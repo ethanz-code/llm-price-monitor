@@ -1,0 +1,18 @@
+# secrets：.env（含真实值，即使 dotenvx 加密后的也不进库）、私钥、明文开发 env
+.env
+.env.keys
+.env.development
+
+# 真实站点配置（可能含 cookie/token），仓库只保留 example 模板
+config/price-monitor.json
+
+# build / tooling artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+.venv/
+
+# runtime data
+var/

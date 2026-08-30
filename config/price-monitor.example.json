@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "timeout": 45,
+    "history_file": "var/price-history.jsonl",
+    "latest_file": "var/price-latest.json",
+    "event_file": "var/price-events.jsonl",
+    "webhook_env": "PRICE_MONITOR_WEBHOOK_URL",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+  },
+  "ai": {
+    "enabled": true,
+    "base_url": "https://your-ai-endpoint.example.com/compatible-mode/v1",
+    "models": ["your-ai-model-a", "your-ai-model-b"],
+    "api_key_env": "PRICE_MONITOR_AI_API_KEY",
+    "max_input_chars": 60000,
+    "max_tokens": 4000,
+    "cache_file": "var/price-ai-cache.json"
+  },
+  "sites": [
+    {
+      "id": "example-newapi",
+      "models": ["gpt-5.6-sol", "claude-fable-5"],
+      "network": { "url": "https://example-newapi.com/api/pricing" }
+    },
+    {
+      "id": "example-auth-site",
+      "models": ["gpt-5.6-sol"],
+      "network": {
+        "url": "https://example-auth-site.com/api/pricing",
+        "headers": {
+          "Authorization": "Bearer ${EXAMPLE_SITE_TOKEN}",
+          "referer": "https://example-auth-site.com/pricing"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+[project]
+name = "llm-price-monitor"
+version = "0.1.0"
+description = "Assay 试金：多中转站模型价格取证、监控与官方价审计"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "httpx>=0.28,<1",
+  "python-dotenvx>=2,<3",
+]
+
+[project.scripts]
+price-monitor = "llm_price_monitor.monitor:main"
+price-tracker = "llm_price_monitor.tracker:main"
+fetch-official-prices = "llm_price_monitor.official_cli:official_main"
+price-discount = "llm_price_monitor.official_cli:discount_main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["llm_price_monitor*"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
