@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Assay 试金：多中转站模型价格取证、监控与官方价审计"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+  "fastapi>=0.115",
   "httpx>=0.28,<1",
   "python-dotenvx>=2,<3",
+  "uvicorn>=0.34",
 ]
 
 [project.scripts]
@@ -13,6 +15,7 @@ price-monitor = "llm_price_monitor.monitor:main"
 price-tracker = "llm_price_monitor.tracker:main"
 fetch-official-prices = "llm_price_monitor.official_cli:official_main"
 price-discount = "llm_price_monitor.official_cli:discount_main"
+price-web = "llm_price_monitor.webapi.app:main"
 
 [build-system]
 requires = ["setuptools>=75"]

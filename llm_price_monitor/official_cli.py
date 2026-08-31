@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from llm_price_monitor.config import load_config
+from llm_price_monitor.config import MonitorConfig, load_config
 from llm_price_monitor.env import load_env_files
 from llm_price_monitor.report import run_once, summary_row
 from llm_price_monitor.official import fx, jsonio, normalize, search, tavily
@@ -49,48 +49,59 @@ def official_main() -> None:
     if not config.ai.enabled or not config.ai.base_url or not config.ai.pick_model():
         print(_error_line("配置文件 ai 段未启用或未配置，无法提取官方价"))
         raise SystemExit(2)
-    tavily_key = tavily.resolve_tavily_key(args.tavily_key)
-    if not tavily_key:
-        print(_error_line("未找到 Tavily key（--tavily-key / TAVILY_API_KEY / tvly 登录态）"))
-        raise SystemExit(2)
 
-    output_path = Path(args.output)
+    vendors = _parse_vendor_specs(args.vendors) if args.vendors else None
+    try:
+        output = fetch_official(config, Path(args.output), tavily_key=args.tavily_key, vendors=vendors)
+    except ValueError as exc:
+        print(_error_line(str(exc)))
+        raise SystemExit(2) from exc
+
+    models = output["models"]
+    found_count = sum(1 for entry in models.values() if entry.get("found"))
+    print(f'{{"status": "ok", "output": "{args.output}", "models_found": {found_count}, "models_total": {len(models)}}}')
+
+
+def fetch_official(
+    config: MonitorConfig,
+    output_path: Path,
+    *,
+    tavily_key: str | None = None,
+    vendors: list[search.VendorSpec] | None = None,
+) -> dict:
+    """Tavily 搜索各厂商官方价并写入 output_path，返回完整输出 dict；供 CLI 与 Web API 复用。"""
+    key = tavily.resolve_tavily_key(tavily_key)
+    if not key:
+        raise ValueError("未找到 Tavily key（--tavily-key / TAVILY_API_KEY / tvly 登录态）")
+
     previous = jsonio.read_json_object(output_path).get("models", {})
 
     with httpx.Client(follow_redirects=True) as client:
-        try:
-            rate, rate_source = fx.get_usd_cny_rate(client)
-        except ValueError as exc:
-            print(_error_line(str(exc)))
-            raise SystemExit(2) from exc
+        rate, rate_source = fx.get_usd_cny_rate(client)
 
     models: dict[str, dict] = {}
-    vendors = _parse_vendor_specs(args.vendors) if args.vendors else search.DEFAULT_VENDORS
-    for spec in vendors:
-        print(f"按厂商搜索官方价: {spec.vendor}", file=sys.stderr)
-        result = search.search_vendor(config.ai, tavily_key, rate, vendor=spec.vendor, domains=spec.domains)
+    for spec in vendors if vendors is not None else search.DEFAULT_VENDORS:
+        result = search.search_vendor(config.ai, key, rate, vendor=spec.vendor, domains=spec.domains)
         for entry in result.entries:
-            key = normalize.model_key(str(entry.get("model") or ""))
-            if key:
-                models[key] = entry
-        if not result.found:
-            print(f"  {spec.vendor}: {result.reason[:120]}", file=sys.stderr)
+            model_key = normalize.model_key(str(entry.get("model") or ""))
+            if model_key:
+                models[model_key] = entry
 
     # 全局补齐：本次没搜到、但上一轮已有的模型原样保留，避免一次波动丢数据。
-    for key, old_entry in previous.items():
-        if key not in models and isinstance(old_entry, dict) and old_entry.get("found"):
-            models[key] = {**old_entry, "from_previous_run": True}
+    for old_key, old_entry in previous.items():
+        if old_key not in models and isinstance(old_entry, dict) and old_entry.get("found"):
+            models[old_key] = {**old_entry, "from_previous_run": True}
 
-    jsonio.write_json(output_path, {
+    output = {
         "generated_at": time.time(),
         "generated_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "search_engine": "tavily",
         "usd_cny_rate": normalize.round2(rate),
         "rate_source": rate_source,
         "models": models,
-    })
-    found_count = sum(1 for entry in models.values() if entry.get("found"))
-    print(f'{{"status": "ok", "output": "{output_path}", "models_found": {found_count}, "models_total": {len(models)}}}')
+    }
+    jsonio.write_json(output_path, output)
+    return output
 
 
 def discount_main() -> None:
