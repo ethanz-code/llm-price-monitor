@@ -1,13 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
- * 全站 Basic Auth：设置 PRICE_WEB_PASSWORD 即启用（与 FastAPI 侧共用同一组环境变量）。
+ * 管理员门禁：设置 PRICE_WEB_PASSWORD 后，/api 的写请求（POST/PUT/PATCH/DELETE）
+ * 需要管理员 Basic 凭据，与 FastAPI 侧双层校验；页面与读接口公开浏览。
  * Proxy 固定运行在 Node.js runtime，可在 next start 运行时读取环境变量。
  */
 
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 export default function proxy(request: NextRequest) {
   const password = process.env.PRICE_WEB_PASSWORD;
-  if (!password) return NextResponse.next();
+  const isWriteApi = request.nextUrl.pathname.startsWith("/api") && WRITE_METHODS.has(request.method);
+  if (!password || !isWriteApi) return NextResponse.next();
 
   const username = process.env.PRICE_WEB_USERNAME ?? "admin";
   const header = request.headers.get("authorization") ?? "";

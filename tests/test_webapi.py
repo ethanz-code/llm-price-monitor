@@ -165,16 +165,28 @@ def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeyp
     release.set()
 
 
-def test_basic_auth_when_password_configured(workspace: Path, monkeypatch):
+def test_admin_gate_gates_writes_only_when_password_configured(workspace: Path, monkeypatch):
     monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
     monkeypatch.setenv("PRICE_WEB_USERNAME", "ethan")
     client = TestClient(create_app(_config(workspace)))
-    assert client.get("/api/health").status_code == 401
-    assert "Basic" in client.get("/api/health").headers["WWW-Authenticate"]
-    wrong = client.get("/api/health", headers={"Authorization": "Basic " + base64.b64encode(b"ethan:nope").decode()})
+
+    # 读接口公开浏览
+    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/meta").json()["is_admin"] is False
+
+    # 写接口需要管理员凭据
+    denied = client.post("/api/collect", json={})
+    assert denied.status_code == 401
+    assert "Basic" in denied.headers["WWW-Authenticate"]
+    wrong = client.post(
+        "/api/auth/verify", headers={"Authorization": "Basic " + base64.b64encode(b"ethan:nope").decode()}
+    )
     assert wrong.status_code == 401
-    ok = client.get("/api/health", headers={"Authorization": "Basic " + base64.b64encode(b"ethan:s3cret").decode()})
-    assert ok.status_code == 200
+
+    # 管理员凭据通过验证，meta 也识别为管理员
+    creds = {"Authorization": "Basic " + base64.b64encode(b"ethan:s3cret").decode()}
+    assert client.post("/api/auth/verify", headers=creds).json() == {"is_admin": True}
+    assert client.get("/api/meta", headers=creds).json()["is_admin"] is True
 
 
 def test_no_auth_by_default(workspace: Path, monkeypatch):

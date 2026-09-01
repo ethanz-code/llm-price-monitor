@@ -101,31 +101,45 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return float(meta["usd_cny_rate"]), f"{meta.get('rate_source')}（缓存）"
             raise HTTPException(status_code=503, detail="实时汇率获取失败且官方价文件中没有缓存汇率") from None
 
-    @app.middleware("http")
-    async def _basic_auth(request: Request, call_next: Any) -> Response:
+    def _credentials_ok(request: Request, username: str, password: str) -> bool:
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            decoded = base64.b64decode(header[6:]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return False
+        user, _, supplied = decoded.partition(":")
+        return secrets.compare_digest(user, username) and secrets.compare_digest(supplied, password)
+
+    def _is_admin(request: Request) -> bool:
+        """密码未配置 = 本机全开放模式，所有访客都是管理员；否则校验 Basic 凭据。"""
         password = os.getenv("PRICE_WEB_PASSWORD")
-        if password:
-            username = os.getenv("PRICE_WEB_USERNAME", "admin")
-            header = request.headers.get("Authorization", "")
-            ok = False
-            if header.startswith("Basic "):
-                try:
-                    decoded = base64.b64decode(header[6:]).decode("utf-8")
-                except (ValueError, UnicodeDecodeError):
-                    ok = False
-                else:
-                    user, _, supplied = decoded.partition(":")
-                    ok = secrets.compare_digest(user, username) and secrets.compare_digest(supplied, password)
-            if not ok:
-                return Response(status_code=401, headers={"WWW-Authenticate": "Basic realm=llm-price-monitor"})
+        if not password:
+            return True
+        return _credentials_ok(request, os.getenv("PRICE_WEB_USERNAME", "admin"), password)
+
+    @app.middleware("http")
+    async def _admin_gate(request: Request, call_next: Any) -> Response:
+        """读接口公开浏览；写操作需要管理员凭据（401 带 WWW-Authenticate 触发浏览器登录框）。"""
+        password = os.getenv("PRICE_WEB_PASSWORD")
+        if password and request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _credentials_ok(
+            request, os.getenv("PRICE_WEB_USERNAME", "admin"), password
+        ):
+            return Response(status_code=401, headers={"WWW-Authenticate": "Basic realm=llm-price-monitor"})
         return await call_next(request)
+
+    @app.post("/api/auth/verify")
+    def auth_verify(request: Request) -> dict[str, bool]:
+        """管理员身份验证探测：未登录时 401 触发浏览器 Basic 登录框。"""
+        return {"is_admin": _is_admin(request)}
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/api/meta")
-    def meta() -> dict[str, Any]:
+    def meta(request: Request) -> dict[str, Any]:
         config = _config()
         return {
             "sites": [
@@ -139,6 +153,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 for site in config.sites
             ],
             "auth_enabled": bool(os.getenv("PRICE_WEB_PASSWORD")),
+            "is_admin": _is_admin(request),
         }
 
     @app.get("/api/latest")

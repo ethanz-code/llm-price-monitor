@@ -116,6 +116,7 @@ export interface SiteMeta {
 export interface MetaData {
   sites: SiteMeta[];
   auth_enabled: boolean;
+  is_admin: boolean;
 }
 
 export interface TaskInfo {

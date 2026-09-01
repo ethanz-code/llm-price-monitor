@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Btn, Modal } from "./ui";
+import { Btn } from "./ui";
 import { IconCheck, IconClose, IconMenu, IconMoon, IconSun } from "./icons";
 import { LogoMark } from "./LogoMark";
 import { useTheme } from "@/app/providers";
+import type { MetaData } from "@/lib/types";
 import type { ThemeMode } from "@/theme";
 
 const ITEMS = [
@@ -38,36 +39,42 @@ function ThemeToggle() {
   );
 }
 
-/** 未上线功能的体面占位：按钮 + "即将上线"说明弹窗；说明支持内嵌链接。 */
-function ComingSoon({ label, title, description }: { label: string; title: string; description: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Btn variant="text" onClick={() => setOpen(true)}>
-        {label}
-      </Btn>
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={title}
-        footer={
-          <Btn variant="primary" onClick={() => setOpen(false)}>
-            知道了
-          </Btn>
-        }
-      >
-        <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>{description}</p>
-      </Modal>
-    </>
-  );
+/** 管理员登录态：读 /api/meta 判断当前访客是否已凭 Basic 凭据成为管理员；
+ *  未登录时点击「登录」发一次写探测，401 触发浏览器原生登录框。 */
+function useAdminState() {
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    fetch("/api/meta", { cache: "no-store" })
+      .then((res) => (res.ok ? (res.json() as Promise<MetaData>) : null))
+      .then((data) => setIsAdmin(Boolean(data?.is_admin)))
+      .catch(() => setIsAdmin(false));
+  }, []);
+
+  async function login() {
+    try {
+      const res = await fetch("/api/auth/verify", { method: "POST", cache: "no-store" });
+      if (res.ok) {
+        setIsAdmin(true);
+        router.push("/admin");
+      }
+    } catch {
+      // 浏览器登录框被取消时可能抛错；保持未登录态
+    }
+  }
+
+  return { isAdmin, login };
 }
 
 /** 透明浮动导航（Artificial Analysis 式）：logo 胶囊居左，菜单与动作靠右；
- *  采集入口属于登录后的管理面板，不在公开导航露出。 */
+ *  「管理面板」入口仅在管理员登录态（或本机全开放模式）显示。 */
 export function SiteNav() {
   const pathname = usePathname();
   const selected = `/${pathname.split("/")[1] ?? ""}`;
   const { mode, setMode } = useTheme();
+  const { isAdmin, login } = useAdminState();
+  const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -139,6 +146,16 @@ export function SiteNav() {
                     {selected === item.key && <IconCheck size={13} />}
                   </Link>
                 ))}
+                {isAdmin && (
+                  <Link
+                    href="/admin"
+                    onClick={() => setMenuOpen(false)}
+                    className={`nav-pop-item${selected === "/admin" ? " active" : ""}`}
+                  >
+                    管理面板
+                    {selected === "/admin" && <IconCheck size={13} />}
+                  </Link>
+                )}
               </nav>
               <div className="nav-pop-theme">
                 <span className="admin-rail-title">主题</span>
@@ -162,16 +179,15 @@ export function SiteNav() {
 
         <div className="nav-actions">
           <ThemeToggle />
-          <ComingSoon
-            label="登录"
-            title="账号体系即将上线"
-            description={
-              <>
-                登录与多用户支持还在开发中，上线后可以管理自己的监控清单与提醒，采集任务也会收进管理面板。当前无需登录即可查看全部数据，也可以先
-                <Link href="/admin">预览管理面板</Link>。
-              </>
-            }
-          />
+          {isAdmin === null ? null : isAdmin ? (
+            <Btn variant="text" onClick={() => router.push("/admin")} title="已以管理员身份登录">
+              管理面板
+            </Btn>
+          ) : (
+            <Btn variant="text" onClick={login} title="输入管理员密码后可配置站点与触发采集">
+              登录
+            </Btn>
+          )}
         </div>
       </div>
     </header>

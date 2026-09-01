@@ -32,6 +32,9 @@ export function CollectButton({ size }: { size?: "lg" | "sm" }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ persist }),
       });
+      if (res.status === 401) {
+        throw new Error("需要管理员登录后才能采集（在登录框输入密码即可）");
+      }
       if (!res.ok) {
         const detail = ((await res.json()) as { detail?: string }).detail;
         throw new Error(detail ?? `HTTP ${res.status}`);
