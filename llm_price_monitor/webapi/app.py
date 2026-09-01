@@ -206,7 +206,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return auth.session_username(store, request.cookies.get(auth.SESSION_COOKIE)) is not None
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员
-    ADMIN_GET_PATHS = {"/api/settings", "/api/sites"}
+    ADMIN_GET_PATHS = {"/api/settings", "/api/sites", "/api/docs/readme"}
     SETUP_PATH = "/api/setup"
     # 登录/登出/首次设置本身必须是公开写接口，否则永远进不了门
     PUBLIC_WRITE_PATHS = {SETUP_PATH, "/api/auth/login", "/api/auth/logout"}
@@ -349,6 +349,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/docs/readme")
+    def readme() -> dict[str, str]:
+        """管理面板文档页用：读仓库根 README.md 原文，找不到时报 404。"""
+        for candidate in (Path(__file__).resolve().parents[2] / "README.md", Path.cwd() / "README.md"):
+            if candidate.is_file():
+                return {"markdown": candidate.read_text(encoding="utf-8")}
+        raise HTTPException(status_code=404, detail="未找到 README.md")
 
     @app.get("/api/meta")
     def meta(request: Request) -> dict[str, Any]:

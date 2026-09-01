@@ -7,6 +7,7 @@ import { fetchMeta } from "@/lib/api";
 import {
   IconAppstore,
   IconBolt,
+  IconBook,
   IconDashboard,
   IconHistory,
   IconSettings,
@@ -17,6 +18,7 @@ const RAIL = [
   { href: "/admin/sites", label: "站点管理", icon: <IconAppstore size={15} /> },
   { href: "/admin/tasks", label: "采集任务", icon: <IconBolt size={15} /> },
   { href: "/admin/events", label: "事件审计", icon: <IconHistory size={15} /> },
+  { href: "/admin/docs", label: "使用文档", icon: <IconBook size={15} /> },
   { href: "/admin/settings", label: "系统设置", icon: <IconSettings size={15} /> },
 ];
 
