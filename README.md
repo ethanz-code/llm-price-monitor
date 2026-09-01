@@ -47,14 +47,23 @@ npx @dotenvx/dotenvx set TAVILY_API_KEY tvly-xxx
 cp .env.example .env   # 编辑并填写真实值
 ```
 
-配置站点并启动：
+准备站点配置并启动（二选一）：
 
 ```bash
 cp config/price-monitor.example.json config/price-monitor.json
 # 编辑 config/price-monitor.json，填入你要监控的站点和目标模型
 
-uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 前端使用
+# 生产模式：先构建前端，再一条命令同时拉起 API + 前端
+cd web && npm install && npm run build && cd ..
+uv run price-web --with-frontend
+
+# 开发模式：前端热加载 + Python 改动自动重启，日常改代码用这个
+uv run price-web --dev
 ```
+
+打开 http://localhost:3000 即可使用。首次启动（数据库里还没有管理员账号）会
+进入 `/setup` 首次设置向导：创建管理员账号 → 填 AI / Tavily / Webhook 密钥 →
+跟着指引添加站点、触发首次采集。站点也可以先跑起来后在管理面板里添加。
 
 > [!TIP]
 > 启动时会自动通过 `python-dotenvx` 读取 `.env`（支持 dotenvx 加密值）。
@@ -64,10 +73,11 @@ uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 
 
 唯一入口：
 
-| 命令         | 用途                                                                     |
-| ------------ | ------------------------------------------------------------------------ |
-| `price-web`  | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
-| `price-admin` | 重置管理员账号密码（忘记密码时的找回入口，需在仓库根目录运行）          |
+| 命令          | 用途                                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| `price-web`   | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 生产前端             |
+| `price-web --dev` | 开发模式：uvicorn 热重载 + Next.js dev 前端热加载（隐含 `--with-frontend`，无需先构建） |
+| `price-admin` | 重置管理员账号密码（忘记密码时的找回入口，需在仓库根目录运行）                           |
 
 采集、官方价刷新、折扣计算等能力全部通过 HTTP API 使用
 （`POST /api/collect`、`POST /api/official/refresh`、`GET /api/discount`），
@@ -128,22 +138,19 @@ Next.js 16（App Router）+ React 19 的服务端渲染数据站，自研轻量 
 
 ### 启动
 
-```bash
-# 1. 构建前端（仅首次或前端代码变更后需要）
-cd web && npm install && npm run build && cd ..
+| 场景 | 命令 | 说明 |
+| ---- | ---- | ---- |
+| 生产 | `uv run price-web --with-frontend` | 跑 `web/.next` 构建产物，需先 `npm run build` |
+| 开发 | `uv run price-web --dev` | 前端 `next dev` 热加载；Python 改动 uvicorn 自动重启，无需构建 |
 
-# 2. 一条命令同时拉起 API 与前端
-uv run price-web --with-frontend
-#    API: http://127.0.0.1:8000，前端: http://localhost:3000（/api 自动反代到 API）
-```
-
-也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start` 起前端；
-开发调试用 `npm run dev` 替代 build + start。
+也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start`（生产）或
+`npm run dev`（开发）起前端。
 
 > [!TIP]
-> `price-web` 支持 `--host`、`--port`、`--config` 参数；`--with-frontend` 检测到
-> `web/.next` 缺少构建产物时会直接提示先执行 `npm run build`。
-> 8000 端口已被旧实例占用时，先停掉旧进程或用 `--port` 换端口。
+> `price-web` 支持 `--host`、`--port`、`--config` 参数（`--dev` 模式下 `--config`
+> 不可用，热重载子进程只按默认路径加载配置）；`--with-frontend` 检测到 `web/.next`
+> 缺少构建产物时会直接提示先执行 `npm run build`。8000 端口已被旧实例占用时，
+> 先停掉旧进程或用 `--port` 换端口。
 
 环境变量（写入 `.env` 或 dotenvx）：
 

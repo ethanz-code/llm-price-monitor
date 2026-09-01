@@ -514,19 +514,45 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
+    parser.add_argument("--frontend-port", type=int, default=3000)
     parser.add_argument("--with-frontend", action="store_true", help="同时以生产模式拉起 web/ 下的 Next.js 服务（需先 npm run build）")
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="开发模式：uvicorn 热重载（改 Python 自动重启）+ Next.js dev 前端热加载，隐含 --with-frontend；与 --config 互斥",
+    )
     args = parser.parse_args()
 
+    if args.dev and args.config != str(DEFAULT_CONFIG):
+        raise SystemExit("--dev 模式不支持 --config（热重载子进程只按默认路径加载配置）")
+
     frontend: subprocess.Popen | None = None
-    if args.with_frontend:
+    if args.with_frontend or args.dev:
         web_dir = Path("web")
-        if not (web_dir / ".next" / "BUILD_ID").exists():
-            raise SystemExit("web/.next 不存在，请先在 web/ 下执行 npm run build")
-        frontend = subprocess.Popen(["npm", "run", "start"], cwd=web_dir)
-        print(f"前端已启动: http://localhost:3000（API: http://{args.host}:{args.port}）", flush=True)
+        if args.dev:
+            command = ["npm", "run", "dev", "--", "-p", str(args.frontend_port)]
+        else:
+            if not (web_dir / ".next" / "BUILD_ID").exists():
+                raise SystemExit("web/.next 不存在，请先在 web/ 下执行 npm run build")
+            command = ["npm", "run", "start", "--", "-p", str(args.frontend_port)]
+        # 前端 /api 反代目标跟随本次后端地址，保证 --port 换端口时整条链路一致
+        env = {**os.environ, "PRICE_WEB_API_URL": f"http://{args.host}:{args.port}"}
+        frontend = subprocess.Popen(command, cwd=web_dir, env=env)
+        print(f"前端已启动: http://localhost:{args.frontend_port}（API: http://{args.host}:{args.port}）", flush=True)
 
     try:
-        uvicorn.run(create_app(Path(args.config)), host=args.host, port=args.port)
+        if args.dev:
+            # 热重载要求 import string；.env 已在父进程注入 os.environ，子进程会继承
+            uvicorn.run(
+                "llm_price_monitor.webapi.app:create_app",
+                factory=True,
+                host=args.host,
+                port=args.port,
+                reload=True,
+                reload_dirs=["llm_price_monitor"],
+            )
+        else:
+            uvicorn.run(create_app(Path(args.config)), host=args.host, port=args.port)
     finally:
         if frontend:
             frontend.terminate()
