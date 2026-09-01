@@ -1,7 +1,6 @@
 """官方价搜索与折扣率计算的共享实现。
 
-CLI 入口为 pyproject 注册的 `fetch-official-prices` / `price-discount`（实现在
-`llm_price_monitor/official_cli.py`），全部业务逻辑按职责拆在本包：
+全部业务逻辑按职责拆在本包，入口统一走 webapi 的官方价刷新任务：
 
 - `jsonio`：JSON 文件读写缓存
 - `normalize`：模型名归一化与数值取整

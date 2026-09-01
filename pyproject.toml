@@ -11,10 +11,6 @@ dependencies = [
 ]
 
 [project.scripts]
-price-monitor = "llm_price_monitor.monitor:main"
-price-tracker = "llm_price_monitor.tracker:main"
-fetch-official-prices = "llm_price_monitor.official_cli:official_main"
-price-discount = "llm_price_monitor.official_cli:discount_main"
 price-web = "llm_price_monitor.webapi.app:main"
 
 [build-system]

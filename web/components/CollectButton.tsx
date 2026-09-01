@@ -46,6 +46,7 @@ export function CollectButton({ size }: { size?: "lg" | "sm" }) {
   }
 
   const running = task?.status === "running";
+  const records = (task?.result?.records as unknown[] | undefined)?.length ?? 0;
   const events = (task?.result?.events as string[] | undefined)?.length ?? 0;
   return (
     <>
@@ -71,7 +72,7 @@ export function CollectButton({ size }: { size?: "lg" | "sm" }) {
               {task.status === "running" && <ToneTag tone="blue">采集中…</ToneTag>}
               {task.status === "done" && (
                 <ToneTag tone="green">
-                  完成：{String(task.result?.records ?? 0)} 条记录，{String(events)} 个事件
+                  完成：{String(records)} 条记录，{String(events)} 个事件
                 </ToneTag>
               )}
               {task.status === "failed" && <ToneTag tone="red">失败：{task.error}</ToneTag>}

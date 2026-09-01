@@ -17,6 +17,8 @@
 - **AI 兜底解析**：无法确认格式的接口交给 AI 从原始响应证据中提取，但绝不猜测
 - **官方价审计**：Tavily 搜索厂商官方定价页，AI 提取官方原价，自动计算站点价折扣率
 - **变化告警**：新增、涨价、降价、恢复均生成事件，可推送 webhook
+- **Web 数据站**：品牌首页 + 价格总览、历史趋势、官方价库、折扣对比五个页面，
+  页面上可直接触发采集与官方价刷新后台任务
 - **完整证据链**：每条价格记录附带响应 URL、状态、载荷哈希和脱敏后的证据片段
 
 > [!IMPORTANT]
@@ -26,7 +28,7 @@
 
 ## 🚀 快速开始
 
-要求：Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)。
+要求：Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)；使用 Web 界面另需 Node.js 与 npm。
 
 ```bash
 git clone https://github.com/ethanz-code/llm-price-monitor.git
@@ -45,38 +47,30 @@ npx @dotenvx/dotenvx set TAVILY_API_KEY tvly-xxx
 cp .env.example .env   # 编辑并填写真实值
 ```
 
-配置站点并运行：
+配置站点并启动：
 
 ```bash
 cp config/price-monitor.example.json config/price-monitor.json
 # 编辑 config/price-monitor.json，填入你要监控的站点和目标模型
 
-uv run price-monitor --config config/price-monitor.json --summary
+uv run price-web   # 打开 http://127.0.0.1:8000/docs 或配合 web/ 前端使用
 ```
 
 > [!TIP]
-> CLI 会自动通过 `python-dotenvx` 加载 `.env`（支持 dotenvx 加密值）。
+> CLI 会自动通过 `python-dotenvx` 加密 `.env`（支持 dotenvx 加密值）。
 > `config/price-monitor.json` 与 `.env` 含真实凭据，已被 `.gitignore` 排除，不会提交。
 
 ## 📖 命令
 
+唯一入口：
+
 | 命令 | 用途 |
 | --- | --- |
-| `price-monitor` | 多站点批量价格监控（历史/快照/事件/官方价折扣输出） |
-| `price-tracker` | 单站点价格采集（价格页面 / JSON 接口 / New API） |
-| `fetch-official-prices` | Tavily 搜索 + AI 提取各厂商官方模型原价 |
-| `price-discount` | 对比站点价与官方价，计算折扣率 |
-| `price-web` | 启动 Web 服务（FastAPI API 层），配合 `web/` 前端页面使用 |
+| `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
 
-常用参数示例：
-
-```bash
-# 只测试配置中的一个站点，不写入历史
-uv run price-monitor --config config/price-monitor.json --site-id example-newapi --no-write
-
-# 输出 AI 请求预览，不发起 AI 调用（调试提示词与证据筛选）
-uv run price-monitor --config config/price-monitor.json --dry-run
-```
+采集、官方价刷新、折扣计算等能力全部通过 HTTP API 使用
+（`POST /api/collect`、`POST /api/official/refresh`、`GET /api/discount`），
+由管理面板或任意 HTTP 客户端调用。
 
 ## ⚙️ 配置
 
@@ -101,22 +95,36 @@ uv run price-monitor --config config/price-monitor.json --dry-run
 
 ## 🌐 Web 界面
 
-四个服务端渲染页面（Next.js App Router + Ant Design，非客户端单页应用）：
-价格总览、历史与事件、官方价库、折扣对比；页面上可触发“立即采集”与“刷新官方价”
-后台任务并轮询进度。
+Next.js 16（App Router）+ React 19 的服务端渲染数据站，自研轻量 UI kit，
+不依赖重型组件库；支持浅色 / 深色 / 跟随系统三态主题。
+
+| 页面 | 内容 |
+| --- | --- |
+| `/` | 品牌首页：实时统计条、最新事件流与快照预览 |
+| `/overview` | 价格总览：全部站点 × 模型的最新单价 |
+| `/history` | 历史与事件：价格趋势图 + 变化事件列表 |
+| `/official` | 官方价库：各厂商模型官方原价 |
+| `/discount` | 折扣对比：站点价相对官方价的折扣率 |
+| `/admin` | 管理面板：触发"立即采集"与"刷新官方价"后台任务并轮询进度（不在公开导航） |
+
+### 启动
 
 ```bash
-# 1. 启动 API（仓库根目录运行，路径按 config/ 与 var/ 相对解析）
-uv run price-web                 # 默认 127.0.0.1:8000
+# 1. 构建前端（仅首次或前端代码变更后需要）
+cd web && npm install && npm run build && cd ..
 
-# 2. 启动前端
-cd web
-npm install
-npm run build && npm run start   # http://localhost:3000（/api 自动反代到 8000）
-
-# 或构建后一条命令同时拉起两者
+# 2. 一条命令同时拉起 API 与前端
 uv run price-web --with-frontend
+#    API: http://127.0.0.1:8000，前端: http://localhost:3000（/api 自动反代到 API）
 ```
+
+也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start` 起前端；
+开发调试用 `npm run dev` 替代 build + start。
+
+> [!TIP]
+> `price-web` 支持 `--host`、`--port`、`--config` 参数；`--with-frontend` 检测到
+> `web/.next` 缺少构建产物时会直接提示先执行 `npm run build`。
+> 8000 端口已被旧实例占用时，先停掉旧进程或用 `--port` 换端口。
 
 环境变量（写入 `.env` 或 dotenvx）：
 

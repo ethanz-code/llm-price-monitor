@@ -141,7 +141,10 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
             break
         threading.Event().wait(0.05)
     assert task["status"] == "done"
-    assert task["result"] == {"records": 1, "events": [], "errors": [], "persisted": False}
+    assert task["result"]["events"] == []
+    assert task["result"]["errors"] == []
+    assert task["result"]["persisted"] is False
+    assert [row["model"] for row in task["result"]["records"]] == ["demo-model"]
 
 
 def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeypatch):

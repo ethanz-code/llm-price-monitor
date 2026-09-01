@@ -11,7 +11,7 @@ import json
 import os
 import secrets
 import subprocess
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -28,15 +28,17 @@ from llm_price_monitor.env import load_env_files
 from llm_price_monitor.official import fx, jsonio
 from llm_price_monitor.official import search as official_search
 from llm_price_monitor.official.discount import build_discount, compute_discounts, summarize
-from llm_price_monitor.official_cli import fetch_official
-from llm_price_monitor.report import run_once, summary_row
+from llm_price_monitor.official.fetch import fetch_official
+from llm_price_monitor.report import attach_official_discounts, run_once, summary_row
 
 DEFAULT_CONFIG = Path("config/price-monitor.json")
+OFFICIAL_FILE = Path("var/official-prices.json")
 
 
 class CollectBody(BaseModel):
     persist: bool = False
     site_id: str | None = None
+    dry_run: bool = False
 
 
 class RefreshBody(BaseModel):
@@ -230,14 +232,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not sites:
                 raise HTTPException(status_code=400, detail=f"配置中不存在站点: {body.site_id}")
             config = replace(config, sites=sites)
+        if body.dry_run:
+            config = replace(config, ai=replace(config.ai, dry_run=True))
 
         def _run() -> dict[str, Any]:
-            report = run_once(config, persist=body.persist)
+            report = run_once(config, persist=body.persist and not body.dry_run)
+            output = attach_official_discounts(asdict(report), OFFICIAL_FILE)
             return {
-                "records": len(report.records),
+                "records": [summary_row(row) for row in output["records"]],
                 "events": [event["kind"] for event in report.events],
                 "errors": report.errors,
-                "persisted": body.persist,
+                "persisted": body.persist and not body.dry_run,
+                "official_prices": output["official_prices"],
+                "ai_previews": report.ai_previews,
             }
 
         try:
@@ -251,11 +258,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         config = _config()
         if not config.ai.enabled or not config.ai.base_url or not config.ai.pick_model():
             raise HTTPException(status_code=400, detail="配置文件 ai 段未启用或未配置，无法提取官方价")
-        output_path = Path("var/official-prices.json")
+        output_path = OFFICIAL_FILE
         vendors = [official_search.VendorSpec(name) for name in body.vendors] if body.vendors else None
 
         def _run() -> dict[str, Any]:
-            output = fetch_official(config, output_path, vendors=vendors)
+            previous = jsonio.read_json(output_path) if output_path.exists() else None
+            output = fetch_official(config, previous=previous, vendors=vendors)
+            jsonio.write_json(output_path, output)
             return {
                 "models_total": len(output["models"]),
                 "models_found": sum(1 for entry in output["models"].values() if entry.get("found")),

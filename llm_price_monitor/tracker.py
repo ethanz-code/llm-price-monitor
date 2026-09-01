@@ -1,19 +1,17 @@
-#!/usr/bin/env python3
-"""采集模型价格页面并保存历史。与渠道连通性监控完全独立。"""
+"""价格解析与采集库函数：价格页/New API 解析、站点类型识别、价格记录构造。
+
+被 config / ai / adapters / report 复用；命令行入口已移除，采集统一走 /api/collect。
+"""
 from __future__ import annotations
 
-import argparse
-import json
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 
-from llm_price_monitor.env import load_env_files
 from llm_price_monitor.units import number_or_none as _number
 
 
@@ -457,47 +455,6 @@ def fetch_newapi_price(base_url: str, model: str, *, group: str | None = None, t
             client.close()
 
 
-def fetch_price_with_fallback(page_url: str, model: str, *, group: str | None = None, timeout: float = 20.0, client: httpx.Client | None = None) -> PriceRecord:
-    """价格页兜底链：页面 -> New API -> 常见公开模型广场接口。"""
-    parsed = httpx.URL(page_url)
-    base = f"{parsed.scheme}://{parsed.host}" + (f":{parsed.port}" if parsed.port else "")
-    errors: list[str] = []
-    candidate: PriceRecord | None = None
-    own = client is None
-    client = client or httpx.Client(timeout=timeout, follow_redirects=True, headers={"user-agent": "Proxy-SmartAven-price-tracker/1.0"})
-    site = detect_site_kind(page_url, timeout=timeout, client=client)
-    try:
-        record = fetch_price(page_url, model, timeout=timeout, client=client)
-        record.metadata = {**(record.metadata or {}), "detected_site_kind": site["kind"]}
-        if record.price_status == "confirmed":
-            return record
-        candidate = record
-    except (httpx.HTTPError, ValueError) as exc:
-        errors.append(f"页面解析: {exc}")
-    try:
-        record = fetch_newapi_price(base, model, group=group, timeout=timeout, client=client)
-        record.metadata = {**(record.metadata or {}), "detected_site_kind": site["kind"]}
-        return record
-    except (httpx.HTTPError, ValueError) as exc:
-        errors.append(f"New API: {exc}")
-    try:
-        for path in ("/model-plaza", "/api/v1/model-plaza", "/api/pricing", "/api/v1/pricing"):
-            try:
-                response = client.get(base + path)
-                response.raise_for_status()
-                payload = response.json()
-                return _record_from_json(payload, model, base + path, metadata={"detected_site_kind": site["kind"], "fallback_endpoint": path})
-            except (httpx.HTTPError, ValueError, TypeError) as exc:
-                errors.append(f"{path}: {exc}")
-    finally:
-        if own:
-            client.close()
-    if candidate is not None:
-        candidate.metadata = {**(candidate.metadata or {}), "fallback_errors": errors}
-        return candidate
-    raise ValueError("未找到可公开读取的价格数据；" + "；".join(errors))
-
-
 def _find_model_record(value: Any, model: str) -> dict[str, Any] | None:
     if isinstance(value, dict):
         direct = value.get(model)
@@ -515,48 +472,3 @@ def _find_model_record(value: Any, model: str) -> dict[str, Any] | None:
             if found:
                 return found
     return None
-
-
-def append_history(path: Path, record: PriceRecord) -> list[dict[str, Any]]:
-    history = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-    history.append(asdict(record))
-    path.write_text(json.dumps(history, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return history
-
-
-def main() -> None:
-    load_env_files()
-    parser = argparse.ArgumentParser(description="独立采集模型价格页面并保存历史")
-    parser.add_argument("--url", required=True, help="价格页面或 JSON 接口")
-    parser.add_argument("--model", required=False)
-    parser.add_argument("--format", choices=["auto", "page", "newapi"], default="auto")
-    parser.add_argument("--inspect", action="store_true", help="只识别站点类型和公开价格能力，不采集价格")
-    parser.add_argument("--group", help="New API 计费分组，例如 gpt pro")
-    parser.add_argument("--history", default="prices.json")
-    parser.add_argument("--timeout", type=float, default=20)
-    args = parser.parse_args()
-    if args.inspect:
-        print(json.dumps(detect_site_kind(args.url, timeout=args.timeout), ensure_ascii=False))
-        return
-    if not args.model:
-        parser.error("采集价格时必须提供 --model")
-    try:
-        record = fetch_newapi_price(args.url, args.model, group=args.group, timeout=args.timeout) if args.format == "newapi" else fetch_price_with_fallback(args.url, args.model, group=args.group, timeout=args.timeout)
-    except (httpx.HTTPError, ValueError) as exc:
-        print(json.dumps({"站点": args.url, "模型": args.model, "输入价格": None, "输出价格": None, "价格单位": "", "价格状态": "unavailable", "需要认证": "认证" in str(exc), "错误": str(exc), "采集时间": time.time()}, ensure_ascii=False))
-        raise SystemExit(2) from exc
-    history = append_history(Path(args.history), record)
-    same = [item for item in history if item["model"].lower() == args.model.lower()]
-    trend = "不可用" if record.price_status == "unavailable" else "暂无数据"
-    if record.price_status == "candidate":
-        trend = "候选数据"
-    if record.price_status == "confirmed" and len(same) >= 2:
-        previous = same[-2]["input_price"]
-        previous_status = same[-2].get("price_status", "confirmed")
-        if previous_status == "confirmed" and record.input_price is not None and previous is not None:
-            trend = "上升" if record.input_price > previous else "下降" if record.input_price < previous else "稳定"
-    print(json.dumps({"站点": args.url, "模型": record.model, "输入价格": record.input_price, "输出价格": record.output_price, "价格单位": record.unit, "价格状态": record.price_status, "需要认证": record.requires_auth, "价格趋势": trend, "元数据": record.metadata, "采集时间": record.captured_at}, ensure_ascii=False))
-
-
-if __name__ == "__main__":
-    main()

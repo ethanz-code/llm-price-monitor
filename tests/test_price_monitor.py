@@ -4,7 +4,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llm_price_monitor.monitor import AIDryRun, AIConfig, AIPriceExtractor, BROWSER_USER_AGENTS, BrowserAdapter, ModelTarget, PriceMonitorError, SiteSpec, NEWAPI_ONEAPI_PRICING_GUIDANCE, _decode_response_body, _headers, _is_preferred_response_url, _network_pricing_records, _repair_mojibake, _target_page_text, choose_user_agent, load_config, run_once
+from llm_price_monitor.adapters import BrowserAdapter, headers as _headers, network_pricing_records as _network_pricing_records
+from llm_price_monitor.ai import AIDryRun, AIPriceExtractor, NEWAPI_ONEAPI_PRICING_GUIDANCE
+from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec, load_config
+from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, target_page_text as _target_page_text
+from llm_price_monitor.report import run_once, summary_row as _summary_row
+from llm_price_monitor.useragent import BROWSER_USER_AGENTS, choose_user_agent
 from llm_price_monitor.tracker import PriceRecord
 
 
@@ -115,7 +120,7 @@ def test_network_adapter_uses_ai_alias_before_newapi_calculation(monkeypatch):
             "candidate",
         )]
 
-    monkeypatch.setattr("llm_price_monitor.monitor.AIPriceExtractor.extract", fake_extract)
+    monkeypatch.setattr("llm_price_monitor.ai.AIPriceExtractor.extract", fake_extract)
     spec = SiteSpec(
         id="demo",
         models=(ModelTarget("informal-gpt"),),
@@ -184,7 +189,7 @@ def test_network_page_response_is_sent_to_ai_without_dom_or_browser(monkeypatch)
         seen["payload"] = responses[0].get("payload")
         return [PriceRecord("demo-model", 1, 2, "CNY/1M tokens", "", 0, {}, "confirmed")]
 
-    monkeypatch.setattr("llm_price_monitor.monitor.AIPriceExtractor.extract", fake_extract)
+    monkeypatch.setattr("llm_price_monitor.ai.AIPriceExtractor.extract", fake_extract)
     spec = SiteSpec(
         id="html-page",
         models=(ModelTarget("demo-model"),),
@@ -475,7 +480,7 @@ def test_browser_probe_reports_no_discoverable_price_data(tmp_path: Path, monkey
         "settings": {"history_file": str(tmp_path / "history.jsonl"), "latest_file": str(tmp_path / "latest.json"), "event_file": str(tmp_path / "events.jsonl")},
         "sites": [{"id": "demo", "adapter": "browser", "model_list_url": "https://demo.test/pricing", "models": []}]
     }))
-    monkeypatch.setattr("llm_price_monitor.monitor.BrowserAdapter.collect", lambda *_args: (_ for _ in ()).throw(PriceMonitorError("页面已打开，但没有捕获到可识别的价格 JSON/模型")))
+    monkeypatch.setattr("llm_price_monitor.adapters.BrowserAdapter.collect", lambda *_args: (_ for _ in ()).throw(PriceMonitorError("页面已打开，但没有捕获到可识别的价格 JSON/模型")))
     report = run_once(config, client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200))))
     assert report.errors[0]["site_id"] == "demo"
 
@@ -961,7 +966,7 @@ def _write_config(tmp_path: Path, value: dict) -> Path:
 
 
 def test_summary_row_flattens_standard_tier_and_keeps_ladder():
-    from llm_price_monitor.monitor import _summary_row
+    from llm_price_monitor.report import summary_row as _summary_row
 
     row = {
         "site_id": "demo",
@@ -992,7 +997,7 @@ def test_summary_row_flattens_standard_tier_and_keeps_ladder():
 
 
 def test_summary_row_wraps_flat_price_as_single_tier():
-    from llm_price_monitor.monitor import _summary_row
+    from llm_price_monitor.report import summary_row as _summary_row
 
     row = {
         "site_id": "demo",
@@ -1020,7 +1025,7 @@ def test_summary_row_wraps_flat_price_as_single_tier():
 
 
 def test_summary_row_skips_cross_group_tiers_and_normalizes_per_token_unit():
-    from llm_price_monitor.monitor import _summary_row
+    from llm_price_monitor.report import summary_row as _summary_row
 
     row = {
         "site_id": "demo",
@@ -1049,7 +1054,8 @@ def test_summary_row_skips_cross_group_tiers_and_normalizes_per_token_unit():
 
 
 def test_ai_empty_pricing_rules_skeleton_becomes_unavailable():
-    from llm_price_monitor.monitor import AIConfig, AIPriceExtractor
+    from llm_price_monitor.ai import AIPriceExtractor
+    from llm_price_monitor.config import AIConfig
 
     extractor = AIPriceExtractor(AIConfig())
     result = {
@@ -1075,7 +1081,8 @@ def test_ai_empty_pricing_rules_skeleton_becomes_unavailable():
 
 
 def test_ai_multi_group_pricing_rules_split_into_per_group_records():
-    from llm_price_monitor.monitor import AIConfig, AIPriceExtractor
+    from llm_price_monitor.ai import AIPriceExtractor
+    from llm_price_monitor.config import AIConfig
 
     extractor = AIPriceExtractor(AIConfig())
     result = {
@@ -1107,7 +1114,7 @@ def test_ai_multi_group_pricing_rules_split_into_per_group_records():
     records = extractor._records(spec, result, "", "hash", set(), {}, ["gpt-5.6-sol"])
     assert [record.metadata["group"] for record in records] == ["gpt-plus-优惠", "pro-企业专用"]
     assert all(record.price_status == "rule_only" for record in records)
-    from llm_price_monitor.monitor import _summary_row
+    from llm_price_monitor.report import summary_row as _summary_row
     summary = _summary_row(_record_dict_for_test(records[0]))
     assert summary["input_price"] == pytest.approx(0.89)
     assert summary["tiers"][0]["unit"] == "USD/1M tokens"
