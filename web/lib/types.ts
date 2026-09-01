@@ -119,6 +119,40 @@ export interface MetaData {
   is_admin: boolean;
 }
 
+/** 站点完整配置（与 config/price-monitor.json 的 sites 段同构，存储于 SQLite sites 表）。 */
+export interface SiteConfig {
+  id: string;
+  adapter?: string;
+  model_list_url?: string | null;
+  models: (string | { name: string; group?: string | null; aliases?: string[] })[];
+  network?: {
+    url?: string | null;
+    method?: string;
+    params?: Record<string, string>;
+    headers?: Record<string, string>;
+    body_type?: string;
+    body?: unknown;
+  } | null;
+  request_headers?: Record<string, string> | null;
+  enabled?: boolean;
+  note?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SitesData {
+  sites: SiteConfig[];
+}
+
+/** 系统设置文档：settings/ai 两段，键名与配置文件一致。 */
+export interface SettingsData {
+  settings: Record<string, unknown>;
+  ai: Record<string, unknown>;
+}
+
+export interface TasksData {
+  tasks: TaskInfo[];
+}
+
 export interface TaskInfo {
   id: string;
   kind: string;

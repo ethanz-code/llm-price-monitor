@@ -136,28 +136,33 @@ export function Toaster() {
 /* ---------- 开关 ---------- */
 
 export function Switch({
+  checked,
   defaultChecked,
   disabled,
   title,
   onChange,
 }: {
+  /** 受控用法：传入 checked 后由外部状态驱动 */
+  checked?: boolean;
   defaultChecked?: boolean;
   disabled?: boolean;
   title?: string;
   onChange?: (checked: boolean) => void;
 }) {
-  const [checked, setChecked] = useState(!!defaultChecked);
+  const [internal, setInternal] = useState(!!defaultChecked);
+  const isControlled = checked !== undefined;
+  const value = isControlled ? checked : internal;
   return (
     <button
       type="button"
       role="switch"
-      aria-checked={checked}
+      aria-checked={value}
       title={title}
       disabled={disabled}
       className="switch"
       onClick={() => {
-        const next = !checked;
-        setChecked(next);
+        const next = !value;
+        if (!isControlled) setInternal(next);
         onChange?.(next);
       }}
     >

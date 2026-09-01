@@ -24,7 +24,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from llm_price_monitor.webapi import tasks
-from llm_price_monitor.config import MonitorConfig, config_from_store
+from llm_price_monitor.config import (
+    MonitorConfig,
+    SiteSpec,
+    ai_from_raw,
+    config_from_store,
+    settings_from_raw,
+    sites_from_raw,
+)
 from llm_price_monitor.env import load_env_files
 from llm_price_monitor.official import fx, jsonio
 from llm_price_monitor.official import search as official_search
@@ -50,6 +57,15 @@ class CollectBody(BaseModel):
 
 class RefreshBody(BaseModel):
     vendors: list[str] | None = None
+
+
+class SettingsBody(BaseModel):
+    settings: dict[str, Any] | None = None
+    ai: dict[str, Any] | None = None
+
+
+class SiteBody(BaseModel):
+    config: dict[str, Any]
 
 
 def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
@@ -192,11 +208,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return True
         return _credentials_ok(request, os.getenv("PRICE_WEB_USERNAME", "admin"), password)
 
+    # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员
+    ADMIN_GET_PATHS = {"/api/settings", "/api/sites"}
+
     @app.middleware("http")
     async def _admin_gate(request: Request, call_next: Any) -> Response:
-        """读接口公开浏览；写操作需要管理员凭据（401 带 WWW-Authenticate 触发浏览器登录框）。"""
+        """读接口公开浏览；写操作与管理设置读取需要管理员凭据（401 触发浏览器登录框）。"""
         password = os.getenv("PRICE_WEB_PASSWORD")
-        if password and request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _credentials_ok(
+        needs_admin = request.method in {"POST", "PUT", "PATCH", "DELETE"} or request.url.path in ADMIN_GET_PATHS
+        if password and needs_admin and not _credentials_ok(
             request, os.getenv("PRICE_WEB_USERNAME", "admin"), password
         ):
             return Response(status_code=401, headers={"WWW-Authenticate": "Basic realm=llm-price-monitor"})
@@ -206,6 +226,81 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def auth_verify(request: Request) -> dict[str, bool]:
         """管理员身份验证探测：未登录时 401 触发浏览器 Basic 登录框。"""
         return {"is_admin": _is_admin(request)}
+
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        """管理员读取系统设置（AI / Tavily / webhook 等，密钥为明文）。"""
+        return {
+            "settings": store.get_document("settings") or {},
+            "ai": store.get_document("ai") or {},
+        }
+
+    @app.put("/api/settings")
+    def update_settings(body: SettingsBody) -> dict[str, Any]:
+        """合并保存系统设置；保存前用配置构建器做类型校验，非法输入返回 400。"""
+        try:
+            if body.settings is not None:
+                merged = {**(store.get_document("settings") or {}), **body.settings}
+                settings_from_raw(merged, resolve_env=False)
+                store.set_document("settings", merged)
+            if body.ai is not None:
+                merged_ai = {**(store.get_document("ai") or {}), **body.ai}
+                ai_from_raw(merged_ai, resolve_env=False, cache=None)
+                store.set_document("ai", merged_ai)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"settings": store.get_document("settings") or {}, "ai": store.get_document("ai") or {}}
+
+    def _validated_site_config(config: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(config, dict) or not str(config.get("id") or "").strip():
+            raise ValueError("站点必须提供非空 id")
+        unknown = sorted(set(config) - set(SiteSpec.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"站点配置包含未知字段: {', '.join(unknown)}")
+        sites_from_raw([config])  # 结构校验：network / models / headers 等
+        return config
+
+    @app.get("/api/sites")
+    def list_sites() -> dict[str, Any]:
+        return {"sites": store.list_site_configs()}
+
+    @app.post("/api/sites")
+    def create_site(body: SiteBody) -> dict[str, Any]:
+        try:
+            config = _validated_site_config(body.config)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        site_id = str(config["id"]).strip()
+        if store.get_site_config(site_id) is not None:
+            raise HTTPException(status_code=409, detail=f"站点已存在: {site_id}")
+        store.upsert_site(site_id, config)
+        return {"site": config}
+
+    @app.put("/api/sites/{site_id}")
+    def update_site(site_id: str, body: SiteBody) -> dict[str, Any]:
+        if store.get_site_config(site_id) is None:
+            raise HTTPException(status_code=404, detail=f"站点不存在: {site_id}")
+        try:
+            config = _validated_site_config(body.config)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        new_id = str(config["id"]).strip()
+        if new_id != site_id and store.get_site_config(new_id) is not None:
+            raise HTTPException(status_code=409, detail=f"目标站点 id 已存在: {new_id}")
+        if new_id != site_id:
+            store.delete_site(site_id)
+        store.upsert_site(new_id, config)
+        return {"site": config}
+
+    @app.delete("/api/sites/{site_id}")
+    def delete_site(site_id: str) -> dict[str, Any]:
+        if not store.delete_site(site_id):
+            raise HTTPException(status_code=404, detail=f"站点不存在: {site_id}")
+        return {"deleted": site_id}
+
+    @app.get("/api/tasks")
+    def list_tasks() -> dict[str, Any]:
+        return {"tasks": tasks.recent()}
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

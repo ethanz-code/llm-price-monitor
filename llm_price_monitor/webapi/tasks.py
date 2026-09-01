@@ -49,3 +49,10 @@ def get(task_id: str) -> dict[str, Any] | None:
     with _lock:
         task = _tasks.get(task_id)
         return dict(task) if task else None
+
+
+def recent(limit: int = 20) -> list[dict[str, Any]]:
+    """最近的任务列表（新任务在前）；任务注册表在进程内存中，重启即清空。"""
+    with _lock:
+        items = sorted(_tasks.values(), key=lambda item: str(item["started_at"]), reverse=True)
+        return [dict(item) for item in items[:limit]]

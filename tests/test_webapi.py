@@ -193,3 +193,79 @@ def test_no_auth_by_default(workspace: Path, monkeypatch):
     monkeypatch.delenv("PRICE_WEB_PASSWORD", raising=False)
     client = TestClient(create_app(_config(workspace)))
     assert client.get("/api/health").status_code == 200
+
+
+def _admin_headers(password: str = "s3cret") -> dict[str, str]:
+    return {"Authorization": "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()}
+
+
+def test_settings_roundtrip_and_validation(workspace: Path, monkeypatch):
+    monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
+    client = TestClient(create_app(_config(workspace)))
+    assert client.get("/api/settings").status_code == 401  # 管理员专属读接口
+
+    creds = _admin_headers()
+    saved = client.put("/api/settings", headers=creds, json={
+        "settings": {"webhook": "https://hook.test", "tavily_api_key": "tvly-x"},
+        "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-x"},
+    })
+    assert saved.status_code == 200
+    assert saved.json()["settings"]["webhook"] == "https://hook.test"
+    assert saved.json()["ai"]["api_key"] == "sk-x"
+
+    reloaded = client.get("/api/settings", headers=creds).json()
+    assert reloaded["ai"]["models"] == ["m-a", "m-b"]
+
+    bad = client.put("/api/settings", headers=creds, json={"ai": {"timeout": "abc"}})
+    assert bad.status_code == 400
+
+
+def test_sites_crud_requires_admin_and_validates(workspace: Path, monkeypatch):
+    monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
+    client = TestClient(create_app(_config(workspace)))
+    assert client.get("/api/sites").status_code == 401
+    assert client.post("/api/sites", json={"config": {"id": "x"}}).status_code == 401
+    creds = _admin_headers()
+
+    sites = client.get("/api/sites", headers=creds).json()["sites"]
+    assert [site["id"] for site in sites] == ["demo"]
+
+    created = client.post("/api/sites", headers=creds, json={
+        "config": {"id": "x", "network": {"url": "https://x.test/api"}, "models": ["m1"]}
+    })
+    assert created.status_code == 200
+
+    duplicate = client.post("/api/sites", headers=creds, json={
+        "config": {"id": "x", "network": {"url": "https://x.test/api"}, "models": ["m1"]}
+    })
+    assert duplicate.status_code == 409
+
+    unknown_field = client.post("/api/sites", headers=creds, json={"config": {"id": "y", "oops": 1}})
+    assert unknown_field.status_code == 400
+
+    bad_url = client.post("/api/sites", headers=creds, json={
+        "config": {"id": "y", "network": {"url": "notaurl"}, "models": ["m1"]}
+    })
+    assert bad_url.status_code == 400
+
+    updated = client.put("/api/sites/demo", headers=creds, json={"config": {**sites[0], "enabled": False}})
+    assert updated.status_code == 200 and updated.json()["site"]["enabled"] is False
+
+    renamed = client.put("/api/sites/demo", headers=creds, json={"config": {**sites[0], "id": "demo2"}})
+    assert renamed.status_code == 200
+    ids = [site["id"] for site in client.get("/api/sites", headers=creds).json()["sites"]]
+    assert "demo2" in ids and "demo" not in ids
+
+    assert client.delete("/api/sites/x", headers=creds).status_code == 200
+    assert client.delete("/api/sites/x", headers=creds).status_code == 404
+
+
+def test_tasks_listed_after_collect(workspace: Path, monkeypatch):
+    from llm_price_monitor.report import MonitorReport
+    import llm_price_monitor.webapi.app as app_module
+
+    monkeypatch.setattr(app_module, "run_once", lambda config, **kwargs: MonitorReport(0.0, 1.0, [], [], [], []))
+    client = TestClient(create_app(_config(workspace)))
+    task_id = client.post("/api/collect", json={}).json()["task_id"]
+    listed = client.get("/api/tasks").json()["tasks"]
+    assert task_id in [task["id"] for task in listed]

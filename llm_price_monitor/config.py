@@ -100,7 +100,7 @@ class MonitorConfig:
     sites: tuple[SiteSpec, ...]
 
 
-def _settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSettings:
+def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSettings:
     raw = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {key: raw[key] for key in MonitorSettings.__dataclass_fields__ if key in raw}
     if resolve_env:
@@ -118,7 +118,7 @@ def _settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSett
     return MonitorSettings(**values)
 
 
-def _ai_from_raw(raw: dict[str, Any], *, resolve_env: bool, cache: AIResultCache | None) -> AIConfig:
+def ai_from_raw(raw: dict[str, Any], *, resolve_env: bool, cache: AIResultCache | None) -> AIConfig:
     raw = raw if isinstance(raw, dict) else {}
     raw_models = raw.get("models", [])
     if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
@@ -141,7 +141,7 @@ def _ai_from_raw(raw: dict[str, Any], *, resolve_env: bool, cache: AIResultCache
     )
 
 
-def _sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
+def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
     sites = []
     for value in values:
         site_id = value.get("id", "<unknown>")
@@ -226,9 +226,9 @@ def config_from_raw(
     raw: dict[str, Any], *, resolve_env: bool = True, cache: AIResultCache | None = None
 ) -> MonitorConfig:
     """raw dict → 强类型配置；文件种子路径（resolve_env=True）负责 env 兜底与空站点校验。"""
-    settings = _settings_from_raw(raw.get("settings", {}), resolve_env=resolve_env)
-    ai = _ai_from_raw(raw.get("ai", {}), resolve_env=resolve_env, cache=cache)
-    sites = _sites_from_raw(raw.get("sites", []))
+    settings = settings_from_raw(raw.get("settings", {}), resolve_env=resolve_env)
+    ai = ai_from_raw(raw.get("ai", {}), resolve_env=resolve_env, cache=cache)
+    sites = sites_from_raw(raw.get("sites", []))
     if resolve_env and not sites:
         raise ValueError("配置中没有启用站点")
     return MonitorConfig(settings, ai, sites)
