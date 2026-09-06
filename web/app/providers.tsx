@@ -1,10 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { App, ConfigProvider } from "antd";
-import zhCN from "antd/locale/zh_CN";
 import type { ReactNode } from "react";
-import { buildTheme, resolveDark, type ThemeMode } from "@/theme";
+import { resolveDark, type ThemeMode } from "@/theme";
 
 interface ThemeContextValue {
   mode: ThemeMode;
@@ -22,6 +20,7 @@ export function useTheme() {
   return useContext(ThemeContext);
 }
 
+/** 主题上下文：免闪烁引导（themeInitScript）先行，这里只负责运行时切换。 */
 export function Providers({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>("system");
   const [dark, setDark] = useState(true);
@@ -59,11 +58,5 @@ export function Providers({ children }: { children: ReactNode }) {
     [mode, dark],
   );
 
-  return (
-    <ThemeContext.Provider value={value}>
-      <ConfigProvider locale={zhCN} theme={buildTheme(dark)}>
-        <App>{children}</App>
-      </ConfigProvider>
-    </ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

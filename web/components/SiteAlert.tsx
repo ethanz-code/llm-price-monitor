@@ -1,18 +1,11 @@
-import { Alert } from "antd";
+import { Alert } from "@/components/ui";
 
+/** 数据读取失败的警示条。 */
 export function SiteAlert({ title, detail, fix }: { title: string; detail: string; fix?: string }) {
   return (
-    <Alert
-      className="section-gap"
-      type="warning"
-      showIcon
-      message={title}
-      description={
-        <span>
-          {detail}
-          {fix ? <>。{fix}</> : null}
-        </span>
-      }
-    />
+    <Alert tone="warn" title={title} className="section-gap">
+      {detail}
+      {fix ? <>。{fix}</> : null}
+    </Alert>
   );
 }

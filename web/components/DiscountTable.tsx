@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Empty, Table } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { DataTable, type DColumn } from "./DataTable";
 import { StatCard } from "./PageHeader";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
@@ -26,16 +25,17 @@ export function DiscountTable({ data }: { data: DiscountData }) {
     return inputs.length ? Math.min(...inputs) : null;
   }, [data.discounts]);
 
-  const summaryColumns: ColumnsType<DiscountSummaryItem> = [
+  const summaryColumns: DColumn<DiscountSummaryItem>[] = [
     { title: "模型", dataIndex: "model", render: (v: string) => <span className="mono" style={{ fontWeight: 550 }}>{v}</span> },
     {
       title: "输入折扣（均值）",
-      dataIndex: ["input_discount", "avg"],
+      dataIndex: "input_discount",
+      key: "input_avg",
       align: "right",
       sorter: (a, b) => a.input_discount.avg - b.input_discount.avg,
-      render: (v: number, row) => (
+      render: (_, row) => (
         <span style={{ display: "inline-flex", gap: 8, alignItems: "baseline" }}>
-          <span className="mono" style={{ fontWeight: 550 }}>{formatDiscount(v)}</span>
+          <span className="mono" style={{ fontWeight: 550 }}>{formatDiscount(row.input_discount.avg)}</span>
           <span className="mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
             {formatDiscount(row.input_discount.min)} ~ {formatDiscount(row.input_discount.max)}
           </span>
@@ -44,12 +44,13 @@ export function DiscountTable({ data }: { data: DiscountData }) {
     },
     {
       title: "输出折扣（均值）",
-      dataIndex: ["output_discount", "avg"],
+      dataIndex: "output_discount",
+      key: "output_avg",
       align: "right",
       sorter: (a, b) => a.output_discount.avg - b.output_discount.avg,
-      render: (v: number, row) => (
+      render: (_, row) => (
         <span style={{ display: "inline-flex", gap: 8, alignItems: "baseline" }}>
-          <span className="mono" style={{ fontWeight: 550 }}>{formatDiscount(v)}</span>
+          <span className="mono" style={{ fontWeight: 550 }}>{formatDiscount(row.output_discount.avg)}</span>
           <span className="mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
             {formatDiscount(row.output_discount.min)} ~ {formatDiscount(row.output_discount.max)}
           </span>
@@ -59,7 +60,7 @@ export function DiscountTable({ data }: { data: DiscountData }) {
     { title: "对比站点数", dataIndex: "sites_compared", align: "right", width: 120 },
   ];
 
-  const detailColumns: ColumnsType<DiscountRow> = [
+  const detailColumns: DColumn<DiscountRow>[] = [
     {
       title: "站点",
       dataIndex: "site_id",
@@ -114,13 +115,11 @@ export function DiscountTable({ data }: { data: DiscountData }) {
           <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", fontWeight: 550, fontSize: 15 }}>
             按模型汇总
           </div>
-          <Table<DiscountSummaryItem>
-            columns={summaryColumns}
-            dataSource={summaryRows}
+          <DataTable<DiscountSummaryItem>
             rowKey="model"
-            pagination={false}
-            size="middle"
-            scroll={{ x: 640 }}
+            columns={summaryColumns}
+            rows={summaryRows}
+            scrollX={640}
           />
         </div>
       )}
@@ -129,14 +128,12 @@ export function DiscountTable({ data }: { data: DiscountData }) {
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", fontWeight: 550, fontSize: 15 }}>
           逐站点明细
         </div>
-        <Table<DiscountRow>
-          columns={detailColumns}
-          dataSource={data.discounts}
+        <DataTable<DiscountRow>
           rowKey={(row) => `${row.site_id}:${row.model}:${row.group ?? ""}`}
-          pagination={false}
-          size="middle"
-          scroll={{ x: 760 }}
-          locale={{ emptyText: <Empty description="暂无可对比的价格" /> }}
+          columns={detailColumns}
+          rows={data.discounts}
+          scrollX={760}
+          empty="暂无可对比的价格"
         />
       </div>
 

@@ -1,7 +1,9 @@
-import Link from "next/link";
+"use client";
+
+import { IconGithub } from "./icons";
 import { LogoMark } from "./LogoMark";
 
-/** 全站页脚：品牌、数据入口、关于与免责声明。 */
+/** 全站页脚：品牌介绍、数据说明与 GitHub 入口，紧凑单区布局。 */
 export function SiteFooter() {
   return (
     <footer className="site-footer">
@@ -12,29 +14,25 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>LLM 价格监控</span>
           </div>
           <p>
-            中转站价格取证、历史监控与官方价折扣审计。价格事实仅来自直接请求的 HTTP JSON
-            响应，不做任何猜测。
+            面向 API 中转站的价格取证与监控：周期性请求各站点价格接口，与厂商官方价相除得到折扣，并把每次采集沉淀为历史曲线与变化事件。所有价格均来自直接请求的
+            HTTP JSON 响应，逐条可溯源。
           </p>
-        </div>
-        <div className="site-footer-col">
-          <div className="site-footer-title">监控数据</div>
-          <Link href="/overview">价格总览</Link>
-          <Link href="/history">历史与事件</Link>
-          <Link href="/official">官方价库</Link>
-          <Link href="/discount">折扣对比</Link>
-        </div>
-        <div className="site-footer-col">
-          <div className="site-footer-title">关于</div>
-          <a href="https://github.com/ethanz-code/llm-price-monitor" target="_blank" rel="noreferrer">
-            GitHub 仓库
+          <a
+            className="footer-github"
+            href="https://github.com/ethanz-code/llm-price-monitor"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="GitHub 仓库"
+          >
+            <IconGithub size={18} />
           </a>
-          <span>免责声明：所有价格来自公开接口的取证快照，仅供研究参考，不构成对任何站点的使用推荐。</span>
+        </div>
+        <div className="site-footer-note">
+          <div className="site-footer-title">数据说明</div>
+          页面展示的价格均为特定时间的取证快照，可能与站点当前实时价格不同，也不构成对任何站点的使用推荐；折扣对比以厂商官方价为锚点，汇率快照与来源链接随每条记录一同展示。
         </div>
       </div>
-      <div className="site-footer-meta">
-        <span>© 2026 LLM 价格监控</span>
-        <span className="mono">data over vibes</span>
-      </div>
+      <div className="site-footer-meta">© 2026 LLM 价格监控</div>
     </footer>
   );
 }

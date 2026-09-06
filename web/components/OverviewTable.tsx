@@ -1,9 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { Empty, Table, Tooltip } from "antd";
-import type { ColumnsType } from "antd/es/table";
 import Link from "next/link";
+import { DataTable, type DColumn } from "./DataTable";
 import { StatCard } from "./PageHeader";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
@@ -19,7 +18,11 @@ function StatusCell({ row }: { row: OverviewRecord }) {
     .filter(Boolean)
     .join(" · ");
   const content = <ToneTag tone={meta.tone}>{meta.label}</ToneTag>;
-  return tip ? <Tooltip title={tip}>{content}</Tooltip> : content;
+  return tip ? (
+    <span title={tip}>{content}</span>
+  ) : (
+    content
+  );
 }
 
 function DiscountCell({ row }: { row: OverviewRecord }) {
@@ -39,18 +42,18 @@ export function OverviewTable({ data }: { data: OverviewData }) {
   const records = data.records;
 
   const stats = useMemo(() => {
-    const sites = new Set(records.map((r) => r.site_id));
-    const models = new Set(records.map((r) => r.model));
+    const sites = new Set(records.map((row) => row.site_id));
+    const models = new Set(records.map((row) => row.model));
     const latest = records.reduce<number | undefined>(
-      (acc, r) => (acc === undefined || r.captured_at > acc ? r.captured_at : acc),
+      (acc, row) => (acc === undefined || row.captured_at > acc ? row.captured_at : acc),
       undefined,
     );
-    const inputs = records.map((r) => r.discount?.input).filter((v): v is number => v !== null && v !== undefined);
+    const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
     const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
     return { sites: sites.size, models: models.size, latest, avgInput };
   }, [records]);
 
-  const columns: ColumnsType<OverviewRecord> = [
+  const columns: DColumn<OverviewRecord>[] = [
     {
       title: "站点",
       dataIndex: "site_id",
@@ -161,14 +164,12 @@ export function OverviewTable({ data }: { data: OverviewData }) {
             </span>
           )}
         </div>
-        <Table<OverviewRecord>
+        <DataTable<OverviewRecord>
           rowKey={(row) => `${row.site_id}:${row.model}:${row.metadata?.group ?? ""}`}
           columns={columns}
-          dataSource={records}
-          pagination={false}
-          size="middle"
-          scroll={{ x: 900 }}
-          locale={{ emptyText: <Empty description="暂无价格数据，点击右上角“立即采集”开始" /> }}
+          rows={records}
+          scrollX={900}
+          empty="暂无价格数据，完成一轮采集后这里会展示各站点最新快照"
         />
       </div>
     </>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "antd";
+import { Btn } from "@/components/ui";
 
 export default function NotFound() {
   return (
@@ -12,7 +12,7 @@ export default function NotFound() {
           这个页面不存在，或者已经被移走了。
         </p>
         <Link href="/">
-          <Button type="primary">返回首页</Button>
+          <Btn variant="primary">返回首页</Btn>
         </Link>
       </div>
     </div>

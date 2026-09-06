@@ -1,16 +1,15 @@
 "use client";
 
-import { Table } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { DataTable, type DColumn } from "./DataTable";
 import { formatDiscount, formatPrice, discountTone, statusMeta } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import type { OverviewRecord } from "@/lib/types";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 
-/** Landing 的最新快照预览表：列渲染含函数与交互，需在客户端渲染。 */
+/** Landing 的最新快照预览表：列渲染含交互，需在客户端渲染。 */
 export function SnapshotPreview({ records }: { records: OverviewRecord[] }) {
-  const columns: ColumnsType<OverviewRecord> = [
+  const columns: DColumn<OverviewRecord>[] = [
     {
       title: "站点",
       dataIndex: "site_id",
@@ -72,13 +71,10 @@ export function SnapshotPreview({ records }: { records: OverviewRecord[] }) {
 
   return (
     <div className="panel" style={{ overflow: "hidden" }}>
-      <Table<OverviewRecord>
+      <DataTable<OverviewRecord>
         rowKey={(row) => `${row.site_id}:${row.model}:${row.metadata?.group ?? ""}`}
         columns={columns}
-        dataSource={records}
-        pagination={false}
-        size="middle"
-        scroll={{ x: 760 }}
+        rows={records}
       />
     </div>
   );

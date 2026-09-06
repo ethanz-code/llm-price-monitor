@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Select } from "antd";
+import { Sel } from "./ui";
 import { formatPrice } from "@/lib/format";
 import { useTheme } from "@/app/providers";
 import type { PriceRecord } from "@/lib/types";
@@ -80,8 +80,7 @@ export function PriceTrendChart({ records }: { records: PriceRecord[] }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <span style={{ fontWeight: 550, fontSize: 15 }}>价格趋势</span>
         {seriesList.length > 1 && (
-          <Select
-            size="small"
+          <Sel
             value={series.key}
             onChange={setActive}
             style={{ minWidth: 240 }}

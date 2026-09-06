@@ -1,31 +1,38 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Empty, Segmented, Table, Tooltip, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { DataTable, type DColumn } from "./DataTable";
+import { Empty, Sel, Seg } from "./ui";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { getSiteInfo } from "@/lib/sites";
 import { PriceTrendChart } from "./PriceTrendChart";
 import { eventMeta, formatPrice, formatTime, statusMeta } from "@/lib/format";
-import type { EventListData, EventRow, HistoryListData, PriceRecord } from "@/lib/types";
+import type { EventListData, HistoryListData, PriceRecord } from "@/lib/types";
 
 function KindTag({ kind }: { kind: string }) {
   const meta = eventMeta(kind);
   return <ToneTag tone={meta.tone}>{meta.label}</ToneTag>;
 }
 
-function describeChange(event: EventRow): string {
-  const current = event.current;
-  const previous = event.previous;
-  const cur = current ? `${formatPrice(current.input_price)} / ${formatPrice(current.output_price)} ${current.unit ?? ""}` : "无价格";
-  const prev = previous ? `${formatPrice(previous.input_price)} / ${formatPrice(previous.output_price)} ${previous.unit ?? ""}` : "无记录";
+interface ChangeLike {
+  current?: { input_price: number | null; output_price: number | null; unit?: string } | null;
+  previous?: { input_price: number | null; output_price: number | null; unit?: string } | null;
+}
+
+function describeChange(event: ChangeLike): string {
+  const cur = event.current
+    ? `${formatPrice(event.current.input_price)} / ${formatPrice(event.current.output_price)} ${event.current.unit ?? ""}`
+    : "无价格";
+  const prev = event.previous
+    ? `${formatPrice(event.previous.input_price)} / ${formatPrice(event.previous.output_price)} ${event.previous.unit ?? ""}`
+    : "无记录";
   return `${prev} → ${cur}`;
 }
 
-function EventFeed({ events }: { events: EventRow[] }) {
+function EventFeed({ events }: { events: import("@/lib/types").EventRow[] }) {
   if (events.length === 0) {
-    return <Empty description="还没有事件。价格出现新增或变化时会记录在这里" style={{ padding: "32px 0" }} />;
+    return <Empty>还没有事件。价格出现新增或变化时会记录在这里</Empty>;
   }
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -34,8 +41,6 @@ function EventFeed({ events }: { events: EventRow[] }) {
         .reverse()
         .map((event, index) => {
           const tone = eventMeta(event.kind).tone;
-          const dotColor =
-            tone === "red" ? "#E27B78" : tone === "green" ? "#7CC47F" : tone === "yellow" ? "#E0B45C" : "#5B9BFF";
           return (
             <div
               key={`${event.site_id}:${event.model}:${event.detected_at}:${index}`}
@@ -48,10 +53,7 @@ function EventFeed({ events }: { events: EventRow[] }) {
                 background: "var(--panel-2)",
               }}
             >
-              <span
-                aria-hidden
-                style={{ width: 8, height: 8, borderRadius: 9999, background: dotColor, marginTop: 7, flexShrink: 0 }}
-              />
+              <span aria-hidden className={`side-dot dot-${tone}`} style={{ marginTop: 7 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <KindTag kind={event.kind} />
@@ -89,16 +91,16 @@ export function HistoryView({ events, history }: { events: EventListData; histor
   const filteredEvents = site === "all" ? events.events : events.events.filter((e) => e.site_id === site);
   const filteredRecords = site === "all" ? history.records : history.records.filter((r) => r.site_id === site);
 
-  const columns: ColumnsType<PriceRecord> = [
+  const columns: DColumn<PriceRecord>[] = [
     {
       title: "站点",
       dataIndex: "site_id",
       width: 130,
       render: (v: string, row) => {
-        const site = getSiteInfo(v, row.source_url);
+        const info = getSiteInfo(v, row.source_url);
         return (
-          <RiskLink href={site.homepage || row.source_url} variant="site">
-            <span className="mono">{site.name}</span>
+          <RiskLink href={info.homepage || row.source_url} variant="site">
+            <span className="mono">{info.name}</span>
           </RiskLink>
         );
       },
@@ -126,18 +128,18 @@ export function HistoryView({ events, history }: { events: EventListData; histor
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <Segmented
+        <Seg
           value={view}
           onChange={(value) => setView(value as "events" | "records")}
           options={[
-            { label: `事件（${events.total}）`, value: "events" },
-            { label: `采集记录（${history.total}）`, value: "records" },
+            { value: "events", label: `事件（${events.total}）` },
+            { value: "records", label: `采集记录（${history.total}）` },
           ]}
         />
-        <Segmented
+        <Sel
           value={site}
-          onChange={(value) => setSite(value as string)}
-          options={[{ label: "全部站点", value: "all" }, ...sites.map((s) => ({ label: s, value: s }))]}
+          onChange={setSite}
+          options={[{ value: "all", label: "全部站点" }, ...sites.map((s) => ({ value: s, label: s }))]}
         />
       </div>
 
@@ -145,14 +147,13 @@ export function HistoryView({ events, history }: { events: EventListData; histor
         <EventFeed events={filteredEvents} />
       ) : (
         <div className="panel" style={{ overflow: "hidden" }}>
-          <Table<PriceRecord>
+          <DataTable<PriceRecord>
             rowKey={(row) => `${row.site_id}:${row.model}:${row.captured_at}`}
             columns={columns}
-            dataSource={filteredRecords}
-            pagination={{ pageSize: 20, showSizeChanger: false }}
-            size="middle"
-            scroll={{ x: 860 }}
-            locale={{ emptyText: <Empty description="暂无记录" /> }}
+            rows={filteredRecords}
+            pageSize={20}
+            scrollX={860}
+            empty="暂无记录"
           />
         </div>
       )}

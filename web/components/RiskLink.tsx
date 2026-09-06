@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Button, Checkbox, Modal, Space, Typography } from "antd";
-import type { ReactNode } from "react";
+import { Btn, Check, Modal } from "./ui";
 
 const SKIP_KEY = "risklink-confirmed";
 
@@ -17,7 +16,7 @@ export function RiskLink({
   variant = "muted",
 }: {
   href: string;
-  children: ReactNode;
+  children: React.ReactNode;
   /** muted：来源类弱链接；site：站点名主链接 */
   variant?: "muted" | "site";
 }) {
@@ -72,29 +71,28 @@ export function RiskLink({
       </a>
       <Modal
         open={open}
-        onCancel={() => setOpen(false)}
+        onClose={() => setOpen(false)}
         title="即将离开本站"
-        width="min(440px, calc(100vw - 32px))"
         footer={
-          <Space>
-            <Button onClick={() => setOpen(false)}>取消</Button>
-            <Button type="primary" onClick={confirm}>
+          <>
+            <Btn onClick={() => setOpen(false)}>取消</Btn>
+            <Btn variant="primary" onClick={confirm}>
               继续访问
-            </Button>
-          </Space>
+            </Btn>
+          </>
         }
       >
-        <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
+        <div style={{ display: "grid", gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13.5 }}>
             你将访问第三方站点 <span className="mono">{host}</span>。
-          </Typography.Paragraph>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          </p>
+          <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
             本站展示的价格均为特定时间的取证快照，可能与该站当前价格不同，也不构成对该站点的使用推荐。请自行评估风险。
-          </Typography.Paragraph>
-          <Checkbox checked={skip} onChange={(event) => setSkip(event.target.checked)}>
+          </p>
+          <Check checked={skip} onChange={setSkip}>
             本次会话内不再提示
-          </Checkbox>
-        </Space>
+          </Check>
+        </div>
       </Modal>
     </>
   );

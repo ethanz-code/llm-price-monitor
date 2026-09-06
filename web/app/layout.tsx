@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { Providers } from "./providers";
+import { Toaster } from "@/components/ui";
 import { SiteNav } from "@/components/SiteNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { themeInitScript } from "@/theme";
@@ -29,13 +29,12 @@ export default function RootLayout({ children }: React.PropsWithChildren) {
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        <AntdRegistry>
-          <Providers>
-            <SiteNav />
-            <main>{children}</main>
-            <SiteFooter />
-          </Providers>
-        </AntdRegistry>
+        <Providers>
+          <SiteNav />
+          <main>{children}</main>
+          <SiteFooter />
+          <Toaster />
+        </Providers>
       </body>
     </html>
   );
