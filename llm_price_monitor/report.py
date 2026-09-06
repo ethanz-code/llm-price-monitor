@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -22,7 +21,7 @@ from llm_price_monitor.tracker import PriceRecord
 from llm_price_monitor.units import round2, tier_unit_per_1m
 from llm_price_monitor.useragent import choose_user_agent
 from llm_price_monitor.official import discount as official_discount, fx as official_fx
-from llm_price_monitor.official.jsonio import read_json_object as read_official_json
+from llm_price_monitor.store import Store
 
 
 @dataclass(frozen=True)
@@ -72,15 +71,6 @@ def classify(previous: dict[str, Any] | None, current: dict[str, Any]) -> Change
     return "changed"
 
 
-def append_jsonl(path: Path, values: list[dict[str, Any]]) -> None:
-    if not values:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        for value in values:
-            handle.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
-
-
 def send_webhook(url: str, events: list[dict[str, Any]], timeout: float) -> None:
     if not events:
         return
@@ -92,6 +82,7 @@ def send_webhook(url: str, events: list[dict[str, Any]], timeout: float) -> None
 def run_once(
     config: MonitorConfig,
     *,
+    store: Store | None = None,
     client: httpx.Client | None = None,
     user_agent: str | None = None,
     persist: bool = True,
@@ -100,8 +91,7 @@ def run_once(
     selected_user_agent = choose_user_agent(config, user_agent)
     own = client is None
     client = client or httpx.Client(follow_redirects=True)
-    latest_path = Path(config.settings.latest_file)
-    latest = json.loads(latest_path.read_text(encoding="utf-8")) if latest_path.exists() else {}
+    latest = store.latest_all() if store is not None else {}
     records: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -134,14 +124,12 @@ def run_once(
                 events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
                 latest[key] = current
         changed_events = [event for event in events if event["kind"] != "unchanged"]
-        if persist:
-            append_jsonl(Path(config.settings.history_file), records)
-            append_jsonl(Path(config.settings.event_file), changed_events)
-            latest_path.parent.mkdir(parents=True, exist_ok=True)
-            latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            webhook = os.getenv(config.settings.webhook_env) if config.settings.webhook_env else None
-            if webhook:
-                send_webhook(webhook, changed_events, config.settings.timeout)
+        if persist and store is not None:
+            store.append_history(records)
+            store.append_events(changed_events)
+            store.replace_latest(latest)
+            if config.settings.webhook:
+                send_webhook(config.settings.webhook, changed_events, config.settings.timeout)
         return MonitorReport(started, time.time(), records, changed_events, errors, ai_previews)
     finally:
         if own:
@@ -236,10 +224,9 @@ def summary_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def attach_official_discounts(output: dict[str, Any], official_file: Path) -> dict[str, Any]:
+def attach_official_discounts(output: dict[str, Any], official_report: dict[str, Any] | None) -> dict[str, Any]:
     """为输出记录附加相对官方价的折扣（仅输出层，不写入历史/快照，不影响指纹与事件）。"""
-    context: dict[str, Any] = {"file": str(official_file), "enabled": False}
-    official_report = read_official_json(official_file) if official_file.exists() else None
+    context: dict[str, Any] = {"enabled": False}
     models = official_report.get("models") if isinstance(official_report, dict) else None
     if isinstance(models, dict) and models:
         try:

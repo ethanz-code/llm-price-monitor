@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -85,31 +84,13 @@ class AIPriceExtractor:
         return payload_hash({"version": 2, "site": spec.id, "models": expected_models, "evidence": evidence})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
-        if not self.config.cache_file:
+        if self.config.cache is None:
             return None
-        path = Path(self.config.cache_file)
-        if not path.exists():
-            return None
-        try:
-            cache = json.loads(path.read_text(encoding="utf-8"))
-            value = cache.get(key)
-            return value if isinstance(value, dict) else None
-        except (OSError, ValueError):
-            return None
+        return self.config.cache.cache_get(key)
 
     def _save_cached_result(self, key: str, result: dict[str, Any]) -> None:
-        if not self.config.cache_file:
-            return
-        path = Path(self.config.cache_file)
-        try:
-            cache = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            if not isinstance(cache, dict):
-                cache = {}
-            cache[key] = result
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except (OSError, TypeError):
-            pass
+        if self.config.cache is not None:
+            self.config.cache.cache_put(key, result)
 
     def _evidence(
         self,

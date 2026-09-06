@@ -53,11 +53,11 @@ cp .env.example .env   # 编辑并填写真实值
 cp config/price-monitor.example.json config/price-monitor.json
 # 编辑 config/price-monitor.json，填入你要监控的站点和目标模型
 
-uv run price-web   # 打开 http://127.0.0.1:8000/docs 或配合 web/ 前端使用
+uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 前端使用
 ```
 
 > [!TIP]
-> CLI 会自动通过 `python-dotenvx` 加密 `.env`（支持 dotenvx 加密值）。
+> 启动时会自动通过 `python-dotenvx` 读取 `.env`（支持 dotenvx 加密值）。
 > `config/price-monitor.json` 与 `.env` 含真实凭据，已被 `.gitignore` 排除，不会提交。
 
 ## 📖 命令
@@ -76,6 +76,9 @@ uv run price-web   # 打开 http://127.0.0.1:8000/docs 或配合 web/ 前端使�
 
 站点、目标模型、分组、倍率基准、请求配置统一写在 `config/price-monitor.json`
 （模板见 [`config/price-monitor.example.json`](config/price-monitor.example.json)）。
+配置在 `price-web` 首次启动（空库）时导入 SQLite（`var/monitor.db`），此后数据库是
+唯一真相源；之后再改 `config/price-monitor.json` 不会生效，需删除 `var/monitor.db`
+重启才会重新导入。
 
 需要登录态的站点，请求头支持 `${ENV_VAR}` 注入，敏感值不落盘：
 
@@ -128,17 +131,24 @@ uv run price-web --with-frontend
 
 环境变量（写入 `.env` 或 dotenvx）：
 
-- `PRICE_WEB_PASSWORD` / `PRICE_WEB_USERNAME`：设置后全站启用 Basic Auth
-  （Next.js 代理层与 FastAPI 双层校验）；不设置则无鉴权，仅限本机使用
+- `PRICE_WEB_PASSWORD` / `PRICE_WEB_USERNAME`：设置后写接口（POST/PUT/PATCH/DELETE）
+  启用 Basic Auth（Next.js 代理层与 FastAPI 双层校验），读接口公开浏览；
+  不设置则无鉴权，仅限本机使用
 - `PRICE_WEB_API_URL`：前端反代目标，默认 `http://127.0.0.1:8000`
 
 ## 📁 输出
 
+数据统一存放在 SQLite 数据库中：
+
 | 文件 | 内容 |
 | --- | --- |
-| `var/price-history.jsonl` | 每次采集的完整记录 |
-| `var/price-latest.json` | 每个站点和模型的最新快照 |
-| `var/price-events.jsonl` | 新增、变化、恢复和状态变化事件 |
+| `var/monitor.db` | 站点配置、采集历史、最新快照、变化事件、官方价与 AI 缓存的唯一真相源 |
+| `var/fx-cache.json` | 汇率缓存（在线汇率源全部失败时回退） |
+
+> [!TIP]
+> `var/price-history.jsonl`、`var/price-latest.json`、`var/price-events.jsonl`、
+> `var/price-ai-cache.json` 和 `var/official-prices.json` 仅在首次启动（空库）时
+> 作为存量数据导入数据库，之后新增数据只写数据库。
 
 ## 🧪 测试
 

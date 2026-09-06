@@ -9,6 +9,7 @@ from llm_price_monitor.ai import AIDryRun, AIPriceExtractor, NEWAPI_ONEAPI_PRICI
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec, load_config
 from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, target_page_text as _target_page_text
 from llm_price_monitor.report import run_once, summary_row as _summary_row
+from llm_price_monitor.store import Store
 from llm_price_monitor.useragent import BROWSER_USER_AGENTS, choose_user_agent
 from llm_price_monitor.tracker import PriceRecord
 
@@ -39,16 +40,17 @@ def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkey
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
     config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
     monkeypatch.setattr(BrowserAdapter, "collect", collect)
-    first = run_once(config, client=httpx.Client())
+    first = run_once(config, store=store, client=httpx.Client())
     assert [event["kind"] for event in first.events] == ["new"]
     assert first.records[0]["price_status"] == "confirmed"
 
     payload["data"][0]["official"]["output"] = 3
-    second = run_once(config, client=httpx.Client())
+    second = run_once(config, store=store, client=httpx.Client())
     assert [event["kind"] for event in second.events] == ["changed"]
-    assert len((tmp_path / "history.jsonl").read_text(encoding="utf-8").splitlines()) == 2
-    assert len(json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))) == 1
+    assert store.count_history() == 2
+    assert len(store.latest_all()) == 1
 
 
 def test_monitor_records_error_without_stopping_other_sites(tmp_path: Path):

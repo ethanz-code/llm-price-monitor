@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import subprocess
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from collections.abc import Callable
@@ -23,16 +24,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from llm_price_monitor.webapi import tasks
-from llm_price_monitor.config import MonitorConfig, MonitorSettings, load_config
+from llm_price_monitor.config import MonitorConfig, config_from_store
 from llm_price_monitor.env import load_env_files
 from llm_price_monitor.official import fx, jsonio
 from llm_price_monitor.official import search as official_search
-from llm_price_monitor.official.discount import build_discount, compute_discounts, summarize
+from llm_price_monitor.official.discount import build_discount, summarize
 from llm_price_monitor.official.fetch import fetch_official
 from llm_price_monitor.report import attach_official_discounts, run_once, summary_row
+from llm_price_monitor.store import Store
 
 DEFAULT_CONFIG = Path("config/price-monitor.json")
 OFFICIAL_FILE = Path("var/official-prices.json")
+DB_PATH = Path("var/monitor.db")
+AI_CACHE_FILE = Path("var/price-ai-cache.json")
+LATEST_FILE = Path("var/price-latest.json")
+HISTORY_FILE = Path("var/price-history.jsonl")
+EVENTS_FILE = Path("var/price-events.jsonl")
 
 
 class CollectBody(BaseModel):
@@ -45,9 +52,95 @@ class RefreshBody(BaseModel):
     vendors: list[str] | None = None
 
 
+def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    doc = {
+        key: raw[key]
+        for key in (
+            "timeout",
+            "user_agent",
+            "random_user_agent",
+            "user_agent_platforms",
+            "user_agent_chrome_versions",
+            "user_agent_version_window",
+        )
+        if key in raw
+    }
+    webhook = raw.get("webhook") or (os.getenv(str(raw["webhook_env"]).strip()) if raw.get("webhook_env") else None)
+    if webhook:
+        doc["webhook"] = webhook
+    tavily = raw.get("tavily_api_key") or os.getenv("TAVILY_API_KEY")
+    if tavily:
+        doc["tavily_api_key"] = tavily
+    return doc
+
+
+def _ai_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    doc = {
+        key: raw[key]
+        for key in ("enabled", "base_url", "model", "models", "timeout", "max_input_chars", "max_tokens", "enable_thinking", "dry_run")
+        if key in raw
+    }
+    api_key = raw.get("api_key") or (os.getenv(str(raw["api_key_env"]).strip()) if raw.get("api_key_env") else None)
+    if api_key:
+        doc["api_key"] = api_key
+    return doc
+
+
+def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+    return rows
+
+
+def _seed_store(store: Store, config_path: Path) -> None:
+    """首次启动（空库）把配置文件与 var/ 存量文件导入数据库；此后数据库是唯一真相源。"""
+    if store.get_document("seeded") is not None:
+        return
+    raw: dict[str, Any] = {}
+    if config_path.exists():
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"配置文件 {config_path} 格式不正确")
+
+    store.replace_sites([item for item in raw.get("sites", []) if isinstance(item, dict)])
+    store.set_document("settings", _settings_seed_document(raw.get("settings", {})))
+    store.set_document("ai", _ai_seed_document(raw.get("ai", {})))
+    config_from_store(store)  # 立即校验导入结果，坏配置在启动期报错
+
+    # 旧配置的 settings 里可自定义数据文件路径；未配置时用标准名
+    settings_raw = raw.get("settings", {}) if isinstance(raw.get("settings"), dict) else {}
+    latest_path = Path(str(settings_raw.get("latest_file") or LATEST_FILE))
+    history_path = Path(str(settings_raw.get("history_file") or HISTORY_FILE))
+    events_path = Path(str(settings_raw.get("event_file") or EVENTS_FILE))
+
+    if OFFICIAL_FILE.exists():
+        store.set_document("official_prices", jsonio.read_json(OFFICIAL_FILE))
+    if AI_CACHE_FILE.exists():
+        store.set_document("ai_cache", jsonio.read_json(AI_CACHE_FILE))
+    if latest_path.exists():
+        latest = jsonio.read_json(latest_path)
+        if isinstance(latest, dict):
+            store.replace_latest({key: row for key, row in latest.items() if isinstance(row, dict)})
+    store.append_history(_read_jsonl_rows(history_path))
+    store.append_events(_read_jsonl_rows(events_path))
+    store.set_document("seeded", {"at": time.time()})
+
+
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="llm-price-monitor", docs_url=None, redoc_url=None)
     app.state.config_path = config_path
+    store = Store(DB_PATH)
+    _seed_store(store, config_path)
+    app.state.store = store
 
     app.add_middleware(
         CORSMiddleware,
@@ -58,35 +151,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     def _config() -> MonitorConfig:
         try:
-            return load_config(config_path)
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"加载配置 {config_path} 失败: {exc}") from exc
-
-    def _settings() -> MonitorSettings:
-        return _config().settings
-
-    def _read_json(path: Path) -> dict[str, Any]:
-        data = jsonio.read_json(path)
-        if not isinstance(data, dict):
-            raise HTTPException(status_code=500, detail=f"{path} 格式不正确")
-        return data
-
-    def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-        return rows
+            return config_from_store(store)
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail=f"加载数据库配置失败: {exc}") from exc
 
     def _official_models() -> tuple[dict[str, Any], dict[str, Any]]:
-        """返回 (官方价模型表, 官方价文件自身元信息)；文件缺失时为空表。"""
-        path = Path("var/official-prices.json")
-        if not path.exists():
+        """返回 (官方价模型表, 元信息)；数据库无官方价文档时为空表。"""
+        report = store.get_document("official_prices")
+        if not report:
             return {}, {}
-        report = _read_json(path)
         models = report.get("models")
         meta = {k: report.get(k) for k in ("generated_at", "generated_at_iso", "usd_cny_rate", "rate_source")}
         return (models if isinstance(models, dict) else {}), meta
@@ -158,39 +231,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/latest")
     def latest() -> dict[str, Any]:
-        return _read_json(Path(_settings().latest_file))
+        return store.latest_all()
 
     @app.get("/api/history")
     def history(limit: int = 500, site_id: str | None = None, model: str | None = None) -> dict[str, Any]:
-        rows = _read_jsonl(Path(_settings().history_file))
-        if site_id:
-            rows = [row for row in rows if row.get("site_id") == site_id]
-        if model:
-            rows = [row for row in rows if row.get("model") == model]
-        return {"records": rows[-limit:], "total": len(rows)}
+        records, total = store.read_history(limit=limit, site_id=site_id, model=model)
+        return {"records": records, "total": total}
 
     @app.get("/api/events")
     def events(limit: int = 200, site_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
-        rows = _read_jsonl(Path(_settings().event_file))
-        if site_id:
-            rows = [row for row in rows if row.get("site_id") == site_id]
-        if kind:
-            rows = [row for row in rows if row.get("kind") == kind]
-        return {"events": rows[-limit:], "total": len(rows)}
+        events, total = store.read_events(limit=limit, site_id=site_id, kind=kind)
+        return {"events": events, "total": total}
 
     @app.get("/api/official")
     def official() -> dict[str, Any]:
-        path = Path("var/official-prices.json")
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="官方价文件不存在，请先运行 fetch-official-prices 或在页面触发刷新")
-        return _read_json(path)
+        report = store.get_document("official_prices")
+        if not report:
+            raise HTTPException(status_code=404, detail="官方价数据不存在，请先在管理面板触发刷新")
+        return report
 
     @app.get("/api/discount")
     def discount() -> dict[str, Any]:
         models, meta = _official_models()
         if not models:
             raise HTTPException(status_code=404, detail="官方价文件不存在或为空，请先获取官方价")
-        latest_rows = [row for row in _read_json(Path(_settings().latest_file)).values() if isinstance(row, dict)]
+        latest_rows = [row for row in store.latest_all().values() if isinstance(row, dict)]
         rate, rate_source = _usd_cny_rate(models, meta)
         entries = []
         skipped: list[dict[str, Any]] = []
@@ -227,7 +292,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return entry.as_dict() if entry is not None else None
 
         records: list[dict[str, Any]] = []
-        for row in _read_json(Path(_settings().latest_file)).values():
+        for row in store.latest_all().values():
             if not isinstance(row, dict):
                 continue
             records.append({**row, "discount": discount_of(row) if discount_of else None})
@@ -251,8 +316,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             config = replace(config, ai=replace(config.ai, dry_run=True))
 
         def _run() -> dict[str, Any]:
-            report = run_once(config, persist=body.persist and not body.dry_run)
-            output = attach_official_discounts(asdict(report), OFFICIAL_FILE)
+            report = run_once(config, store=store, persist=body.persist and not body.dry_run)
+            output = attach_official_discounts(asdict(report), store.get_document("official_prices"))
             return {
                 "records": [summary_row(row) for row in output["records"]],
                 "events": [event["kind"] for event in report.events],
@@ -273,13 +338,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         config = _config()
         if not config.ai.enabled or not config.ai.base_url or not config.ai.pick_model():
             raise HTTPException(status_code=400, detail="配置文件 ai 段未启用或未配置，无法提取官方价")
-        output_path = OFFICIAL_FILE
         vendors = [official_search.VendorSpec(name) for name in body.vendors] if body.vendors else None
 
         def _run() -> dict[str, Any]:
-            previous = jsonio.read_json(output_path) if output_path.exists() else None
-            output = fetch_official(config, previous=previous, vendors=vendors)
-            jsonio.write_json(output_path, output)
+            output = fetch_official(
+                config,
+                previous=store.get_document("official_prices"),
+                tavily_key=config.settings.tavily_api_key,
+                vendors=vendors,
+            )
+            store.set_document("official_prices", output)
             return {
                 "models_total": len(output["models"]),
                 "models_found": sum(1 for entry in output["models"].values() if entry.get("found")),
