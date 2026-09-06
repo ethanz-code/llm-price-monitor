@@ -16,3 +16,5 @@ dist/
 
 # runtime data
 var/
+.serena/
+.playwright-mcp/

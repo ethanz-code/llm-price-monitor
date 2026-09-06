@@ -6,7 +6,6 @@ import pytest
 
 from llm_price_monitor.monitor import AIDryRun, AIConfig, AIPriceExtractor, BROWSER_USER_AGENTS, BrowserAdapter, ModelTarget, PriceMonitorError, SiteSpec, NEWAPI_ONEAPI_PRICING_GUIDANCE, _decode_response_body, _headers, _is_preferred_response_url, _network_pricing_records, _repair_mojibake, _target_page_text, choose_user_agent, load_config, run_once
 from llm_price_monitor.tracker import PriceRecord
-from scripts.usage_cost import calculate_cost
 
 
 def _config(tmp_path: Path) -> dict:
@@ -393,24 +392,6 @@ def test_id_only_site_is_an_disabled_placeholder(tmp_path: Path):
     assert config.sites[0].id == "placeholder"
     assert config.sites[0].adapter == "browser"
     assert config.sites[0].enabled is False
-
-
-def test_usage_cost_joins_input_and_output_prices():
-    result = calculate_cost(
-        {"samples": [{"ok": True, "prompt_tokens": 1_000_000, "completion_tokens": 500_000}]},
-        {"model": "demo", "price_status": "confirmed", "unit": "USD/1M tokens", "input_price": 2, "output_price": 4},
-    )
-    assert result["estimated_cost"] == 4
-    assert result["currency"] == "USD"
-
-
-def test_usage_cost_does_not_turn_multiplier_into_currency():
-    result = calculate_cost(
-        {"samples": [{"ok": True, "prompt_tokens": 100, "completion_tokens": 10}]},
-        {"model": "demo", "price_status": "unavailable", "unit": "quota", "metadata": {"pricing_kind": "quota_multiplier"}},
-    )
-    assert result["estimated_cost"] is None
-    assert result["cost_status"] == "rule_only"
 
 
 def test_target_model_aliases_select_one_page_card():

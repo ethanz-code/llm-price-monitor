@@ -1,5 +1,9 @@
 # llm-price-monitor
 
+<p align="left">
+  <img src="web/app/icon.svg" width="72" alt="LLM 价格监控 Logo" />
+</p>
+
 **LLM（AI 大模型）价格监控器**：从中转站（API 中转服务）的价格接口直接取证，
 对模型输入/输出单价做确定性计价、历史监控、变化告警，并与厂商官方价对比
 计算折扣率。
@@ -62,7 +66,7 @@ uv run price-monitor --config config/price-monitor.json --summary
 | `price-tracker` | 单站点价格采集（价格页面 / JSON 接口 / New API） |
 | `fetch-official-prices` | Tavily 搜索 + AI 提取各厂商官方模型原价 |
 | `price-discount` | 对比站点价与官方价，计算折扣率 |
-| `scripts/usage_cost.py` | 渠道 Token 统计与价格快照关联，估算请求成本 |
+| `price-web` | 启动 Web 服务（FastAPI API 层），配合 `web/` 前端页面使用 |
 
 常用参数示例：
 
@@ -94,6 +98,31 @@ uv run price-monitor --config config/price-monitor.json --dry-run
 
 计价规则、AI 抽取约束、输出数据结构等完整说明见
 [docs/pricing.md](docs/pricing.md)。
+
+## 🌐 Web 界面
+
+四个服务端渲染页面（Next.js App Router + Ant Design，非客户端单页应用）：
+价格总览、历史与事件、官方价库、折扣对比；页面上可触发“立即采集”与“刷新官方价”
+后台任务并轮询进度。
+
+```bash
+# 1. 启动 API（仓库根目录运行，路径按 config/ 与 var/ 相对解析）
+uv run price-web                 # 默认 127.0.0.1:8000
+
+# 2. 启动前端
+cd web
+npm install
+npm run build && npm run start   # http://localhost:3000（/api 自动反代到 8000）
+
+# 或构建后一条命令同时拉起两者
+uv run price-web --with-frontend
+```
+
+环境变量（写入 `.env` 或 dotenvx）：
+
+- `PRICE_WEB_PASSWORD` / `PRICE_WEB_USERNAME`：设置后全站启用 Basic Auth
+  （Next.js 代理层与 FastAPI 双层校验）；不设置则无鉴权，仅限本机使用
+- `PRICE_WEB_API_URL`：前端反代目标，默认 `http://127.0.0.1:8000`
 
 ## 📁 输出
 
