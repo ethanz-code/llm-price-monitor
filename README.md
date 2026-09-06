@@ -16,7 +16,7 @@
 - **确定性计价**：识别为 one-api/new-api 的响应按倍率公式精确计算，支持分组与上下文阶梯
 - **AI 兜底解析**：无法确认格式的接口交给 AI 从原始响应证据中提取，但绝不猜测
 - **官方价审计**：Tavily 搜索厂商官方定价页，AI 提取官方原价，自动计算站点价折扣率
-- **变化告警**：新增、涨价、降价、恢复均生成事件，可推送 webhook
+- **变化告警**：新增、涨价、降价、恢复均生成事件，可在事件审计里追溯
 - **Web 数据站**：品牌首页 + 价格总览、历史趋势、官方价库、折扣对比五个页面，
   页面上可直接触发采集与官方价刷新后台任务
 - **完整证据链**：每条价格记录附带响应 URL、状态、载荷哈希和脱敏后的证据片段
@@ -62,7 +62,7 @@ uv run price-web --dev
 ```
 
 打开 http://localhost:3000 即可使用。首次启动（数据库里还没有管理员账号）会
-进入 `/setup` 首次设置向导：创建管理员账号 → 填 AI / Tavily / Webhook 密钥 →
+进入 `/setup` 首次设置向导：创建管理员账号 → 填 AI / Tavily 密钥 →
 跟着指引添加站点、触发首次采集。站点也可以先跑起来后在管理面板里添加。
 
 > [!TIP]
@@ -85,7 +85,7 @@ uv run price-web --dev
 
 ## ⚙️ 配置
 
-日常配置在**管理面板**完成（站点增删改、AI/Tavily/Webhook 等系统设置），保存即写入
+日常配置在**管理面板**完成（站点增删改、AI/Tavily 等系统设置），保存即写入
 SQLite（`var/monitor.db`）并立即生效。`config/price-monitor.json`
 （模板见 [`config/price-monitor.example.json`](config/price-monitor.example.json)）
 只作为 `price-web` 首次启动（空库）的种子导入，此后改动该文件不会生效；
@@ -116,7 +116,7 @@ SQLite（`var/monitor.db`）并立即生效。`config/price-monitor.json`
 | `POST /api/auth/login` / `POST /api/auth/logout`                                         | 公开   | 登录签发 30 天会话 cookie / 登出清除                        |
 | `POST /api/collect`                                                                      | 管理员 | 触发采集，支持 `dry_run`（AI 请求预览），结果附带官方价折扣 |
 | `POST /api/official/refresh`                                                             | 管理员 | Tavily 搜索 + AI 提取官方价                                 |
-| `GET /api/settings` / `PUT /api/settings`                                                | 管理员 | 系统设置（AI、Tavily key、Webhook）                         |
+| `GET /api/settings` / `PUT /api/settings`                                                | 管理员 | 系统设置（AI、Tavily key）                         |
 | `GET /api/sites`、`POST /api/sites`、`PUT/DELETE /api/sites/{id}`                        | 管理员 | 站点配置增删改                                              |
 | `GET /api/tasks`、`GET /api/tasks/{id}`                                                  | 公开   | 后台任务列表与进度                                          |
 

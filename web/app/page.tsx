@@ -3,14 +3,14 @@ import { apiGet } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import { eventMeta, formatDiscount, formatTime } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import type { EventListData, MetaData, OverviewData } from "@/lib/types";
+import type { EventListData, HistoryListData, MetaData, OverviewData } from "@/lib/types";
 import { RiskLink } from "@/components/RiskLink";
 import { ComingSoon } from "@/components/ui";
 import { LandingFeatures } from "@/components/LandingFeatures";
-import { IllusPulse } from "@/components/Illus";
-import { Reveal } from "@/components/Reveal";
+import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
+import { TermTip, type TermKey } from "@/components/TermTip";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +18,7 @@ interface LandingData {
   overview: OverviewData | null;
   meta: MetaData | null;
   events: EventListData | null;
+  history: HistoryListData | null;
   error: string | null;
 }
 
@@ -28,12 +29,20 @@ async function loadLanding(): Promise<LandingData> {
       apiGet<MetaData>("/api/meta"),
       apiGet<EventListData>("/api/events?limit=8"),
     ]);
-    return { overview, meta, events, error: null };
+    // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
+    let history: HistoryListData | null;
+    try {
+      history = await apiGet<HistoryListData>("/api/history?limit=1000");
+    } catch {
+      history = null;
+    }
+    return { overview, meta, events, history, error: null };
   } catch (cause) {
     return {
       overview: null,
       meta: null,
       events: null,
+      history: null,
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
@@ -62,20 +71,12 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
   }));
 }
 
-/** 事件色点与站内语义色板同源。 */
-function eventDotColor(tone: string): string {
-  if (tone === "green") return "#7cc47f";
-  if (tone === "red") return "#e27b78";
-  if (tone === "yellow") return "#e0b45c";
-  if (tone === "blue") return "#5b9bff";
-  return "#9aa0a8";
-}
-
 export default async function LandingPage() {
-  const { overview, meta, events, error } = await loadLanding();
+  const { overview, meta, events, history, error } = await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
   const latestEvents = events?.events.slice(-4).reverse() ?? [];
+  const historyRecords = history?.records ?? [];
 
   const siteIds = new Set(records.map((row) => row.site_id));
   const modelIds = new Set(records.map((row) => row.model));
@@ -90,12 +91,22 @@ export default async function LandingPage() {
     undefined,
   );
 
-  const highlights = [
+  const highlights: {
+    tone: "green" | "yellow" | "blue";
+    title: string;
+    value: string;
+    sub: string;
+    tip?: TermKey;
+    /** 0–1 比例条（可选）：给折扣类指标一个相对官方价的量感 */
+    bar?: number;
+  }[] = [
     {
       tone: "green" as const,
       title: "最低输入折扣",
+      tip: "discount_input",
       value: best?.discount?.input !== null && best?.discount?.input !== undefined ? formatDiscount(best.discount.input) : "—",
       sub: best ? `${getSiteInfo(best.site_id, best.source_url).name} · 相对厂商官方价` : "暂无折扣数据",
+      bar: best?.discount?.input ?? undefined,
     },
     {
       tone: "yellow" as const,
@@ -118,11 +129,11 @@ export default async function LandingPage() {
           <h1 className="hero-title">
             中转站价格，
             <br />
-            逐条取证。
+            条条有出处。
           </h1>
           <p className="hero-sub">
-            多站点价格快照、厂商官方价锚定、变化事件追踪。所有价格事实均来自直接请求的
-            HTTP 响应，不做任何猜测。
+            多站点价格快照、厂商官方价对照、变化事件追踪。所有价格都来自对站点的直接抓取，
+            每一条都能点开来源核对，不做任何估算。
           </p>
           <div className="hero-actions">
             <Link href="/overview">
@@ -136,7 +147,7 @@ export default async function LandingPage() {
           </div>
         </div>
         <aside className="hero-side">
-          <IllusPulse width={170} className="hero-illu" />
+          <HeroTrendChart records={historyRecords} />
           <div className="hero-side-title">最新事件</div>
           {latestEvents.length > 0 ? (
             <>
@@ -146,7 +157,7 @@ export default async function LandingPage() {
                 return (
                   <Link key={`${event.site_id}:${event.model}:${event.detected_at}:${index}`} href="/history" className="side-note">
                     <span className="side-note-line">
-                      <span className="side-dot" style={{ background: eventDotColor(meta.tone) }} />
+                      <span className={`side-dot dot-${meta.tone}`} />
                       <span className="side-note-title">
                         {site.name} · {meta.label}
                       </span>
@@ -167,92 +178,93 @@ export default async function LandingPage() {
         </aside>
       </section>
 
-      {error && <SiteAlert title="无法读取监控数据" detail={error} fix="请确认后端已启动：uv run price-web" />}
+      {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。" />}
 
-      <Reveal>
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>实时亮点</h2>
-          </div>
-          <div className="landing-stats">
-            {highlights.map((item) => (
-              <div key={item.title} className="landing-stat">
-                <div className="stat-label">{item.title}</div>
-                <div className="hl-value">{item.value}</div>
-                <div className="hl-sub">{item.sub}</div>
+      <section className="landing-section">
+        <div className="landing-section-head">
+          <h2>实时亮点</h2>
+        </div>
+        <div className="landing-stats">
+          {highlights.map((item) => (
+            <div key={item.title} className={`landing-stat lstat-${item.tone}`}>
+              <div className="stat-label">
+                <span aria-hidden className={`stat-dot dot-${item.tone}`} />
+                {item.title}
+                {item.tip && <TermTip term={item.tip} />}
               </div>
-            ))}
-          </div>
-        </section>
-      </Reveal>
+              <div className="hl-value">{item.value}</div>
+              {item.bar !== undefined && item.bar >= 0.05 && (
+                <span className="disc-bar-track hl-bar" aria-hidden>
+                  <span className={`disc-bar-fill tone-${item.tone}`} style={{ width: `${Math.round(Math.min(Math.max(item.bar, 0), 1) * 100)}%` }} />
+                </span>
+              )}
+              <div className="hl-sub">{item.sub}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {records.length > 0 && (
-        <Reveal>
-          <section className="landing-section">
-            <div className="landing-section-head">
-              <h2>最新快照</h2>
-              <Link href="/overview" className="landing-more">
-                查看全部 →
-              </Link>
-            </div>
-            <SnapshotPreview records={records.slice(0, 6)} />
-          </section>
-        </Reveal>
+        <section className="landing-section">
+          <div className="landing-section-head">
+            <h2>最新快照</h2>
+            <Link href="/overview" className="landing-more">
+              查看全部 →
+            </Link>
+          </div>
+          <SnapshotPreview records={records.slice(0, 6)} />
+        </section>
       )}
 
-      <Reveal>
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>监控中的站点</h2>
-            <ComingSoon
-              label="提交监控站点"
-              variant="text"
-              title="提交监控站点"
-              description="站点录入功能即将上线：届时可以直接填写中转站的价格接口地址，加入监控清单。当前仍可通过仓库内的配置文件添加。"
-            />
+      <section className="landing-section">
+        <div className="landing-section-head">
+          <h2>监控中的站点</h2>
+          <ComingSoon
+            label="提交监控站点"
+            variant="text"
+            title="提交监控站点"
+            description="站点提报功能即将上线，届时填写站点地址即可申请加入监控清单，我们会逐个核验后接入。"
+          />
+        </div>
+        {sites.length > 0 ? (
+          <div className="site-list">
+            {sites.map((site) => {
+              const info = getSiteInfo(site.id, site.sourceUrl);
+              const href = info.homepage || site.sourceUrl || "";
+              return (
+                <div key={site.id} className="site-row">
+                  <span
+                    aria-hidden
+                    className="site-dot"
+                    style={{ background: site.enabled ? "var(--accent)" : "var(--text-3)" }}
+                  />
+                  <span className="site-name">
+                    {href ? (
+                      <RiskLink href={href} variant="site">
+                        {info.name}
+                      </RiskLink>
+                    ) : (
+                      info.name
+                    )}
+                  </span>
+                  <span className="site-count mono">
+                    {site.models} 模型{site.enabled ? "" : " · 已停用"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-          {sites.length > 0 ? (
-            <div className="site-list">
-              {sites.map((site) => {
-                const info = getSiteInfo(site.id, site.sourceUrl);
-                const href = info.homepage || site.sourceUrl || "";
-                return (
-                  <div key={site.id} className="site-row">
-                    <span
-                      aria-hidden
-                      className="site-dot"
-                      style={{ background: site.enabled ? "var(--accent)" : "var(--text-3)" }}
-                    />
-                    <span className="site-name">
-                      {href ? (
-                        <RiskLink href={href} variant="site">
-                          {info.name}
-                        </RiskLink>
-                      ) : (
-                        info.name
-                      )}
-                    </span>
-                    <span className="site-count mono">
-                      {site.models} 模型{site.enabled ? "" : " · 已停用"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p style={{ color: "var(--text-2)" }}>还没有站点数据。</p>
-          )}
-        </section>
-      </Reveal>
+        ) : (
+          <p style={{ color: "var(--text-2)" }}>还没有站点数据。</p>
+        )}
+      </section>
 
-      <Reveal>
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>价格如何取证</h2>
-          </div>
-          <LandingFeatures />
-        </section>
-      </Reveal>
+      <section className="landing-section">
+        <div className="landing-section-head">
+          <h2>价格从哪里来</h2>
+        </div>
+        <LandingFeatures />
+      </section>
     </div>
   );
 }

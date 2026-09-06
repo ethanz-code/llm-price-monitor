@@ -112,10 +112,10 @@ function SiteModal({
     >
       <div style={{ display: "grid", gap: 14 }}>
         <SettingRow label="站点 ID">
-          <Input value={id} onChange={setId} placeholder="例如 example-newapi" style={{ width: 280 }} />
+          <Input value={id} onChange={setId} placeholder="例如 example-newapi" style={{ width: 280, maxWidth: "100%" }} />
         </SettingRow>
         <SettingRow label="价格接口 URL">
-          <Input value={url} onChange={setUrl} placeholder="https://example.com/api/pricing" style={{ width: 360 }} />
+          <Input value={url} onChange={setUrl} placeholder="https://example.com/api/pricing" style={{ width: 360, maxWidth: "100%" }} />
         </SettingRow>
         <SettingRow label="请求方法">
           <Sel
@@ -128,7 +128,7 @@ function SiteModal({
           />
         </SettingRow>
         <SettingRow label="目标模型（逗号或换行分隔）" hint="需要分组的模型可在高级配置里写成 { name, group, aliases } 对象">
-          <Input value={models} onChange={setModels} placeholder="gpt-5.6-sol, claude-5-sonnet" style={{ width: 360 }} />
+          <Input value={models} onChange={setModels} placeholder="gpt-5.6-sol, claude-5-sonnet" style={{ width: 360, maxWidth: "100%" }} />
         </SettingRow>
         <SettingRow label="启用采集">
           <Switch checked={enabled} onChange={setEnabled} />

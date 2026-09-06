@@ -5,8 +5,17 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import remarkAlert from "remark-github-blockquote-alert";
 import { apiSend } from "@/lib/api";
+
+/** README 里的图片是仓库相对路径（如 web/app/icon.svg）：
+ *  GitHub 上按仓库根解析，这里映射到站点根由 Next 静态路由提供。 */
+function rewriteImageSrc(src: string | undefined): string | undefined {
+  if (!src || /^(https?:|data:|\/)/.test(src)) return src;
+  if (src.startsWith("web/app/")) return `/${src.slice("web/app/".length)}`;
+  return src;
+}
 
 export function AdminDocs() {
   const [markdown, setMarkdown] = useState<string | null>(null);
@@ -36,11 +45,15 @@ export function AdminDocs() {
     <div className="panel markdown-doc">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkAlert]}
+        rehypePlugins={[rehypeRaw]}
         components={{
           a: ({ href, children }) => (
             <a href={href} target="_blank" rel="noreferrer">
               {children}
             </a>
+          ),
+          img: ({ src, alt, width }) => (
+            <img src={rewriteImageSrc(typeof src === "string" ? src : undefined)} alt={alt ?? ""} width={width} />
           ),
         }}
       >

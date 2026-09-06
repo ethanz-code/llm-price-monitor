@@ -75,7 +75,7 @@ export default async function AdminOverviewPage() {
               <span className="guide-icon"><IconKey size={15} /></span>
               <div>
                 <div className="guide-title">2 · 配好 AI 与 Tavily</div>
-                <p>AI 兜底提取负责解析格式不明的站点；Tavily 用于检索厂商官方定价页，折扣对比需要它。</p>
+                <p>AI 在采集时解析模型别名并兜底提取格式不明站点的价格；Tavily 用于检索厂商官方定价页，折扣对比需要它。</p>
               </div>
               <Link href="/admin/settings" className="guide-link">去设置 →</Link>
             </li>

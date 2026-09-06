@@ -40,12 +40,11 @@ def test_site_crud_round_trip(tmp_path: Path):
 def test_config_from_store_builds_typed_config(tmp_path: Path):
     store = Store(tmp_path / "monitor.db")
     store.replace_sites([_site_config("demo", "https://demo.test/api")])
-    store.set_document("settings", {"timeout": 9.5, "webhook": "https://hook.test", "tavily_api_key": "tvly-x"})
+    store.set_document("settings", {"timeout": 9.5, "tavily_api_key": "tvly-x"})
     store.set_document("ai", {"enabled": True, "base_url": "https://ai.test/v1", "models": ["m-a"], "api_key": "sk-x"})
 
     config = config_from_store(store)
     assert config.settings.timeout == 9.5
-    assert config.settings.webhook == "https://hook.test"
     assert config.settings.tavily_api_key == "tvly-x"
     assert config.ai.api_key == "sk-x"
     assert config.ai.cache is store

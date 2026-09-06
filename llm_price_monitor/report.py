@@ -1,7 +1,7 @@
 """运行编排与报告：一次监控运行、事件分类、持久化、汇总输出。
 
 run_once 是唯一入口：选 UA → 逐站点采集 → 与上次快照比对生成事件 →
-写历史/快照/webhook → 输出 MonitorReport 与面向外部的 summary 行。
+写历史/快照 → 输出 MonitorReport 与面向外部的 summary 行。
 """
 from __future__ import annotations
 
@@ -71,14 +71,6 @@ def classify(previous: dict[str, Any] | None, current: dict[str, Any]) -> Change
     return "changed"
 
 
-def send_webhook(url: str, events: list[dict[str, Any]], timeout: float) -> None:
-    if not events:
-        return
-    lines = [f"{item['site_id']} / {item['model']}: {item['kind']}" for item in events]
-    response = httpx.post(url, json={"text": "Proxy-SmartAven 价格监控\n" + "\n".join(lines)}, timeout=timeout)
-    response.raise_for_status()
-
-
 def run_once(
     config: MonitorConfig,
     *,
@@ -128,8 +120,6 @@ def run_once(
             store.append_history(records)
             store.append_events(changed_events)
             store.replace_latest(latest)
-            if config.settings.webhook:
-                send_webhook(config.settings.webhook, changed_events, config.settings.timeout)
         return MonitorReport(started, time.time(), records, changed_events, errors, ai_previews)
     finally:
         if own:

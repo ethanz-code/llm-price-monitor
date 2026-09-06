@@ -85,9 +85,6 @@ def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
         )
         if key in raw
     }
-    webhook = raw.get("webhook") or (os.getenv(str(raw["webhook_env"]).strip()) if raw.get("webhook_env") else None)
-    if webhook:
-        doc["webhook"] = webhook
     tavily = raw.get("tavily_api_key") or os.getenv("TAVILY_API_KEY")
     if tavily:
         doc["tavily_api_key"] = tavily
@@ -273,7 +270,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
-        """管理员读取系统设置（AI / Tavily / webhook 等，密钥为明文）。"""
+        """管理员读取系统设置（AI / Tavily 等，密钥为明文）。"""
         return {
             "settings": store.get_document("settings") or {},
             "ai": store.get_document("ai") or {},

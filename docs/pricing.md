@@ -7,7 +7,7 @@
 
 ## 特性
 
-- **多站点监控**：通过 API 触发采集各站点价格接口，AI 自动归一化不规范模型名，历史/快照/变化事件齐备，可推送 webhook。
+- **多站点监控**：通过 API 触发采集各站点价格接口，AI 自动归一化不规范模型名，历史/快照/变化事件齐备。
 - **确定性计价**：one-api / new-api 响应本地精确计算（`输入价 = model_ratio × ratio_base_price × group_ratio`）；`billing_denomination_version: 2` 新格式直接读官方标注价。
 - **完整阶梯**：`tiered_expr` 与 `pricing_rules.tiers` 解析为完整上下文阶梯（tiers），保留缓存读/写价与 `request_rules`，不压缩成固定单价。
 - **AI 兜底**：非 New API 格式交给 AI 做证据抽取，结果过模型名、URL、价格数值三重校验，无法闭环时降级，不猜测。
@@ -74,7 +74,7 @@ llm_price_monitor/
 curl -X POST http://127.0.0.1:8000/api/collect -H 'Content-Type: application/json' -d '{"persist": true}'
 ```
 
-请求体常用字段：`site_id`（单站测试）、`persist`（默认 `false`，`true` 时把历史/快照/事件写入数据库并推送 webhook）、`dry_run`（AI 只输出请求预览，不落库）。响应是后台任务 id，用 `GET /api/tasks/{task_id}` 轮询结果。
+请求体常用字段：`site_id`（单站测试）、`persist`（默认 `false`，`true` 时把历史/快照/事件写入数据库）、`dry_run`（AI 只输出请求预览，不落库）。响应是后台任务 id，用 `GET /api/tasks/{task_id}` 轮询结果。
 
 ### 2. 官方原价搜索
 
@@ -245,7 +245,7 @@ curl http://127.0.0.1:8000/api/discount
 2. **识别**：命中 one-api/new-api 结构时走本地确定性计价；`billing_denomination_version=2` 的站点按 USD 基准处理并乘以站点声明的 `pricing_cny_rate`（如有）。
 3. **AI 抽取**：非标准响应把脱敏后的 JSON 证据连同计价规则提示词交给 AI；`confirmed` 要求网络证据和价格数值同时闭环，否则降级 `candidate`。
 4. **折扣**：官方价数据存在时，按实时汇率把站点价与官方采用价统一折算 CNY 后相除。
-5. **事件**：对比数据库中的旧快照生成事件，推送到 `settings.webhook` 指定的 webhook（种子导入时可由 `webhook_env` 环境变量名解析）。
+5. **事件**：对比数据库中的旧快照生成事件，写入数据库供事件审计查询。
 
 ## 测试
 

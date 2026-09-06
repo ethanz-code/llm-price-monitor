@@ -119,7 +119,6 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
   const [aiModels, setAiModels] = useState("");
   const [aiApiKey, setAiApiKey] = useState("");
   const [tavilyKey, setTavilyKey] = useState("");
-  const [webhook, setWebhook] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -134,7 +133,6 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
       if (aiApiKey.trim()) ai.api_key = aiApiKey.trim();
       const settings: Record<string, unknown> = {};
       if (tavilyKey.trim()) settings.tavily_api_key = tavilyKey.trim();
-      if (webhook.trim()) settings.webhook = webhook.trim();
       await apiSend("/api/settings", "PUT", { settings, ai });
       onDone();
     } catch (cause) {
@@ -151,7 +149,7 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
           <span>AI 兜底提取</span>
           <Switch checked={aiEnabled} onChange={setAiEnabled} />
         </div>
-        <p className="auth-hint">格式不明的站点交给 AI 从证据中提取价格，会产生 token 费用。</p>
+        <p className="auth-hint">开启后每次采集都会调用 AI：标准 New API 站点仅解析模型别名（价格仍本地计算），格式不明站点由 AI 提取价格；结果按证据哈希缓存，会产生 token 费用。</p>
         {aiEnabled && (
           <div className="setup-keys-fields">
             <label className="auth-field">
@@ -175,13 +173,6 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
         </div>
         <p className="auth-hint">刷新厂商官方价库用；留空则回退 TAVILY_API_KEY 环境变量。</p>
         <Input value={tavilyKey} onChange={setTavilyKey} placeholder="tvly-…" type="password" />
-      </div>
-      <div className="setup-keys-group">
-        <div className="setup-keys-head">
-          <span>事件通知 Webhook</span>
-        </div>
-        <p className="auth-hint">出现新增或价格变化时推送通知；留空则不推送。</p>
-        <Input value={webhook} onChange={setWebhook} placeholder="https://example.com/hook" />
       </div>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>

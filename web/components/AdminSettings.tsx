@@ -1,6 +1,6 @@
 "use client";
 
-/** 系统设置：AI 兜底提取、Tavily、Webhook。 */
+/** 系统设置：AI 兜底提取、Tavily。 */
 
 import { useEffect, useState } from "react";
 import { toast, Btn, Input, Switch } from "./ui";
@@ -30,7 +30,6 @@ function SettingRow({ label, hint, children }: { label: string; hint?: string; c
 export function AdminSettings() {
   const [data, setData] = useState<SettingsData | null>(null);
   const [tavilyKey, setTavilyKey] = useState("");
-  const [webhook, setWebhook] = useState("");
   const [aiEnabled, setAiEnabled] = useState(true);
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModels, setAiModels] = useState("");
@@ -43,7 +42,6 @@ export function AdminSettings() {
       .then((loaded) => {
         setData(loaded);
         setTavilyKey(typeof loaded.settings.tavily_api_key === "string" ? loaded.settings.tavily_api_key : "");
-        setWebhook(typeof loaded.settings.webhook === "string" ? loaded.settings.webhook : "");
         const ai = loaded.ai;
         setAiEnabled(ai.enabled !== false);
         setAiBaseUrl(typeof ai.base_url === "string" ? ai.base_url : "");
@@ -56,7 +54,7 @@ export function AdminSettings() {
 
   async function save() {
     if (!data) return;
-    const settings = { ...data.settings, tavily_api_key: tavilyKey.trim() || null, webhook: webhook.trim() || null };
+    const settings = { ...data.settings, tavily_api_key: tavilyKey.trim() || null };
     const ai: Record<string, unknown> = {
       ...data.ai,
       enabled: aiEnabled,
@@ -84,26 +82,23 @@ export function AdminSettings() {
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>加载中…</span>
       ) : (
         <>
-          <SettingRow label="AI 兜底提取" hint="格式不明站点交给 AI 从证据中提取价格（会产生 token 费用）">
+          <SettingRow label="AI 兜底提取" hint="开启后每次采集都会调用 AI：标准 New API 站点仅解析模型别名（价格仍本地计算），格式不明站点由 AI 提取价格；结果按证据哈希缓存，会产生 token 费用">
             <Switch checked={aiEnabled} onChange={setAiEnabled} />
           </SettingRow>
           <SettingRow label="AI Base URL">
-            <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" style={{ width: 360 }} />
+            <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" style={{ width: 360, maxWidth: "100%" }} />
           </SettingRow>
           <SettingRow label="AI 模型列表" hint="逗号分隔；每次抽取随机选用一个">
-            <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" style={{ width: 360 }} />
+            <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" style={{ width: 360, maxWidth: "100%" }} />
           </SettingRow>
           <SettingRow label="AI API Key" hint="保存在本机数据库中，不回传第三方">
-            <Input value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" style={{ width: 360 }} />
+            <Input value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" style={{ width: 360, maxWidth: "100%" }} />
           </SettingRow>
           <SettingRow label="AI 超时（秒）">
-            <Input value={aiTimeout} onChange={setAiTimeout} style={{ width: 120 }} />
+            <Input value={aiTimeout} onChange={setAiTimeout} style={{ width: 120, maxWidth: "100%" }} />
           </SettingRow>
           <SettingRow label="Tavily API Key" hint="官方价库刷新用；留空则回退 TAVILY_API_KEY 环境变量">
-            <Input value={tavilyKey} onChange={setTavilyKey} placeholder="tvly-…" style={{ width: 360 }} />
-          </SettingRow>
-          <SettingRow label="事件通知 Webhook" hint="采集出现新增/变化时推送；留空则不推送">
-            <Input value={webhook} onChange={setWebhook} placeholder="https://example.com/hook" style={{ width: 360 }} />
+            <Input value={tavilyKey} onChange={setTavilyKey} placeholder="tvly-…" style={{ width: 360, maxWidth: "100%" }} />
           </SettingRow>
           <div style={{ display: "flex", gap: 10 }}>
             <Btn variant="primary" loading={saving} onClick={save}>

@@ -210,11 +210,10 @@ def test_env_password_seeds_admin_for_existing_deployments(workspace: Path, monk
 def test_settings_roundtrip_and_validation(workspace: Path):
     client = _admin_client(workspace)
     saved = client.put("/api/settings", json={
-        "settings": {"webhook": "https://hook.test", "tavily_api_key": "tvly-x"},
+        "settings": {"tavily_api_key": "tvly-x"},
         "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-x"},
     })
     assert saved.status_code == 200
-    assert saved.json()["settings"]["webhook"] == "https://hook.test"
     assert saved.json()["ai"]["api_key"] == "sk-x"
 
     reloaded = client.get("/api/settings").json()

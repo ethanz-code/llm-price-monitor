@@ -26,10 +26,24 @@ export function PageHeader({
   );
 }
 
-export function StatCard({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
+export function StatCard({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  hint?: string;
+  /** 标签前色点的语义色（对齐实时亮点的指标分色） */
+  tone?: "green" | "yellow" | "blue" | "red" | "gray";
+}) {
   return (
     <div className="stat-card">
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">
+        {tone && <span aria-hidden className={`stat-dot dot-${tone}`} />}
+        {label}
+      </div>
       <div className="stat-value">{value}</div>
       {hint && <div className="stat-hint">{hint}</div>}
     </div>

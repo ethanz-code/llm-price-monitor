@@ -64,7 +64,6 @@ class AIResultCache(Protocol):
 @dataclass(frozen=True)
 class MonitorSettings:
     timeout: float = 20.0
-    webhook: str | None = None
     tavily_api_key: str | None = None
     user_agent: str = DEFAULT_BROWSER_USER_AGENT
     random_user_agent: bool = False
@@ -104,9 +103,7 @@ def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSetti
     raw = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {key: raw[key] for key in MonitorSettings.__dataclass_fields__ if key in raw}
     if resolve_env:
-        # 文件种子路径的旧字段与 env 兜底：webhook_env → webhook 直填、TAVILY_API_KEY
-        if "webhook" not in values and raw.get("webhook_env"):
-            values["webhook"] = os.getenv(str(raw["webhook_env"]).strip())
+        # 文件种子路径的 env 兜底：TAVILY_API_KEY
         if "tavily_api_key" not in values:
             values["tavily_api_key"] = os.getenv("TAVILY_API_KEY")
     for key in ("user_agent_platforms", "user_agent_chrome_versions"):
