@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     template: "%s · LLM 价格监控",
   },
   description:
-    "LLM 中转站模型价格取证与监控：多站点价格快照、变化事件、厂商官方价与折扣率对比。所有价格事实均来自直接请求的 HTTP 响应。",
+    "LLM 中转站模型价格取证与监控：多站点价格快照、变化事件、厂商官方价与折扣率对比，逐条可溯源。",
   openGraph: {
     title: "LLM 价格监控",
     description: "多站点价格快照、官方价锚定与变化事件追踪，逐条取证、可溯源。",

@@ -22,7 +22,7 @@ export default async function DiscountPage() {
       <PageHeader
         eyebrow="DISCOUNTS"
         title="折扣对比"
-        subtitle="站点价折算 CNY 后与厂商官方原价相除：比值 21% 即“1.9 折”，越低越便宜。"
+        subtitle="站点价折算 CNY 后与厂商官方原价相除：比值 19% 即“1.9 折”，越低越便宜。"
       />
       {error && (
         <SiteAlert

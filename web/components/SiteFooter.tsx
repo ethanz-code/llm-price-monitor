@@ -14,8 +14,7 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>LLM 价格监控</span>
           </div>
           <p>
-            面向 API 中转站的价格取证与监控：周期性请求各站点价格接口，与厂商官方价相除得到折扣，并把每次采集沉淀为历史曲线与变化事件。所有价格均来自直接请求的
-            HTTP JSON 响应，逐条可溯源。
+            面向 API 中转站的价格取证与监控：周期性请求各站点价格接口，与厂商官方价相除得到折扣，并把每次采集留存为历史曲线与变化事件。
           </p>
           <a
             className="footer-github"

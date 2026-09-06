@@ -432,7 +432,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def official_refresh(body: RefreshBody) -> dict[str, str]:
         config = _config()
         if not config.ai.enabled or not config.ai.base_url or not config.ai.pick_model():
-            raise HTTPException(status_code=400, detail="配置文件 ai 段未启用或未配置，无法提取官方价")
+            raise HTTPException(status_code=400, detail="系统设置中 AI 未启用或未配置（Base URL 与模型列表），无法提取官方价")
         vendors = [official_search.VendorSpec(name) for name in body.vendors] if body.vendors else None
 
         def _run() -> dict[str, Any]:

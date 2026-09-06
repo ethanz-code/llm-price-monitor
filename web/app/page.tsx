@@ -109,7 +109,7 @@ export default async function LandingPage() {
       tone: "blue" as const,
       title: "监控覆盖",
       value: `${siteIds.size} 站 · ${modelIds.size} 模型`,
-      sub: `${records.length} 条价格记录沉淀`,
+      sub: `累计 ${records.length} 条价格记录`,
     },
   ];
 

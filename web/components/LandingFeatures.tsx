@@ -7,7 +7,7 @@ const FEATURES = [
   {
     icon: <IconAim size={17} />,
     title: "直接请求取证",
-    text: "按配置逐站点请求价格接口，每条价格都来自实际返回的 HTTP JSON 响应——不猜测、不插值、不搬运二手数据。",
+    text: "按配置逐站点请求价格接口，每条价格都能对应一段实际返回的 HTTP JSON 响应。",
   },
   {
     icon: <IconFileSearch size={17} />,
@@ -17,7 +17,7 @@ const FEATURES = [
   {
     icon: <IconNodes size={17} />,
     title: "变化事件流",
-    text: "每次采集与上一轮对比，新增、涨价、降价、恢复、状态变化实时进入事件流，历史曲线按天沉淀。",
+    text: "每次采集与上一轮对比，新增、涨价、降价、恢复、状态变化进入事件流，价格按天积累成历史曲线。",
   },
 ];
 

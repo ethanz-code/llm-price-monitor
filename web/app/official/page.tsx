@@ -22,7 +22,7 @@ export default async function OfficialPage() {
       <PageHeader
         eyebrow="OFFICIAL PRICES"
         title="官方价库"
-        subtitle="Tavily 搜索厂商官方定价页、AI 提取的模型原价；折扣对比以 effective 价为基准，来源链接可溯源。"
+        subtitle="通过 Tavily 搜索厂商官方定价页，再用 AI 提取模型原价；折扣对比以 effective 价为基准，来源链接可溯源。"
       />
       {error && (
         <SiteAlert

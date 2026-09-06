@@ -64,8 +64,8 @@ uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 
 
 唯一入口：
 
-| 命令 | 用途 |
-| --- | --- |
+| 命令        | 用途                                                                     |
+| ----------- | ------------------------------------------------------------------------ |
 | `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
 
 采集、官方价刷新、折扣计算等能力全部通过 HTTP API 使用
@@ -74,11 +74,11 @@ uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 
 
 ## ⚙️ 配置
 
-站点、目标模型、分组、倍率基准、请求配置统一写在 `config/price-monitor.json`
-（模板见 [`config/price-monitor.example.json`](config/price-monitor.example.json)）。
-配置在 `price-web` 首次启动（空库）时导入 SQLite（`var/monitor.db`），此后数据库是
-唯一真相源；之后再改 `config/price-monitor.json` 不会生效，需删除 `var/monitor.db`
-重启才会重新导入。
+日常配置在**管理面板**完成（站点增删改、AI/Tavily/Webhook 等系统设置），保存即写入
+SQLite（`var/monitor.db`）并立即生效。`config/price-monitor.json`
+（模板见 [`config/price-monitor.example.json`](config/price-monitor.example.json)）
+只作为 `price-web` 首次启动（空库）的种子导入，此后改动该文件不会生效；
+删除 `var/monitor.db` 重启才会重新导入。
 
 需要登录态的站点，请求头支持 `${ENV_VAR}` 注入，敏感值不落盘：
 
@@ -96,19 +96,31 @@ uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 
 计价规则、AI 抽取约束、输出数据结构等完整说明见
 [docs/pricing.md](docs/pricing.md)。
 
+## 🔌 API
+
+| 端点                                                                                     | 鉴权   | 说明                                                        |
+| ---------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------- |
+| `GET /api/overview` / `latest` / `history` / `events` / `official` / `discount` / `meta` | 公开   | 数据读取                                                    |
+| `POST /api/collect`                                                                      | 管理员 | 触发采集，支持 `dry_run`（AI 请求预览），结果附带官方价折扣 |
+| `POST /api/official/refresh`                                                             | 管理员 | Tavily 搜索 + AI 提取官方价                                 |
+| `GET /api/settings` / `PUT /api/settings`                                                | 管理员 | 系统设置（AI、Tavily key、Webhook）                         |
+| `GET /api/sites`、`POST /api/sites`、`PUT/DELETE /api/sites/{id}`                        | 管理员 | 站点配置增删改                                              |
+| `GET /api/tasks`、`GET /api/tasks/{id}`                                                  | 公开   | 后台任务列表与进度                                          |
+| `POST /api/auth/verify`                                                                  | 管理员 | 登录探测（401 触发浏览器 Basic 登录框）                     |
+
 ## 🌐 Web 界面
 
 Next.js 16（App Router）+ React 19 的服务端渲染数据站，自研轻量 UI kit，
 不依赖重型组件库；支持浅色 / 深色 / 跟随系统三态主题。
 
-| 页面 | 内容 |
-| --- | --- |
-| `/` | 品牌首页：实时统计条、最新事件流与快照预览 |
-| `/overview` | 价格总览：全部站点 × 模型的最新单价 |
-| `/history` | 历史与事件：价格趋势图 + 变化事件列表 |
-| `/official` | 官方价库：各厂商模型官方原价 |
-| `/discount` | 折扣对比：站点价相对官方价的折扣率 |
-| `/admin` | 管理面板：触发"立即采集"与"刷新官方价"后台任务并轮询进度（不在公开导航） |
+| 页面        | 内容                                                                                |
+| ----------- | ----------------------------------------------------------------------------------- |
+| `/`         | 品牌首页：实时统计条、最新事件流与快照预览                                          |
+| `/overview` | 价格总览：全部站点 × 模型的最新单价                                                 |
+| `/history`  | 历史与事件：价格趋势图 + 变化事件列表                                               |
+| `/official` | 官方价库：各厂商模型官方原价                                                        |
+| `/discount` | 折扣对比：站点价相对官方价的折扣率                                                  |
+| `/admin`    | 管理面板：站点增删改、系统设置（AI/Tavily/Webhook）、采集与官方价刷新任务、事件审计 |
 
 ### 启动
 
@@ -140,23 +152,13 @@ uv run price-web --with-frontend
 
 数据统一存放在 SQLite 数据库中：
 
-| 文件 | 内容 |
-| --- | --- |
-| `var/monitor.db` | 站点配置、采集历史、最新快照、变化事件、官方价与 AI 缓存的唯一真相源 |
-| `var/fx-cache.json` | 汇率缓存（在线汇率源全部失败时回退） |
-
-> [!TIP]
-> `var/price-history.jsonl`、`var/price-latest.json`、`var/price-events.jsonl`、
-> `var/price-ai-cache.json` 和 `var/official-prices.json` 仅在首次启动（空库）时
-> 作为存量数据导入数据库，之后新增数据只写数据库。
+| 文件                | 内容                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| `var/monitor.db`    | 站点配置、采集历史、最新快照、变化事件、官方价与 AI 缓存的唯一真相源 |
+| `var/fx-cache.json` | 汇率缓存（在线汇率源全部失败时回退）                                 |
 
 ## 🧪 测试
 
 ```bash
 uv run pytest
 ```
-
-## 🔗 来源
-
-从 Proxy-SmartAven（多中转站 AI 网关）的价格监控子包拆分而来，与网关完全
-解耦，可独立运行；价格数据也可为网关的渠道选择与成本评估提供依据。
