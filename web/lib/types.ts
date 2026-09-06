@@ -115,8 +115,9 @@ export interface SiteMeta {
 
 export interface MetaData {
   sites: SiteMeta[];
-  auth_enabled: boolean;
   is_admin: boolean;
+  /** true = 数据库还没有管理员账号，需要先走 /setup 首次设置 */
+  needs_setup: boolean;
 }
 
 /** 站点完整配置（与 config/price-monitor.json 的 sites 段同构，存储于 SQLite sites 表）。 */

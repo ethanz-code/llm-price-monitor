@@ -33,7 +33,8 @@ export function CollectButton({ size }: { size?: "lg" | "sm" }) {
         body: JSON.stringify({ persist }),
       });
       if (res.status === 401) {
-        throw new Error("需要管理员登录后才能采集（在登录框输入密码即可）");
+        window.location.href = "/login";
+        throw new Error("需要管理员登录");
       }
       if (!res.ok) {
         const detail = ((await res.json()) as { detail?: string }).detail;

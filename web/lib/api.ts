@@ -1,4 +1,7 @@
-/** 服务端组件专用的 API 读取层：直连 FastAPI。读接口公开，无需附带凭据。 */
+/** API 访问层：服务端直连 FastAPI（读接口公开）；浏览器侧走同源代理，
+ *  管理接口依赖 HttpOnly session cookie，浏览器自动携带。 */
+
+import type { MetaData } from "./types";
 
 const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000";
 
@@ -10,7 +13,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** 浏览器侧写请求：401 时浏览器原生弹出 Basic 登录框，登录后自动重试。 */
+/** 浏览器侧管理请求：401 时跳转登录页。 */
 export async function apiSend<T>(path: string, method: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -19,11 +22,40 @@ export async function apiSend<T>(path: string, method: string, body?: unknown): 
     cache: "no-store",
   });
   if (res.status === 401) {
-    throw new Error("需要管理员登录（取消登录框则无法继续）");
+    if (typeof window !== "undefined") window.location.href = "/login";
+    throw new Error("需要管理员登录");
   }
   if (!res.ok) {
-    const detail = (await res.json().catch(() => null) as { detail?: string } | null)?.detail;
-    throw new Error(detail ?? `HTTP ${res.status}`);
+    throw new Error(await detailOf(res));
   }
   return (await res.json()) as T;
+}
+
+/** 登录 / 登出 / 首次设置：401 不跳转，错误信息交给调用方展示。 */
+export async function apiAuthPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(await detailOf(res));
+  }
+  return (await res.json()) as T;
+}
+
+/** 浏览器侧读取登录态；后端不可达时返回 null。 */
+export async function fetchMeta(): Promise<MetaData | null> {
+  try {
+    const res = await fetch("/api/meta", { cache: "no-store" });
+    return res.ok ? ((await res.json()) as MetaData) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function detailOf(res: Response): Promise<string> {
+  const data = (await res.json().catch(() => null)) as { detail?: string } | null;
+  return data?.detail ?? `HTTP ${res.status}`;
 }

@@ -7,6 +7,7 @@ import type { EventListData, MetaData, OverviewData } from "@/lib/types";
 import { RiskLink } from "@/components/RiskLink";
 import { ComingSoon } from "@/components/ui";
 import { LandingFeatures } from "@/components/LandingFeatures";
+import { IllusPulse } from "@/components/Illus";
 import { Reveal } from "@/components/Reveal";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -61,10 +62,7 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
   }));
 }
 
-/** Highlights 卡片侧色（AA 的彩色方块语法，取自站内语义色板）。 */
-const TONE_SQUARES = { green: "#c8ff00", yellow: "#e0b45c", blue: "#5b9bff" } as const;
-
-/** 事件色点与 Highlights 方块同源。 */
+/** 事件色点与站内语义色板同源。 */
 function eventDotColor(tone: string): string {
   if (tone === "green") return "#7cc47f";
   if (tone === "red") return "#e27b78";
@@ -138,6 +136,7 @@ export default async function LandingPage() {
           </div>
         </div>
         <aside className="hero-side">
+          <IllusPulse width={170} className="hero-illu" />
           <div className="hero-side-title">最新事件</div>
           {latestEvents.length > 0 ? (
             <>
@@ -173,18 +172,12 @@ export default async function LandingPage() {
       <Reveal>
         <section className="landing-section">
           <div className="landing-section-head">
-            <h2>
-              <span className="hl-square" style={{ background: TONE_SQUARES.green }} />
-              实时亮点
-            </h2>
+            <h2>实时亮点</h2>
           </div>
-          <div className="highlight-grid">
+          <div className="landing-stats">
             {highlights.map((item) => (
-              <div key={item.title} className="highlight-card">
-                <div className="hl-head">
-                  <span className="hl-square" style={{ background: TONE_SQUARES[item.tone] }} />
-                  <h3>{item.title}</h3>
-                </div>
+              <div key={item.title} className="landing-stat">
+                <div className="stat-label">{item.title}</div>
                 <div className="hl-value">{item.value}</div>
                 <div className="hl-sub">{item.sub}</div>
               </div>
@@ -197,10 +190,7 @@ export default async function LandingPage() {
         <Reveal>
           <section className="landing-section">
             <div className="landing-section-head">
-              <h2>
-                <span className="hl-square" style={{ background: TONE_SQUARES.yellow }} />
-                最新快照
-              </h2>
+              <h2>最新快照</h2>
               <Link href="/overview" className="landing-more">
                 查看全部 →
               </Link>
@@ -213,10 +203,7 @@ export default async function LandingPage() {
       <Reveal>
         <section className="landing-section">
           <div className="landing-section-head">
-            <h2>
-              <span className="hl-square" style={{ background: TONE_SQUARES.blue }} />
-              监控中的站点
-            </h2>
+            <h2>监控中的站点</h2>
             <ComingSoon
               label="提交监控站点"
               variant="text"
@@ -225,31 +212,29 @@ export default async function LandingPage() {
             />
           </div>
           {sites.length > 0 ? (
-            <div className="site-grid">
+            <div className="site-list">
               {sites.map((site) => {
                 const info = getSiteInfo(site.id, site.sourceUrl);
                 const href = info.homepage || site.sourceUrl || "";
                 return (
-                  <div key={site.id} className="site-card">
+                  <div key={site.id} className="site-row">
                     <span
                       aria-hidden
                       className="site-dot"
                       style={{ background: site.enabled ? "var(--accent)" : "var(--text-3)" }}
                     />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="site-name">
-                        {href ? (
-                          <RiskLink href={href} variant="site">
-                            {info.name}
-                          </RiskLink>
-                        ) : (
-                          info.name
-                        )}
-                      </div>
-                      <div className="site-count">
-                        {site.models} 个模型{site.enabled ? "" : " · 已停用"}
-                      </div>
-                    </div>
+                    <span className="site-name">
+                      {href ? (
+                        <RiskLink href={href} variant="site">
+                          {info.name}
+                        </RiskLink>
+                      ) : (
+                        info.name
+                      )}
+                    </span>
+                    <span className="site-count mono">
+                      {site.models} 模型{site.enabled ? "" : " · 已停用"}
+                    </span>
                   </div>
                 );
               })}
@@ -263,10 +248,7 @@ export default async function LandingPage() {
       <Reveal>
         <section className="landing-section">
           <div className="landing-section-head">
-            <h2>
-              <span className="hl-square" style={{ background: TONE_SQUARES.green }} />
-              价格如何取证
-            </h2>
+            <h2>价格如何取证</h2>
           </div>
           <LandingFeatures />
         </section>

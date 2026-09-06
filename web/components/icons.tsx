@@ -75,6 +75,32 @@ export function IconSun(p: IconProps) {
   );
 }
 
+export function IconMonitor(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <rect x={3} y={4.5} width={18} height={12.5} rx={1.5} />
+      <path d="M9 20.5h6m-3-3.5v3.5" />
+    </Stroke>
+  );
+}
+
+export function IconKey(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <circle cx={8} cy={15.5} r={4} />
+      <path d="m11 12.5 8.5-8.5M16 7l2.5 2.5M13.5 9.5 16 12" />
+    </Stroke>
+  );
+}
+
+export function IconPlus(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="M12 5v14M5 12h14" />
+    </Stroke>
+  );
+}
+
 export function IconGithub(p: IconProps) {
   return (
     <svg width={p.size ?? 16} height={p.size ?? 16} viewBox="0 0 24 24" fill="currentColor" className={p.className} aria-hidden>

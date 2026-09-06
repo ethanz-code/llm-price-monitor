@@ -64,9 +64,10 @@ uv run price-web   # 启动 API 服务（http://127.0.0.1:8000），配合 web/ 
 
 唯一入口：
 
-| 命令        | 用途                                                                     |
-| ----------- | ------------------------------------------------------------------------ |
-| `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
+| 命令         | 用途                                                                     |
+| ------------ | ------------------------------------------------------------------------ |
+| `price-web`  | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
+| `price-admin` | 重置管理员账号密码（忘记密码时的找回入口，需在仓库根目录运行）          |
 
 采集、官方价刷新、折扣计算等能力全部通过 HTTP API 使用
 （`POST /api/collect`、`POST /api/official/refresh`、`GET /api/discount`），
@@ -101,26 +102,29 @@ SQLite（`var/monitor.db`）并立即生效。`config/price-monitor.json`
 | 端点                                                                                     | 鉴权   | 说明                                                        |
 | ---------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------- |
 | `GET /api/overview` / `latest` / `history` / `events` / `official` / `discount` / `meta` | 公开   | 数据读取                                                    |
+| `POST /api/setup`                                                                        | 公开   | 首次设置：创建管理员账号（仅库里没有账号时可用）           |
+| `POST /api/auth/login` / `POST /api/auth/logout`                                         | 公开   | 登录签发 30 天会话 cookie / 登出清除                        |
 | `POST /api/collect`                                                                      | 管理员 | 触发采集，支持 `dry_run`（AI 请求预览），结果附带官方价折扣 |
 | `POST /api/official/refresh`                                                             | 管理员 | Tavily 搜索 + AI 提取官方价                                 |
 | `GET /api/settings` / `PUT /api/settings`                                                | 管理员 | 系统设置（AI、Tavily key、Webhook）                         |
 | `GET /api/sites`、`POST /api/sites`、`PUT/DELETE /api/sites/{id}`                        | 管理员 | 站点配置增删改                                              |
 | `GET /api/tasks`、`GET /api/tasks/{id}`                                                  | 公开   | 后台任务列表与进度                                          |
-| `POST /api/auth/verify`                                                                  | 管理员 | 登录探测（401 触发浏览器 Basic 登录框）                     |
 
 ## 🌐 Web 界面
 
 Next.js 16（App Router）+ React 19 的服务端渲染数据站，自研轻量 UI kit，
 不依赖重型组件库；支持浅色 / 深色 / 跟随系统三态主题。
 
-| 页面        | 内容                                                                                |
-| ----------- | ----------------------------------------------------------------------------------- |
-| `/`         | 品牌首页：实时统计条、最新事件流与快照预览                                          |
-| `/overview` | 价格总览：全部站点 × 模型的最新单价                                                 |
-| `/history`  | 历史与事件：价格趋势图 + 变化事件列表                                               |
-| `/official` | 官方价库：各厂商模型官方原价                                                        |
-| `/discount` | 折扣对比：站点价相对官方价的折扣率                                                  |
-| `/admin`    | 管理面板：站点增删改、系统设置（AI/Tavily/Webhook）、采集与官方价刷新任务、事件审计 |
+| 页面             | 内容                                                                 |
+| ---------------- | -------------------------------------------------------------------- |
+| `/`              | 品牌首页：实时统计条、最新事件流与快照预览                           |
+| `/overview`      | 价格总览：全部站点 × 模型的最新单价                                  |
+| `/history`       | 历史与事件：价格趋势图 + 变化事件列表                                |
+| `/official`      | 官方价库：各厂商模型官方原价                                         |
+| `/discount`      | 折扣对比：站点价相对官方价的折扣率                                   |
+| `/setup`         | 首次设置向导：创建管理员账号 → 配置必填密钥 → 上手指引               |
+| `/login`         | 管理员登录（忘记密码可用 `price-admin` 重置）                        |
+| `/admin`（含子页） | 管理面板：概览 / 站点管理 / 采集任务 / 事件审计 / 系统设置五个子路由 |
 
 ### 启动
 
@@ -143,10 +147,14 @@ uv run price-web --with-frontend
 
 环境变量（写入 `.env` 或 dotenvx）：
 
-- `PRICE_WEB_PASSWORD` / `PRICE_WEB_USERNAME`：设置后写接口（POST/PUT/PATCH/DELETE）
-  启用 Basic Auth（Next.js 代理层与 FastAPI 双层校验），读接口公开浏览；
-  不设置则无鉴权，仅限本机使用
 - `PRICE_WEB_API_URL`：前端反代目标，默认 `http://127.0.0.1:8000`
+
+鉴权为 session 登录：管理员账号（scrypt 哈希）与登录会话签名密钥都存在
+`var/monitor.db`；首次启动（库中没有账号）访问任意管理入口会进入 `/setup`
+创建账号并引导配置密钥，登录态为 30 天有效的 HttpOnly cookie。旧版本通过
+`PRICE_WEB_PASSWORD` / `PRICE_WEB_USERNAME` 设置的凭据会在首次启动时自动
+落库为管理员账号，迁移后这两个变量不再使用；忘记密码在仓库根目录运行
+`uv run price-admin` 重置。
 
 ## 📁 输出
 

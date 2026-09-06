@@ -250,6 +250,8 @@ export function Input({
   disabled,
   style,
   prefix,
+  type,
+  autoComplete,
 }: {
   value?: string;
   defaultValue?: string;
@@ -258,6 +260,8 @@ export function Input({
   disabled?: boolean;
   style?: React.CSSProperties;
   prefix?: ReactNode;
+  type?: string;
+  autoComplete?: string;
 }) {
   return (
     <span className="input-wrap" style={style}>
@@ -268,34 +272,11 @@ export function Input({
         defaultValue={defaultValue}
         placeholder={placeholder}
         disabled={disabled}
+        type={type}
+        autoComplete={autoComplete}
         onChange={(event) => onChange?.(event.target.value)}
       />
     </span>
-  );
-}
-
-/* ---------- 进度条 ---------- */
-
-export function Progress({ percent }: { percent: number }) {
-  return (
-    <span className="prog" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
-      <span className="prog-fill" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
-    </span>
-  );
-}
-
-/* ---------- 时间线 ---------- */
-
-export function Timeline({ items }: { items: { color: string; children: ReactNode }[] }) {
-  return (
-    <ul className="tline">
-      {items.map((item, index) => (
-        <li key={index}>
-          <span className="tdot" style={{ background: item.color }} />
-          {item.children}
-        </li>
-      ))}
-    </ul>
   );
 }
 

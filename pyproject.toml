@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 price-web = "llm_price_monitor.webapi.app:main"
+price-admin = "llm_price_monitor.admin_cli:main"
 
 [build-system]
 requires = ["setuptools>=75"]

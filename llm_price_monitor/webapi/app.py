@@ -1,4 +1,4 @@
-"""FastAPI 应用：只读数据端点 + 采集/官方价刷新后台任务 + 可选 Basic Auth。
+"""FastAPI 应用：只读数据端点 + 采集/官方价刷新后台任务 + session 登录鉴权。
 
 路径语义与 CLI 一致：var/ 下的数据文件、config/price-monitor.json 均相对启动时的
 工作目录解析，`price-web` 应在仓库根目录运行。
@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
-import secrets
 import subprocess
 import time
 from dataclasses import asdict, replace
@@ -23,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from llm_price_monitor.webapi import tasks
+from llm_price_monitor.webapi import auth, tasks
 from llm_price_monitor.config import (
     MonitorConfig,
     SiteSpec,
@@ -66,6 +64,11 @@ class SettingsBody(BaseModel):
 
 class SiteBody(BaseModel):
     config: dict[str, Any]
+
+
+class CredentialsBody(BaseModel):
+    username: str
+    password: str
 
 
 def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
@@ -151,11 +154,19 @@ def _seed_store(store: Store, config_path: Path) -> None:
     store.set_document("seeded", {"at": time.time()})
 
 
+def _seed_admin_from_env(store: Store) -> None:
+    """兼容旧部署：设置了 PRICE_WEB_PASSWORD 且库里还没有管理员账号时，把环境凭据落库。"""
+    if auth.get_admin(store) is not None or not os.getenv("PRICE_WEB_PASSWORD"):
+        return
+    auth.set_admin(store, os.getenv("PRICE_WEB_USERNAME", "admin"), os.getenv("PRICE_WEB_PASSWORD", ""))
+
+
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="llm-price-monitor", docs_url=None, redoc_url=None)
     app.state.config_path = config_path
     store = Store(DB_PATH)
     _seed_store(store, config_path)
+    _seed_admin_from_env(store)
     app.state.store = store
 
     app.add_middleware(
@@ -190,42 +201,75 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return float(meta["usd_cny_rate"]), f"{meta.get('rate_source')}（缓存）"
             raise HTTPException(status_code=503, detail="实时汇率获取失败且官方价文件中没有缓存汇率") from None
 
-    def _credentials_ok(request: Request, username: str, password: str) -> bool:
-        header = request.headers.get("Authorization", "")
-        if not header.startswith("Basic "):
-            return False
-        try:
-            decoded = base64.b64decode(header[6:]).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return False
-        user, _, supplied = decoded.partition(":")
-        return secrets.compare_digest(user, username) and secrets.compare_digest(supplied, password)
-
     def _is_admin(request: Request) -> bool:
-        """密码未配置 = 本机全开放模式，所有访客都是管理员；否则校验 Basic 凭据。"""
-        password = os.getenv("PRICE_WEB_PASSWORD")
-        if not password:
-            return True
-        return _credentials_ok(request, os.getenv("PRICE_WEB_USERNAME", "admin"), password)
+        """会话 cookie 有效即为管理员；首次启动（无管理员账号）时人人未登录。"""
+        return auth.session_username(store, request.cookies.get(auth.SESSION_COOKIE)) is not None
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员
     ADMIN_GET_PATHS = {"/api/settings", "/api/sites"}
+    SETUP_PATH = "/api/setup"
+    # 登录/登出/首次设置本身必须是公开写接口，否则永远进不了门
+    PUBLIC_WRITE_PATHS = {SETUP_PATH, "/api/auth/login", "/api/auth/logout"}
 
     @app.middleware("http")
     async def _admin_gate(request: Request, call_next: Any) -> Response:
-        """读接口公开浏览；写操作与管理设置读取需要管理员凭据（401 触发浏览器登录框）。"""
-        password = os.getenv("PRICE_WEB_PASSWORD")
-        needs_admin = request.method in {"POST", "PUT", "PATCH", "DELETE"} or request.url.path in ADMIN_GET_PATHS
-        if password and needs_admin and not _credentials_ok(
-            request, os.getenv("PRICE_WEB_USERNAME", "admin"), password
-        ):
-            return Response(status_code=401, headers={"WWW-Authenticate": "Basic realm=llm-price-monitor"})
+        """读接口公开浏览；写操作与管理设置读取需要管理员会话。
+
+        首次启动（尚未创建管理员账号）只放行 /api/setup，其余写接口一律 401。
+        """
+        needs_admin = (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"} or request.url.path in ADMIN_GET_PATHS
+        ) and request.url.path not in PUBLIC_WRITE_PATHS
+        if needs_admin:
+            has_admin = auth.get_admin(store) is not None
+            # 首次启动只放行 /api/setup；其余写接口一律 401
+            if not has_admin and request.url.path != SETUP_PATH:
+                return Response(status_code=401)
+            if has_admin and not _is_admin(request):
+                return Response(status_code=401)
         return await call_next(request)
 
-    @app.post("/api/auth/verify")
-    def auth_verify(request: Request) -> dict[str, bool]:
-        """管理员身份验证探测：未登录时 401 触发浏览器 Basic 登录框。"""
-        return {"is_admin": _is_admin(request)}
+    @app.post("/api/setup")
+    def setup(body: CredentialsBody, response: Response) -> dict[str, bool]:
+        """首次设置：创建管理员账号并直接登录；账号已存在时拒绝。"""
+        if auth.get_admin(store) is not None:
+            raise HTTPException(status_code=409, detail="管理员账号已存在，请直接登录")
+        try:
+            username = auth.validate_username(body.username)
+            auth.validate_password(body.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        auth.set_admin(store, username, body.password)
+        response.set_cookie(
+            auth.SESSION_COOKIE,
+            auth.issue_session(store, username),
+            max_age=auth.SESSION_TTL,
+            httponly=True,
+            samesite="lax",
+        )
+        return {"is_admin": True}
+
+    @app.post("/api/auth/login")
+    def login(body: CredentialsBody, response: Response) -> dict[str, bool]:
+        """账号密码登录，签发 30 天有效期的 HttpOnly 会话 cookie。"""
+        admin = auth.get_admin(store)
+        if admin is None:
+            raise HTTPException(status_code=400, detail="尚未创建管理员账号，请先完成首次设置")
+        if body.username.strip() != admin["username"] or not auth.verify_password(body.password, admin["password_hash"]):
+            raise HTTPException(status_code=401, detail="用户名或密码不正确")
+        response.set_cookie(
+            auth.SESSION_COOKIE,
+            auth.issue_session(store, admin["username"]),
+            max_age=auth.SESSION_TTL,
+            httponly=True,
+            samesite="lax",
+        )
+        return {"is_admin": True}
+
+    @app.post("/api/auth/logout")
+    def logout(response: Response) -> dict[str, bool]:
+        response.delete_cookie(auth.SESSION_COOKIE, path="/")
+        return {"is_admin": False}
 
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
@@ -320,8 +364,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 }
                 for site in config.sites
             ],
-            "auth_enabled": bool(os.getenv("PRICE_WEB_PASSWORD")),
             "is_admin": _is_admin(request),
+            "needs_setup": auth.get_admin(store) is None,
         }
 
     @app.get("/api/latest")

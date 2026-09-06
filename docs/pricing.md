@@ -48,7 +48,7 @@ llm_price_monitor/
 | `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
 
 监控、官方价搜索、折扣计算等能力全部通过 HTTP API 使用
-（写接口在设置了 `PRICE_WEB_PASSWORD` 时需要管理员 Basic 凭据）：
+（写接口需要管理员 session，见 README「鉴权」说明）：
 
 | API | 用途 |
 | --- | --- |

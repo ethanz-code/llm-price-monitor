@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { IconGithub } from "./icons";
 import { LogoMark } from "./LogoMark";
 
-/** 全站页脚：品牌介绍、数据说明与 GitHub 入口，紧凑单区布局。 */
+/** 全站页脚：品牌 + 一句话说明合并数据免责；管理入口只以低调文字链接出现在底行。 */
 export function SiteFooter() {
   return (
     <footer className="site-footer">
@@ -14,7 +15,7 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>LLM 价格监控</span>
           </div>
           <p>
-            面向 API 中转站的价格取证与监控：周期性请求各站点价格接口，与厂商官方价相除得到折扣，并把每次采集留存为历史曲线与变化事件。
+            多站点价格快照、厂商官方价锚定与变化事件追踪。页面数据均为特定时间的取证快照，仅供研究参考，不构成对任何站点的使用推荐。
           </p>
           <a
             className="footer-github"
@@ -26,12 +27,15 @@ export function SiteFooter() {
             <IconGithub size={18} />
           </a>
         </div>
-        <div className="site-footer-note">
-          <div className="site-footer-title">数据说明</div>
-          页面展示的价格均为特定时间的取证快照，可能与站点当前实时价格不同，也不构成对任何站点的使用推荐；折扣对比以厂商官方价为锚点，汇率快照与来源链接随每条记录一同展示。
-        </div>
       </div>
-      <div className="site-footer-meta">© 2026 LLM 价格监控</div>
+      <div className="site-footer-meta">
+        <span>© 2026 LLM 价格监控</span>
+        <span className="site-footer-meta-links">
+          <Link href="/discount">折扣口径</Link>
+          <Link href="/official">官方价来源</Link>
+          <Link href="/admin" className="footer-admin-link">管理</Link>
+        </span>
+      </div>
     </footer>
   );
 }

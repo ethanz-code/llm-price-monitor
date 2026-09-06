@@ -1,6 +1,5 @@
 import json
 import threading
-import base64
 from pathlib import Path
 
 import httpx
@@ -133,7 +132,7 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
         return MonitorReport(0.0, 1.0, [{"model": "demo-model"}], [], [], [])
 
     monkeypatch.setattr(app_module, "run_once", fake_run_once)
-    client = TestClient(create_app(_config(workspace)))
+    client = _admin_client(workspace)
     task_id = client.post("/api/collect", json={"persist": False}).json()["task_id"]
     for _ in range(50):
         task = client.get(f"/api/tasks/{task_id}").json()
@@ -157,7 +156,7 @@ def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeyp
         return MonitorReport(0.0, 1.0, [], [], [], [])
 
     monkeypatch.setattr(app_module, "run_once", slow_run_once)
-    client = TestClient(create_app(_config(workspace)))
+    client = _admin_client(workspace)
     assert client.post("/api/collect", json={"site_id": "nope"}).status_code == 400
     client.post("/api/collect", json={})
     conflict = client.post("/api/collect", json={})
@@ -165,47 +164,52 @@ def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeyp
     release.set()
 
 
-def test_admin_gate_gates_writes_only_when_password_configured(workspace: Path, monkeypatch):
+def _admin_client(workspace: Path, username: str = "admin", password: str = "s3cret") -> TestClient:
+    """创建应用并完成首次设置，返回已登录管理员的客户端（会话 cookie 自动保持）。"""
+    client = TestClient(create_app(_config(workspace)))
+    assert client.post("/api/setup", json={"username": username, "password": password}).status_code == 200
+    return client
+
+
+def test_setup_login_and_gate(workspace: Path):
+    client = TestClient(create_app(_config(workspace)))
+
+    # 首次启动无账号：needs_setup，写接口与管理接口 401，读接口公开
+    meta = client.get("/api/meta").json()
+    assert meta["needs_setup"] is True and meta["is_admin"] is False
+    assert client.post("/api/collect", json={}).status_code == 401
+    assert client.get("/api/settings").status_code == 401
+    assert client.get("/api/health").status_code == 200
+
+    # 弱密码拒绝；setup 成功后即登录；重复 setup 409
+    assert client.post("/api/setup", json={"username": "ethan", "password": "123"}).status_code == 400
+    assert client.post("/api/setup", json={"username": "ethan", "password": "s3cret"}).json() == {"is_admin": True}
+    assert client.post("/api/setup", json={"username": "x", "password": "s3cret"}).status_code == 409
+    assert client.get("/api/meta").json()["is_admin"] is True
+    assert client.get("/api/settings").status_code == 200
+
+    # 登出后恢复游客态；错误密码 401，正确密码重新登录
+    client.post("/api/auth/logout")
+    assert client.get("/api/meta").json()["is_admin"] is False
+    assert client.post("/api/auth/login", json={"username": "ethan", "password": "nope"}).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "ethan", "password": "s3cret"}).json() == {"is_admin": True}
+    meta = client.get("/api/meta").json()
+    assert meta["is_admin"] is True and meta["needs_setup"] is False
+
+
+def test_env_password_seeds_admin_for_existing_deployments(workspace: Path, monkeypatch):
     monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
     monkeypatch.setenv("PRICE_WEB_USERNAME", "ethan")
     client = TestClient(create_app(_config(workspace)))
-
-    # 读接口公开浏览
-    assert client.get("/api/health").status_code == 200
-    assert client.get("/api/meta").json()["is_admin"] is False
-
-    # 写接口需要管理员凭据
-    denied = client.post("/api/collect", json={})
-    assert denied.status_code == 401
-    assert "Basic" in denied.headers["WWW-Authenticate"]
-    wrong = client.post(
-        "/api/auth/verify", headers={"Authorization": "Basic " + base64.b64encode(b"ethan:nope").decode()}
-    )
-    assert wrong.status_code == 401
-
-    # 管理员凭据通过验证，meta 也识别为管理员
-    creds = {"Authorization": "Basic " + base64.b64encode(b"ethan:s3cret").decode()}
-    assert client.post("/api/auth/verify", headers=creds).json() == {"is_admin": True}
-    assert client.get("/api/meta", headers=creds).json()["is_admin"] is True
+    meta = client.get("/api/meta").json()
+    assert meta["needs_setup"] is False and meta["is_admin"] is False
+    assert client.post("/api/auth/login", json={"username": "ethan", "password": "s3cret"}).status_code == 200
+    assert client.get("/api/meta").json()["is_admin"] is True
 
 
-def test_no_auth_by_default(workspace: Path, monkeypatch):
-    monkeypatch.delenv("PRICE_WEB_PASSWORD", raising=False)
-    client = TestClient(create_app(_config(workspace)))
-    assert client.get("/api/health").status_code == 200
-
-
-def _admin_headers(password: str = "s3cret") -> dict[str, str]:
-    return {"Authorization": "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()}
-
-
-def test_settings_roundtrip_and_validation(workspace: Path, monkeypatch):
-    monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
-    client = TestClient(create_app(_config(workspace)))
-    assert client.get("/api/settings").status_code == 401  # 管理员专属读接口
-
-    creds = _admin_headers()
-    saved = client.put("/api/settings", headers=creds, json={
+def test_settings_roundtrip_and_validation(workspace: Path):
+    client = _admin_client(workspace)
+    saved = client.put("/api/settings", json={
         "settings": {"webhook": "https://hook.test", "tavily_api_key": "tvly-x"},
         "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-x"},
     })
@@ -213,51 +217,50 @@ def test_settings_roundtrip_and_validation(workspace: Path, monkeypatch):
     assert saved.json()["settings"]["webhook"] == "https://hook.test"
     assert saved.json()["ai"]["api_key"] == "sk-x"
 
-    reloaded = client.get("/api/settings", headers=creds).json()
+    reloaded = client.get("/api/settings").json()
     assert reloaded["ai"]["models"] == ["m-a", "m-b"]
 
-    bad = client.put("/api/settings", headers=creds, json={"ai": {"timeout": "abc"}})
+    bad = client.put("/api/settings", json={"ai": {"timeout": "abc"}})
     assert bad.status_code == 400
 
 
-def test_sites_crud_requires_admin_and_validates(workspace: Path, monkeypatch):
-    monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
+def test_sites_crud_requires_admin_and_validates(workspace: Path):
     client = TestClient(create_app(_config(workspace)))
     assert client.get("/api/sites").status_code == 401
     assert client.post("/api/sites", json={"config": {"id": "x"}}).status_code == 401
-    creds = _admin_headers()
+    client = _admin_client(workspace)
 
-    sites = client.get("/api/sites", headers=creds).json()["sites"]
+    sites = client.get("/api/sites").json()["sites"]
     assert [site["id"] for site in sites] == ["demo"]
 
-    created = client.post("/api/sites", headers=creds, json={
+    created = client.post("/api/sites", json={
         "config": {"id": "x", "network": {"url": "https://x.test/api"}, "models": ["m1"]}
     })
     assert created.status_code == 200
 
-    duplicate = client.post("/api/sites", headers=creds, json={
+    duplicate = client.post("/api/sites", json={
         "config": {"id": "x", "network": {"url": "https://x.test/api"}, "models": ["m1"]}
     })
     assert duplicate.status_code == 409
 
-    unknown_field = client.post("/api/sites", headers=creds, json={"config": {"id": "y", "oops": 1}})
+    unknown_field = client.post("/api/sites", json={"config": {"id": "y", "oops": 1}})
     assert unknown_field.status_code == 400
 
-    bad_url = client.post("/api/sites", headers=creds, json={
+    bad_url = client.post("/api/sites", json={
         "config": {"id": "y", "network": {"url": "notaurl"}, "models": ["m1"]}
     })
     assert bad_url.status_code == 400
 
-    updated = client.put("/api/sites/demo", headers=creds, json={"config": {**sites[0], "enabled": False}})
+    updated = client.put("/api/sites/demo", json={"config": {**sites[0], "enabled": False}})
     assert updated.status_code == 200 and updated.json()["site"]["enabled"] is False
 
-    renamed = client.put("/api/sites/demo", headers=creds, json={"config": {**sites[0], "id": "demo2"}})
+    renamed = client.put("/api/sites/demo", json={"config": {**sites[0], "id": "demo2"}})
     assert renamed.status_code == 200
-    ids = [site["id"] for site in client.get("/api/sites", headers=creds).json()["sites"]]
+    ids = [site["id"] for site in client.get("/api/sites").json()["sites"]]
     assert "demo2" in ids and "demo" not in ids
 
-    assert client.delete("/api/sites/x", headers=creds).status_code == 200
-    assert client.delete("/api/sites/x", headers=creds).status_code == 404
+    assert client.delete("/api/sites/x").status_code == 200
+    assert client.delete("/api/sites/x").status_code == 404
 
 
 def test_tasks_listed_after_collect(workspace: Path, monkeypatch):
@@ -265,7 +268,7 @@ def test_tasks_listed_after_collect(workspace: Path, monkeypatch):
     import llm_price_monitor.webapi.app as app_module
 
     monkeypatch.setattr(app_module, "run_once", lambda config, **kwargs: MonitorReport(0.0, 1.0, [], [], [], []))
-    client = TestClient(create_app(_config(workspace)))
+    client = _admin_client(workspace)
     task_id = client.post("/api/collect", json={}).json()["task_id"]
     listed = client.get("/api/tasks").json()["tasks"]
     assert task_id in [task["id"] for task in listed]
