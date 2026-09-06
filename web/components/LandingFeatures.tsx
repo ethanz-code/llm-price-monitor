@@ -1,23 +1,28 @@
 "use client";
 
-import { IconAim, IconFileSearch, IconNodes } from "./icons";
+import { IconAim, IconFileSearch, IconMonitor, IconNodes } from "./icons";
 
-/** Landing 方法论：编辑感编号列表（非卡片），发丝线分行。 */
+/** 首页能力速览：两列编号列表，每条一句话，讲清楚能查到什么、去哪页看。 */
 const FEATURES = [
   {
     icon: <IconAim size={16} />,
-    title: "直接请求取证",
-    text: "按配置逐站点请求价格接口，每条价格都能对应一段实际返回的 HTTP JSON 响应。",
+    title: "直接抄价，不靠猜",
+    text: "站点标多少就记多少，每条价格都附来源链接，点开就能核对。",
   },
   {
     icon: <IconFileSearch size={16} />,
-    title: "官方价锚定",
-    text: "检索厂商官方定价页并提取原价，站点价与官方价相除得到折扣，每一条都能溯源到定价页出处。",
+    title: "厂商价对照，折扣现形",
+    text: "折扣按厂商原价算，不认站点自报；各家厂商价收在「厂商定价」页。",
   },
   {
     icon: <IconNodes size={16} />,
-    title: "变化事件流",
-    text: "每次采集与上一轮对比，新增、涨价、降价、恢复、状态变化进入事件流，价格按天积累成历史曲线。",
+    title: "变化全记下来",
+    text: "涨价、降价、下架、恢复，都记进「历史与事件」，什么时候变的翻得到。",
+  },
+  {
+    icon: <IconMonitor size={16} />,
+    title: "渠道状态与公告",
+    text: "渠道可用率、响应延迟，站点发的维护、跑路公告，也一并盯着。",
   },
 ];
 

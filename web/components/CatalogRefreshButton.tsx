@@ -6,8 +6,8 @@ import { IconSync } from "./icons";
 import { ToneTag } from "./ToneTag";
 import type { TaskInfo } from "@/lib/types";
 
-/** 触发官方价增量刷新：有缓存的模型保留，未命中的厂商重新走 Tavily 搜索 + AI 提取。 */
-export function OfficialRefreshButton() {
+/** 从 models.dev 同步厂商价目录：拉取全量定价快照并按汇率换算人民币，秒级完成。 */
+export function CatalogRefreshButton() {
   const [open, setOpen] = useState(false);
   const [starting, setStarting] = useState(false);
   const [task, setTask] = useState<TaskInfo | null>(null);
@@ -26,7 +26,7 @@ export function OfficialRefreshButton() {
     setStarting(true);
     setTask(null);
     try {
-      const res = await fetch("/api/official/refresh", {
+      const res = await fetch("/api/catalog/refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
@@ -53,17 +53,17 @@ export function OfficialRefreshButton() {
     <>
       <Btn loading={running || starting} onClick={() => { setTask(null); setOpen(true); }}>
         <IconSync size={14} />
-        刷新官方价
+        刷新厂商定价
       </Btn>
       <Modal
         open={open}
         onClose={() => { if (!running) setOpen(false); }}
-        title="刷新官方价"
+        title="刷新厂商定价"
       >
         <div style={{ display: "grid", gap: 16 }}>
           <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
-            将按内置厂商清单执行 Tavily 搜索并调用 AI 提取官方定价页，全程可能需要数分钟；
-            本轮未搜到的模型会沿用上一轮结果并标记"上轮保留"。
+            从 models.dev 重新拉取各厂商最新定价，按当前汇率换算成人民币后整体替换；
+            拉不到时保持原样不动，通常几秒完成。
           </p>
           {task && (
             <div style={{ display: "grid", gap: 6 }}>

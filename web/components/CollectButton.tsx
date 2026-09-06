@@ -65,11 +65,10 @@ export function CollectButton({ size }: { size?: "lg" | "sm" }) {
       >
         <div style={{ display: "grid", gap: 16 }}>
           <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
-            将按配置逐站点请求价格接口；无法确认格式的站点会调用 AI 从证据中提取，可能产生
-            AI token 费用并耗时一到数分钟。
+            将按配置逐站点请求价格；本地解析不了的站点会交给 AI 识别，可能产生 token 费用，一般一到数分钟。
           </p>
           <Check checked={persist} onChange={setPersist} disabled={running}>
-            写入历史与事件文件（不勾选则仅本次预览，不落盘）
+            保存到历史与事件（不勾选则仅本次预览）
           </Check>
           {task && (
             <div style={{ display: "grid", gap: 6 }}>

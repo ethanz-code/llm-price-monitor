@@ -1,65 +1,110 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { DataTable, type DColumn } from "./DataTable";
 import { StatCard } from "./PageHeader";
+import { Empty } from "./ui";
+import { IconMonitor } from "./icons";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
-import { currencySymbol, formatDiscount, formatPrice, formatTime, recordStatusKey, rowReason, statusMeta, tieredPriceRange, TIERED_PRICE_TIP } from "@/lib/format";
+import { effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
+import { canonicalModel, hasUsablePrice, mergeModelRows, modelRowKey } from "@/lib/priceRows";
+import { filterDotsByGroups, type ChannelDotRow } from "@/lib/channelStatus";
 import { DiscountBars } from "./DiscountBars";
+import { PriceCell } from "./PriceCell";
 import type { OverviewData, OverviewRecord, SiteStatus } from "@/lib/types";
 
-/** 有效价 = 顶层价格或阶梯计价区间任一可得；无效行（需认证/无数据）在时间排序中沉底。 */
-function hasUsablePrice(row: OverviewRecord): boolean {
-  return (
-    row.input_price != null ||
-    row.output_price != null ||
-    tieredPriceRange(row, "input_price") != null ||
-    tieredPriceRange(row, "output_price") != null
-  );
+// 渠道点阵：每行是一个渠道/分组（异常在前），取该渠道最近 15 次检测的小点；行首为渠道/分组名
+const CHANNEL_DOT_COLS = 15;
+
+interface ModelGroup {
+  /** 归一后的分组键：大小写/连字符等写法差异不产生重复的表 */
+  key: string;
+  /** 展示名：该组内出现次数最多的写法 */
+  model: string;
+  /** 其余写法（语义相同、字符不同），在表头标注 */
+  aliases: string[];
+  rows: OverviewRecord[];
+  sites: number;
+  priced: boolean;
 }
 
-export function OverviewTable({ data }: { data: OverviewData }) {
+export function OverviewTable({ data, statusDots }: { data: OverviewData; statusDots?: Record<string, ChannelDotRow[]> }) {
   const records = data.records;
+  const router = useRouter();
+  // 站点价统一按 RMB 展示与排序：USD 记录乘厂商价快照汇率，CNY 记录原样；无汇率回落原币
+  const rate = data.catalog.usd_cny_rate ?? null;
 
-  // 站点+模型 合并为一行：代表行取价格最低的一条，其余记录展开后可见；单位不同的记录不并组
-  const { parentRows, childRowsOf } = useMemo(() => {
-    const groups = new Map<string, OverviewRecord[]>();
+  // 按模型拆表：一个模型一张表；默认选中排序后的第一个，用户切换后跟随其选择
+  const [activeModel, setActiveModel] = useState<string | null>(null);
+
+  const models = useMemo<ModelGroup[]>(() => {
+    const byModel = new Map<string, { rows: OverviewRecord[]; names: Map<string, number> }>();
     for (const row of records) {
-      const key = `${row.site_id}:${row.model}:${row.unit}`;
-      const list = groups.get(key);
-      if (list) list.push(row);
-      else groups.set(key, [row]);
+      const key = canonicalModel(row.model);
+      let entry = byModel.get(key);
+      if (!entry) {
+        entry = { rows: [], names: new Map() };
+        byModel.set(key, entry);
+      }
+      entry.rows.push(row);
+      entry.names.set(row.model, (entry.names.get(row.model) ?? 0) + 1);
     }
-    // 代表行：有可用价者优先；输入价最低，其次输出价最低；再同取最新
-    const better = (a: OverviewRecord, b: OverviewRecord) => {
-      if (hasUsablePrice(a) !== hasUsablePrice(b)) return hasUsablePrice(a);
-      const inputA = a.input_price ?? Number.POSITIVE_INFINITY;
-      const inputB = b.input_price ?? Number.POSITIVE_INFINITY;
-      if (inputA !== inputB) return inputA < inputB;
-      const outputA = a.output_price ?? Number.POSITIVE_INFINITY;
-      const outputB = b.output_price ?? Number.POSITIVE_INFINITY;
-      if (outputA !== outputB) return outputA < outputB;
-      return a.captured_at > b.captured_at;
-    };
-    const parentRows: OverviewRecord[] = [];
-    const childRowsOf = new Map<string, OverviewRecord[]>();
-    for (const [key, list] of groups) {
-      const best = list.reduce((acc, row) => (better(row, acc) ? row : acc), list[0]);
-      parentRows.push(best);
-      const rest = list.filter((row) => row !== best);
-      if (rest.length > 0) childRowsOf.set(key, rest);
-    }
-    // 有效价行在前（时间倒序），需认证/无数据的行沉底
-    parentRows.sort((a, b) => {
-      if (hasUsablePrice(a) !== hasUsablePrice(b)) return hasUsablePrice(a) ? -1 : 1;
-      return b.captured_at - a.captured_at;
+    const groups = [...byModel.entries()].map(([key, entry]) => {
+      // 展示名取出现最多的一种写法，其余写法记为别名
+      const ranked = [...entry.names.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      return {
+        key,
+        model: ranked[0][0],
+        aliases: ranked.slice(1).map(([name]) => name),
+        rows: entry.rows,
+        sites: new Set(entry.rows.map((row) => row.site_id)).size,
+        priced: entry.rows.some(hasUsablePrice),
+      };
     });
-    return { parentRows, childRowsOf };
+    // 有真实价的模型在前；同状态按覆盖站点数多的在前，名称稳定排序兜底
+    groups.sort((a, b) =>
+      a.priced !== b.priced ? (a.priced ? -1 : 1) : b.sites - a.sites || a.model.localeCompare(b.model),
+    );
+    return groups;
   }, [records]);
+
+  const active = models.find((group) => group.key === activeModel) ?? models[0];
+
+  // 表内仍沿用"同站点同分组合并为一行"的口径：代表行取最低价，其余展开可见
+  const { parentRows, childRowsOf } = useMemo(
+    () =>
+      active
+        ? mergeModelRows(active.rows)
+        : { parentRows: [] as OverviewRecord[], childRowsOf: new Map<string, OverviewRecord[]>() },
+    [active],
+  );
+
+  // 渠道点阵按合并组过滤：父行只显示该站点+模型涉及的分组（父+子记录的分组并集）；
+  // 目标分组为空或一行都匹配不上（渠道形态接口，行名不是分组名）时不过滤
+  const dotsByRowKey = useMemo(() => {
+    const result = new Map<string, ChannelDotRow[]>();
+    const mergeInfo = new Map<string, { siteId: string; groups: Set<string> }>();
+    for (const row of active?.rows ?? []) {
+      const key = modelRowKey(row);
+      let info = mergeInfo.get(key);
+      if (!info) {
+        info = { siteId: row.site_id, groups: new Set() };
+        mergeInfo.set(key, info);
+      }
+      const group = row.metadata?.group;
+      if (group) info.groups.add(group);
+    }
+    for (const [key, { siteId, groups }] of mergeInfo) {
+      const dots = statusDots?.[siteId];
+      if (dots?.length) result.set(key, filterDotsByGroups(dots, groups));
+    }
+    return result;
+  }, [active, statusDots]);
 
   const attentionSites = useMemo(() => {
     return Object.entries(data.collect_status ?? {})
@@ -69,103 +114,76 @@ export function OverviewTable({ data }: { data: OverviewData }) {
 
   const stats = useMemo(() => {
     const sites = new Set(records.map((row) => row.site_id));
-    const models = new Set(records.map((row) => row.model));
+    const modelsCount = new Set(records.map((row) => row.model));
     const latest = records.reduce<number | undefined>(
       (acc, row) => (acc === undefined || row.captured_at > acc ? row.captured_at : acc),
       undefined,
     );
     const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
     const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
-    return { sites: sites.size, models: models.size, latest, avgInput };
+    return { sites: sites.size, models: modelsCount.size, latest, avgInput };
   }, [records]);
 
   const columns: DColumn<OverviewRecord>[] = [
     {
       title: "站点",
       dataIndex: "site_id",
-      width: 115,
+      width: 170,
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
+        // 状态列已去掉：正常态是噪音，只有异常（需认证/无数据）才在名称旁挂标签
+        const statusKey = recordStatusKey(row);
+        const abnormal = statusKey === "auth_required" || statusKey === "unavailable";
+        const meta = statusMeta(statusKey);
+        const reason = rowReason(row);
+        const tip = [reason, row.last_price_at != null ? `上次拿到数据：${formatTime(row.last_price_at)}` : null]
+          .filter(Boolean)
+          .join("\n") || undefined;
         return (
-          <RiskLink href={site.homepage || row.source_url} variant="site">
-            <span className="mono">{site.name}</span>
-          </RiskLink>
-        );
-      },
-      sorter: (a, b) => a.site_id.localeCompare(b.site_id),
-    },
-    {
-      title: "模型",
-      dataIndex: "model",
-      width: 140,
-      render: (v: string, row) => {
-        const rest = childRowsOf.get(`${row.site_id}:${row.model}:${row.unit}`);
-        // 子行与父行同 key，会查到同一份 rest；+N 只标在父行上。
-        // 模型名单行省略：不换行撑高行距，完整名悬停可见
-        return (
-          <span style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-            <span className="mono cell-ellipsis" title={v}>
-              {v}
-            </span>
-            {rest && !rest.includes(row) && (
-              <span
-                title={`还有 ${rest.length} 条记录，展开查看`}
-                style={{ color: "var(--text-3)", fontSize: 12, flexShrink: 0 }}
-              >
-                +{rest.length}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+            <RiskLink href={site.homepage || row.source_url} variant="site">
+              <span className="mono">{site.name}</span>
+            </RiskLink>
+            {abnormal && (
+              <span title={tip}>
+                <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
               </span>
             )}
           </span>
         );
       },
-      sorter: (a, b) => a.model.localeCompare(b.model),
+      sorter: (a, b) => a.site_id.localeCompare(b.site_id),
     },
     {
       title: (
         <>
           输入价<TermTip term="input_price" />
-          <span className="thead-unit thead-unit-block">USD / 1M tokens</span>
+          <span className="thead-unit thead-unit-block">CNY / 1M tokens</span>
         </>
       ),
       dataIndex: "input_price",
       align: "right",
-      width: 125,
-      sorter: (a, b) => (a.input_price ?? -1) - (b.input_price ?? -1),
-      render: (v: number | null, row) => {
-        const range = tieredPriceRange(row, "input_price");
-        return (
-          <span className="mono num" title={range ? TIERED_PRICE_TIP : undefined}>
-            {currencySymbol(row.unit)}
-            {range ?? formatPrice(v)}
-          </span>
-        );
-      },
+      width: 140,
+      sorter: (a, b) => (effectiveCnyPrice(a, "input_price", rate) ?? -1) - (effectiveCnyPrice(b, "input_price", rate) ?? -1),
+      render: (_v: number | null, row) => <PriceCell row={row} field="input_price" rate={rate} />,
     },
     {
       title: (
         <>
           输出价<TermTip term="output_price" />
-          <span className="thead-unit thead-unit-block">USD / 1M tokens</span>
+          <span className="thead-unit thead-unit-block">CNY / 1M tokens</span>
         </>
       ),
       dataIndex: "output_price",
       align: "right",
-      width: 125,
-      sorter: (a, b) => (a.output_price ?? -1) - (b.output_price ?? -1),
-      render: (v: number | null, row) => {
-        const range = tieredPriceRange(row, "output_price");
-        return (
-          <span className="mono num" title={range ? TIERED_PRICE_TIP : undefined}>
-            {currencySymbol(row.unit)}
-            {range ?? formatPrice(v)}
-          </span>
-        );
-      },
+      width: 140,
+      sorter: (a, b) => (effectiveCnyPrice(a, "output_price", rate) ?? -1) - (effectiveCnyPrice(b, "output_price", rate) ?? -1),
+      render: (_v: number | null, row) => <PriceCell row={row} field="output_price" rate={rate} />,
     },
     {
       title: "分组",
       key: "group",
-      width: 90,
+      width: 140,
       mobileHide: true,
       render: (_v: unknown, row) => {
         const group = row.metadata?.group;
@@ -181,47 +199,78 @@ export function OverviewTable({ data }: { data: OverviewData }) {
     {
       title: (
         <>
-          状态
-          <TermTip term="status" />
-        </>
-      ),
-      key: "status",
-      width: 80,
-      mobileHide: true,
-      render: (_v: unknown, row) => {
-        const meta = statusMeta(recordStatusKey(row));
-        const reason = rowReason(row);
-        return (
-          <span title={reason ?? undefined}>
-            <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
-          </span>
-        );
-      },
-    },
-    {
-      title: (
-        <>
-          官方价折扣
+          厂商价折扣
           <TermTip term="discount" />
         </>
       ),
       key: "discount",
-      width: 150,
+      width: 180,
       mobileHide: true,
       sorter: (a, b) => (a.discount?.input ?? 9) - (b.discount?.input ?? 9),
       render: (_, row) => <DiscountBars discount={row.discount} />,
     },
     {
-      title: "采集时间",
-      dataIndex: "captured_at",
-      width: 155,
-      sorter: (a, b) => a.captured_at - b.captured_at,
-      mobileHide: true,
-      render: (v: number) => (
-        <span className="mono" style={{ color: "var(--text-2)", fontSize: 13, whiteSpace: "nowrap" }}>
-          {formatTime(v)}
-        </span>
+      title: (
+        <>
+          渠道
+          <TermTip term="channels" />
+        </>
       ),
+      key: "channels",
+      width: 250,
+      mobileHide: true,
+      render: (_v: unknown, row) => {
+        const key = modelRowKey(row);
+        // 折叠子行不重复渲染点阵，渠道状态只在父行显示
+        if (childRowsOf.get(key)?.includes(row)) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        const rows = dotsByRowKey.get(key) ?? [];
+        if (rows.length === 0) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        return (
+          <Link href={`/overview/status/${encodeURIComponent(row.site_id)}`} className="ch-matrix" title="每行是一个渠道/分组的最近检测（异常在前），点击查看趋势图">
+            {rows.map((channel) => (
+              <span key={channel.name} className="ch-line-dots">
+                <span className="ch-line-name" title={channel.name}>
+                  {channel.name}
+                </span>
+                {channel.dots.slice(-CHANNEL_DOT_COLS).map((dot, index) => (
+                  <span
+                    key={index}
+                    aria-hidden
+                    title={`${channel.name}：${dot.status}${dot.at != null ? ` · ${formatTime(dot.at)}` : ""}`}
+                    className={`ch-mini ${dot.ok ? "ch-ok" : "ch-down"}`}
+                  />
+                ))}
+              </span>
+            ))}
+          </Link>
+        );
+      },
+    },
+    {
+      title: "公告",
+      key: "notice",
+      // 不设固定宽度：剩余空间都给公告摘要，窄窗口时靠省略号收敛
+      mobileHide: true,
+      ellipsis: true,
+      render: (_v: unknown, row) => {
+        const notice = data.notices?.[row.site_id];
+        if (!notice?.content) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        const tip = [
+          noticeExcerpt(notice.content),
+          notice.captured_at ? `发布于 ${formatTime(notice.captured_at)}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return (
+          <Link
+            href={`/overview/status/${encodeURIComponent(row.site_id)}`}
+            title={tip}
+            style={{ color: "var(--text-2)" }}
+          >
+            {noticeExcerpt(notice.content)}
+          </Link>
+        );
+      },
     },
   ];
 
@@ -264,9 +313,29 @@ export function OverviewTable({ data }: { data: OverviewData }) {
             </>
           }
           value={stats.avgInput !== null ? formatDiscount(stats.avgInput) : "—"}
-          hint="相对厂商官方原价"
+          hint="相对厂商原价"
         />
       </div>
+      {models.length > 0 && (
+        <div className="rise-in" style={{ overflowX: "auto", marginBottom: 16 }}>
+          <span className="seg" role="tablist">
+            {models.map((group) => (
+              <button
+                key={group.model}
+                type="button"
+                role="tab"
+                aria-selected={group.key === active?.key}
+                className={`seg-item${group.key === active?.key ? " on" : ""}`}
+                title={group.aliases.length > 0 ? `合并了不同写法：${[group.model, ...group.aliases].join("、")}` : undefined}
+                onClick={() => setActiveModel(group.key)}
+              >
+                <span className="mono">{group.model}</span>
+                <span style={{ color: "var(--text-3)", marginLeft: 6, fontSize: 12 }}>{group.sites}</span>
+              </button>
+            ))}
+          </span>
+        </div>
+      )}
       <div className="panel rise-in" style={{ overflow: "hidden" }}>
         <div
           style={{
@@ -279,16 +348,29 @@ export function OverviewTable({ data }: { data: OverviewData }) {
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <span style={{ fontWeight: 550, fontSize: 15 }}>
-            最新快照
-            <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400, marginLeft: 10 }}>
-              同站点同模型合并为一行（取最低价），行尾箭头展开全部
-            </span>
+          <span style={{ fontWeight: 550, fontSize: 15, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            {active ? (
+              <>
+                <span className="mono">{active.model}</span>
+                {active.aliases.length > 0 && (
+                  <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
+                    别名：{active.aliases.join("、")}
+                  </span>
+                )}
+              </>
+            ) : (
+              "最新快照"
+            )}
+            {active && (
+              <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
+                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同分组合并取最低价，点名称右侧 +N 展开其余写法，点行内其他位置查看站点检测详情
+              </span>
+            )}
           </span>
-          {data.official.enabled && (
+          {data.catalog.enabled && (
             <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-              官方价快照 <span className="mono">{data.official.generated_at_iso ?? "—"}</span> · 汇率{" "}
-              <span className="mono">{data.official.usd_cny_rate ?? "—"}</span>（{data.official.rate_source}）·{" "}
+              厂商价快照 <span className="mono">{data.catalog.generated_at_iso ?? "—"}</span> · 汇率{" "}
+              <span className="mono">{data.catalog.usd_cny_rate ?? "—"}</span>（{data.catalog.rate_source}）·{" "}
               <Link href="/discount" style={{ color: "var(--accent-text)" }}>
                 折扣明细
               </Link>
@@ -299,10 +381,18 @@ export function OverviewTable({ data }: { data: OverviewData }) {
           rowKey={(row) => `${row.site_id}:${row.model}:${row.metadata?.group ?? ""}`}
           columns={columns}
           rows={parentRows}
-          childrenOf={(row) => childRowsOf.get(`${row.site_id}:${row.model}:${row.unit}`)}
-          pageSize={20}
-          scrollX={1085}
-          empty="暂无价格数据，完成一轮采集后这里会展示各站点最新快照"
+          childrenOf={(row) => childRowsOf.get(modelRowKey(row))}
+          paginated
+          scrollX={1020}
+          mobileScrollX={500}
+          onRowClick={(row) => router.push(`/overview/status/${encodeURIComponent(row.site_id)}`)}
+          empty={
+            <Empty
+              icon={<IconMonitor size={18} />}
+              title="还没有价格数据"
+              description="完成一轮采集后，这里会展示各站点的最新快照。"
+            />
+          }
         />
       </div>
     </>

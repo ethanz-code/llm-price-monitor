@@ -4,14 +4,18 @@
 
 import { useEffect, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { CollectButton } from "./CollectButton";
+import { Empty } from "./ui";
+import { IconBolt } from "./icons";
 import { apiSend } from "@/lib/api";
 import { formatTime } from "@/lib/format";
 import type { TaskInfo, TasksData } from "@/lib/types";
 
 const TASK_KIND_LABELS: Record<string, string> = {
-  collect: "全站价格采集",
-  "official-refresh": "官方价库刷新",
+  collect: "全量采集",
+  "collect-price": "价格采集",
+  "collect-status": "渠道状态采集",
+  "collect-notice": "站点公告采集",
+  "catalog-refresh": "厂商定价刷新",
 };
 
 function StatusTag({ status }: { status: string }) {
@@ -41,9 +45,9 @@ export function AdminTasks() {
   }, []);
 
   const taskColumns: DColumn<TaskInfo>[] = [
-    { key: "kind", title: "任务", render: (_v, row) => TASK_KIND_LABELS[row.kind] ?? row.kind },
+    { key: "kind", title: "任务", width: 150, render: (_v, row) => TASK_KIND_LABELS[row.kind] ?? row.kind },
     { key: "status", title: "状态", width: 90, render: (_v, row) => <StatusTag status={row.status} /> },
-    { key: "started_at", title: "开始时间", width: 150, render: (v: number) => formatTime(v) },
+    { key: "started_at", dataIndex: "started_at", title: "开始时间", width: 160, render: (v: number) => <span className="mono" style={{ color: "var(--text-2)", fontSize: 13, whiteSpace: "nowrap" }}>{formatTime(v)}</span> },
     {
       key: "cost",
       title: "耗时",
@@ -61,7 +65,7 @@ export function AdminTasks() {
         const result = row.result as { records?: unknown[]; models_found?: number };
         return (
           <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>
-            {row.kind === "official-refresh"
+            {row.kind === "catalog-refresh"
               ? `找到 ${String(result.models_found ?? 0)} 条`
               : `${(result.records ?? []).length} 条记录`}
           </span>
@@ -76,7 +80,15 @@ export function AdminTasks() {
         rowKey="id"
         columns={taskColumns}
         rows={tasks}
-        empty="暂无任务记录；点击「立即采集」或「刷新官方价」后会在这里跟踪。"
+        scrollX={700}
+        mobileScrollX={640}
+        empty={
+          <Empty
+            icon={<IconBolt size={18} />}
+            title="暂无任务记录"
+            description="点「立即采集」或「刷新厂商定价」后，进度会显示在这里。"
+          />
+        }
       />
     </div>
   );

@@ -11,9 +11,9 @@ import type { ThemeMode } from "@/theme";
 
 const ITEMS = [
   { key: "/", label: "首页" },
-  { key: "/overview", label: "价格总览" },
+  { key: "/overview", label: "中转站定价" },
   { key: "/history", label: "历史与事件" },
-  { key: "/official", label: "官方价库" },
+  { key: "/catalog", label: "厂商定价" },
   { key: "/discount", label: "折扣对比" },
 ];
 
@@ -23,26 +23,62 @@ const MODE_OPTIONS: { value: ThemeMode; label: string; title: string; icon: Reac
   { value: "system", label: "系统", title: "跟随系统", icon: <IconMonitor size={14} /> },
 ];
 
-/** 三档主题分段控件：图标 + 选中高亮，当前档位一眼可见。 */
-function ThemeSegmented() {
+/** 桌面主题切换：单图标触发器 + 下拉三选，当前档位由图标本身表达。 */
+function ThemeMenu() {
   const { mode, setMode } = useTheme();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const current = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[2];
   return (
-    <span className="seg theme-seg" role="radiogroup" aria-label="主题模式">
-      {MODE_OPTIONS.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={mode === option.value}
-          title={option.title}
-          aria-label={option.title}
-          className={`seg-item${mode === option.value ? " on" : ""}`}
-          onClick={() => setMode(option.value)}
-        >
-          {option.icon}
-          <span className="theme-seg-label">{option.label}</span>
-        </button>
-      ))}
+    <span className="theme-wrap" ref={ref}>
+      <button
+        type="button"
+        className="theme-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`主题模式：${current.title}`}
+        title={`主题：${current.title}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {current.icon}
+      </button>
+      {open && (
+        <div className="nav-pop theme-pop" role="menu">
+          {MODE_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === option.value}
+              className={`nav-pop-theme-item${mode === option.value ? " active" : ""}`}
+              onClick={() => {
+                setMode(option.value);
+                setOpen(false);
+              }}
+            >
+              {option.icon}
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
     </span>
   );
 }
@@ -86,7 +122,6 @@ export function SiteNav() {
         <Link href="/" className="brand-pill">
           <LogoMark size={24} />
           <span className="brand-name">LLM 价格监控</span>
-          <span className="mono brand-version">v0.1</span>
         </Link>
 
         <nav className="nav-pill" aria-label="主导航">
@@ -146,7 +181,7 @@ export function SiteNav() {
         </span>
 
         <div className="nav-actions">
-          <ThemeSegmented />
+          <ThemeMenu />
         </div>
       </div>
     </header>

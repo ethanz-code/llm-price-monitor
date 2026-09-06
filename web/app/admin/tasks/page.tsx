@@ -1,16 +1,18 @@
-import { PageHeader } from "@/components/PageHeader";
 import { AdminTasks } from "@/components/AdminTasks";
+import { CollectButton } from "@/components/CollectButton";
+import { CatalogRefreshButton } from "@/components/CatalogRefreshButton";
 
 export const metadata = { title: "管理面板 · 采集任务" };
 
 export default function AdminTasksPage() {
   return (
     <>
-      <PageHeader
-        eyebrow="ADMIN · TASKS"
-        title="采集任务"
-        subtitle="全站价格采集与官方价库刷新的后台任务记录。"
-      />
+      <div className="admin-toolbar" style={{ justifyContent: "flex-end" }}>
+        <span style={{ display: "inline-flex", gap: 8 }}>
+          <CollectButton />
+          <CatalogRefreshButton />
+        </span>
+      </div>
       <AdminTasks />
     </>
   );

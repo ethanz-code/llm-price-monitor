@@ -22,13 +22,13 @@ export default async function DiscountPage() {
       <PageHeader
         eyebrow="DISCOUNTS"
         title="折扣对比"
-        subtitle="站点价折算 CNY 后与厂商官方原价相除：比值 19% 即“1.9 折”，越低越便宜。"
+        subtitle="站点价折算 CNY 后与厂商原价相除：比值 19% 即“1.9 折”，越低越便宜。"
       />
       {error && (
         <SiteAlert
           title="无法计算折扣"
           detail={error}
-          fix="需要已生成的官方价文件（fetch-official-prices）与最新价格快照"
+          fix="折扣对比需要先有厂商定价和最新价格快照：管理员可在管理后台「采集任务」页点击「刷新厂商定价」。"
         />
       )}
       {data && <DiscountTable data={data} />}

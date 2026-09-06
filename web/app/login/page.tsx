@@ -62,7 +62,7 @@ export default function LoginPage() {
             </Btn>
           </form>
           <p className="auth-hint">
-            忘记密码？在服务器仓库根目录运行 <code className="mono">uv run price-admin</code> 重置。
+            忘记密码？在服务器上运行 <code className="mono">uv run price-admin</code> 重置。
           </p>
           <Link href="/" className="auth-back">← 返回首页</Link>
         </div>

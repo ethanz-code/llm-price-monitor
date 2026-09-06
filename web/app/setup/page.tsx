@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiAuthPost, apiSend, fetchMeta } from "@/lib/api";
-import { Btn, Input, Switch } from "@/components/ui";
+import { Btn, Input } from "@/components/ui";
 import { LogoMark } from "@/components/LogoMark";
 import { IconCheck } from "@/components/icons";
 
@@ -34,7 +34,7 @@ export default function SetupPage() {
   if (checking) {
     return (
       <div className="auth-page">
-        <span className="skel" style={{ width: 420, height: 300 }} />
+        <span className="skel" style={{ width: "min(420px, 100%)", height: 300 }} />
       </div>
     );
   }
@@ -114,25 +114,33 @@ function StepAccount({ onDone }: { onDone: () => void }) {
 /* ---------- 第 2 步：必需密钥（均可跳过，之后在系统设置里补填） ---------- */
 
 function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }) {
-  const [aiEnabled, setAiEnabled] = useState(true);
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModels, setAiModels] = useState("");
   const [aiApiKey, setAiApiKey] = useState("");
-  const [tavilyKey, setTavilyKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    // 默认种子里预置了推荐 AI（阿里云百炼）：带出 Base URL 与模型列表，管理员只需填 Key
+    apiSend<{ ai: { base_url?: unknown; models?: unknown } }>("/api/settings", "GET")
+      .then((loaded) => {
+        if (typeof loaded.ai?.base_url === "string" && loaded.ai.base_url) setAiBaseUrl(loaded.ai.base_url);
+        const models = Array.isArray(loaded.ai?.models) ? loaded.ai.models : [];
+        setAiModels(models.filter((item): item is string => typeof item === "string").join(", "));
+      })
+      .catch(() => {}); // 读取失败就保持空表单，手动填写
+  }, []);
 
   async function save() {
     setLoading(true);
     setError(null);
     try {
-      const ai: Record<string, unknown> = { enabled: aiEnabled };
+      const ai: Record<string, unknown> = { enabled: true };
       if (aiBaseUrl.trim()) ai.base_url = aiBaseUrl.trim();
       const models = aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
       if (models.length) ai.models = models;
       if (aiApiKey.trim()) ai.api_key = aiApiKey.trim();
       const settings: Record<string, unknown> = {};
-      if (tavilyKey.trim()) settings.tavily_api_key = tavilyKey.trim();
       await apiSend("/api/settings", "PUT", { settings, ai });
       onDone();
     } catch (cause) {
@@ -146,33 +154,30 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
     <div className="auth-form">
       <div className="setup-keys-group">
         <div className="setup-keys-head">
-          <span>AI 兜底提取</span>
-          <Switch checked={aiEnabled} onChange={setAiEnabled} />
+          <span>AI 提取</span>
         </div>
-        <p className="auth-hint">开启后每次采集都会调用 AI：标准 New API 站点仅解析模型别名（价格仍本地计算），格式不明站点由 AI 提取价格；结果按证据哈希缓存，会产生 token 费用。</p>
-        {aiEnabled && (
-          <div className="setup-keys-fields">
-            <label className="auth-field">
-              <span>Base URL</span>
-              <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" />
-            </label>
-            <label className="auth-field">
-              <span>模型列表（逗号分隔）</span>
-              <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" />
-            </label>
-            <label className="auth-field">
-              <span>API Key</span>
-              <Input value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" type="password" />
-            </label>
-          </div>
-        )}
-      </div>
-      <div className="setup-keys-group">
-        <div className="setup-keys-head">
-          <span>Tavily API Key</span>
+        <p className="auth-hint">
+          标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；结果会缓存以减少重复调用，仍可能产生 token 费用。
+          推荐先用阿里云百炼的免费模型：Base URL 和模型列表已预置，只需创建一个 API Key 填到下面。新用户开通百炼即送
+          新人免费额度（90 天，北京地域），无需实名认证：
+          <a href="https://help.aliyun.com/zh/model-studio/new-free-quota" target="_blank" rel="noreferrer">免费额度说明</a>
+          ·
+          <a href="https://help.aliyun.com/zh/model-studio/get-api-key" target="_blank" rel="noreferrer">获取 API Key</a>
+        </p>
+        <div className="setup-keys-fields">
+          <label className="auth-field">
+            <span>Base URL</span>
+            <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" />
+          </label>
+          <label className="auth-field">
+            <span>模型列表（逗号分隔）</span>
+            <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" />
+          </label>
+          <label className="auth-field">
+            <span>API Key</span>
+            <Input value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" type="password" />
+          </label>
         </div>
-        <p className="auth-hint">刷新厂商官方价库用；留空则回退 TAVILY_API_KEY 环境变量。</p>
-        <Input value={tavilyKey} onChange={setTavilyKey} placeholder="tvly-…" type="password" />
       </div>
       {error && <p className="auth-error" role="alert">{error}</p>}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -191,8 +196,8 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
 
 const NEXT_STEPS = [
   { title: "添加监控站点", text: "在「站点管理」里新增中转站的价格接口地址与目标模型。", href: "/admin/sites", label: "去添加站点" },
-  { title: "触发首次采集", text: "在「概览」或「采集任务」里点「立即采集」，跑通第一轮价格取证。", href: "/admin/tasks", label: "去采集" },
-  { title: "刷新官方价库", text: "配置好 Tavily 与 AI 后，刷新厂商官方定价，折扣对比才有锚点。", href: "/admin/settings", label: "查看设置" },
+  { title: "触发首次采集", text: "在「采集任务」里点「立即采集」，完成第一次价格采集。", href: "/admin/tasks", label: "去采集" },
+  { title: "刷新厂商定价", text: "厂商价数据来自 models.dev，无需任何密钥，一键同步后折扣对比才有基准。", href: "/catalog", label: "去刷新" },
 ];
 
 function StepDone() {

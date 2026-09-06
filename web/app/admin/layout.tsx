@@ -9,7 +9,7 @@ import {
   IconBolt,
   IconBook,
   IconDashboard,
-  IconHistory,
+  IconEye,
   IconSettings,
 } from "@/components/icons";
 
@@ -17,7 +17,7 @@ const RAIL = [
   { href: "/admin", label: "概览", icon: <IconDashboard size={15} />, exact: true },
   { href: "/admin/sites", label: "站点管理", icon: <IconAppstore size={15} /> },
   { href: "/admin/tasks", label: "采集任务", icon: <IconBolt size={15} /> },
-  { href: "/admin/events", label: "事件审计", icon: <IconHistory size={15} /> },
+  { href: "/admin/analytics", label: "访问统计", icon: <IconEye size={15} /> },
   { href: "/admin/docs", label: "使用文档", icon: <IconBook size={15} /> },
   { href: "/admin/settings", label: "系统设置", icon: <IconSettings size={15} /> },
 ];
@@ -45,8 +45,11 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
   if (!ready) return null;
 
   return (
-    <div className="page">
-      <div className="admin-shell">
+    <>
+      {/* 通栏光晕挂在 .page 之外：视口宽于内容区（如折叠浏览器侧栏）时最右侧不留空缺 */}
+      <div className="admin-backdrop" aria-hidden />
+      <div className="page">
+        <div className="admin-shell">
         <aside className="admin-rail" aria-label="管理面板导航">
           <div className="admin-rail-title">Admin</div>
           {RAIL.map((item) => {
@@ -69,8 +72,9 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
             退出登录
           </button>
         </aside>
-        <div className="admin-content">{children}</div>
+          <div className="admin-content">{children}</div>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

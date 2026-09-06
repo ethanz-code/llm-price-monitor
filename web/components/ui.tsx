@@ -365,8 +365,35 @@ export function Input({
 
 /* ---------- 空状态 ---------- */
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+export function Empty({
+  icon,
+  title,
+  description,
+  action,
+  children,
+}: {
+  icon?: ReactNode;
+  title?: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+  children?: ReactNode;
+}) {
+  // 兼容旧用法：<Empty>纯文本</Empty> 仍渲染为一行灰字
+  if (!icon && !title && !action) {
+    return <div className="empty">{children}</div>;
+  }
+  return (
+    <div className="empty-state">
+      {icon && (
+        <span className="empty-icon" aria-hidden>
+          {icon}
+        </span>
+      )}
+      {title && <p className="empty-title">{title}</p>}
+      <p className="empty-desc">{description ?? children}</p>
+      {action && <div className="empty-action">{action}</div>}
+    </div>
+  );
 }
 
 /* ---------- 分段控制 ---------- */

@@ -15,7 +15,7 @@ export function PageHeader({
   return (
     <div className="page-header">
       <div className="page-eyebrow">{eyebrow}</div>
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 24 }}>
         <div>
           <h1 className="page-title">{title}</h1>
           <p className="page-subtitle">{subtitle}</p>

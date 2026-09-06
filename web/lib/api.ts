@@ -5,8 +5,18 @@ import type { MetaData } from "./types";
 
 const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000";
 
-export async function apiGet<T>(path: string): Promise<T> {
+export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers });
+  if (!res.ok) {
+    throw new Error(`GET ${path} 失败: HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
+/** 读接口允许 404：数据尚未生成时返回 null，其余错误照常抛出。 */
+export async function apiGetOptional<T>(path: string): Promise<T | null> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(`GET ${path} 失败: HTTP ${res.status}`);
   }

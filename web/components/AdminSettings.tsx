@@ -1,9 +1,10 @@
 "use client";
 
-/** 系统设置：AI 兜底提取、Tavily。 */
+/** 系统设置：按「采集调度 / AI 提取 / 微信通知 WxPusher / 种子导入」分组，AI 与通知可独立测试有效性。 */
 
 import { useEffect, useState } from "react";
-import { toast, Btn, Input, Switch } from "./ui";
+import { toast, Btn, Input, Sel, Modal } from "./ui";
+import { IconEye, IconEyeOff } from "./icons";
 import { apiSend } from "@/lib/api";
 import type { SettingsData, SiteConfig } from "@/lib/types";
 
@@ -11,11 +12,55 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 四类采集任务的后台定时间隔（分钟），与后端 settings.schedule 默认值保持一致；0 = 关闭定时。 */
+const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5, notice: 30, catalog: 1440 };
+
+const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
+  { key: "price", label: "价格采集", hint: "定时去各站点看价格，有变化就记下来" },
+  { key: "status", label: "渠道状态", hint: "定时检查开了状态监测的站点，渠道有变化就记事件" },
+  { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来并通知" },
+  { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录（默认 24 小时一次）" },
+];
+
 function modelsToText(models: SiteConfig["models"]): string {
-  return (models ?? []).map((item) => (typeof item === "string" ? item : item.name)).join(", ");
+  return (models ?? []).join(", ");
 }
 
-function SettingRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+/** 密钥输入：password 型 + 显隐切换，避免旁人瞥屏或截图泄露。 */
+function SecretInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <Input
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      type={show ? "text" : "password"}
+      autoComplete="off"
+      style={{ width: "min(360px, 100%)" }}
+      suffix={
+        <button
+          type="button"
+          className="input-suffix"
+          onClick={() => setShow((current) => !current)}
+          aria-label={show ? "隐藏密钥" : "显示密钥"}
+          title={show ? "隐藏" : "显示"}
+        >
+          {show ? <IconEyeOff /> : <IconEye />}
+        </button>
+      }
+    />
+  );
+}
+
+function SettingRow({ label, hint, children }: { label: string; hint?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div style={{ display: "grid", gap: 4 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
@@ -27,38 +72,133 @@ function SettingRow({ label, hint, children }: { label: string; hint?: string; c
   );
 }
 
+type TestTarget = "ai" | "wxpusher";
+
+type TestOutcome = { ok: boolean; text: string };
+
+type TestResponse = { elapsed_ms: number; model?: string; reply?: string };
+
+type SeedResponse = {
+  mode: "skip_existing" | "overwrite";
+  settings_written: string[];
+  ai_written: string[];
+  sites_written: number;
+  sites_replaced: boolean;
+};
+
+function seedResultText(result: SeedResponse): string {
+  const parts: string[] = [];
+  if (result.settings_written.length) parts.push(`设置 ${result.settings_written.length} 项`);
+  if (result.ai_written.length) parts.push(`AI 配置 ${result.ai_written.length} 项`);
+  if (result.sites_replaced) parts.push(`站点已替换为 ${result.sites_written} 个`);
+  else if (result.sites_written) parts.push(`新增站点 ${result.sites_written} 个`);
+  return parts.length ? `种子导入完成：${parts.join("，")}` : "种子导入完成：内容都已是最新，没有要补的";
+}
+
+function resultText(target: TestTarget, data: TestResponse): string {
+  const ms = `${data.elapsed_ms}ms`;
+  if (target === "ai") {
+    const reply = data.reply ? ` · 回复「${data.reply.slice(0, 20)}」` : "";
+    return `✓ 连通 · ${data.model} · ${ms}${reply}`;
+  }
+  return `✓ 测试消息已发送 · ${ms}`;
+}
+
+function SettingsSection({
+  title,
+  description,
+  action,
+  result,
+  children,
+}: {
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+  result?: TestOutcome;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className="settings-section" style={{ display: "grid", gap: 14, padding: "16px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "grid", gap: 3 }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{title}</span>
+          {description && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{description}</span>}
+        </div>
+        {action}
+      </div>
+      {children}
+      {result && (
+        <span style={{ fontSize: 12.5, color: result.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
+          {result.text}
+        </span>
+      )}
+    </section>
+  );
+}
+
 export function AdminSettings() {
   const [data, setData] = useState<SettingsData | null>(null);
-  const [tavilyKey, setTavilyKey] = useState("");
-  const [aiEnabled, setAiEnabled] = useState(true);
+  const [wxToken, setWxToken] = useState("");
+  const [wxUid, setWxUid] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("");
+  const [aiFormat, setAiFormat] = useState("chat_completions");
   const [aiModels, setAiModels] = useState("");
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiTimeout, setAiTimeout] = useState("60");
+  const [schedule, setSchedule] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState<TestTarget | null>(null);
+  const [results, setResults] = useState<Partial<Record<TestTarget, TestOutcome>>>({});
+  const [seeding, setSeeding] = useState<"skip_existing" | "overwrite" | null>(null);
+  const [seedWarnOpen, setSeedWarnOpen] = useState(false);
 
   useEffect(() => {
     apiSend<SettingsData>("/api/settings", "GET")
       .then((loaded) => {
         setData(loaded);
-        setTavilyKey(typeof loaded.settings.tavily_api_key === "string" ? loaded.settings.tavily_api_key : "");
+        setWxToken(typeof loaded.settings.wxpusher_app_token === "string" ? loaded.settings.wxpusher_app_token : "");
+        setWxUid(typeof loaded.settings.wxpusher_uid === "string" ? loaded.settings.wxpusher_uid : "");
         const ai = loaded.ai;
-        setAiEnabled(ai.enabled !== false);
         setAiBaseUrl(typeof ai.base_url === "string" ? ai.base_url : "");
+        setAiFormat(typeof ai.api_format === "string" && ai.api_format ? ai.api_format : "chat_completions");
         setAiModels(modelsToText((ai.models as SiteConfig["models"]) ?? []));
         setAiApiKey(typeof ai.api_key === "string" ? ai.api_key : "");
         setAiTimeout(String(typeof ai.timeout === "number" ? ai.timeout : 60));
+        const rawSchedule = (loaded.settings.schedule ?? {}) as Record<string, unknown>;
+        const nextSchedule: Record<string, string> = {};
+        for (const item of SCHEDULE_ITEMS) {
+          const value = rawSchedule[item.key];
+          nextSchedule[item.key] = typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+        }
+        setSchedule(nextSchedule);
       })
       .catch(() => setData({ settings: {}, ai: {} }));
   }, []);
 
   async function save() {
     if (!data) return;
-    const settings = { ...data.settings, tavily_api_key: tavilyKey.trim() || null };
+    // 间隔留空 = 回默认值，0 = 关闭该项定时；非法输入直接拦截，不发请求
+    const scheduleOut: Record<string, number> = {};
+    for (const item of SCHEDULE_ITEMS) {
+      const text = (schedule[item.key] ?? "").trim();
+      const value = text ? Number.parseFloat(text) : DEFAULT_SCHEDULE_MINUTES[item.key];
+      if (!Number.isFinite(value) || value < 0) {
+        toast(`${item.label}间隔需是不小于 0 的数字（分钟，0 为关闭）`);
+        return;
+      }
+      scheduleOut[item.key] = value;
+    }
+    const settings = {
+      ...data.settings,
+      wxpusher_app_token: wxToken.trim() || null,
+      wxpusher_uid: wxUid.trim() || null,
+      schedule: scheduleOut,
+    };
     const ai: Record<string, unknown> = {
       ...data.ai,
-      enabled: aiEnabled,
+      enabled: true,
       base_url: aiBaseUrl.trim(),
+      api_format: aiFormat,
       models: aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
       api_key: aiApiKey.trim() || null,
     };
@@ -68,6 +208,7 @@ export function AdminSettings() {
     try {
       const saved = await apiSend<SettingsData>("/api/settings", "PUT", { settings, ai });
       setData(saved);
+      setResults({});
       toast("设置已保存，立即生效");
     } catch (error) {
       toast(`保存失败: ${errorText(error)}`);
@@ -76,36 +217,185 @@ export function AdminSettings() {
     }
   }
 
+  async function runTest(target: TestTarget) {
+    setTesting(target);
+    try {
+      const result = await apiSend<TestResponse>("/api/settings/test", "POST", {
+        target,
+        settings: {
+          wxpusher_app_token: wxToken.trim() || null,
+          wxpusher_uid: wxUid.trim() || null,
+        },
+        ai: {
+          base_url: aiBaseUrl.trim(),
+          api_format: aiFormat,
+          models: aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+          api_key: aiApiKey.trim() || null,
+          timeout: Number.isFinite(Number.parseFloat(aiTimeout)) ? Number.parseFloat(aiTimeout) : 60,
+        },
+      });
+      setResults((prev) => ({ ...prev, [target]: { ok: true, text: resultText(target, result) } }));
+    } catch (error) {
+      setResults((prev) => ({ ...prev, [target]: { ok: false, text: `✗ ${errorText(error)}` } }));
+    } finally {
+      setTesting(null);
+    }
+  }
+
+  async function runSeed(mode: "skip_existing" | "overwrite") {
+    if (mode === "overwrite") {
+      setSeedWarnOpen(true); // 覆盖有风险：先弹确认弹窗再执行
+      return;
+    }
+    await doSeed(mode);
+  }
+
+  async function doSeed(mode: "skip_existing" | "overwrite") {
+    setSeeding(mode);
+    try {
+      const result = await apiSend<SeedResponse>("/api/seed", "POST", { mode });
+      toast(seedResultText(result));
+    } catch (error) {
+      toast(`种子导入失败: ${errorText(error)}`);
+    } finally {
+      setSeeding(null);
+    }
+  }
+
+  async function confirmOverwriteSeed() {
+    await doSeed("overwrite");
+    setSeedWarnOpen(false);
+  }
+
   return (
-    <div className="panel" style={{ padding: "24px 28px", display: "grid", gap: 18, maxWidth: 620 }}>
+    <div className="panel settings-panel">
       {!data ? (
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>加载中…</span>
       ) : (
-        <>
-          <SettingRow label="AI 兜底提取" hint="开启后每次采集都会调用 AI：标准 New API 站点仅解析模型别名（价格仍本地计算），格式不明站点由 AI 提取价格；结果按证据哈希缓存，会产生 token 费用">
-            <Switch checked={aiEnabled} onChange={setAiEnabled} />
-          </SettingRow>
-          <SettingRow label="AI Base URL">
-            <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" style={{ width: 360, maxWidth: "100%" }} />
-          </SettingRow>
-          <SettingRow label="AI 模型列表" hint="逗号分隔；每次抽取随机选用一个">
-            <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" style={{ width: 360, maxWidth: "100%" }} />
-          </SettingRow>
-          <SettingRow label="AI API Key" hint="保存在本机数据库中，不回传第三方">
-            <Input value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" style={{ width: 360, maxWidth: "100%" }} />
-          </SettingRow>
-          <SettingRow label="AI 超时（秒）">
-            <Input value={aiTimeout} onChange={setAiTimeout} style={{ width: 120, maxWidth: "100%" }} />
-          </SettingRow>
-          <SettingRow label="Tavily API Key" hint="官方价库刷新用；留空则回退 TAVILY_API_KEY 环境变量">
-            <Input value={tavilyKey} onChange={setTavilyKey} placeholder="tvly-…" style={{ width: 360, maxWidth: "100%" }} />
-          </SettingRow>
-          <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "grid" }}>
+          <SettingsSection
+            title="采集调度"
+            description="各项采集多久自动跑一次（分钟），保存后立即生效；填 0 表示关闭定时，只手动采集"
+          >
+            {SCHEDULE_ITEMS.map((item) => (
+              <SettingRow key={item.key} label={`${item.label}间隔（分钟）`} hint={item.hint}>
+                <Input
+                  value={schedule[item.key] ?? ""}
+                  onChange={(value) => setSchedule((prev) => ({ ...prev, [item.key]: value }))}
+                  placeholder={`默认 ${DEFAULT_SCHEDULE_MINUTES[item.key]}`}
+                  style={{ width: 120, maxWidth: "100%" }}
+                />
+              </SettingRow>
+            ))}
+          </SettingsSection>
+          <SettingsSection
+            title="AI 提取"
+            description="AI 负责认出模型别名、读本地算不了的站点价格。填好 Base URL 和模型列表就算启用；会产生少量 token 费用"
+            result={results.ai}
+          >
+            <SettingRow label="服务商格式" hint="按你的 AI 服务商选：选 Anthropic 就填 https://api.anthropic.com，选 Gemini 就填 https://generativelanguage.googleapis.com">
+              <Sel
+                value={aiFormat}
+                onChange={setAiFormat}
+                options={[
+                  { value: "chat_completions", label: "OpenAI 兼容（/chat/completions）" },
+                  { value: "openai_responses", label: "OpenAI Responses（/v1/responses）" },
+                  { value: "anthropic", label: "Anthropic Messages（/v1/messages）" },
+                  { value: "gemini", label: "Gemini（:generateContent）" },
+                ]}
+              />
+            </SettingRow>
+            <SettingRow label="AI Base URL">
+              <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" style={{ width: "min(360px, 100%)" }} />
+            </SettingRow>
+            <SettingRow label="AI 模型列表" hint="逗号分隔，每次随机用一个">
+              <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" style={{ width: "min(360px, 100%)" }} />
+            </SettingRow>
+            <SettingRow
+              label="AI API Key"
+              hint={
+                <>
+                  只存在本机，不会发给第三方。推荐先用阿里云百炼：Base URL 和模型列表已预置，开通即送新人免费额度（
+                  <a href="https://help.aliyun.com/zh/model-studio/new-free-quota" target="_blank" rel="noreferrer">额度说明</a>
+                  ·
+                  <a href="https://help.aliyun.com/zh/model-studio/get-api-key" target="_blank" rel="noreferrer">获取 API Key</a>
+                  ）
+                </>
+              }
+            >
+              <SecretInput value={aiApiKey} onChange={setAiApiKey} placeholder="sk-…" />
+            </SettingRow>
+            <SettingRow label="AI 超时（秒）">
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Input value={aiTimeout} onChange={setAiTimeout} style={{ width: 120, maxWidth: "100%" }} />
+                <Btn size="sm" loading={testing === "ai"} onClick={() => runTest("ai")}>
+                  测试连通
+                </Btn>
+              </div>
+            </SettingRow>
+          </SettingsSection>
+          <SettingsSection
+            title="通知推送（WxPusher）"
+            description="有人提交建议时通知你；Token 留空就只保存不推送"
+            action={
+              <Btn size="sm" loading={testing === "wxpusher"} onClick={() => runTest("wxpusher")}>
+                发测试消息
+              </Btn>
+            }
+            result={results.wxpusher}
+          >
+            <SettingRow label="WxPusher App Token" hint="在 wxpusher.zjiecode.com 管理后台创建应用后获取">
+              <SecretInput value={wxToken} onChange={setWxToken} placeholder="AT_…" />
+            </SettingRow>
+            <SettingRow label="WxPusher UID" hint="关注自己创建的应用后，在管理后台「用户管理」或客户端里能看到自己的 UID；留空就发给全部关注者">
+              <Input value={wxUid} onChange={setWxUid} placeholder="UID_…" style={{ width: "min(360px, 100%)" }} />
+            </SettingRow>
+          </SettingsSection>
+          <SettingsSection
+            title="种子导入"
+            description="按 config/default-seed.json 把默认配置重新导入一遍；没提到的配置不动"
+          >
+            <SettingRow label="手动重新导入">
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn size="sm" loading={seeding === "skip_existing"} onClick={() => runSeed("skip_existing")}>
+                  补齐缺失
+                </Btn>
+                <Btn size="sm" loading={seeding === "overwrite"} onClick={() => runSeed("overwrite")}>
+                  覆盖写入
+                </Btn>
+              </div>
+            </SettingRow>
+          </SettingsSection>
+          <div className="settings-save-bar">
+            <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>修改保存后立即生效</span>
             <Btn variant="primary" loading={saving} onClick={save}>
               保存设置
             </Btn>
           </div>
-        </>
+          <Modal
+            open={seedWarnOpen}
+            onClose={() => setSeedWarnOpen(false)}
+            title="确认覆盖写入？"
+            footer={
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <Btn onClick={() => setSeedWarnOpen(false)}>取消</Btn>
+                <Btn variant="primary" loading={seeding === "overwrite"} onClick={confirmOverwriteSeed}>
+                  确认覆盖写入
+                </Btn>
+              </div>
+            }
+          >
+            <div style={{ display: "grid", gap: 10, fontSize: 13.5, lineHeight: 1.7 }}>
+              <span>
+                会用 <code>config/default-seed.json</code> 里的值覆盖同名设置
+                （调度间隔、超时、AI 配置等回到默认），缺的会补上。
+              </span>
+              <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>
+                没提到的配置不动；种子列了站点才会整体替换站点，默认种子不会清空你的站点。
+              </span>
+            </div>
+          </Modal>
+        </div>
       )}
     </div>
   );

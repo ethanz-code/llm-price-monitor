@@ -1,0 +1,33 @@
+import { Tip } from "./ui";
+
+/** 页面名词的悬停解释文案；全站共用一份口径，调整措辞只改这里。 */
+const TERMS = {
+  discount: "折扣 = 站点单价（折算 CNY）÷ 厂商原价。19% ≈ 1.9 折，越低越便宜。",
+  discount_input:
+    "输入折扣 = 输入单价 ÷ 厂商输入原价。输入指发给模型的文字（prompt），越低越便宜。",
+  discount_output:
+    "输出折扣 = 输出单价 ÷ 厂商输出原价。输出指模型生成的内容（completion），通常高于输入折扣。",
+  input_price:
+    "发给模型的内容（prompt）的单价，按每百万 token 计费。站点价统一折算成人民币展示（USD 价乘快照汇率），显示为区间（如 1–2）时表示阶梯计价，取最低–最高档。",
+  output_price:
+    "模型生成内容（completion）的单价，通常高于输入价。站点价统一折算成人民币展示（USD 价乘快照汇率），显示为区间（如 1–2）时表示阶梯计价，取最低–最高档。",
+  official_cny: "厂商 USD 原价按目录刷新时锁定的汇率折算的人民币单价；各处折扣计算也用这个快照汇率，全站口径一致。",
+  list_price: "厂商定价页标称的列表价（list price），经 models.dev 收录，折扣对比以此为基准。",
+  context_limit:
+    "上下文窗口与最大输出 token 数（厂商标称，models.dev 收录）：上下文是单次请求能装下的总 token 上限，输出是其中模型生成部分的上限；显示 — 表示目录未收录该数值。",
+  description: "开源模型目录 models.dev 收录的一句话模型简介，帮助快速了解模型定位与特点。",
+  unit: "站点价展示口径：统一按 CNY / 1M tokens 显示，USD 价乘厂商价快照汇率折算，CNY 价原样。",
+  rate: "厂商价折算人民币所用的 USD/CNY 汇率，来源见括号内标注。",
+  ratio: "端点倍率：实售价 = 厂商基准价(USD) × 倍率；倍率先按模型显示名匹配，缺失时回退厂商级。",
+  group: "中转站的计价分组（如 default、vip），不同分组倍率不同，价格按分组区分。",
+  status:
+    "正常 = 价格有页面与接口双重来源；规则价 = 按站点倍率规则计算得出；待确认 = AI 提取结果待复核；需认证 = 价格页需登录才能查看。",
+  channels:
+    "渠道/分组检测点阵：只展示对应站点状态监测接口采集到的数据，每行一个渠道或分组（异常在前），行首为渠道/分组名；总览里只显示该模型涉及分组的检测点，全量渠道见渠道状态详情页；显示 — 表示该站点没有状态监测数据。",
+} as const;
+
+export type TermKey = keyof typeof TERMS;
+
+export function TermTip({ term }: { term: TermKey }) {
+  return <Tip text={TERMS[term]} />;
+}
