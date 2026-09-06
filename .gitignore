@@ -3,10 +3,8 @@
 .env.keys
 .env.development
 
-# 真实站点配置（可能含 cookie/token），仓库只保留 example 模板
-config/price-monitor.json
-
 # build / tooling artifacts
+node_modules/
 __pycache__/
 *.py[cod]
 .pytest_cache/

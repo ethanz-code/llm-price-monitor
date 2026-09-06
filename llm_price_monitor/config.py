@@ -14,12 +14,13 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 from llm_price_monitor.store import Store
-from llm_price_monitor.tracker import DEFAULT_NEWAPI_RATIO_BASE_PRICE
-from llm_price_monitor.units import number_or_none
 from llm_price_monitor.useragent import DEFAULT_BROWSER_USER_AGENT
 
 PriceStatus = Literal["confirmed", "candidate", "rule_only", "unavailable"]
 ChangeKind = Literal["new", "changed", "unchanged", "recovered", "status_changed"]
+
+# AI 调用的接口结构：同一套提示词按所选结构的 URL/请求体/响应格式发出
+AI_FORMATS = ("chat_completions", "openai_responses", "anthropic", "gemini")
 
 
 class PriceMonitorError(RuntimeError):
@@ -29,15 +30,31 @@ class PriceMonitorError(RuntimeError):
 @dataclass(frozen=True)
 class ModelTarget:
     name: str
-    group: str | None = None
-    aliases: tuple[str, ...] = ()
+
+
+DEPRECATED_SITE_FIELDS = frozenset({"note", "preferred_response_url_patterns", "ratio_base_price", "model_list_url", "currency"})  # 已废弃的站点字段：加载/保存时静默丢弃
+
+# 四类采集任务的定时间隔（分钟），存 settings.schedule；0 = 关闭该项定时、只保留手动触发
+DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440}
+SCHEDULE_KEYS = tuple(DEFAULT_SCHEDULE_MINUTES)
+
+
+def schedule_from_raw(raw: Any) -> dict[str, float]:
+    """校验 settings.schedule：每项必须是不小于 0 的数字（分钟）；缺失项回默认值。"""
+    raw = raw if isinstance(raw, dict) else {}
+    schedule: dict[str, float] = {}
+    for key in SCHEDULE_KEYS:
+        value = raw.get(key, DEFAULT_SCHEDULE_MINUTES[key])
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"settings.schedule.{key} 必须是不小于 0 的数字（分钟，0 表示关闭定时）")
+        schedule[key] = float(value)
+    return schedule
 
 
 @dataclass(frozen=True)
 class SiteSpec:
     id: str
-    adapter: str = "browser"  # 兼容旧配置；browser 与 network 均使用 HTTP 请求
-    model_list_url: str | None = None
+    adapter: str = "standard"  # 旧值 browser/network/rate_base 载入时归一为 standard
     models: tuple[ModelTarget, ...] = ()
     auth_token: str | None = None
     auth_header: str = "Authorization"
@@ -46,11 +63,10 @@ class SiteSpec:
     cookies: dict[str, str] = field(default_factory=dict)
     request_headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    note: str | None = None
-    preferred_response_url_patterns: tuple[str, ...] = ("price", "model")
-    ratio_base_price: float = DEFAULT_NEWAPI_RATIO_BASE_PRICE
-    currency: str = "CNY"
     network: dict[str, Any] = field(default_factory=dict)
+    networks: tuple[dict[str, Any], ...] = ()  # 附加采集地址：与 network 同构，逐个采集后合并价格
+    status: dict[str, Any] = field(default_factory=dict)
+    notice: dict[str, Any] = field(default_factory=dict)  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
 
 
 class AIResultCache(Protocol):
@@ -64,7 +80,8 @@ class AIResultCache(Protocol):
 @dataclass(frozen=True)
 class MonitorSettings:
     timeout: float = 20.0
-    tavily_api_key: str | None = None
+    wxpusher_app_token: str | None = None
+    wxpusher_uid: str | None = None
     user_agent: str = DEFAULT_BROWSER_USER_AGENT
     random_user_agent: bool = False
     user_agent_platforms: tuple[str, ...] = ()
@@ -79,11 +96,11 @@ class AIConfig:
     model: str = ""
     models: tuple[str, ...] = ()
     api_key: str | None = None
+    api_format: str = "chat_completions"
     timeout: float = 60.0
     max_input_chars: int = 60000
     max_tokens: int = 4000
     enable_thinking: bool = False
-    dry_run: bool = False
     cache: AIResultCache | None = None
 
     def pick_model(self) -> str:
@@ -102,10 +119,6 @@ class MonitorConfig:
 def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSettings:
     raw = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {key: raw[key] for key in MonitorSettings.__dataclass_fields__ if key in raw}
-    if resolve_env:
-        # 文件种子路径的 env 兜底：TAVILY_API_KEY
-        if "tavily_api_key" not in values:
-            values["tavily_api_key"] = os.getenv("TAVILY_API_KEY")
     for key in ("user_agent_platforms", "user_agent_chrome_versions"):
         if key in values:
             value = values[key]
@@ -123,24 +136,49 @@ def ai_from_raw(raw: dict[str, Any], *, resolve_env: bool, cache: AIResultCache 
     api_key = raw.get("api_key")
     if not api_key and resolve_env:
         api_key = os.getenv(str(raw.get("api_key_env", "")).strip())
+    api_format = str(raw.get("api_format", "chat_completions")).strip()
+    if api_format not in AI_FORMATS:
+        raise ValueError("配置文件 ai.api_format 必须是 chat_completions、openai_responses、anthropic 或 gemini")
     return AIConfig(
         enabled=bool(raw.get("enabled", True)),
         base_url=str(raw.get("base_url", "")).strip(),
         model=str(raw.get("model", "")).strip(),
         models=tuple(dict.fromkeys(item.strip() for item in raw_models if item.strip())),
         api_key=api_key or None,
+        api_format=api_format,
         timeout=float(raw.get("timeout", 60)),
         max_input_chars=int(raw.get("max_input_chars", 60000)),
         max_tokens=int(raw.get("max_tokens", 4000)),
         enable_thinking=bool(raw.get("enable_thinking", False)),
-        dry_run=bool(raw.get("dry_run", False)),
         cache=cache,
     )
 
 
+def _endpoint_section(raw: Any, site_id: str, name: str) -> dict[str, Any]:
+    """status/notice 段归一：URL 字符串简写 → {url}；校验 url 与 params/headers 类型。"""
+    if isinstance(raw, str):
+        raw = {"url": raw}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"站点 {site_id} 的 {name} 必须是 URL 字符串或对象")
+    if raw:
+        url = raw.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError(f"站点 {site_id} 的 {name}.url 必须是非空 URL")
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError(f"站点 {site_id} 的 {name}.url 必须是完整的 http(s) URL")
+        for section_field in ("params", "headers"):
+            if section_field in raw and not isinstance(raw[section_field], dict):
+                raise ValueError(f"站点 {site_id} 的 {name}.{section_field} 必须是对象")
+    return raw
+
+
 def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
     sites = []
-    for value in values:
+    for raw_value in values:
+        value = {key: item for key, item in raw_value.items() if key not in DEPRECATED_SITE_FIELDS}
         site_id = value.get("id", "<unknown>")
         if "base_url" in value:
             raise ValueError(f"站点 {site_id} 不再支持 base_url；请在 network.url 配置接口地址")
@@ -166,52 +204,70 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
         if not isinstance(network, dict):
             raise ValueError(f"站点 {site_id} 的 network 必须是对象")
         network_url = network.get("url")
+        adapter = str(value.get("adapter") or "standard")
+        if adapter in {"browser", "network", "rate_base"}:
+            adapter = "standard"  # 旧配置值归一；rate_base 双地址退化为 network.url 单地址
+        network = {key: item for key, item in network.items() if key != "base_price_url"}
+        if isinstance(network_url, dict):
+            # 旧 rate_base 的对象形态：归一时只保留主 URL
+            inner_url = network_url.get("url")
+            network_url = inner_url if isinstance(inner_url, str) and inner_url.strip() else None
+            network = {**network, "url": network_url}
         if network_url is not None:
             if not isinstance(network_url, str) or not network_url.strip():
                 raise ValueError(f"站点 {site_id} 的 network.url 必须是非空 URL")
             parsed_network_url = urlsplit(network_url)
             if parsed_network_url.scheme not in {"http", "https"} or not parsed_network_url.netloc:
                 raise ValueError(f"站点 {site_id} 的 network.url 必须是完整的 http(s) URL")
-        network_method = str(network.get("method", "GET")).strip().upper()
-        if network_method not in {"GET", "POST", "PUT", "PATCH"}:
-            raise ValueError(f"站点 {site_id} 的 network.method 不支持: {network_method}")
+        ratio_url = network.get("ratio_url")
+        if ratio_url is not None:
+            if not isinstance(ratio_url, str) or not ratio_url.strip():
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url 必须是非空 URL")
+            parsed_ratio_url = urlsplit(ratio_url)
+            if parsed_ratio_url.scheme not in {"http", "https"} or not parsed_ratio_url.netloc:
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url 必须是完整的 http(s) URL")
         for network_field in ("params", "headers"):
             if network_field in network and not isinstance(network[network_field], dict):
                 raise ValueError(f"站点 {site_id} 的 network.{network_field} 必须是对象")
-        body_type = str(network.get("body_type", "json")).strip().lower()
-        if body_type not in {"json", "form", "raw"}:
-            raise ValueError(f"站点 {site_id} 的 network.body_type 必须是 json、form 或 raw")
+        raw_networks = value.get("networks", [])
+        if not isinstance(raw_networks, list):
+            raise ValueError(f"站点 {site_id} 的 networks 必须是数组")
+        normalized_networks: list[dict[str, Any]] = []
+        for index, entry in enumerate(raw_networks):
+            label = f"站点 {site_id} 的 networks[{index}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{label} 必须是对象")
+            entry_url = entry.get("url")
+            if not isinstance(entry_url, str) or not entry_url.strip():
+                raise ValueError(f"{label}.url 必须是非空 URL")
+            parsed_entry_url = urlsplit(entry_url)
+            if parsed_entry_url.scheme not in {"http", "https"} or not parsed_entry_url.netloc:
+                raise ValueError(f"{label}.url 必须是完整的 http(s) URL")
+            for network_field in ("params", "headers"):
+                if network_field in entry and not isinstance(entry[network_field], dict):
+                    raise ValueError(f"{label}.{network_field} 必须是对象")
+            normalized_networks.append(entry)
+        raw_status = _endpoint_section(value.get("status"), site_id, "status")
+        raw_notice = _endpoint_section(value.get("notice"), site_id, "notice")
         request_headers = value.get("request_headers", {})
         if not isinstance(request_headers, dict) or any(
             not isinstance(key, str) or not isinstance(header_value, str)
             for key, header_value in request_headers.items()
         ):
             raise ValueError(f"站点 {site_id} 的 request_headers 必须是字符串键值对象")
-        preferred_response_url_patterns = value.get("preferred_response_url_patterns", ["price", "model"])
-        if not isinstance(preferred_response_url_patterns, list) or any(not isinstance(item, str) for item in preferred_response_url_patterns):
-            raise ValueError(f"站点 {site_id} 的 preferred_response_url_patterns 必须是字符串数组")
-        ratio_base_price = number_or_none(value.get("ratio_base_price", DEFAULT_NEWAPI_RATIO_BASE_PRICE))
-        if ratio_base_price is None or ratio_base_price <= 0:
-            raise ValueError(f"站点 {site_id} 的 ratio_base_price 必须是正数")
-        currency = str(value.get("currency", "CNY")).strip().upper()
-        if currency not in {"CNY", "USD"}:
-            raise ValueError(f"站点 {site_id} 的 currency 必须是 CNY 或 USD")
-        models = tuple(
-            ModelTarget(
-                item if isinstance(item, str) else item["name"],
-                None if isinstance(item, str) else item.get("group"),
-                () if isinstance(item, str) else tuple(item.get("aliases", [])),
-            )
-            for item in value.get("models", [])
-        )
+        raw_models = value.get("models", [])
+        if any(not isinstance(item, str) for item in raw_models):
+            raise ValueError(f"站点 {site_id} 的 models 必须是字符串数组；模型分组/别名字段已下线，别名由 AI 自动解析")
+        models = tuple(ModelTarget(item.strip()) for item in raw_models if item.strip())
         site_values = {
             **value,
+            "adapter": adapter,
             "models": models,
             "request_headers": request_headers,
-            "preferred_response_url_patterns": tuple(preferred_response_url_patterns),
-            "ratio_base_price": ratio_base_price,
-            "currency": currency,
-            "network": {**network, "method": network_method, "body_type": body_type},
+            "network": network,
+            "networks": tuple(normalized_networks),
+            "status": raw_status,
+            "notice": raw_notice,
         }
         if set(value) <= {"id"}:
             site_values["enabled"] = False

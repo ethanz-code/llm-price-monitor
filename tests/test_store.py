@@ -1,5 +1,6 @@
 """SQLite 存储层与首次种子导入的行为测试。"""
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from llm_price_monitor.webapi.app import create_app
 def _site_config(site_id: str, url: str) -> dict:
     return {
         "id": site_id,
-        "adapter": "browser",
+        "adapter": "standard",
         "model_list_url": url,
         "models": ["demo-model"],
         "network": {"url": url},
@@ -36,16 +37,45 @@ def test_site_crud_round_trip(tmp_path: Path):
     assert store.delete_site("a") is False
     assert store.get_site_config("a") is None
 
+def test_delete_site_purge_cleans_related_data(tmp_path: Path):
+    """purge 删除同时清理该站点的历史/事件/状态/快照；默认删除只删配置保留数据。"""
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("a", _site_config("a", "https://a.test/api"))
+    store.append_history([
+        {"site_id": "a", "model": "m1", "captured_at": 1.0},
+        {"site_id": "b", "model": "m1", "captured_at": 2.0},
+    ])
+    store.append_events([{"site_id": "a", "model": "m1", "kind": "new", "detected_at": 1.0}])
+    store.append_status_records([{"site_id": "a", "captured_at": 1.0, "ok": True}])
+    store.append_status_events([{"site_id": "a", "kind": "channel_up", "detected_at": 1.0}])
+    store.replace_latest({"a:m1:default": {"site_id": "a"}, "b:m1:default": {"site_id": "b"}})
+
+    # 默认删除：历史数据全部保留
+    assert store.delete_site("a") is True
+    assert store.get_site_config("a") is None
+    assert store.read_history(limit=10, site_id="a")[1] == 1
+    assert "a:m1:default" in store.latest_all()
+
+    # purge 删除：五类站点数据一并清理，其他站点不受影响
+    store.upsert_site("a", _site_config("a", "https://a.test/api"))
+    assert store.delete_site("a", purge=True) is True
+    assert store.read_history(limit=10, site_id="a")[1] == 0
+    assert store.read_events(limit=10, site_id="a")[1] == 0
+    assert store.read_status(limit=10, site_id="a")[1] == 0
+    assert store.read_status_events(limit=10, site_id="a")[1] == 0
+    assert "a:m1:default" not in store.latest_all()
+    assert store.read_history(limit=10, site_id="b")[1] == 1
+    assert "b:m1:default" in store.latest_all()
+
 
 def test_config_from_store_builds_typed_config(tmp_path: Path):
     store = Store(tmp_path / "monitor.db")
     store.replace_sites([_site_config("demo", "https://demo.test/api")])
-    store.set_document("settings", {"timeout": 9.5, "tavily_api_key": "tvly-x"})
+    store.set_document("settings", {"timeout": 9.5})
     store.set_document("ai", {"enabled": True, "base_url": "https://ai.test/v1", "models": ["m-a"], "api_key": "sk-x"})
 
     config = config_from_store(store)
     assert config.settings.timeout == 9.5
-    assert config.settings.tavily_api_key == "tvly-x"
     assert config.ai.api_key == "sk-x"
     assert config.ai.cache is store
     assert config.sites[0].id == "demo"
@@ -82,10 +112,11 @@ def test_store_history_and_events_filters(tmp_path: Path):
 def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     """首启种子：配置文件 + var/ 存量全部入库；二次启动不重复导入。"""
     monkeypatch.chdir(tmp_path)
-    config_path = tmp_path / "config" / "price-monitor.json"
+    config_path = tmp_path / "config" / "default-seed.json"
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({
-        "settings": {"timeout": 15.0},
+        # timeout 断言种子导入；schedule 全 0 关闭后台调度，测试环境不触网
+        "settings": {"timeout": 15.0, "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0}},
         "ai": {"enabled": False},
         "sites": [_site_config("demo", "https://demo.test/api")],
     }), encoding="utf-8")
@@ -99,7 +130,8 @@ def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     (tmp_path / "var" / "price-events.jsonl").write_text(
         json.dumps({"site_id": "demo", "model": "m", "kind": "new", "detected_at": 1.0}) + "\n", encoding="utf-8"
     )
-    (tmp_path / "var" / "official-prices.json").write_text(json.dumps({
+    (tmp_path / "var" / "catalog.json").write_text(json.dumps({
+        "generated_at": time.time(),  # 新鲜目录：启动自动同步线程不触发网络请求
         "models": {"m": {"found": True}}, "usd_cny_rate": 7.0,
     }), encoding="utf-8")
 
@@ -108,7 +140,7 @@ def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     assert store.count_history() == 1
     assert store.count_events() == 1
     assert len(store.latest_all()) == 1
-    assert store.get_document("official_prices") is not None
+    assert store.get_document("catalog") is not None
     assert config_from_store(store).settings.timeout == 15.0
 
     # 二次启动：seeded 标记阻止重复导入

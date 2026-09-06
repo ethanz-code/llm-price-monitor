@@ -23,7 +23,6 @@ class DiscountEntry:
     output_discount: Any
     official_input_cny: Any
     official_output_cny: Any
-    basis: str
     source_url: str
 
     def as_dict(self) -> dict[str, Any]:
@@ -32,7 +31,6 @@ class DiscountEntry:
             "output": self.output_discount,
             "official_input_cny": self.official_input_cny,
             "official_output_cny": self.official_output_cny,
-            "basis": self.basis,
             "source_url": self.source_url,
         }
 
@@ -45,12 +43,12 @@ def build_discount(
     """单条记录的折扣计算；返回 (条目, None) 或 (None, 跳过原因)。全部折算成 CNY 后相除。"""
     official_entry = official_models.get(model_key(str(row.get("model", ""))))
     if not isinstance(official_entry, dict) or not official_entry.get("found"):
-        return None, "官方价文件中没有该模型的可用官方价"
+        return None, "厂商价目录中没有该模型的可用定价"
     site_input, site_output = _site_prices(row)
     if site_input is None and site_output is None:
         return None, "站点未拿到可用价格"
 
-    effective = official_entry.get("effective") or {}
+    list_prices = official_entry.get("list") or {}
     official_currency = str(official_entry.get("currency") or "USD").upper()
 
     def to_cny(value: Any, *, currency: str = "CNY", unit: str | None = None) -> Any:
@@ -60,8 +58,8 @@ def build_discount(
         is_usd = ("USD" in unit.upper()) if unit is not None else currency == "USD"
         return round2(value * rate) if is_usd else round2(value)
 
-    official_input_cny = to_cny(effective.get("input"), currency=official_currency)
-    official_output_cny = to_cny(effective.get("output"), currency=official_currency)
+    official_input_cny = to_cny(list_prices.get("input"), currency=official_currency)
+    official_output_cny = to_cny(list_prices.get("output"), currency=official_currency)
     site_input_cny = to_cny(site_input, unit=row.get("unit"))
     site_output_cny = to_cny(site_output, unit=row.get("unit"))
 
@@ -73,7 +71,6 @@ def build_discount(
         output_discount=round2(site_output_cny / official_output_cny) if site_output_cny and official_output_cny else None,
         official_input_cny=official_input_cny,
         official_output_cny=official_output_cny,
-        basis=str(effective.get("basis") or "list"),
         source_url=official_entry.get("source_url") or "",
     )
     return entry, None

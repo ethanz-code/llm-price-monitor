@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 
@@ -68,3 +68,17 @@ def get_usd_cny_rate(client: httpx.Client, fallback: float | None = None) -> tup
     if fallback is not None:
         return fallback, "在线源均失败，使用 --usd-cny 兜底"
     raise ValueError("所有汇率在线源均失败，且无缓存或 --usd-cny 兜底可用") from None
+
+
+def resolve_rate(snapshot_rate: Any, *, timeout: float = 10) -> tuple[Any, Any]:
+    """折扣与展示共用汇率：目录快照自带值优先（与快照同时刻，保证口径一致），缺失/非法时实时拉取兜底。
+
+    返回 (rate, rate_source)；快照缺失且实时拉取失败返回 (None, 失败原因)。
+    """
+    if isinstance(snapshot_rate, (int, float)) and snapshot_rate > 0:
+        return float(snapshot_rate), "厂商价快照"
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+            return get_usd_cny_rate(client)
+    except ValueError as exc:
+        return None, str(exc)

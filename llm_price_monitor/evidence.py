@@ -75,7 +75,7 @@ def redact_url(value: str) -> str:
     )
 
 
-def is_preferred_response_url(url: str, patterns: tuple[str, ...]) -> bool:
+def is_preferred_response_url(url: str, patterns: tuple[str, ...] = ("price", "model")) -> bool:
     parts = urlsplit(url)
     # 域名经常包含 model（例如 modelflare），只检查接口 path/query。
     normalized = re.sub(r"[^a-z0-9]+", " ", f"{parts.path}?{parts.query}".casefold()).strip()

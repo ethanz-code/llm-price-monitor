@@ -33,22 +33,6 @@ def tier_unit_per_1m(unit: Any) -> tuple[Any, float]:
     return unit, 1.0
 
 
-def unit_scale(unit: str) -> tuple[str, float] | None:
-    """从 `USD/1M tokens` 这类单位字符串识别币种和每 1M 放大倍数。"""
-    lowered = unit.lower().replace(" ", "")
-    if "usd" in lowered or "$" in lowered:
-        currency = "USD"
-    elif "cny" in lowered or "rmb" in lowered or "元" in lowered or "人民币" in lowered or "¥" in lowered:
-        currency = "CNY"
-    else:
-        return None
-    if re.search(r"1m|百万|million", lowered):
-        return currency, 1_000_000
-    if re.search(r"1k|千|thousand", lowered):
-        return currency, 1_000
-    return None
-
-
 def merge_unique(values: list[Any]) -> list[Any]:
     """按 JSON 值去重，保留站点返回的原始顺序。"""
     result: list[Any] = []

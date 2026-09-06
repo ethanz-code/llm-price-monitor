@@ -123,6 +123,18 @@ def test_newapi_requires_explicit_group_for_multiple_enabled_groups():
         raise AssertionError("多分组模型不应依赖响应中的显示顺序选择价格")
 
 
+def test_newapi_unlabeled_group_keeps_unit_ratio_when_group_rate_missing():
+    payload = {
+        "group_ratio": {},
+        "data": [{"model_name": "gpt-5.6-luna", "enable_groups": ["gpt pro"], "model_ratio": 0.5}],
+    }
+
+    record = newapi_price_record(payload, "gpt-5.6-luna", "https://newapi.test/api/pricing")
+
+    assert record.metadata["group"] == "gpt pro"
+    assert record.input_price == 1.0 and record.output_price == 1.0
+
+
 def test_newapi_pricing_rules_supply_output_price_when_top_level_only_has_input():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/status":

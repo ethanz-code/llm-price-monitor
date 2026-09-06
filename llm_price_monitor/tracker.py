@@ -179,14 +179,19 @@ def _ratio_group(
         else:
             raise ValueError(f"模型 {item.get('model_name')} 有多个可用分组，必须显式指定 group")
     if selected is None:
-        return None, 1.0
+        # 未标注分组一律归一为 default：事件键稳定，不随 enable_groups 抖动翻转出重复"新增"
+        selected = "default"
     if enabled_groups and selected not in enabled_groups:
         raise ValueError(f"模型 {item.get('model_name')} 不支持分组 {selected}")
     multiplier = _number(ratios.get(selected))
     if multiplier is None and fallback_ratios:
         multiplier = _number(fallback_ratios.get(selected))
     if multiplier is None:
-        raise GroupRatioUnavailableError(f"站点未公开分组 {selected} 的倍率")
+        if selected == "default" or group is None:
+            # 未标注分组的模型缺倍率时维持旧 1.0 基准，不因分组校验中断整站采集
+            multiplier = 1.0
+        else:
+            raise GroupRatioUnavailableError(f"站点未公开分组 {selected} 的倍率")
     return selected, multiplier
 
 
@@ -443,7 +448,17 @@ def fetch_newapi_price(base_url: str, model: str, *, group: str | None = None, t
         response = client.get(f"{base}/api/pricing")
         if response.status_code in (401, 403):
             if status_is_newapi:
-                return PriceRecord(model, None, None, "New API 价格接口需要认证", f"{base}/api/pricing", time.time(), {"newapi": True, "detected_endpoint": "/api/pricing"}, "unavailable", True)
+                return PriceRecord(
+                    model,
+                    None,
+                    None,
+                    "USD/1M tokens",
+                    f"{base}/api/pricing",
+                    time.time(),
+                    {"newapi": True, "detected_endpoint": "/api/pricing", "error": "New API 价格接口需要认证"},
+                    "unavailable",
+                    True,
+                )
             raise ValueError("New API 价格接口需要认证")
         response.raise_for_status()
         payload = response.json()

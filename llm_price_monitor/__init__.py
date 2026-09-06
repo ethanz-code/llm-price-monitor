@@ -9,7 +9,8 @@
 - `config`：强类型配置与校验（load_config）
 - `ai`：AI 价格抽取（AIPriceExtractor）
 - `adapters`：价格采集适配器（NetworkAdapter、ADAPTERS）
+- `status`：渠道状态采集（GET + JSON/内嵌 JSON/AI 三层解析、结构 diff）
 - `report`：运行编排、事件分类、持久化与汇总（run_once、summary_row）
-- `official`：官方价搜索与折扣率计算（tavily/extraction/search/fx/discount/fetch）
+- `catalog`：官方价目录（models.dev 同步）与折扣率计算（modelsdev/fx/discount）
 - `webapi`：FastAPI 服务（数据端点、采集任务、管理接口），唯一入口 `price-web`
 """
