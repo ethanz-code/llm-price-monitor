@@ -5,7 +5,7 @@ import { DataTable, type DColumn } from "./DataTable";
 import { StatCard } from "./PageHeader";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
-import { DiscountBars } from "./DiscountBars";
+import { DiscountBars, DiscountRangeBar } from "./DiscountBars";
 import { getSiteInfo } from "@/lib/sites";
 import { formatDiscount, formatPrice } from "@/lib/format";
 import type { DiscountData, DiscountRow, DiscountSummaryItem } from "@/lib/types";
@@ -49,8 +49,9 @@ export function DiscountTable({ data }: { data: DiscountData }) {
       width: 185,
       sorter: (a, b) => a.input_discount.avg - b.input_discount.avg,
       render: (_, row) => (
-        <span style={{ display: "inline-grid", justifyItems: "end", gap: 1 }}>
+        <span style={{ display: "inline-grid", justifyItems: "end", gap: 4 }}>
           <span className="mono num" style={{ fontWeight: 550 }}>{formatDiscount(row.input_discount.avg)}</span>
+          <DiscountRangeBar min={row.input_discount.min} max={row.input_discount.max} avg={row.input_discount.avg} />
           <span className="mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
             {formatDiscount(row.input_discount.min)} – {formatDiscount(row.input_discount.max)}
           </span>
@@ -70,8 +71,9 @@ export function DiscountTable({ data }: { data: DiscountData }) {
       width: 185,
       sorter: (a, b) => a.output_discount.avg - b.output_discount.avg,
       render: (_, row) => (
-        <span style={{ display: "inline-grid", justifyItems: "end", gap: 1 }}>
+        <span style={{ display: "inline-grid", justifyItems: "end", gap: 4 }}>
           <span className="mono num" style={{ fontWeight: 550 }}>{formatDiscount(row.output_discount.avg)}</span>
+          <DiscountRangeBar min={row.output_discount.min} max={row.output_discount.max} avg={row.output_discount.avg} />
           <span className="mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
             {formatDiscount(row.output_discount.min)} – {formatDiscount(row.output_discount.max)}
           </span>

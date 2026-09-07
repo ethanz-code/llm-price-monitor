@@ -226,7 +226,28 @@ class NetworkAdapter:
         user_agent: str,
         ai: AIConfig | None = None,
     ) -> list[PriceRecord]:
-        """直接请求配置的价格接口；不启动浏览器。"""
+        """直接请求配置的价格接口；不启动浏览器。
+
+        全部模型都拿不到价格（unavailable）时，多半是 CDN 质询/接口偶发抖动
+        而非站点真没数据，隔 20 秒重试一次，重试成功则用重试结果。
+        """
+        records = self._collect_once(spec, client, timeout, user_agent, ai)
+        if records and all(record.price_status == "unavailable" for record in records):
+            time.sleep(20)
+            retried = self._collect_once(spec, client, timeout, user_agent, ai)
+            if any(record.price_status != "unavailable" for record in retried):
+                return retried
+        return records
+
+    def _collect_once(
+        self,
+        spec: SiteSpec,
+        client: httpx.Client,
+        timeout: float,
+        user_agent: str,
+        ai: AIConfig | None = None,
+    ) -> list[PriceRecord]:
+        """单次采集，不重试。"""
         if not spec.models:
             raise PriceMonitorError("不会自动检测所有模型；请在 models 中配置目标模型并在 network.url 配置接口地址")
         network = spec.network if isinstance(spec.network, dict) else {}

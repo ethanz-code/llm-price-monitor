@@ -55,7 +55,7 @@ export interface OverviewData {
 
 /** 单站点最近一次采集状态（后端 documents.collect_status，与 run_once/site_status_from_records 对齐）。 */
 export interface SiteStatus {
-  status: "ok" | "auth_required" | "unavailable" | "error" | "disabled";
+  status: "ok" | "inferred" | "auth_required" | "no_data" | "unavailable" | "error" | "disabled";
   error: string | null;
   checked_at: number | null;
 }
@@ -213,6 +213,19 @@ export interface TaskInfo {
   finished_at: number | null;
   result?: { [key: string]: unknown };
   error?: string | null;
+  /** 列表接口只带日志行数；完整日志经 /api/tasks/{id} 详情获取。 */
+  log_count?: number;
+}
+
+/** 任务过程日志行：level=error 在界面标红。 */
+export interface TaskLog {
+  time: number;
+  message: string;
+  level: "info" | "error";
+}
+
+export interface TaskDetail extends TaskInfo {
+  logs: TaskLog[];
 }
 
 /** 渠道状态快照（后端 fetch_site_status 输出；data 为站点自有结构的自由 JSON）。 */

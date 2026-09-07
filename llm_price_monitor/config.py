@@ -6,7 +6,6 @@ MonitorConfig，不再接触原始字典。
 from __future__ import annotations
 
 import json
-import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -128,14 +127,12 @@ def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSetti
     return MonitorSettings(**values)
 
 
-def ai_from_raw(raw: dict[str, Any], *, resolve_env: bool, cache: AIResultCache | None) -> AIConfig:
+def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig:
     raw = raw if isinstance(raw, dict) else {}
     raw_models = raw.get("models", [])
     if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
         raise ValueError("配置文件 ai.models 必须是字符串数组")
     api_key = raw.get("api_key")
-    if not api_key and resolve_env:
-        api_key = os.getenv(str(raw.get("api_key_env", "")).strip())
     api_format = str(raw.get("api_format", "chat_completions")).strip()
     if api_format not in AI_FORMATS:
         raise ValueError("配置文件 ai.api_format 必须是 chat_completions、openai_responses、anthropic 或 gemini")
@@ -278,9 +275,9 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
 def config_from_raw(
     raw: dict[str, Any], *, resolve_env: bool = True, cache: AIResultCache | None = None
 ) -> MonitorConfig:
-    """raw dict → 强类型配置；文件种子路径（resolve_env=True）负责 env 兜底与空站点校验。"""
+    """raw dict → 强类型配置；文件种子路径（resolve_env=True）额外要求站点不为空。"""
     settings = settings_from_raw(raw.get("settings", {}), resolve_env=resolve_env)
-    ai = ai_from_raw(raw.get("ai", {}), resolve_env=resolve_env, cache=cache)
+    ai = ai_from_raw(raw.get("ai", {}), cache=cache)
     sites = sites_from_raw(raw.get("sites", []))
     if resolve_env and not sites:
         raise ValueError("配置中没有启用站点")

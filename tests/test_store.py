@@ -109,6 +109,21 @@ def test_store_history_and_events_filters(tmp_path: Path):
     assert total == 1 and events[0]["kind"] == "new"
 
 
+def test_read_rows_clamps_limit(tmp_path: Path, monkeypatch):
+    """公开读接口的 limit 统一钳制到 _MAX_ROW_LIMIT：超大入参不会一次拖全表。"""
+    import llm_price_monitor.store as store_module
+
+    monkeypatch.setattr(store_module, "_MAX_ROW_LIMIT", 2)
+    store = Store(tmp_path / "monitor.db")
+    store.append_history([
+        {"site_id": "a", "model": "m1", "captured_at": 1.0},
+        {"site_id": "a", "model": "m2", "captured_at": 2.0},
+        {"site_id": "a", "model": "m3", "captured_at": 3.0},
+    ])
+    rows, total = store.read_history(limit=10**9)
+    assert total == 3 and len(rows) == 2  # COUNT 反映全量，返回行数被钳制
+
+
 def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     """首启种子：配置文件 + var/ 存量全部入库；二次启动不重复导入。"""
     monkeypatch.chdir(tmp_path)

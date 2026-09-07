@@ -6,8 +6,9 @@ from typing import Any
 
 from llm_price_monitor.catalog.classify import attach_ai_tiers
 from llm_price_monitor.catalog.modelsdev import fetch_catalogs
-from llm_price_monitor.catalog.translate import attach_zh_descriptions
+from llm_price_monitor.catalog.translate import attach_zh_descriptions, fingerprint_translations
 from llm_price_monitor.config import MonitorConfig, config_from_store
+from llm_price_monitor import tasklog
 from llm_price_monitor.report import scan_notices, scan_prices, scan_statuses, summary_row
 from llm_price_monitor.store import Store
 
@@ -60,29 +61,42 @@ def notice_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
 def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
     """厂商定价同步任务体：一次拉取 models.dev 快照，落官方价与全量渠道价两份目录。"""
     def _run() -> dict[str, Any]:
+        tasklog.emit("开始刷新厂商定价：抓取 models.dev 快照")
         output, full = fetch_catalogs()
+        providers = len({entry["vendor"] for entry in full["models"].values()})
+        tasklog.emit(f"快照抓取完成：{providers} 个厂商，{len(full['models'])} 个模型")
         previous = store.get_document("catalog")
         previous_all = store.get_document("catalog_all")
         try:
             ai_config = config_from_store(store).ai
         except ValueError:
             ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有 AI 档位与中文简介
+        # 两份目录的译文按简介指纹互济：官方目录翻过的全量渠道直接复用，反之亦然
+        seed_official = {**fingerprint_translations(previous_all), **fingerprint_translations(previous)}
         classified = attach_ai_tiers(output, previous, ai_config) if ai_config is not None else 0
-        translated = attach_zh_descriptions(output, previous, ai_config) if ai_config is not None else 0
-        # 全量渠道目录仅供展示，不做 AI 档位判定；简介翻译按轮次限额逐步补齐
-        translated_all = (
-            attach_zh_descriptions(full, previous_all, ai_config, budget=ALL_CATALOG_TRANSLATE_BUDGET)
+        translated = (
+            attach_zh_descriptions(output, previous, ai_config, seed=seed_official)
             if ai_config is not None
             else 0
         )
+        # 全量渠道目录仅供展示，不做 AI 档位判定；简介翻译按轮次限额逐步补齐
+        seed_all = {**seed_official, **fingerprint_translations(output)}
+        translated_all = (
+            attach_zh_descriptions(full, previous_all, ai_config, budget=ALL_CATALOG_TRANSLATE_BUDGET, seed=seed_all)
+            if ai_config is not None
+            else 0
+        )
+        if ai_config is not None:
+            tasklog.emit(f"AI 档位判定 {classified} 条，中文简介翻译 {translated + translated_all} 条")
         store.set_document("catalog", output)
         store.set_document("catalog_all", full)
+        tasklog.emit(f"厂商定价已更新：官方目录 {len(output['models'])} 个模型")
         return {
             "models_total": len(output["models"]),
             "models_found": sum(1 for entry in output["models"].values() if entry.get("found")),
             "ai_classified": classified,
             "zh_translated": translated,
-            "all_providers": len({entry["vendor"] for entry in full["models"].values()}),
+            "all_providers": providers,
             "all_models_total": len(full["models"]),
             "all_zh_translated": translated_all,
         }

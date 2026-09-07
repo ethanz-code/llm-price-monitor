@@ -22,14 +22,17 @@ export function isNoticeEvent(event: { kind: string; model?: unknown }): event i
   return event.kind === "notice_init" || event.kind === "notice_changed";
 }
 
-/** 公告正文的单行摘要：去掉 Markdown 标题井号，超长截断；事件流与首页侧栏共用。 */
-export function noticeExcerpt(content: string): string {
-  const line =
-    content
-      .split("\n")
-      .map((part) => part.trim().replace(/^#+\s*/, ""))
-      .filter(Boolean)[0] ?? content;
-  return line.length > 120 ? `${line.slice(0, 120)}…` : line;
+/** 公告正文摘要：先剥掉 HTML 标签（部分站点公告是 HTML 片段），去掉 Markdown 标题井号后取前 maxLines 行；
+ * 超过长度上限截断加省略号。默认单行（事件流与首页侧栏用），总览表公告列传 3 行由 CSS 钳制展示。 */
+export function noticeExcerpt(content: string, maxLines = 1): string {
+  const lines = content
+    .replace(/<[^>]*>/g, " ")
+    .split("\n")
+    .map((part) => part.trim().replace(/^#+\s*/, ""))
+    .filter(Boolean);
+  const text = lines.slice(0, maxLines).join(" ") || content;
+  const cap = maxLines <= 1 ? 120 : maxLines * 110;
+  return text.length > cap ? `${text.slice(0, cap)}…` : text;
 }
 
 export function formatPrice(value: number | null | undefined): string {
@@ -192,6 +195,13 @@ export function formatTime(ts: number | undefined | null): string {
   return `${dayKey(ts)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 任务日志行用：当日内时分秒，如 14:05:09。 */
+export function formatClock(ts: number): string {
+  const d = new Date(ts * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 /** 折扣 = 站点价 / 厂商价；0.21 显示为 21%，越小越便宜。 */
 export function formatDiscount(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -211,7 +221,9 @@ export const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   confirmed: { label: "正常", tone: "green" },
   rule_only: { label: "规则价", tone: "blue" },
   candidate: { label: "待确认", tone: "blue" },
+  inferred: { label: "仅推断价", tone: "yellow" },
   auth_required: { label: "需认证", tone: "yellow" },
+  no_data: { label: "未抓到价格", tone: "yellow" },
   unavailable: { label: "无数据", tone: "gray" },
   disabled: { label: "已停用", tone: "gray" },
   error: { label: "采集失败", tone: "red" },
@@ -233,4 +245,15 @@ export function rowReason(row: {
 }): string | null {
   const fromMeta = row.metadata?.error ?? row.metadata?.notes;
   return row.status_reason ?? (typeof fromMeta === "string" && fromMeta ? fromMeta : null);
+}
+
+/** 归一化搜索文本：小写并去掉分隔符（- _ . 空格等），让 GLM5.3 能命中 GLM-5.3。 */
+export function looseSearchKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "");
+}
+
+/** 模糊包含匹配：去掉分隔符后再比对，空关键词恒命中。 */
+export function looseIncludes(haystack: string, needle: string): boolean {
+  const n = looseSearchKey(needle);
+  return n.length === 0 || looseSearchKey(haystack).includes(n);
 }

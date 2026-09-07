@@ -11,13 +11,17 @@ export const PALETTE_DARK = ["#C8FF00", "#5B9BFF", "#E0B45C", "#E27B78", "#9DA3A
 /** 全站统一的图表主题：坐标轴、网格、主色与多系列色板，随明暗主题切换。 */
 export function useChartTheme() {
   const { dark } = useTheme();
+  const palette = dark ? PALETTE_DARK : PALETTE_LIGHT;
+  const lineColor = dark ? "#C8FF00" : "#86C200";
   return {
     dark,
     axisColor: dark ? "#6E7478" : "#9B9B98",
     gridColor: dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
-    lineColor: dark ? "#C8FF00" : "#86C200",
+    lineColor,
     secondaryColor: dark ? "#9DA3A6" : "#ADACA8",
-    palette: dark ? PALETTE_DARK : PALETTE_LIGHT,
+    palette,
+    /** 可用率三档警示色：正常沿用品牌绿，波动/大面积异常取色板中的琥珀与红。 */
+    statusColors: { ok: lineColor, warn: palette[2], down: palette[3] },
   };
 }
 

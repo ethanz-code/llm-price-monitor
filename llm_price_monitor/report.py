@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from llm_price_monitor import tasklog
 from llm_price_monitor.adapters import ADAPTERS
 from llm_price_monitor.config import ChangeKind, MonitorConfig, PriceMonitorError, SiteSpec
 from llm_price_monitor.tracker import PriceRecord
@@ -95,7 +96,11 @@ def classify(previous: dict[str, Any] | None, current: dict[str, Any]) -> Change
 
 
 def site_status_from_records(records: list[PriceRecord]) -> dict[str, Any]:
-    """从一次采集成功的记录推导站点级状态；整站请求失败由调用方直接填 error。"""
+    """从一次采集成功的记录推导站点级状态；整站请求失败由调用方直接填 error。
+
+    ok=抓到确认/候选价；inferred=只有 AI 推断价（已回填进快照但未经页面交叉验证）；
+    no_data=流程跑完但没抓到任何价格数据；auth_required=需要登录才能看到价格。
+    """
     authed = [record for record in records if record.requires_auth]
     if authed:
         reason = next(
@@ -107,8 +112,10 @@ def site_status_from_records(records: list[PriceRecord]) -> dict[str, Any]:
             None,
         )
         return {"status": "auth_required", "error": reason}
-    if any(record.price_status in {"confirmed", "candidate", "rule_only"} for record in records):
+    if any(record.price_status in {"confirmed", "candidate"} for record in records):
         return {"status": "ok", "error": None}
+    if any(record.price_status == "rule_only" for record in records):
+        return {"status": "inferred", "error": None}
     reason = next(
         (
             str(record.metadata.get("error") or record.metadata.get("notes"))
@@ -117,7 +124,7 @@ def site_status_from_records(records: list[PriceRecord]) -> dict[str, Any]:
         ),
         None,
     )
-    return {"status": "unavailable", "error": reason}
+    return {"status": "no_data", "error": reason}
 
 
 @dataclass
@@ -161,6 +168,22 @@ def _carry_last_price(current: dict[str, Any], previous: dict[str, Any]) -> dict
     }
 
 
+def _backfill_rule_price(row: dict[str, Any]) -> dict[str, Any]:
+    """rule_only 行价格字段为空但 pricing_rules 有推断价时，把代表档价格回填到顶层：
+    推断价得以进快照与定价页（price_status 保持 rule_only，前端标注"规则价"）；
+    真正无数据的行（pricing_rules 也为空）保持无价，不进快照。"""
+    if row.get("price_status") != "rule_only" or _has_price(row):
+        return row
+    representative = representative_tier(summary_tiers(row), row)
+    if not representative:
+        return row
+    return {
+        **row,
+        "input_price": row.get("input_price") if row.get("input_price") is not None else representative.get("input_price"),
+        "output_price": row.get("output_price") if row.get("output_price") is not None else representative.get("output_price"),
+    }
+
+
 def _scan_prices(
     config: MonitorConfig,
     client: httpx.Client,
@@ -178,13 +201,18 @@ def _scan_prices(
     events: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     site_status: dict[str, dict[str, Any]] = {}
+    enabled_count = sum(1 for spec in config.sites if spec.enabled)
+    scan_started = time.time()
+    tasklog.emit(f"开始价格采集：{enabled_count} 个站点")
     for spec in config.sites:
         if not spec.enabled:
             continue
+        site_started = time.time()
         adapter = ADAPTERS.get(spec.adapter)
         if adapter is None:
             errors.append({"site_id": spec.id, "error": f"未知适配器: {spec.adapter}"})
             site_status[spec.id] = {"status": "error", "error": f"未知适配器: {spec.adapter}", "checked_at": time.time()}
+            tasklog.emit(f"[{spec.id}] 价格采集失败：未知适配器 {spec.adapter}", "error")
             continue
         # 多地址站点：主地址 + networks 附加地址依次采集；同一模型重复命中时主地址优先
         collected = []
@@ -202,12 +230,15 @@ def _scan_prices(
             message = "；".join(collect_errors)
             errors.append({"site_id": spec.id, "error": message})
             site_status[spec.id] = {"status": "error", "error": message, "checked_at": time.time()}
+            tasklog.emit(f"[{spec.id}] 价格采集失败：{message}", "error")
             continue
         for message in collect_errors:
             errors.append({"site_id": spec.id, "error": message})
+            tasklog.emit(f"[{spec.id}] 部分地址采集失败：{message}", "error")
         site_status[spec.id] = {"checked_at": time.time(), **site_status_from_records(collected)}
+        site_changed = 0
         for record in collected:
-            current = record_dict(spec.id, record)
+            current = _backfill_rule_price(record_dict(spec.id, record))
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定
             group = (record.metadata or {}).get("group") or "default"
             key = f"{spec.id}:{record.model}:{group}"
@@ -222,6 +253,7 @@ def _scan_prices(
                 records.append(current)
                 kind = classify(previous, current)
                 events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
+                site_changed += kind != "unchanged"
                 continue
             current["fingerprint"] = fingerprint(current)
             current["captured_at"] = record.captured_at
@@ -229,7 +261,10 @@ def _scan_prices(
             history_rows.append(current)
             kind = classify(previous, current)
             events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
+            site_changed += kind != "unchanged"
             latest[key] = current
+        tasklog.emit(f"[{spec.id}] 价格采集成功：{len(collected)} 条价格，{site_changed} 处变化，{time.time() - site_started:.1f}s")
+    tasklog.emit(f"价格采集完成：{len(records)} 条记录，{len(errors)} 个错误，{time.time() - scan_started:.1f}s")
     return records, history_rows, events, errors, site_status
 
 
@@ -249,6 +284,8 @@ def _scan_statuses(
 ) -> SectionScan:
     """渠道状态采集：只处理配置了 status.url 的站点；与上次记录 diff，变化写入 status 事件。"""
     scan = SectionScan()
+    scan_started = time.time()
+    tasklog.emit("开始渠道状态采集")
     for spec in config.sites:
         if not spec.enabled or not spec.status.get("url"):
             continue
@@ -256,6 +293,7 @@ def _scan_statuses(
             status_record = fetch_site_status(spec, client, config.settings.timeout, user_agent, config.ai)
         except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
             scan.errors.append({"site_id": spec.id, "error": f"渠道状态采集失败: {exc}"})
+            tasklog.emit(f"[{spec.id}] 渠道状态采集失败：{exc}", "error")
             continue
         scan.records.append(status_record)
         previous_record = store.latest_status(spec.id) if store is not None else None
@@ -273,6 +311,10 @@ def _scan_statuses(
                 "detected_at": status_record["captured_at"],
                 "changes": changes,
             })
+            tasklog.emit(f"[{spec.id}] 渠道状态有变化")
+        else:
+            tasklog.emit(f"[{spec.id}] 渠道状态无变化")
+    tasklog.emit(f"渠道状态采集完成：{len(scan.records)} 个站点，{len(scan.errors)} 个错误，{time.time() - scan_started:.1f}s")
     return scan
 
 
@@ -284,6 +326,8 @@ def _scan_notices(
     正文与上一版本比较：空正文不入库；内容不变不重复存版本、不发事件。
     """
     scan = SectionScan()
+    scan_started = time.time()
+    tasklog.emit("开始站点公告采集")
     for spec in config.sites:
         if not spec.enabled:
             continue
@@ -291,6 +335,7 @@ def _scan_notices(
             notice_record = fetch_site_notice(spec, client, config.settings.timeout, user_agent)
         except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
             scan.errors.append({"site_id": spec.id, "error": f"站点公告采集失败: {exc}"})
+            tasklog.emit(f"[{spec.id}] 站点公告采集失败：{exc}", "error")
             continue
         if notice_record is not None and notice_record["content"]:
             previous_notice = store.latest_notice(spec.id) if store is not None else None
@@ -310,6 +355,9 @@ def _scan_notices(
                     "detected_at": notice_record["captured_at"],
                     "content": notice_record["content"],
                 })
+                # 公告无变化与未配置公告接口的站点不逐站记日志，避免刷屏
+                tasklog.emit(f"[{spec.id}] 公告{'新增' if notice_kind == 'notice_init' else '更新'}")
+    tasklog.emit(f"站点公告采集完成：{len(scan.records)} 条公告，{len(scan.errors)} 个错误，{time.time() - scan_started:.1f}s")
     return scan
 
 
@@ -329,7 +377,8 @@ def scan_prices(
     latest = store.latest_all() if store is not None else {}
     try:
         records, history_rows, events, errors, site_status = _scan_prices(config, client, selected_user_agent, store, latest)
-        changed_events = [event for event in events if event["kind"] != "unchanged"]
+        # price_status 在确认/规则/无数据之间抖动不代表价格真的变了，这类事件不落库
+        changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
             store.append_history(history_rows)
             store.append_events(changed_events)
@@ -406,7 +455,7 @@ def run_once(
         status_scan = _scan_statuses(config, client, selected_user_agent, store)
         notice_scan = _scan_notices(config, client, selected_user_agent, store)
         errors = [*errors, *status_scan.errors, *notice_scan.errors]
-        changed_events = [event for event in events if event["kind"] != "unchanged"]
+        changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
             store.append_history(history_rows)
             store.append_events(changed_events)

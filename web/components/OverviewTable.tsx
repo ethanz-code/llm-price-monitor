@@ -7,13 +7,13 @@ import { DataTable, type DColumn } from "./DataTable";
 import { StatCard } from "./PageHeader";
 import { Empty } from "./ui";
 import { IconMonitor } from "./icons";
-import { ToneTag } from "./ToneTag";
+import { ToneTag, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
 import { effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
-import { canonicalModel, hasUsablePrice, mergeModelRows, modelRowKey } from "@/lib/priceRows";
-import { filterDotsByGroups, type ChannelDotRow } from "@/lib/channelStatus";
+import { canonicalModel, hasUsablePrice, mergeModelRows, modelRowKey, smartOrderRows } from "@/lib/priceRows";
+import { channelSuccessRate, filterDotsByGroups, type ChannelDotRow } from "@/lib/channelStatus";
 import { DiscountBars } from "./DiscountBars";
 import { PriceCell } from "./PriceCell";
 import type { OverviewData, OverviewRecord, SiteStatus } from "@/lib/types";
@@ -76,13 +76,14 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
   const active = models.find((group) => group.key === activeModel) ?? models[0];
 
   // 表内仍沿用"同站点同分组合并为一行"的口径：代表行取最低价，其余展开可见
-  const { parentRows, childRowsOf } = useMemo(
+  const merged = useMemo(
     () =>
       active
         ? mergeModelRows(active.rows)
         : { parentRows: [] as OverviewRecord[], childRowsOf: new Map<string, OverviewRecord[]>() },
     [active],
   );
+  const childRowsOf = merged.childRowsOf;
 
   // 渠道点阵按合并组过滤：父行只显示该站点+模型涉及的分组（父+子记录的分组并集）；
   // 目标分组为空或一行都匹配不上（渠道形态接口，行名不是分组名）时不过滤
@@ -105,6 +106,25 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     }
     return result;
   }, [active, statusDots]);
+
+  // 默认行序（智能排序）：综合价（输入 3 : 输出 1）低、扣分少的在前；点表头排序循环回"无排序"即回到此序
+  const parentRows = useMemo(
+    () =>
+      smartOrderRows(
+        merged.parentRows,
+        (row) => {
+          // 缺信息扣分：渠道按平均成功率扣 0–3 分，没配置渠道状态、没有公告各扣 1
+          const success = channelSuccessRate(dotsByRowKey.get(modelRowKey(row)));
+          let penalty = 0;
+          if (success == null) penalty += 1;
+          else penalty += (1 - success) * 3;
+          if (!data.notices?.[row.site_id]?.content) penalty += 1;
+          return penalty;
+        },
+        rate,
+      ),
+    [merged.parentRows, dotsByRowKey, rate, data.notices],
+  );
 
   const attentionSites = useMemo(() => {
     return Object.entries(data.collect_status ?? {})
@@ -131,11 +151,15 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       width: 170,
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
-        // 状态列已去掉：正常态是噪音，只有异常（需认证/无数据）才在名称旁挂标签
+        // 状态列已去掉：确认/候选价是常态不挂标签；需认证/无数据挂标签，规则价用小字低调标注
         const statusKey = recordStatusKey(row);
-        const abnormal = statusKey === "auth_required" || statusKey === "unavailable";
+        const isRule = statusKey === "rule_only";
+        const showTag = statusKey === "auth_required" || statusKey === "unavailable";
         const meta = statusMeta(statusKey);
-        const reason = rowReason(row);
+        const reason =
+          isRule
+            ? "价格由 AI 从站点数据推算，未经页面交叉验证，仅供参考"
+            : rowReason(row);
         const tip = [reason, row.last_price_at != null ? `上次拿到数据：${formatTime(row.last_price_at)}` : null]
           .filter(Boolean)
           .join("\n") || undefined;
@@ -144,7 +168,8 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             <RiskLink href={site.homepage || row.source_url} variant="site">
               <span className="mono">{site.name}</span>
             </RiskLink>
-            {abnormal && (
+            {isRule && <RulePriceMark tip={tip} />}
+            {showTag && (
               <span title={tip}>
                 <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
               </span>
@@ -249,14 +274,13 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "公告",
       key: "notice",
-      // 不设固定宽度：剩余空间都给公告摘要，窄窗口时靠省略号收敛
+      // 不设固定宽度：剩余空间都给公告；最多 3 行，超出 CSS 钳制，悬停看更长摘要
       mobileHide: true,
-      ellipsis: true,
       render: (_v: unknown, row) => {
         const notice = data.notices?.[row.site_id];
         if (!notice?.content) return <span style={{ color: "var(--text-3)" }}>—</span>;
         const tip = [
-          noticeExcerpt(notice.content),
+          noticeExcerpt(notice.content, 6),
           notice.captured_at ? `发布于 ${formatTime(notice.captured_at)}` : null,
         ]
           .filter(Boolean)
@@ -267,7 +291,18 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             title={tip}
             style={{ color: "var(--text-2)" }}
           >
-            {noticeExcerpt(notice.content)}
+            <span
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                whiteSpace: "normal",
+                lineHeight: 1.55,
+              }}
+            >
+              {noticeExcerpt(notice.content, 3)}
+            </span>
           </Link>
         );
       },
@@ -363,7 +398,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             )}
             {active && (
               <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
-                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同分组合并取最低价，点名称右侧 +N 展开其余写法，点行内其他位置查看站点检测详情
+                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同分组合并取最低价 · 默认综合价低、渠道正常的在前 · 点名称右侧 +N 展开其余写法，点行内其他位置查看站点检测详情
               </span>
             )}
           </span>

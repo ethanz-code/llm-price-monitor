@@ -1,24 +1,47 @@
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { apiGet } from "@/lib/api";
 import { PageHeader } from "@/components/PageHeader";
 import { ToneTag } from "@/components/ToneTag";
 import { StatusCharts } from "@/components/StatusCharts";
+import { StatusUptimeBars } from "@/components/StatusUptimeBars";
 import { formatTime } from "@/lib/format";
-import { availabilityBySite, channelDotsBySite, latencyBySite } from "@/lib/channelStatus";
+import { availabilityBySite, channelDotsBySite, latencyBySite, latencyLevel, rateLevel, type RateLevel } from "@/lib/channelStatus";
 import { getSiteInfo } from "@/lib/sites";
-import type { NoticeSnapshot, StatusChange, StatusEvent, StatusSnapshot } from "@/lib/types";
+import { StatCard } from "@/components/PageHeader";
+import type { NoticeSnapshot, StatusSnapshot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "站点检测" };
+
+/**
+ * 公告正文允许的 HTML 白名单：站点公告常带 HTML 片段，经 rehype-raw 渲染；
+ * 白名单在默认基础上放开 class，保住站点的排版样式，脚本等危险内容仍被剥掉。
+ */
+const NOTICE_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    "*": [...(defaultSchema.attributes?.["*"] ?? []), "className"],
+  },
+};
 
 const PARSE_LABELS: Record<string, string> = {
   json: "JSON",
   embedded_json: "页面内嵌 JSON",
   ai: "AI 解析",
   text: "纯文本",
+};
+
+/** 可用率档位 → KPI 数字的语义色，与趋势图的分段着色一致。 */
+const RATE_TONE: Record<RateLevel, string> = {
+  ok: "var(--tone-green-text)",
+  warn: "var(--tone-yellow-text)",
+  down: "var(--tone-red-text)",
 };
 
 function ValueNode({ value }: { value: unknown }) {
@@ -62,75 +85,24 @@ function ValueNode({ value }: { value: unknown }) {
   return <span className="mono">{String(value)}</span>;
 }
 
-/** 时间戳类字段轮询必变（与后端 diff_status 的跳过口径一致），变化行不渲染。 */
-const TIME_KEY_RE = /(^|_)(at|time|ts)$|^(time|timestamp|ts|updated|datetime|last_update)$/i;
-
-function isVolatilePath(path: string): boolean {
-  const leaf = (path.split(/[.[]/).pop() ?? "").replace(/\]\.?$/, "");
-  return TIME_KEY_RE.test(leaf);
-}
-
-function formatChangeValue(value: unknown): string {
-  if (value === null || value === undefined) return "null";
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
-  if (typeof value === "boolean") return String(value);
-  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
-  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
-}
-
-function ChangeLine({ change }: { change: StatusChange }) {
-  const target = change.op === "remove" ? change.old : change.new;
-  const text = formatChangeValue(target);
-  // 数值四舍五入到 2 位后没变的（如 availability 抖动）不算有效变化
-  if (change.op === "change" && text === formatChangeValue(change.old)) return null;
-  return (
-    <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-      <span
-        className="mono"
-        style={{
-          fontSize: 12,
-          padding: "1px 6px",
-          borderRadius: 6,
-          background: change.op === "remove" ? "var(--tone-red-bg, rgba(200,60,60,.12))" : "var(--hover)",
-        }}
-      >
-        {change.op}
-      </span>
-      <span className="mono" style={{ fontSize: 12.5 }}>
-        {change.path.replace(/^\$\.?/, "")}
-      </span>
-      {target !== undefined && (
-        <span style={{ fontSize: 12.5, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "min(480px, 100%)", minWidth: 0, whiteSpace: "nowrap" }}>
-          {text}
-        </span>
-      )}
-    </div>
-  );
-}
-
 export default async function StatusDetailPage({ params }: { params: Promise<{ siteId: string }> }) {
   const { siteId: rawId } = await params;
   const siteId = decodeURIComponent(rawId);
 
   let records: StatusSnapshot[] = [];
-  let eventList: StatusEvent[] = [];
   let notices: NoticeSnapshot[] = [];
   let error: string | null = null;
   try {
-    const [timeline, events, noticeData] = await Promise.all([
+    const [timeline, noticeData] = await Promise.all([
       apiGet<{ records: StatusSnapshot[]; total: number }>(`/api/status?site_id=${encodeURIComponent(siteId)}&limit=200`),
-      apiGet<{ events: StatusEvent[] }>(`/api/status/events?site_id=${encodeURIComponent(siteId)}&limit=50`).catch(
-        () => ({ events: [] as StatusEvent[] }),
-      ),
       // 公告拉取失败只影响公告区，不阻塞整页
-      apiGet<{ records: NoticeSnapshot[] }>(`/api/notice?site_id=${encodeURIComponent(siteId)}&limit=50`).catch(() => ({
+      apiGet<{ records: NoticeSnapshot[] }>(`/api/notice?site_id=${encodeURIComponent(siteId)}&limit=1`).catch(() => ({
         records: [] as NoticeSnapshot[],
       })),
     ]);
     records = timeline.records ?? [];
-    eventList = events.events ?? [];
-    // 存储按时间升序返回，公告区最新版本在前
-    notices = (noticeData.records ?? []).slice().reverse();
+    // 只展示最新一条公告，不做历史版本
+    notices = noticeData.records ?? [];
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
@@ -147,6 +119,19 @@ export default async function StatusDetailPage({ params }: { params: Promise<{ s
   );
   const firstAt = series[0]?.at;
   const lastAt = series[series.length - 1]?.at;
+  // KPI：可用率取最后一个检测点；延迟 / 自报可用率取各渠道最近一次的均值
+  const lastPct = series[series.length - 1]?.pct;
+  const downCount = channels.filter((channel) => !channel.ok).length;
+  const latestLatencies = channels
+    .map((channel) => channel.dots[channel.dots.length - 1]?.latency)
+    .filter((value): value is number => value != null);
+  const avgLatency = latestLatencies.length
+    ? Math.round(latestLatencies.reduce((sum, value) => sum + value, 0) / latestLatencies.length)
+    : null;
+  const selfReported = channels.map((channel) => channel.availability7d).filter((value): value is number => value != null);
+  const avgSelfReported = selfReported.length
+    ? Math.round(selfReported.reduce((sum, value) => sum + value, 0) / selfReported.length)
+    : null;
 
   return (
     <div className="page">
@@ -163,14 +148,50 @@ export default async function StatusDetailPage({ params }: { params: Promise<{ s
         </p>
       ) : (
         <div style={{ display: "grid", gap: 16 }}>
-          <section className="panel" style={{ display: "grid", gap: 4, padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingBottom: 2 }}>
+          <div className="stat-grid">
+            <StatCard
+              label="当前可用率"
+              value={lastPct != null ? <span style={{ color: RATE_TONE[rateLevel(lastPct)] }}>{lastPct}%</span> : "—"}
+              hint="最近一次检测的正常渠道占比"
+            />
+            <StatCard
+              label="异常渠道"
+              value={
+                <span style={downCount > 0 ? { color: "var(--tone-red-text)" } : undefined}>
+                  {downCount}
+                  <span style={{ fontSize: 15, color: "var(--text-3)" }}> / {channels.length}</span>
+                </span>
+              }
+              hint="最近一次检测状态异常的渠道数"
+            />
+            <StatCard
+              label="平均延迟"
+              value={
+                avgLatency != null ? (
+                  <span style={{ color: RATE_TONE[latencyLevel(avgLatency)] }}>{avgLatency}ms</span>
+                ) : (
+                  "—"
+                )
+              }
+              hint="渠道自报 · 最近一次检测；≥1s 偏慢、≥3s 过高"
+            />
+            <StatCard
+              label="7日自报可用率"
+              value={avgSelfReported != null ? `${avgSelfReported}%` : "—"}
+              hint="站点自己报的数，仅供参考"
+            />
+          </div>
+          <section className="panel" style={{ display: "grid", gap: 14, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
               <h3 className="section-title">渠道检测趋势</h3>
               <span style={{ fontSize: 12, color: "var(--text-3)" }}>
                 {series.length} 个检测点{firstAt ? ` · ${formatTime(firstAt)} → ${formatTime(lastAt)}` : ""}
               </span>
             </div>
-            <StatusCharts availability={series} latency={latencySeries} latencyNames={latencyNames} showLatency={showLatencyTrend} />
+            <StatusUptimeBars points={series} />
+            <div style={{ paddingTop: 4 }}>
+              <StatusCharts availability={series} latency={latencySeries} latencyNames={latencyNames} showLatency={showLatencyTrend} />
+            </div>
             <span className="mono" style={{ fontSize: 12, color: "var(--text-3)", paddingTop: 8, overflowWrap: "anywhere" }}>
               {trendFootnote} · 来源：
               {latest?.source_url ?? "—"} · 最近检测 {latest ? formatTime(latest.captured_at) : "—"}
@@ -203,7 +224,18 @@ export default async function StatusDetailPage({ params }: { params: Promise<{ s
                       )}
                     </span>
                     <ToneTag tone={last?.ok ? "green" : "gray"}>{last?.status ?? "unknown"}</ToneTag>
-                    <span className="mono ch-lat">{metrics.join(" · ") || "—"}</span>
+                    <span
+                      className="mono ch-lat"
+                      style={
+                        last?.latency != null
+                          ? { color: RATE_TONE[latencyLevel(last.latency)] }
+                          : channel.availability7d != null
+                            ? { color: RATE_TONE[rateLevel(channel.availability7d)] }
+                            : undefined
+                      }
+                    >
+                      {metrics.join(" · ") || "—"}
+                    </span>
                     <span className="mono ch-rate">{okCount}/{channel.dots.length}</span>
                   </div>
                 );
@@ -214,25 +246,17 @@ export default async function StatusDetailPage({ params }: { params: Promise<{ s
           {notices.length > 0 && (
             <section className="panel" style={{ display: "grid", gap: 8, padding: 16 }}>
               <h3 className="section-title">站点公告</h3>
-              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-                公告内容变化时才记一条版本，最新在前；正文按站点原文渲染。
-              </span>
-              {notices.map((notice, index) => (
-                <details key={index} open={index === 0} style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 13 }}>
-                    <span className="mono" style={{ color: "var(--text-2)" }}>{formatTime(notice.captured_at)}</span>
-                    <span style={{ color: "var(--text-3)", fontSize: 12, marginLeft: 8 }}>
-                      {index === 0 ? "当前版本" : "历史版本"} · {PARSE_LABELS[notice.parse] ?? notice.parse}
-                    </span>
-                  </summary>
-                  <div style={{ fontSize: 13.5, lineHeight: 1.65, padding: "10px 2px 2px" }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{notice.content}</ReactMarkdown>
-                  </div>
-                </details>
-              ))}
               <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
-                来源：{notices[0]?.source_url ?? "—"}
+                {formatTime(notices[0].captured_at)} · 来源：{notices[0].source_url ?? "—"}
               </span>
+              <div className="notice-body" style={{ fontSize: 13.5, lineHeight: 1.65 }}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeRaw, [rehypeSanitize, NOTICE_SANITIZE_SCHEMA]]}
+                >
+                  {notices[0].content}
+                </ReactMarkdown>
+              </div>
             </section>
           )}
 
@@ -244,34 +268,6 @@ export default async function StatusDetailPage({ params }: { params: Promise<{ s
                   <ValueNode value={latest.data} />
                 </div>
               </details>
-            </section>
-          )}
-
-          {eventList.length > 0 && (
-            <section className="panel" style={{ display: "grid", gap: 10, padding: 16 }}>
-              <h3 className="section-title">最近变化</h3>
-              {eventList
-                .map((event, index) => ({
-                  key: index,
-                  kind: event.kind === "status_init" ? "首次建档" : "内容变化",
-                  detectedAt: event.detected_at,
-                  // 时间戳类字段轮询必变（旧事件已入库），展示层兜底过滤；全被过滤的纯噪音事件整条隐藏
-                  changes: event.changes.filter((change) => !isVolatilePath(change.path)),
-                }))
-                .filter((item) => item.changes.length > 0)
-                .map(({ key, kind, detectedAt, changes }) => (
-                  <div key={key} style={{ display: "grid", gap: 6, padding: "8px 0", borderTop: "1px solid var(--border)" }}>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-                      <span style={{ fontSize: 13, fontWeight: 550 }}>{kind}</span>
-                      <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
-                        {formatTime(detectedAt)}
-                      </span>
-                    </div>
-                    {changes.map((change, changeIndex) => (
-                      <ChangeLine key={changeIndex} change={change} />
-                    ))}
-                  </div>
-                ))}
             </section>
           )}
 

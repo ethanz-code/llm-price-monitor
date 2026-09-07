@@ -1,0 +1,18 @@
+# 构建上下文里排除运行镜像用不到的内容；README.md 和 config/ 必须保留（运行时要读）
+.git
+.env
+.env.keys
+.env.example
+.venv
+var
+tests
+.pytest_cache
+.serena
+.playwright-mcp
+.zcode
+docs
+llm_price_monitor.egg-info
+**/__pycache__
+web/node_modules
+web/.next
+web/tsconfig.tsbuildinfo

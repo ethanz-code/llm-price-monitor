@@ -44,5 +44,6 @@ def main() -> None:
         sys.exit(str(exc))
 
     auth.set_admin(store, username, password)
+    auth.reset_sessions(store)
     print(f"已重置管理员账号：{username}")
-    print("用该账号在 /login 页面登录即可；此前签发的旧会话已因用户名校验而失效。")
+    print("用该账号在 /login 页面登录即可；此前签发的旧会话已全部失效。")

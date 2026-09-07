@@ -1,11 +1,11 @@
 "use client";
 
 import { DataTable, type DColumn } from "./DataTable";
-import { formatDiscount, formatPrice, discountTone, toCnyPrice } from "@/lib/format";
+import { formatDiscount, formatPrice, discountTone, toCnyPrice, recordStatusKey } from "@/lib/format";
 import { modelRowKey } from "@/lib/priceRows";
 import { getSiteInfo } from "@/lib/sites";
 import type { OverviewRecord } from "@/lib/types";
-import { ToneTag } from "./ToneTag";
+import { ToneTag, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 
@@ -28,10 +28,15 @@ export function SnapshotPreview({
       width: "min(140px, 24vw)",
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
+        // 规则价行在站名旁低调标注，首页精选与总览表保持一致的可信度提示
+        const statusKey = recordStatusKey(row);
         return (
-          <RiskLink href={site.homepage || row.source_url} variant="site">
-            <span className="mono">{site.name}</span>
-          </RiskLink>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+            <RiskLink href={site.homepage || row.source_url} variant="site">
+              <span className="mono">{site.name}</span>
+            </RiskLink>
+            {statusKey === "rule_only" && <RulePriceMark />}
+          </span>
         );
       },
     },

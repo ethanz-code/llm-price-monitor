@@ -87,7 +87,8 @@ def test_failed_collect_keeps_last_known_price_in_snapshot(tmp_path: Path, monke
     failed = run_once(config, store=store, client=httpx.Client())
     snapshot = store.latest_all()["demo:demo-model:default"]
 
-    assert [event["kind"] for event in failed.events] == ["status_changed"]
+    # 状态抖动不再生成 status_changed 事件（价格数字没变）
+    assert [event["kind"] for event in failed.events] == []
     assert snapshot["price_status"] == "unavailable" and snapshot["requires_auth"] is True
     assert snapshot["input_price"] == 1 and snapshot["output_price"] == 2
     assert snapshot["unit"] == "USD/1M tokens"
@@ -136,7 +137,8 @@ def test_no_price_placeholder_never_persists_and_carry_marks_auth(tmp_path: Path
     # last_price_at 指向上次真正取到价的那次 captured_at（本例中带价记录 captured_at=0）
     assert snapshot["last_price_at"] == 0
     assert store.count_history() == 1
-    assert [event["kind"] for event in failed.events] == ["status_changed"]
+    # 状态抖动不再生成 status_changed 事件（价格数字没变）
+    assert [event["kind"] for event in failed.events] == []
 
 
 def test_monitor_records_error_without_stopping_other_sites(tmp_path: Path):
@@ -723,10 +725,7 @@ def test_ai_extractor_uses_page_and_response_evidence_without_auth_values():
 
     extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="ai-secret"))
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    import os
-    os.environ["PRICE_MONITOR_AI_API_KEY"] = "ai-secret"
-    try:
-            records = extractor.extract(
+    records = extractor.extract(
                 SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing?token=page-secret"}, models=(ModelTarget("demo-model"),)),
                 "demo-model Input 5 Output 30 USD/1M tokens",
                 [
@@ -735,8 +734,6 @@ def test_ai_extractor_uses_page_and_response_evidence_without_auth_values():
                 ],
                 client=client,
             )
-    finally:
-        os.environ.pop("PRICE_MONITOR_AI_API_KEY", None)
     assert records[0].price_status == "confirmed"
     assert records[0].input_price == 5 and records[0].output_price == 30
     body_text = json.dumps(request_body, ensure_ascii=False)
@@ -1042,12 +1039,7 @@ def test_ai_extractor_rejects_unseen_api_evidence_url():
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
     extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="secret"))
-    import os
-    os.environ["PRICE_MONITOR_AI_API_KEY"] = "secret"
-    try:
-        records = extractor.extract(SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),)), "demo-model 1 2", [{"url": "https://demo.test/api/price", "status": 200, "content_type": "application/json", "payload": {"model_name": "demo-model"}}], client=httpx.Client(transport=httpx.MockTransport(handler)))
-    finally:
-        os.environ.pop("PRICE_MONITOR_AI_API_KEY", None)
+    records = extractor.extract(SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),)), "demo-model 1 2", [{"url": "https://demo.test/api/price", "status": 200, "content_type": "application/json", "payload": {"model_name": "demo-model"}}], client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert records[0].price_status == "candidate"
 
 
@@ -1294,10 +1286,44 @@ def test_site_status_from_records_flags_auth_and_unavailable():
 
     missing = PriceRecord("demo-model", None, None, "USD/1M tokens", "https://demo.test", 0, {"notes": "模型不在在售列表"}, "unavailable")
     result = site_status_from_records([missing])
-    assert result["status"] == "unavailable" and "不在在售列表" in (result["error"] or "")
+    assert result["status"] == "no_data" and "不在在售列表" in (result["error"] or "")
+
+    inferred = PriceRecord("demo-model", None, None, "USD/1M tokens", "https://demo.test", 0, {"pricing_rules": {"groups": []}}, "rule_only")
+    assert site_status_from_records([inferred]) == {"status": "inferred", "error": None}
 
     priced = PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test", 0, {})
     assert site_status_from_records([priced]) == {"status": "ok", "error": None}
+
+
+def test_backfill_rule_price_fills_top_level_from_representative_tier():
+    from llm_price_monitor.report import _backfill_rule_price
+
+    row = {
+        "site_id": "totokens",
+        "model": "gpt-5.6-sol",
+        "input_price": None,
+        "output_price": None,
+        "unit": "USD/1M tokens",
+        "price_status": "rule_only",
+        "requires_auth": False,
+        "metadata": {
+            "group": "pro-企业专用",
+            "pricing_rules": {"groups": [{"name": "pro-企业专用", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": 2.5, "output_price": 15.0, "unit": "USD/1M tokens"},
+            ]}]},
+        },
+    }
+    filled = _backfill_rule_price(row)
+    assert filled["input_price"] == 2.5 and filled["output_price"] == 15.0
+    assert filled["price_status"] == "rule_only"
+
+    # 无推断价的占位行保持无价，不进快照
+    empty = _backfill_rule_price({**row, "metadata": {}})
+    assert empty["input_price"] is None and empty["output_price"] is None
+
+    # 已有价格的行为不受影响
+    priced = {**row, "input_price": 1.0, "output_price": 2.0}
+    assert _backfill_rule_price(priced) == priced
 
 
 def test_run_once_persists_per_site_collect_status(tmp_path: Path, monkeypatch):

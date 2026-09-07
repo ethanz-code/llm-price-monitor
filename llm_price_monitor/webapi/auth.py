@@ -70,6 +70,11 @@ def set_admin(store: Store, username: str, password: str) -> None:
     )
 
 
+def reset_sessions(store: Store) -> None:
+    """轮换会话签名密钥：此前签发的全部会话 cookie 立即失效（重置管理员凭据后调用）。"""
+    store.set_document("session_secret", {"secret": secrets.token_hex(32)})
+
+
 def _secret(store: Store) -> str:
     doc = store.get_document("session_secret")
     if doc and isinstance(doc.get("secret"), str):

@@ -11,15 +11,15 @@ export function proxy(request: NextRequest) {
   if (request.headers.get("next-router-prefetch") === "1") {
     return NextResponse.next();
   }
-  const ip =
-    (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
-    request.headers.get("x-real-ip") ||
-    "";
+  // 转发头原样透传：后端只在直连方为回环（本机反代）时才信任，取 x-real-ip 或 XFF 最后一跳
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const realIp = request.headers.get("x-real-ip");
   fetch(`${API_BASE}/api/analytics/track`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(ip ? { "x-forwarded-for": ip } : null),
+      ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : null),
+      ...(realIp ? { "x-real-ip": realIp } : null),
       "user-agent": request.headers.get("user-agent") ?? "",
     },
     body: JSON.stringify({ path: request.nextUrl.pathname }),

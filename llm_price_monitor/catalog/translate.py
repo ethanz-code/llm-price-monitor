@@ -36,40 +36,68 @@ def description_fingerprint(entry: dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def fingerprint_translations(doc: dict[str, Any] | None) -> dict[str, str]:
+    """从已存目录提取 指纹 -> 中文简介 映射，供其他目录复用已有译文。"""
+    out: dict[str, str] = {}
+    for entry in (doc.get("models", {}) if isinstance(doc, dict) else {}).values():
+        if isinstance(entry, dict) and entry.get("description_zh") and entry.get("desc_fp"):
+            out[str(entry["desc_fp"])] = str(entry["description_zh"])
+    return out
+
+
 def attach_zh_descriptions(
     output: dict[str, Any],
     previous: dict[str, Any] | None,
     config: AIConfig,
     client: httpx.Client | None = None,
     budget: int | None = None,
+    seed: dict[str, str] | None = None,
 ) -> int:
     """给目录条目补中文简介，返回本轮新翻译的模型数。
 
     指纹未变的条目沿用上一轮译文；其余按批次调 AI，budget 限制单轮新增条数
-    （先到先得，剩余留给下一轮）。AI 不可用或某批失败时静默跳过。
+    （先到先得，剩余留给下一轮）。简介指纹相同的条目只翻一次，译文回填给全部
+    重复条目；seed 允许复用其他目录已有的译文（如官方目录与全量渠道目录互济）。
+    AI 不可用或某批失败时静默跳过，单批失败不影响其余批次。
     """
     if not ai_available(config):
         return 0
+    reuse: dict[str, str] = dict(seed or {})
     previous_models = previous.get("models", {}) if isinstance(previous, dict) else {}
-    pending: list[tuple[str, dict[str, Any]]] = []
+    pending: dict[str, tuple[str, dict[str, Any]]] = {}  # 指纹 -> (模型标识, 代表条目)
     for key, entry in output.get("models", {}).items():
         if not entry.get("description"):
             continue
         fingerprint = description_fingerprint(entry)
         old = previous_models.get(key)
-        if isinstance(old, dict) and old.get("desc_fp") == fingerprint:
-            entry["description_zh"] = old.get("description_zh")
+        if isinstance(old, dict) and old.get("desc_fp") == fingerprint and old.get("description_zh"):
+            reuse.setdefault(fingerprint, str(old["description_zh"]))
+        zh = reuse.get(fingerprint)
+        if zh is not None:
+            entry["description_zh"] = zh
             entry["desc_fp"] = fingerprint
             continue
         if budget is not None and len(pending) >= budget:
             continue  # 本轮额度用完，剩余条目下一轮再翻
-        pending.append((key, entry))
+        pending.setdefault(fingerprint, (key, entry))
     translated = 0
-    for start in range(0, len(pending), BATCH_SIZE):
+    representatives = list(pending.values())
+    for start in range(0, len(representatives), BATCH_SIZE):
         try:
-            translated += _translate_batch(config, pending[start : start + BATCH_SIZE], client)
+            translated += _translate_batch(config, representatives[start : start + BATCH_SIZE], client)
         except (AIExtractionError, httpx.HTTPError, ValueError):
-            break  # 本批失败：条目保持原文，下一轮重试
+            continue  # 这批保持原文下一轮重试，其余批次照常
+    for _key, entry in representatives:  # 本轮新翻的译文也入池，供同指纹条目复用
+        if entry.get("description_zh"):
+            reuse[description_fingerprint(entry)] = str(entry["description_zh"])
+    # 已有译文的指纹（含本轮新翻的）回填给同指纹的其余条目
+    for entry in output.get("models", {}).values():
+        if not isinstance(entry, dict) or entry.get("description_zh") or not entry.get("description"):
+            continue
+        zh = reuse.get(description_fingerprint(entry))
+        if zh is not None:
+            entry["description_zh"] = zh
+            entry["desc_fp"] = description_fingerprint(entry)
     return translated
 
 

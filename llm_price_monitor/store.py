@@ -14,6 +14,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+_MAX_ROW_LIMIT = 2000  # 公开读接口单次返回行数上限：limit 入参统一在 _read_rows 钳制，防单请求拖全表
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sites (
     id TEXT PRIMARY KEY,
@@ -469,6 +471,8 @@ class Store:
     def _read_rows(
         self, table: str, *, limit: int, site_id: str | None, kind: str | None, kind_column: str, payload_column: str
     ) -> tuple[list[dict[str, Any]], int]:
+        # limit 来自公开端点的查询参数，钳制上限防止一次请求把整张表读进内存
+        limit = max(1, min(limit, _MAX_ROW_LIMIT))
         clauses: list[str] = []
         params: list[Any] = []
         if site_id:

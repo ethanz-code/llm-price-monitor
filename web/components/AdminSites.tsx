@@ -2,17 +2,17 @@
 
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast, Btn, Check, Empty, Input, Modal, Switch } from "./ui";
-import { IconAppstore, IconChevronDown } from "./icons";
+import { IconAppstore, IconCheck, IconChevronDown } from "./icons";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
 import { getSiteInfo } from "@/lib/sites";
 import { RiskLink } from "./RiskLink";
-import { formatTime, statusMeta } from "@/lib/format";
+import { formatTime, looseIncludes, statusMeta } from "@/lib/format";
 import { ToneTag } from "./ToneTag";
 import { SiteTestButton } from "./SiteTestButton";
-import type { SiteConfig, SitesData, SiteStatus, TaskInfo } from "@/lib/types";
+import type { CatalogData, SiteConfig, SitesData, SiteStatus, TaskInfo } from "@/lib/types";
 
 /** 新建站点用的默认字段模板；认证等高级字段留空，需要时在高级配置 JSON 里补充。 */
 function siteSkeleton(id = ""): SiteConfig {
@@ -53,18 +53,6 @@ function advancedJsonError(text: string): string | null {
   return null;
 }
 
-function modelsToText(models: SiteConfig["models"]): string {
-  return (models ?? []).filter((item): item is string => typeof item === "string").join(", ");
-}
-
-/** 目标模型：文本框逗号或换行分隔的纯名字列表。 */
-function modelsFromParts(text: string): string[] {
-  return text
-    .split(/[,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 /** 表单状态快照：保存与实时同步都基于它，保证两条路径语义一致。 */
 type SiteFormState = {
   id: string;
@@ -72,7 +60,7 @@ type SiteFormState = {
   ratioUrl: string;
   statusUrl: string;
   noticeUrl: string;
-  models: string;
+  models: string[];
   endpointHeadersText: string;
 };
 
@@ -143,7 +131,7 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
     adapter: "standard",
     id: form.id.trim(),
     network: networkFromForm(base, form),
-    models: modelsFromParts(form.models),
+    models: form.models,
   };
   const statusUrl = form.statusUrl.trim();
   if (statusUrl) {
@@ -171,6 +159,232 @@ function SettingRow({ label, hint, children }: { label: string; hint?: string; c
       </div>
       {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
     </div>
+  );
+}
+
+/** models.dev 目录条目 → 多选下拉的选项。 */
+interface ModelOption {
+  id: string;
+  name: string;
+  vendor: string;
+}
+
+/** 一次最多渲染的匹配项：目录数百条，全部渲染没必要。 */
+const MODEL_MATCH_LIMIT = 60;
+
+const MODEL_HINT_STYLE: React.CSSProperties = { fontSize: 12.5, color: "var(--text-3)", padding: "6px 8px" };
+
+/** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加；已选项以标签展示、点 × 移除。 */
+function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
+  const [options, setOptions] = useState<ModelOption[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    apiSend<CatalogData>("/api/catalog", "GET")
+      .then((data) => {
+        if (cancelled) return;
+        setOptions(
+          Object.values(data.models ?? {})
+            .filter((entry) => typeof entry.model === "string" && entry.model)
+            .map((entry) => ({ id: entry.model, name: entry.name ?? "", vendor: entry.vendor ?? "" }))
+            .sort((a, b) => a.id.localeCompare(b.id)),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOptions([]);
+        setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selected = useMemo(() => new Set(value), [value]);
+  const keyword = query.trim().toLowerCase();
+  const matches = useMemo(() => {
+    const source = options ?? [];
+    if (!keyword) return source.slice(0, MODEL_MATCH_LIMIT);
+    const hit = source.filter(
+      (item) =>
+        looseIncludes(item.id, keyword) ||
+        looseIncludes(item.name, keyword) ||
+        looseIncludes(item.vendor, keyword),
+    );
+    // 手动添加的名字不在目录里：把命中的已选项补进来，保证始终可见可移除
+    for (const id of value) {
+      if (looseIncludes(id, keyword) && !hit.some((item) => item.id === id)) {
+        hit.unshift({ id, name: "", vendor: "" });
+      }
+    }
+    return hit.slice(0, MODEL_MATCH_LIMIT);
+  }, [options, keyword, value]);
+
+  function toggle(id: string) {
+    onChange(selected.has(id) ? value.filter((item) => item !== id) : [...value, id]);
+  }
+
+  function commitInput() {
+    const id = query.trim();
+    setQuery("");
+    if (!id || selected.has(id)) return;
+    onChange([...value, id]);
+  }
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex", width: "min(420px, 100%)" }}>
+      <div
+        role="button"
+        aria-label="选择目标模型"
+        onClick={() => setOpen(true)}
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          alignItems: "center",
+          width: "100%",
+          minHeight: 34,
+          padding: "5px 10px",
+          borderRadius: 6,
+          border: "1px solid var(--border-strong)",
+          background: "var(--panel)",
+          cursor: "pointer",
+          boxSizing: "border-box",
+        }}
+      >
+        {value.length === 0 && (
+          <span style={{ color: "var(--text-3)", fontSize: 13 }}>点开搜索勾选模型，自定义的也能加</span>
+        )}
+        {value.map((id) => (
+          <span
+            key={id}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 2,
+              padding: "1px 2px 1px 8px",
+              border: "1px solid var(--border)",
+              borderRadius: 999,
+              fontSize: 12,
+              maxWidth: "100%",
+            }}
+          >
+            <span className="mono" style={{ overflowWrap: "anywhere" }}>
+              {id}
+            </span>
+            <span
+              title="移除"
+              onClick={(event) => {
+                event.stopPropagation();
+                onChange(value.filter((item) => item !== id));
+              }}
+              style={{ cursor: "pointer", color: "var(--text-3)", padding: "2px 6px", borderRadius: 999 }}
+            >
+              ×
+            </span>
+          </span>
+        ))}
+      </div>
+      {open && (
+        <>
+          <span style={{ position: "fixed", inset: 0, zIndex: 30 }} onClick={() => setOpen(false)} />
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 4px)",
+              left: 0,
+              right: 0,
+              zIndex: 31,
+              background: "var(--panel)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              boxShadow: "0 12px 32px rgba(0, 0, 0, 0.18)",
+              display: "grid",
+            }}
+          >
+            <div style={{ padding: 8, borderBottom: "1px solid var(--border)" }}>
+              <input
+                className="input"
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitInput();
+                }}
+                placeholder="搜模型名或厂商；回车把输入添加为自定义模型"
+                style={{ height: 30, fontSize: 12.5 }}
+              />
+            </div>
+            <div style={{ maxHeight: 240, overflowY: "auto", padding: 6, display: "grid", gap: 2 }}>
+              {options === null && <span style={MODEL_HINT_STYLE}>模型目录加载中…</span>}
+              {options !== null && options.length === 0 && (
+                <span style={MODEL_HINT_STYLE}>
+                  {failed ? "模型目录还没同步好，直接输入模型名回车添加" : "目录是空的，直接输入模型名回车添加"}
+                </span>
+              )}
+              {options !== null && matches.length === 0 && (
+                <span style={MODEL_HINT_STYLE}>没有匹配的模型；回车把当前输入添加为自定义模型</span>
+              )}
+              {matches.map((item) => {
+                const picked = selected.has(item.id);
+                return (
+                  <div
+                    key={item.id}
+                    className="model-opt"
+                    onClick={() => toggle(item.id)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: 4,
+                        border: `1px solid ${picked ? "var(--accent)" : "var(--border-strong)"}`,
+                        background: picked ? "var(--accent)" : "transparent",
+                        color: picked ? "#fff" : "transparent",
+                        display: "grid",
+                        placeItems: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <IconCheck size={11} />
+                    </span>
+                    <span className="mono" style={{ fontSize: 12.5, overflowWrap: "anywhere" }}>
+                      {item.id}
+                    </span>
+                    {(item.name || item.vendor) && (
+                      <span
+                        style={{
+                          marginLeft: "auto",
+                          fontSize: 12,
+                          color: "var(--text-3)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {[item.name, item.vendor].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -207,7 +421,9 @@ function SiteModal({
         (initial.notice as { url?: unknown } | null | undefined)?.url,
     ),
   );
-  const [models, setModels] = useState(modelsToText(initial.models));
+  const [models, setModels] = useState<string[]>(
+    (initial.models ?? []).filter((item): item is string => typeof item === "string"),
+  );
   const [endpointHeadersText, setEndpointHeadersText] = useState(dictToText(initial.network?.headers));
   const [jsonOpen, setJsonOpen] = useState(false);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
@@ -244,7 +460,7 @@ function SiteModal({
         : "";
     setStatusUrl(nextStatusUrl);
     if (nextRatioUrl || nextStatusUrl) setExtraOpen(true);
-    setModels(modelsToText(config.models));
+    setModels((config.models ?? []).filter((item): item is string => typeof item === "string"));
     setEndpointHeadersText(dictToText(config.network?.headers));
   }
 
@@ -350,15 +566,13 @@ function SiteModal({
             style={{ width: "min(360px, 100%)" }}
           />
         </SettingRow>
-        <SettingRow label="目标模型（逗号或换行分隔）" hint="填模型名就行；站点上的别名不用手填，AI 会自动识别">
-          <Input
+        <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
+          <ModelMultiSelect
             value={models}
-            onChange={(value) => {
-              setModels(value);
-              syncAdvanced((base) => ({ ...base, models: modelsFromParts(value) }));
+            onChange={(next) => {
+              setModels(next);
+              syncAdvanced((base) => ({ ...base, models: next }));
             }}
-            placeholder="gpt-5.6-sol, claude-5-sonnet"
-            style={{ width: "min(360px, 100%)" }}
           />
         </SettingRow>
           <SettingRow label="请求头（每行 Key: Value）" hint="一般不用填；站点要求特殊请求头时在这里加">

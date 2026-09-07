@@ -3,13 +3,13 @@ import { apiGet } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
   eventMeta,
-  formatDiscount,
   formatTime,
   isNoticeEvent,
   noticeExcerpt,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { mergeModelRows } from "@/lib/priceRows";
+import { availabilityBySite, rateLevel, type RateLevel } from "@/lib/channelStatus";
 import type {
   EventListData,
   EventRow,
@@ -18,14 +18,15 @@ import type {
   NoticeEvent,
   NoticeEventListData,
   OverviewData,
+  StatusLatest,
+  StatusSnapshot,
 } from "@/lib/types";
-import { RiskLink } from "@/components/RiskLink";
 import { ComingSoon } from "@/components/ui";
-import { LandingFeatures } from "@/components/LandingFeatures";
+import { GlobePanel } from "@/components/GlobePanel";
+import type { GlobeSite } from "@/components/SiteGlobe";
 import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
-import { TermTip, type TermKey } from "@/components/TermTip";
 import { HeroBackdrop } from "@/components/HeroBackdrop";
 
 export const dynamic = "force-dynamic";
@@ -36,12 +37,20 @@ interface LandingData {
   events: EventListData | null;
   noticeEvents: NoticeEventListData | null;
   history: HistoryListData | null;
+  status: StatusSnapshot[];
   error: string | null;
 }
 
+/** 渠道检测色点：三档语义色，与可用率趋势图的分段着色一致。 */
+const STRIP_TONE: Record<RateLevel, string> = {
+  ok: "var(--tone-green-text)",
+  warn: "var(--tone-yellow-text)",
+  down: "var(--tone-red-text)",
+};
+
 async function loadLanding(): Promise<LandingData> {
   try {
-    const [overview, meta, events, noticeEvents] = await Promise.all([
+    const [overview, meta, events, noticeEvents, status, statusLatest] = await Promise.all([
       apiGet<OverviewData>("/api/overview"),
       apiGet<MetaData>("/api/meta"),
       apiGet<EventListData>("/api/events?limit=8"),
@@ -50,6 +59,12 @@ async function loadLanding(): Promise<LandingData> {
         events: [],
         total: 0,
       })),
+      // 渠道检测档案拉取失败只影响星球与站点卡片，不阻塞整页
+      apiGet<{ records: StatusSnapshot[] }>("/api/status?limit=200").catch(() => ({
+        records: [] as StatusSnapshot[],
+      })),
+      // 列表接口有单站条数上限，低频站点会被挤出；latest 兜底每站最新一条
+      apiGet<StatusLatest>("/api/status/latest").catch(() => ({} as StatusLatest)),
     ]);
     // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
     let history: HistoryListData | null;
@@ -58,7 +73,11 @@ async function loadLanding(): Promise<LandingData> {
     } catch {
       history = null;
     }
-    return { overview, meta, events, noticeEvents, history, error: null };
+    // 两路按站点+时间戳去重合并，覆盖所有已接入检测的站点
+    const byStamp = new Map<string, StatusSnapshot>();
+    for (const row of status.records) byStamp.set(`${row.site_id}:${row.captured_at}`, row);
+    for (const row of Object.values(statusLatest)) byStamp.set(`${row.site_id}:${row.captured_at}`, row);
+    return { overview, meta, events, noticeEvents, history, status: [...byStamp.values()], error: null };
   } catch (cause) {
     return {
       overview: null,
@@ -66,6 +85,7 @@ async function loadLanding(): Promise<LandingData> {
       events: null,
       noticeEvents: null,
       history: null,
+      status: [],
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
@@ -95,7 +115,7 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 }
 
 export default async function LandingPage() {
-  const { overview, meta, events, noticeEvents, history, error } =
+  const { overview, meta, events, noticeEvents, history, status, error } =
     await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
@@ -110,61 +130,28 @@ export default async function LandingPage() {
     .slice(0, 4);
   const historyRecords = history?.records ?? [];
 
-  const siteIds = new Set(records.map((row) => row.site_id));
-  const modelIds = new Set(records.map((row) => row.model));
+  // 站点检测档案：可用率序列供星球悬停与站点卡片色点共用
+  const availBySite = availabilityBySite(status);
+  const globeSites: GlobeSite[] = sites.map((site) => {
+    const series = availBySite[site.id] ?? [];
+    const latestPoint = series[series.length - 1];
+    return {
+      id: site.id,
+      name: getSiteInfo(site.id, site.sourceUrl).name,
+      models: site.models,
+      enabled: site.enabled,
+      availability: latestPoint?.pct ?? null,
+      down: latestPoint?.down.length ?? 0,
+      checks: series.length,
+    };
+  });
+  /** 站点卡片上的最近 15 次渠道检测色点 */
+  const stripOf = (siteId: string) => (availBySite[siteId] ?? []).slice(-15);
+  // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
+  const statusSiteIds = new Set(status.map((row) => row.site_id));
 
   // 最新快照与价格总览同一套合并口径：同站点同模型取最低价一行
   const { parentRows, childRowsOf } = mergeModelRows(records);
-
-  // 实时亮点：最低输入折扣（及所属站点）、最近采集、监控覆盖
-  const discounted = records
-    .filter(
-      (row) =>
-        row.discount?.input !== null && row.discount?.input !== undefined,
-    )
-    .sort((a, b) => (a.discount?.input ?? 9) - (b.discount?.input ?? 9));
-  const best = discounted[0];
-  const latestAt = records.reduce<number | undefined>(
-    (acc, row) =>
-      acc === undefined || row.captured_at > acc ? row.captured_at : acc,
-    undefined,
-  );
-
-  const highlights: {
-    tone: "green" | "yellow" | "blue";
-    title: string;
-    value: string;
-    sub: string;
-    tip?: TermKey;
-    /** 0–1 比例条（可选）：给折扣类指标一个相对厂商价的量感 */
-    bar?: number;
-  }[] = [
-    {
-      tone: "green" as const,
-      title: "最低输入折扣",
-      tip: "discount_input",
-      value:
-        best?.discount?.input !== null && best?.discount?.input !== undefined
-          ? formatDiscount(best.discount.input)
-          : "—",
-      sub: best
-        ? `${getSiteInfo(best.site_id, best.source_url).name} · 相对厂商价`
-        : "暂无折扣数据",
-      bar: best?.discount?.input ?? undefined,
-    },
-    {
-      tone: "yellow" as const,
-      title: "最近更新",
-      value: latestAt ? formatTime(latestAt).slice(0, 10) : "—",
-      sub: latestAt ? `${formatTime(latestAt).slice(11)} 更新` : "还没有数据",
-    },
-    {
-      tone: "blue" as const,
-      title: "监控覆盖",
-      value: `${siteIds.size} 站点 · ${modelIds.size} 模型`,
-      sub: `已记录 ${records.length} 条价格`,
-    },
-  ];
 
   return (
     <>
@@ -191,11 +178,27 @@ export default async function LandingPage() {
               </Link>
             </div>
           </div>
-          <aside className="hero-side">
+          <aside className="hero-globe">
+            <GlobePanel sites={globeSites} />
+          </aside>
+        </section>
+
+        <section className="landing-section landing-duo">
+          <div>
+            <div className="landing-section-head">
+              <h2>价格走势</h2>
+            </div>
             <HeroTrendChart records={historyRecords} rate={rate} />
-            <div className="hero-side-title">最新事件</div>
+          </div>
+          <div>
+            <div className="landing-section-head">
+              <h2>最新事件</h2>
+              <Link href="/history" className="landing-more">
+                全部事件 →
+              </Link>
+            </div>
             {latestEvents.length > 0 ? (
-              <>
+              <div className="landing-events">
                 {latestEvents.map((event, index) => {
                   const meta = eventMeta(event.kind);
                   const site = isNoticeEvent(event)
@@ -229,16 +232,13 @@ export default async function LandingPage() {
                     </Link>
                   );
                 })}
-                <Link href="/history" className="landing-more">
-                  全部事件 →
-                </Link>
-              </>
+              </div>
             ) : (
               <p style={{ color: "var(--text-3)", fontSize: 13, margin: 0 }}>
                 还没有事件记录。
               </p>
             )}
-          </aside>
+          </div>
         </section>
 
         {error && (
@@ -249,38 +249,6 @@ export default async function LandingPage() {
           />
         )}
 
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>最新行情</h2>
-          </div>
-          <div className="landing-stats">
-            {highlights.map((item) => (
-              <div
-                key={item.title}
-                className={`landing-stat lstat-${item.tone}`}
-              >
-                <div className="stat-label">
-                  <span aria-hidden className={`stat-dot dot-${item.tone}`} />
-                  {item.title}
-                  {item.tip && <TermTip term={item.tip} />}
-                </div>
-                <div className="hl-value">{item.value}</div>
-                {item.bar !== undefined && item.bar >= 0.05 && (
-                  <span className="disc-bar-track hl-bar" aria-hidden>
-                    <span
-                      className={`disc-bar-fill tone-${item.tone}`}
-                      style={{
-                        width: `${Math.round(Math.min(Math.max(item.bar, 0), 1) * 100)}%`,
-                      }}
-                    />
-                  </span>
-                )}
-                <div className="hl-sub">{item.sub}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
         {records.length > 0 && (
           <section className="landing-section">
             <div className="landing-section-head">
@@ -289,6 +257,7 @@ export default async function LandingPage() {
                 查看全部 →
               </Link>
             </div>
+            <p className="landing-section-sub">站点标多少记多少，每条价格都附来源链接，点开就能核对</p>
             <SnapshotPreview
               rows={parentRows.slice(0, 6)}
               childRowsOf={childRowsOf}
@@ -296,13 +265,6 @@ export default async function LandingPage() {
             />
           </section>
         )}
-
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>价格从哪里来</h2>
-          </div>
-          <LandingFeatures />
-        </section>
 
         <section className="landing-section">
           <div className="landing-section-head">
@@ -314,34 +276,63 @@ export default async function LandingPage() {
               description="站点提报功能即将上线，届时填写站点地址即可申请加入监控清单，我们会逐个核验后接入。"
             />
           </div>
+          <p className="landing-section-sub">每个站点的渠道检测与公告都自动存档，点站点名进检测档案</p>
           {sites.length > 0 ? (
-            <div className="site-list">
+            <div className="site-cards">
               {sites.map((site) => {
                 const info = getSiteInfo(site.id, site.sourceUrl);
                 const href = info.homepage || site.sourceUrl || "";
+                const strip = stripOf(site.id);
+                const latestPoint = strip[strip.length - 1];
+                const notice = overview?.notices?.[site.id];
                 return (
-                  <div key={site.id} className="site-row">
-                    <span
-                      aria-hidden
-                      className="site-dot"
-                      style={{
-                        background: site.enabled
-                          ? "var(--accent)"
-                          : "var(--text-3)",
-                      }}
-                    />
-                    <span className="site-name">
-                      {href ? (
-                        <RiskLink href={href} variant="site">
+                  <div key={site.id} className="site-card">
+                    <div className="site-card-head">
+                      <span
+                        aria-hidden
+                        className="site-dot"
+                        style={{ background: site.enabled ? "var(--accent)" : "var(--text-3)" }}
+                      />
+                      <span className="site-name">
+                        <Link href={`/overview/status/${encodeURIComponent(site.id)}`} className="site-link">
                           {info.name}
-                        </RiskLink>
+                        </Link>
+                      </span>
+                      <span className="site-count mono">
+                        {site.models} 模型{site.enabled ? "" : " · 已停用"}
+                      </span>
+                    </div>
+                    {strip.length > 0 && latestPoint ? (
+                      <>
+                        <div className="site-strip" aria-hidden>
+                          {strip.map((point, index) => (
+                            <span
+                              key={index}
+                              className="site-strip-dot"
+                              style={{ background: STRIP_TONE[rateLevel(point.pct)] }}
+                              title={`${formatTime(point.at)} · 正常 ${point.pct}%`}
+                            />
+                          ))}
+                        </div>
+                        <span className="site-card-more">
+                          近 {strip.length} 次渠道检测 · 最新正常 {latestPoint.pct}%
+                        </span>
+                      </>
+                    ) : (
+                      <span className="site-card-nostatus">
+                        {statusSiteIds.has(site.id) ? "暂无渠道检测记录" : "渠道检测未接入"}
+                      </span>
+                    )}
+                    <p className="site-notice" title={notice?.content ?? undefined}>
+                      {notice ? (
+                        <>
+                          {notice.captured_at ? <span className="mono site-notice-time">{formatTime(notice.captured_at)}</span> : null}
+                          {noticeExcerpt(notice.content)}
+                        </>
                       ) : (
-                        info.name
+                        <span style={{ color: "var(--text-3)" }}>暂无公告</span>
                       )}
-                    </span>
-                    <span className="site-count mono">
-                      {site.models} 模型{site.enabled ? "" : " · 已停用"}
-                    </span>
+                    </p>
                   </div>
                 );
               })}

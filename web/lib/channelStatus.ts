@@ -42,6 +42,24 @@ export function filterDotsByGroups(dots: ChannelDotRow[], groups: ReadonlySet<st
   return matched.length > 0 ? matched : dots;
 }
 
+/** 成功率窗口：取每个渠道最近 15 次检测，与总览渠道点阵展示的列数一致。 */
+const RECENT_DOT_WINDOW = 15;
+
+/** 行的平均渠道成功率：每个渠道取最近检测的正常占比，再对各渠道求平均（0–1）；
+ *  无检测数据返回 null，由调用方按缺数据处理。 */
+export function channelSuccessRate(dots: ChannelDotRow[] | undefined): number | null {
+  if (!dots || dots.length === 0) return null;
+  let sum = 0;
+  let count = 0;
+  for (const row of dots) {
+    const recent = row.dots.slice(-RECENT_DOT_WINDOW);
+    if (recent.length === 0) continue;
+    sum += recent.filter((dot) => dot.ok).length / recent.length;
+    count += 1;
+  }
+  return count > 0 ? sum / count : null;
+}
+
 /** 判定为“正常”的状态词表；其余取值一律按异常/未知渲染灰色。 */
 const UP_WORDS = new Set([
   "up",
@@ -263,6 +281,30 @@ export interface AvailabilityPoint {
   at: number;
   pct: number;
   down: string[];
+}
+
+/** 可用率三档：<80% 大面积异常、80–95% 有渠道异常、≥95% 正常。 */
+export type RateLevel = "ok" | "warn" | "down";
+
+/** 按当次正常渠道占比归档；阈值与趋势图分段着色、KPI 数字着色共用。 */
+export function rateLevel(pct: number): RateLevel {
+  if (pct >= 95) return "ok";
+  if (pct >= 80) return "warn";
+  return "down";
+}
+
+/** 异常渠道名单文案：最多点名 6 个，更多时截断并标注总数。趋势图与时段条悬停共用。 */
+export function downNamesLabel(down: string[]): string {
+  if (down.length === 0) return "";
+  const shown = down.slice(0, 6).join("、");
+  return down.length > 6 ? `${shown} 等 ${down.length} 个渠道` : shown;
+}
+
+/** 自报延迟档位：≥3s 明显慢（红）、≥1s 偏慢（黄）、其余正常。与 KPI、渠道行的着色共用。 */
+export function latencyLevel(ms: number): RateLevel {
+  if (ms >= 3000) return "down";
+  if (ms >= 1000) return "warn";
+  return "ok";
 }
 
 /**

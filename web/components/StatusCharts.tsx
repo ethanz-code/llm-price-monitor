@@ -19,12 +19,12 @@ export function StatusCharts({
   showLatency: boolean;
 }) {
   return (
-    <div style={{ display: "grid", gap: 6 }}>
+    <div style={{ display: "grid", gap: 14 }}>
       <h3 className="section-title">可用率趋势</h3>
       <StatusTrendChart points={availability} />
       {showLatency && (
         <>
-          <div style={{ paddingTop: 24 }}>
+          <div style={{ paddingTop: 28 }}>
             <h3 className="section-title">延迟趋势</h3>
           </div>
           <StatusLatencyChart points={latency} channels={latencyNames} />

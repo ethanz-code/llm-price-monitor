@@ -7,7 +7,7 @@ import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { ToneTag } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
-import { formatPrice, formatTokens, isFreePrice } from "@/lib/format";
+import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
 interface Row extends CatalogEntry {
@@ -30,7 +30,8 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? `${row.model} ${row.vendor} ${row.name ?? ""}`.toLowerCase().includes(lower) : true));
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true));
+    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3
   }, [data, keyword, vendor]);
 
   const columns: DColumn<Row>[] = [

@@ -1,0 +1,46 @@
+# llm-price-monitor 生产部署编排：api（FastAPI 后端 + 内置调度）+ web（Next.js 前端）
+# 使用步骤与运维手册见 docs/deploy/docker-compose.md；
+# 交给 AI 助手部署时，让它先读 docs/deploy/ai-runbook.md。
+name: llm-price-monitor
+
+services:
+  api:
+    # 单实例设计：定时调度与任务状态都在进程内存里，多副本会重复采集，禁止 scale
+    build:
+      context: .
+      target: api
+    image: llm-price-monitor/api:local
+    container_name: price-monitor-api
+    restart: unless-stopped
+    volumes:
+      - ./var:/app/var # SQLite 与全部运行数据的唯一落盘位置
+      - ./.env:/app/.env:ro # 启动前必须先 cp .env.example .env，否则挂载会生成同名空目录导致启动失败
+      # - ./config:/app/config:ro # 需要在不重建镜像的情况下改种子配置时放开
+      # - ./.env.keys:/app/.env.keys:ro # 使用 dotenvx 加密 .env 时放开
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/meta', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      target: web
+    image: llm-price-monitor/web:local
+    container_name: price-monitor-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PRICE_WEB_API_URL: http://api:8000 # 需与 Dockerfile 中 web-builder 的 ARG 保持一致
+    ports:
+      - "3000:3000" # 唯一对外端口；8000 不发布，仅容器网络内可达。被占用时改成 "8080:3000" 并同步反代目标
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

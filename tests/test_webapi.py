@@ -303,9 +303,12 @@ def test_collect_site_ids_only_targets_enabled_sites(workspace: Path, monkeypatc
     assert client.post("/api/collect", json={"site_ids": []}).status_code == 400
 
 
-def _admin_client(workspace: Path, username: str = "admin", password: str = "s3cret") -> TestClient:
-    """创建应用并完成首次设置，返回已登录管理员的客户端（会话 cookie 自动保持）。"""
-    client = TestClient(create_app(_config(workspace)))
+def _admin_client(
+    workspace: Path, username: str = "admin", password: str = "s3cret", peer: tuple[str, int] | None = None
+) -> TestClient:
+    """创建应用并完成首次设置，返回已登录管理员的客户端（会话 cookie 自动保持）。
+    peer 模拟直连来源地址：默认 testclient（非回环），传 ("127.0.0.1", …) 模拟本机反代转发。"""
+    client = TestClient(create_app(_config(workspace)), client=peer or ("testclient", 50000))
     assert client.post("/api/setup", json={"username": username, "password": password}).status_code == 200
     return client
 
@@ -334,6 +337,20 @@ def test_setup_login_and_gate(workspace: Path):
     assert client.post("/api/auth/login", json={"username": "ethan", "password": "s3cret"}).json() == {"is_admin": True}
     meta = client.get("/api/meta").json()
     assert meta["is_admin"] is True and meta["needs_setup"] is False
+
+
+def test_login_rate_limit_blocks_after_repeated_failures(workspace: Path):
+    """同一来源连续失败达上限后 429 限流；成功登录清零计数。"""
+    client = _admin_client(workspace)
+    client.post("/api/auth/logout")
+    for _ in range(4):
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "nope"}).status_code == 401
+    # 成功登录清零失败计数，之后重新数满 5 次失败才触发限流
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "s3cret"}).status_code == 200
+    client.post("/api/auth/logout")
+    for _ in range(5):
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "nope"}).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "s3cret"}).status_code == 429
 
 
 def test_collect_status_admin_only_and_tasks_gated(workspace: Path):
@@ -368,10 +385,20 @@ def test_settings_roundtrip_and_validation(workspace: Path):
     client = _admin_client(workspace)
     saved = client.put("/api/settings", json={
         "settings": {"timeout": 30},
-        "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-x"},
+        "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-test-1234"},
     })
     assert saved.status_code == 200
-    assert saved.json()["ai"]["api_key"] == "sk-x"
+    # 响应里只回掩码，完整密钥只存在库里
+    assert saved.json()["ai"]["api_key"] == "••••1234"
+    assert client.get("/api/settings").json()["ai"]["api_key"] == "••••1234"
+    store = client.app.state.store
+    assert store.get_document("ai")["api_key"] == "sk-test-1234"
+
+    # 原样回传掩码 = 保持不变；显式传 null = 清除
+    assert client.put("/api/settings", json={"ai": {"api_key": "••••1234"}}).status_code == 200
+    assert store.get_document("ai")["api_key"] == "sk-test-1234"
+    assert client.put("/api/settings", json={"ai": {"api_key": None}}).status_code == 200
+    assert not store.get_document("ai").get("api_key")
 
     reloaded = client.get("/api/settings").json()
     assert reloaded["ai"]["models"] == ["m-a", "m-b"]
@@ -539,8 +566,9 @@ def test_settings_test_probes_external_services_with_form_values(workspace: Path
 
 def test_analytics_track_public_with_dedup_and_validation(workspace: Path):
     """访问埋点公开可写：记录 IP/UA 并解析设备；30 秒内同 IP 同路径去重；非法路径 400。"""
-    # summary 为管理员接口，统一用已登录客户端发起；track 本身公开
-    client = _admin_client(workspace)
+    # summary 为管理员接口，统一用已登录客户端发起；track 本身公开。
+    # peer 模拟本机反代（回环）转发：只有回环直连才信任转发头，对应线上 Nginx→Next→FastAPI 链路
+    client = _admin_client(workspace, peer=("127.0.0.1", 50000))
     ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     headers = {"x-forwarded-for": "203.0.113.7", "user-agent": ua}
 
@@ -560,6 +588,24 @@ def test_analytics_track_public_with_dedup_and_validation(workspace: Path):
 
     for bad in {"path": "/api/overview"}, {"path": "https://evil.com"}, {"path": ""}:
         assert client.post("/api/analytics/track", json=bad, headers=headers).status_code == 400
+
+    # 非回环直连的客户端不能借 XFF 伪造来源 IP：按直连地址记录
+    outsider = TestClient(create_app(_config(workspace)))
+    outsider.post("/api/analytics/track", json={"path": "/overview"}, headers={"x-forwarded-for": "198.51.100.9"})
+    latest = client.get("/api/analytics/logs?limit=1").json()["visits"][0]
+    assert latest["ip"] == "testclient"
+
+
+def test_analytics_track_per_ip_rate_limit(workspace: Path):
+    """单 IP 每分钟最多写入 TRACK_MAX_PER_MINUTE 条访问记录，超量静默丢弃（响应仍为 ok）。"""
+    from llm_price_monitor.webapi.routes.analytics import TRACK_MAX_PER_MINUTE
+
+    client = TestClient(create_app(_config(workspace)))
+    for i in range(TRACK_MAX_PER_MINUTE + 5):
+        assert client.post("/api/analytics/track", json={"path": f"/p{i}"}).status_code == 200
+    with sqlite3.connect(workspace / "var" / "monitor.db") as conn:
+        total = conn.execute("SELECT COUNT(*) FROM visit_logs").fetchone()[0]
+    assert total == TRACK_MAX_PER_MINUTE
 
 
 def test_analytics_admin_gate_summary_logs_clear(workspace: Path):
@@ -748,5 +794,104 @@ def test_default_seed_ships_ai_without_key(workspace: Path):
     data = client.get("/api/settings").json()
     assert isinstance(data["ai"].get("base_url"), str) and data["ai"]["base_url"]
     assert isinstance(data["ai"].get("models"), list) and len(data["ai"]["models"]) >= 3
-    assert "api_key" not in data["ai"] and "api_key_env" not in data["ai"]  # 种子不含密钥，Key 由向导/设置页补
+    assert "api_key" not in data["ai"]  # 种子不含密钥，Key 由向导/设置页填写后存数据库
     assert data["settings"]["schedule"]["price"] == 60 and data["settings"]["schedule"]["catalog"] == 1440
+
+
+def test_collect_task_logs_in_detail_and_list_summary(workspace: Path, monkeypatch):
+    """采集过程日志随详情接口下发；列表只带 log_count 不带 logs。"""
+    import llm_price_monitor.webapi.routes.collect as collect_routes
+    from llm_price_monitor import tasklog
+    from llm_price_monitor.report import MonitorReport
+
+    def fake_run_once(_config, **_kwargs):
+        tasklog.emit("[demo] 价格采集成功：3 条价格，0 处变化，0.4s")
+        tasklog.emit("[demo] 价格采集失败：连接超时", "error")
+        return MonitorReport(0.0, 1.0, [], [], [])
+
+    monkeypatch.setattr(collect_routes, "run_once", fake_run_once)
+    client = _admin_client(workspace)
+    task_id = client.post("/api/collect", json={}).json()["task_id"]
+    for _ in range(50):
+        task = client.get(f"/api/tasks/{task_id}").json()
+        if task["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert task["status"] == "done"
+    messages = [log["message"] for log in task["logs"]]
+    assert any("价格采集成功" in message for message in messages)
+    assert any("价格采集失败" in message for message in messages)
+    assert sum(1 for log in task["logs"] if log["level"] == "error") >= 1
+    assert all("任务失败" not in message for message in messages)  # 正常完成不产生失败日志
+    listed = client.get("/api/tasks").json()["tasks"]
+    row = next(item for item in listed if item["id"] == task_id)
+    assert "logs" not in row and row["log_count"] == len(task["logs"])
+
+
+def test_collect_failure_writes_error_log(workspace: Path, monkeypatch):
+    """任务体抛异常时任务失败，且失败原因写进日志行。"""
+    import llm_price_monitor.webapi.routes.collect as collect_routes
+
+    def boom(_config, **_kwargs):
+        raise RuntimeError("网络不可达")
+
+    monkeypatch.setattr(collect_routes, "run_once", boom)
+    client = _admin_client(workspace)
+    task_id = client.post("/api/collect", json={}).json()["task_id"]
+    for _ in range(50):
+        task = client.get(f"/api/tasks/{task_id}").json()
+        if task["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert task["status"] == "failed" and "网络不可达" in task["error"]
+    assert any("网络不可达" in log["message"] and log["level"] == "error" for log in task["logs"])
+
+
+def test_task_logs_persist_and_restore_after_restart(tmp_path: Path):
+    """任务记录连同日志持久化；重启加载后运行中的任务标记为失败。"""
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi import tasks
+
+    tasks.reset()
+    db = tmp_path / "monitor.db"
+    tasks.attach_store(Store(db))
+    release = threading.Event()
+    started = threading.Event()
+
+    def job() -> dict:
+        started.set()
+        release.wait(2)
+        return {}
+
+    task_id = tasks.submit("collect", job)
+    assert started.wait(2)
+    assert tasks.get(task_id)["status"] == "running"
+
+    tasks.reset()  # 模拟重启：内存清空，持久化文档保留
+    tasks.attach_store(Store(db))
+    restored = tasks.get(task_id)
+    assert restored is not None
+    assert restored["status"] == "failed" and restored["error"] == "服务重启，任务中断"
+    release.set()
+
+
+def test_tasklog_emit_without_binding_is_noop():
+    """CLI 直跑采集函数时没有绑定日志出口，emit 静默跳过。"""
+    from llm_price_monitor import tasklog
+
+    tasklog.emit("无任务上下文的日志应被忽略")
+    tasklog.emit("错误也应被忽略", "error")
+
+
+def test_site_geo_endpoint_mocked(workspace: Path, monkeypatch):
+    """站点 IP 定位端点：定位结果原样透传，网络定位函数被 mock，不真正联网。"""
+    import llm_price_monitor.webapi.routes.geo as geo_route
+
+    monkeypatch.setattr(
+        geo_route,
+        "resolve_site_geo",
+        lambda configs: {"demo": {"ip": "1.2.3.4", "lat": 35.0, "lon": 110.0, "country": "中国", "city": "测试市"}},
+    )
+    client = TestClient(create_app(_config(workspace)))
+    body = client.get("/api/geo").json()
+    assert body["geo"]["demo"]["lat"] == 35.0 and body["geo"]["demo"]["country"] == "中国"

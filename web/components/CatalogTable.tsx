@@ -8,7 +8,7 @@ import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { ToneTag } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
-import { formatPrice, formatTokens, isFreePrice } from "@/lib/format";
+import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
 interface Row extends CatalogEntry {
@@ -70,8 +70,8 @@ export function CatalogTable({ data }: { data: CatalogData }) {
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? `${row.model} ${row.vendor}`.toLowerCase().includes(lower) : true));
-    // 不重排：保留后端权威顺序（厂商权威序 + 厂商内模型新旧序）
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true));
+    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3；不重排，保留后端权威顺序
   }, [data, keyword, vendor]);
 
   const columns: DColumn<Row>[] = [
