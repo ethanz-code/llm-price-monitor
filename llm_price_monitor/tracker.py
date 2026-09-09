@@ -431,7 +431,19 @@ def _record_from_json(payload: Any, model: str, source_url: str, *, metadata: di
     return PriceRecord(model, input_price, output_price, unit or "JSON未说明单位", source_url, time.time(), details or None, status)
 
 
-def fetch_price(url: str, model: str, *, timeout: float = 20.0, client: httpx.Client | None = None) -> PriceRecord:
+def _fetch_page_via_browser(url: str, headless_config: dict) -> str:
+    """启用 network.headless 时用无头浏览器渲染网页并返回 HTML；失败按采集失败抛错。"""
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    return fetch_page_html(url, headless_config)
+
+
+def fetch_price(url: str, model: str, *, timeout: float = 20.0, client: httpx.Client | None = None, network: dict | None = None) -> PriceRecord:
+    headless_config = (network or {}).get("headless") or {}
+    if headless_config.get("enabled"):
+        parser = _TextParser()
+        parser.feed(_fetch_page_via_browser(url, headless_config))
+        return extract_price(" ".join(parser.parts), model, url)
     own = client is None
     client = client or httpx.Client(timeout=timeout, follow_redirects=True, headers={"user-agent": "Proxy-SmartAven-price-tracker/1.0"})
     try:

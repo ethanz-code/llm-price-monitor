@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast, Btn, Check, Empty, Input, Modal, Sel, Switch } from "./ui";
-import { IconAppstore, IconCheck, IconChevronDown } from "./icons";
+import { IconAppstore, IconCheck } from "./icons";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
 import { getSiteInfo } from "@/lib/sites";
@@ -157,19 +157,6 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
     };
   } else if ("notice" in next) delete next.notice;
   return next;
-}
-
-function SettingRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: "grid", gap: 4 }}>
-      {/* label 包裹控件：读屏软件能把字段名和输入框关联起来 */}
-      <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13.5 }}>{label}</span>
-        {children}
-      </label>
-      {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
-    </div>
-  );
 }
 
 /** models.dev 目录条目 → 多选下拉的选项。 */
@@ -401,6 +388,677 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
   );
 }
 
+function SettingRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "grid", gap: 4 }}>
+      {/* label 包裹控件：读屏软件能把字段名和输入框关联起来 */}
+      <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13.5 }}>{label}</span>
+        {children}
+      </label>
+      {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
+    </div>
+  );
+}
+
+/* ---------- 站点编辑：子弹窗公共部分 ---------- */
+
+/** 续签字段的局部覆盖：onChange 里刚敲入、还没写回主状态的值用 overrides 显式传入 */
+type RefreshOverride = Partial<{
+  method: string;
+  url: string;
+  refresh_token: string;
+  body: string;
+  response_sample: string;
+  access_token_field: string;
+  refresh_token_field: string;
+}>;
+
+/** 测试续签接口的成功返回：新 access_token 用于回填各处认证头，refresh_token 可能已被服务端换新 */
+type RefreshTestResult = { access_token: string; refresh_token: string; refresh_token_rotated: boolean };
+
+/** 认证与续签子弹窗提交回主弹窗的字段集合 */
+type AuthFields = {
+  method: string;
+  url: string;
+  token: string;
+  body: string;
+  sample: string;
+  accessTokenField: string;
+  refreshTokenField: string;
+  endpointHeadersText: string;
+};
+
+/** 网页模式·无头浏览器子弹窗的表单数据（localStorage 用行数组方便增删） */
+type HeadlessForm = {
+  enabled: boolean;
+  cookies: { name: string; value: string }[];
+  localStorage: { key: string; value: string }[];
+  waitSeconds: string;
+};
+
+/** 站点配置 → 无头浏览器表单初值 */
+function headlessFromConfig(config: SiteConfig): HeadlessForm {
+  const headless = config.network?.headless;
+  return {
+    enabled: headless?.enabled === true,
+    cookies: (Array.isArray(headless?.cookies) ? headless.cookies : [])
+      .filter((item): item is { name: string; value: string } => typeof item?.name === "string")
+      .map((item) => ({ name: item.name, value: typeof item.value === "string" ? item.value : "" })),
+    localStorage: Object.entries(headless?.localStorage ?? {}).map(([key, value]) => ({
+      key,
+      value: typeof value === "string" ? value : "",
+    })),
+    waitSeconds: String(typeof headless?.wait_seconds === "number" ? headless.wait_seconds : 3),
+  };
+}
+
+/** 测试续签成功后，把新 token 回填进整份配置：站点通用 token + 各接口 headers 里写死的 Authorization */
+function applyRefreshResult(base: SiteConfig, result: RefreshTestResult): SiteConfig {
+  const retokenHeaders = (headers: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(
+      Object.entries(headers).map(([key, value]) => {
+        if (key.toLowerCase() !== "authorization" || typeof value !== "string") return [key, value];
+        const space = value.indexOf(" ");
+        return [key, space > 0 ? `${value.slice(0, space)} ${result.access_token}` : result.access_token];
+      }),
+    );
+  const hasAuth = (headers: Record<string, string> | undefined) =>
+    !!headers && Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
+  return {
+    ...base,
+    auth_token: result.access_token,
+    network:
+      base.network && hasAuth(base.network.headers)
+        ? { ...base.network, headers: retokenHeaders(base.network.headers!) }
+        : base.network,
+    networks: (base.networks ?? []).map((entry) =>
+      hasAuth(entry.headers) ? { ...entry, headers: retokenHeaders(entry.headers!) } : entry,
+    ),
+    status:
+      base.status && hasAuth(base.status.headers)
+        ? { ...base.status, headers: retokenHeaders(base.status.headers!) }
+        : base.status,
+    notice:
+      base.notice && hasAuth(base.notice.headers)
+        ? { ...base.notice, headers: retokenHeaders(base.notice.headers!) }
+        : base.notice,
+    ...(base.token_refresh
+      ? { token_refresh: { ...base.token_refresh, refresh_token: result.refresh_token } }
+      : {}),
+  };
+}
+
+/** 主弹窗中部的入口卡片：点击打开对应子弹窗；configured 时标注"已配置" */
+function EntryCard({
+  title,
+  desc,
+  configured,
+  onClick,
+}: {
+  title: string;
+  desc: string;
+  configured: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      style={{
+        display: "grid",
+        gap: 3,
+        padding: "10px 12px",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        background: "var(--panel)",
+        cursor: "pointer",
+        transition: "border-color 150ms ease, background 150ms ease",
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.borderColor = "var(--border-strong)";
+        event.currentTarget.style.background = "var(--panel-2)";
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.borderColor = "var(--border)";
+        event.currentTarget.style.background = "var(--panel)";
+      }}
+    >
+      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 550 }}>{title}</span>
+        {configured && <span style={{ fontSize: 11, color: "var(--tone-green-text)" }}>已配置</span>}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--text-3)" }}>{desc}</span>
+    </div>
+  );
+}
+
+/** 子弹窗底部按钮：取消丢弃本次修改，确定才写回主弹窗草稿 */
+function SubModalFooter({
+  onCancel,
+  onConfirm,
+  confirmDisabled,
+  confirmTitle,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+  confirmDisabled?: boolean;
+  confirmTitle?: string;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+      <Btn onClick={onCancel}>取消</Btn>
+      <Btn variant="primary" disabled={confirmDisabled} title={confirmTitle} onClick={onConfirm}>
+        确定
+      </Btn>
+    </div>
+  );
+}
+
+/* ---------- 子弹窗：倍率地址 / 站点公告（单地址输入共用） ---------- */
+
+function UrlSubModal({
+  title,
+  label,
+  hint,
+  placeholder,
+  initial,
+  onCommit,
+  onClose,
+}: {
+  title: string;
+  label: string;
+  hint: string;
+  placeholder: string;
+  initial: string;
+  onCommit: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={title}
+      width={560}
+      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit(value)} />}
+    >
+      <SettingRow label={label} hint={hint}>
+        <Input value={value} onChange={setValue} placeholder={placeholder} style={{ width: "min(380px, 100%)" }} />
+      </SettingRow>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：渠道状态 ---------- */
+
+function StatusSubModal({
+  initialUrl,
+  initialGroups,
+  onCommit,
+  onClose,
+}: {
+  initialUrl: string;
+  initialGroups: string;
+  onCommit: (url: string, groupsText: string) => void;
+  onClose: () => void;
+}) {
+  const [url, setUrl] = useState(initialUrl);
+  const [groupsText, setGroupsText] = useState(initialGroups);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="渠道状态"
+      width={560}
+      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit(url, groupsText)} />}
+    >
+      <div style={{ display: "grid", gap: 14 }}>
+        <SettingRow label="渠道状态 URL" hint="填站点的渠道状态接口地址，每次采集会顺带检查各渠道是否正常，有变化会记成事件">
+          <Input
+            value={url}
+            onChange={setUrl}
+            placeholder="https://example.com/api/status"
+            style={{ width: "min(380px, 100%)" }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="检测分组"
+          hint="选填：只检测这些分组，从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就检测全部渠道"
+        >
+          <Input
+            value={groupsText}
+            onChange={setGroupsText}
+            placeholder="svip, vip"
+            style={{ width: "min(380px, 100%)" }}
+          />
+          {groupsText.trim() && (
+            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+              保存后，这个站点没被选中的分组的历史检测记录会被清掉，且无法恢复
+            </span>
+          )}
+        </SettingRow>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：认证与续签 ---------- */
+
+function AuthSubModal({
+  initial,
+  overrideWarnings,
+  runTest,
+  onCommit,
+  onClose,
+}: {
+  initial: AuthFields;
+  /** network/status/notice headers 里写死认证头时的覆盖提醒（由主弹窗检测） */
+  overrideWarnings: string[];
+  /** 真实调用续签接口；由主弹窗基于当前草稿组装完整配置发请求 */
+  runTest: (overrides: RefreshOverride) => Promise<{ ok: boolean; text: string; result?: RefreshTestResult }>;
+  onCommit: (fields: AuthFields, rotation?: RefreshTestResult) => void;
+  onClose: () => void;
+}) {
+  const [method, setMethod] = useState(initial.method);
+  const [url, setUrl] = useState(initial.url);
+  const [token, setToken] = useState(initial.token);
+  const [body, setBody] = useState(initial.body);
+  const [sample, setSample] = useState(initial.sample);
+  const [headersText, setHeadersText] = useState(initial.endpointHeadersText);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
+  const [rotation, setRotation] = useState<RefreshTestResult | null>(null);
+
+  // AI 分析出的字段路径没有表单入口，展示出来让用户知道分析到了什么
+  const accessTokenField = initial.accessTokenField;
+  const refreshTokenField = initial.refreshTokenField;
+
+  // 续签即时校验：地址格式、请求体占位符、响应案例 JSON，填错当场提示不用等保存
+  const urlError = url.trim() && !/^https?:\/\/\S+\.\S+/.test(url.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
+  const bodyError =
+    body.trim() && !body.includes("${refresh_token}")
+      ? "请求体里要写 ${refresh_token}，续签时才能自动代入凭证"
+      : "";
+  const sampleError = (() => {
+    const text = sample.trim();
+    if (!text) return "";
+    try {
+      JSON.parse(text);
+      return "";
+    } catch {
+      return "案例不是合法 JSON，AI 分析不了；贴一段接口实际返回的 JSON";
+    }
+  })();
+
+  const overrides = (): RefreshOverride => ({
+    method,
+    url,
+    refresh_token: token,
+    body,
+    response_sample: sample,
+  });
+  const fields = (): AuthFields => ({
+    method,
+    url,
+    token,
+    body,
+    sample,
+    accessTokenField,
+    refreshTokenField,
+    endpointHeadersText: headersText,
+  });
+
+  // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
+  function onMethodChange(next: string) {
+    setMethod(next);
+    if (next !== "GET" && !body.trim()) setBody('{"refresh_token": "${refresh_token}"}');
+    setTestResult(null);
+  }
+
+  function onUrlChange(next: string) {
+    setUrl(next);
+    // 首次填地址时自动补上标准请求体，手填过的不覆盖
+    if (next.trim() && !body.trim()) setBody('{"refresh_token": "${refresh_token}"}');
+    setTestResult(null);
+  }
+
+  // 真实调用一次续签接口：验证地址、凭证、响应结构是否都能对上
+  async function test() {
+    if (!url.trim()) {
+      setTestResult({ ok: false, text: "先填续签接口地址再测试" });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const outcome = await runTest(overrides());
+      setTestResult({ ok: outcome.ok, text: outcome.text });
+      if (outcome.ok && outcome.result) {
+        // 新 refresh token 先回填到本弹窗输入框，点确定才落草稿
+        setToken(outcome.result.refresh_token);
+        setRotation(outcome.result);
+      }
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  function commit() {
+    onCommit(fields(), rotation ?? undefined);
+  }
+
+  return (
+    <Modal open onClose={onClose} title="认证与续签" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "grid", gap: 6 }}>
+          <span style={{ fontSize: 13.5 }}>采集请求头（每行 Key: Value）</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            只对价格接口生效。站点级的认证 Token 和 Cookie 是通用的：价格、渠道状态、公告采集都会自动带上，不用在这里重复填
+          </span>
+          {overrideWarnings.length > 0 && (
+            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+              {overrideWarnings.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
+            </span>
+          )}
+          <textarea
+            className="input mono textarea"
+            value={headersText}
+            onChange={(event) => setHeadersText(event.target.value)}
+            rows={2}
+            spellCheck={false}
+            style={{ fontSize: 12 }}
+          />
+        </div>
+
+        <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+          <span style={{ fontSize: 13.5 }}>Token 续签</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            站点认证 token 短效时，配一个续签接口：采集遇到"需认证"就自动调它换新 token 并重试
+          </span>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Sel
+              value={method}
+              onChange={onMethodChange}
+              options={["GET", "POST", "PUT", "PATCH"].map((item) => ({ value: item, label: item }))}
+              style={{ width: 92 }}
+            />
+            <Input
+              value={url}
+              onChange={onUrlChange}
+              placeholder="续签接口地址，如 https://example.com/api/v1/auth/refresh"
+              style={{ flex: 1, minWidth: 220 }}
+            />
+          </div>
+          {urlError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{urlError}</span>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Input
+              value={token}
+              onChange={(value) => {
+                setToken(value);
+                setTestResult(null);
+              }}
+              placeholder="Refresh Token，续签成功后会自动更新"
+              style={{ flex: 1, minWidth: 220 }}
+            />
+            <Input
+              value={body}
+              onChange={(value) => {
+                setBody(value);
+                setTestResult(null);
+              }}
+              placeholder={'请求体，如 {"refresh_token": "${refresh_token}"}'}
+              style={{ flex: 1, minWidth: 220 }}
+            />
+          </div>
+          {bodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{bodyError}</span>}
+          <textarea
+            className="input mono textarea"
+            value={sample}
+            onChange={(event) => setSample(event.target.value)}
+            rows={3}
+            spellCheck={false}
+            placeholder="响应数据结构案例（选填）：贴一段续签接口实际返回的 JSON，保存时会自动分析出新 token 在哪"
+            style={{ fontSize: 12 }}
+          />
+          {sampleError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{sampleError}</span>}
+          {(accessTokenField.trim() || refreshTokenField.trim()) && (
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+              已识别 token 位置：
+              {[accessTokenField.trim() && `access_token = ${accessTokenField.trim()}`, refreshTokenField.trim() && `refresh_token = ${refreshTokenField.trim()}`]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            续签请求会自动带上上面的站点请求头；不贴案例时按常见返回结构自动找 token，贴了更准
+          </span>
+          <div>
+            <Btn variant="text" size="sm" loading={testing} onClick={test}>
+              测试续签
+            </Btn>
+          </div>
+          {testResult && (
+            <span style={{ fontSize: 12.5, color: testResult.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
+              {testResult.text}
+            </span>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：网页模式·无头浏览器 ---------- */
+
+/** 键值对编辑区：多行两列输入 + 删除/添加按钮；Cookie 和 localStorage 共用 */
+function KeyValueRows({
+  rows,
+  onChange,
+  keyLabel,
+  valueLabel,
+  keyPlaceholder,
+  valuePlaceholder,
+  addLabel,
+  ariaPrefix,
+}: {
+  rows: { key: string; value: string }[];
+  onChange: (next: { key: string; value: string }[]) => void;
+  keyLabel: string;
+  valueLabel: string;
+  keyPlaceholder: string;
+  valuePlaceholder: string;
+  addLabel: string;
+  ariaPrefix: string;
+}) {
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {rows.length === 0 && <span style={{ fontSize: 12, color: "var(--text-3)" }}>还没有添加，点下面加一条</span>}
+      {rows.map((row, index) => (
+        <div key={index} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Input
+            value={row.key}
+            ariaLabel={`${ariaPrefix} ${keyLabel} ${index + 1}`}
+            onChange={(next) => onChange(rows.map((item, i) => (i === index ? { ...item, key: next } : item)))}
+            placeholder={keyPlaceholder}
+            style={{ flex: 1, minWidth: 120 }}
+          />
+          <Input
+            value={row.value}
+            ariaLabel={`${ariaPrefix} ${valueLabel} ${index + 1}`}
+            onChange={(next) => onChange(rows.map((item, i) => (i === index ? { ...item, value: next } : item)))}
+            placeholder={valuePlaceholder}
+            style={{ flex: 2, minWidth: 160 }}
+          />
+          <Btn
+            variant="text"
+            size="sm"
+            ariaLabel={`删除第 ${index + 1} 条`}
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+          >
+            删除
+          </Btn>
+        </div>
+      ))}
+      <div>
+        <Btn variant="text" size="sm" onClick={() => onChange([...rows, { key: "", value: "" }])}>
+          {addLabel}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+function HeadlessSubModal({
+  initial,
+  onCommit,
+  onClose,
+}: {
+  initial: HeadlessForm;
+  onCommit: (next: HeadlessForm) => void;
+  onClose: () => void;
+}) {
+  const [enabled, setEnabled] = useState(initial.enabled);
+  // Cookie 与 localStorage 统一用 key/value 行编辑，提交时再映射回 name/value
+  const [cookies, setCookies] = useState(initial.cookies.map((item) => ({ key: item.name, value: item.value })));
+  const [storage, setStorage] = useState(initial.localStorage);
+  const [waitText, setWaitText] = useState(initial.waitSeconds);
+
+  function commit() {
+    // 等待时间收敛到 0~60；填空或非法回落默认 3
+    const parsed = Number(waitText.trim());
+    const waitSeconds = Number.isFinite(parsed) ? Math.min(60, Math.max(0, Math.round(parsed))) : 3;
+    onCommit({
+      enabled,
+      cookies: cookies.filter((item) => item.key.trim()).map((item) => ({ name: item.key.trim(), value: item.value })),
+      localStorage: storage.filter((item) => item.key.trim()),
+      waitSeconds: String(waitSeconds),
+    });
+  }
+
+  return (
+    <Modal open onClose={onClose} title="网页模式·无头浏览器" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <SettingRow label="用无头浏览器打开网页（注入登录信息）" hint="普通的接口采集不带登录状态；开启后改用无头浏览器打开页面，把下面的登录信息注进去">
+          <Switch checked={enabled} onChange={(next) => setEnabled(next)} />
+        </SettingRow>
+        {enabled && (
+          <>
+            <div style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 13.5 }}>Cookie</span>
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                只填名字和值就行，域名、路径会按采集地址自动带上
+              </span>
+              <KeyValueRows
+                rows={cookies}
+                onChange={setCookies}
+                keyLabel="名字"
+                valueLabel="值"
+                keyPlaceholder="名字，如 session"
+                valuePlaceholder="值，如 abc123"
+                addLabel="添加 Cookie"
+                ariaPrefix="Cookie"
+              />
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 13.5 }}>localStorage</span>
+              <KeyValueRows
+                rows={storage}
+                onChange={setStorage}
+                keyLabel="键"
+                valueLabel="值"
+                keyPlaceholder="键，如 token"
+                valuePlaceholder="值"
+                addLabel="添加一项"
+                ariaPrefix="localStorage"
+              />
+            </div>
+            <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
+              <Input
+                value={waitText}
+                type="number"
+                ariaLabel="等待时间（秒）"
+                onChange={setWaitText}
+                style={{ width: 100 }}
+              />
+            </SettingRow>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：高级 JSON ---------- */
+
+function JsonSubModal({
+  initial,
+  onCommit,
+  onClose,
+}: {
+  initial: string;
+  onCommit: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState(initial);
+  const error = advancedJsonError(text);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="高级配置 JSON"
+      width={780}
+      footer={
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <Btn
+            variant="text"
+            size="sm"
+            onClick={() => {
+              try {
+                setText(JSON.stringify(JSON.parse(text) as SiteConfig, null, 2));
+              } catch {
+                toast("JSON 格式不对，先改对再格式化");
+              }
+            }}
+          >
+            格式化
+          </Btn>
+          <SubModalFooter onCancel={onClose} onConfirm={() => onCommit(text)} confirmDisabled={error !== null} confirmTitle={error ? "高级配置 JSON 格式不对，改好才能确定" : undefined} />
+        </div>
+      }
+    >
+      <div style={{ display: "grid", gap: 8 }}>
+        {error ? (
+          <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误：{error}</span>
+        ) : (
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>JSON 合法；确定后会和主弹窗表单自动保持一致。</span>
+        )}
+        <textarea
+          className="input mono textarea"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          rows={22}
+          spellCheck={false}
+          style={{ fontSize: 12, minHeight: 0 }}
+        />
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 主弹窗 ---------- */
+
+/** 子弹窗标识：主弹窗同一时间最多打开一个 */
+type SubKey = "auth" | "headless" | "ratio" | "status" | "notice" | "json";
+
 function SiteModal({
   initial,
   isNew,
@@ -430,17 +1088,6 @@ function SiteModal({
       ? ((initial.notice as { url: string }).url)
       : "",
   );
-  // 倍率/Token 续签/渠道状态/站点公告折叠区：编辑已有配置且任一项已填时自动展开，避免用户以为值丢了
-  const [extraOpen, setExtraOpen] = useState(
-    Boolean(
-      (typeof initial.network?.ratio_url === "string" && initial.network.ratio_url) ||
-        (initial.status as { url?: unknown } | null | undefined)?.url ||
-        (initial.notice as { url?: unknown } | null | undefined)?.url ||
-        initial.token_refresh,
-    ),
-  );
-  // Token 续签子折叠：已配置过续签接口时自动展开，避免用户以为值丢了
-  const [refreshOpen, setRefreshOpen] = useState(Boolean(initial.token_refresh?.url || initial.token_refresh?.refresh_token));
   const [models, setModels] = useState<string[]>(
     (initial.models ?? []).filter((item): item is string => typeof item === "string"),
   );
@@ -464,9 +1111,9 @@ function SiteModal({
   const [refreshTokenField, setRefreshTokenField] = useState(
     typeof initial.token_refresh?.refresh_token_field === "string" ? initial.token_refresh.refresh_token_field : "",
   );
-  const [jsonOpen, setJsonOpen] = useState(false);
-  const [refreshTesting, setRefreshTesting] = useState(false);
-  const [refreshTestResult, setRefreshTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // 网页模式·无头浏览器表单草稿
+  const [headless, setHeadless] = useState<HeadlessForm>(() => headlessFromConfig(initial));
+  const [activeSub, setActiveSub] = useState<SubKey | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
@@ -477,6 +1124,16 @@ function SiteModal({
     refreshBody.trim() && !refreshBody.includes("${refresh_token}")
       ? "请求体里要写 ${refresh_token}，续签时才能自动代入凭证"
       : "";
+  const refreshSampleError = (() => {
+    const sample = refreshSample.trim();
+    if (!sample) return "";
+    try {
+      JSON.parse(sample);
+      return "";
+    } catch {
+      return "案例不是合法 JSON，AI 分析不了；贴一段接口实际返回的 JSON";
+    }
+  })();
 
   // 认证凭证（auth_token/Cookie）是站点级通用的，价格、渠道状态、公告采集都会自动带上；
   // 哪个接口的 headers 里手写了 Authorization/Cookie 就会盖掉通用凭证（续签换新后旧的会失效），这里集中检测提醒
@@ -494,111 +1151,18 @@ function SiteModal({
         .map((key) => `${section}.headers.${key}`);
     });
   })();
-  const refreshSampleError = (() => {
-    const sample = refreshSample.trim();
-    if (!sample) return "";
-    try {
-      JSON.parse(sample);
-      return "";
-    } catch {
-      return "案例不是合法 JSON，AI 分析不了；贴一段接口实际返回的 JSON";
-    }
-  })();
-
-  // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
-  function onRefreshMethodChange(method: string) {
-    setRefreshMethod(method);
-    const nextBody = method !== "GET" && !refreshBody.trim() ? '{"refresh_token": "${refresh_token}"}' : null;
-    if (nextBody !== null) setRefreshBody(nextBody);
-    setRefreshTestResult(null);
-    syncTokenRefresh(nextBody !== null ? { method, body: nextBody } : { method });
-  }
-
-  // 真实调用一次续签接口：验证地址、凭证、响应结构是否都能对上
-  async function testTokenRefresh() {
-    const config = buildConfig();
-    if (!config) return;
-    if (!refreshUrl.trim()) {
-      setRefreshTestResult({ ok: false, text: "先填续签接口地址再测试" });
-      return;
-    }
-    setRefreshTesting(true);
-    setRefreshTestResult(null);
-    try {
-      const result = await apiSend<{ access_token: string; refresh_token: string; refresh_token_rotated: boolean }>(
-        "/api/sites/test-token-refresh",
-        "POST",
-        { config },
-      );
-      // 新 token 回填到高级 JSON 和表单，点保存才落库；写死在采集地址 headers 里的认证头也一并换新
-      const retokenHeaders = (headers: Record<string, string>): Record<string, string> =>
-        Object.fromEntries(
-          Object.entries(headers).map(([key, value]) => {
-            if (key.toLowerCase() !== "authorization" || typeof value !== "string") return [key, value];
-            const space = value.indexOf(" ");
-            return [key, space > 0 ? `${value.slice(0, space)} ${result.access_token}` : result.access_token];
-          }),
-        );
-      const hasAuth = (headers: Record<string, string> | undefined) =>
-        !!headers && Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
-      syncAdvanced((base) => ({
-        ...base,
-        auth_token: result.access_token,
-        network:
-          base.network && hasAuth(base.network.headers)
-            ? { ...base.network, headers: retokenHeaders(base.network.headers!) }
-            : base.network,
-        networks: (base.networks ?? []).map((entry) =>
-          hasAuth(entry.headers) ? { ...entry, headers: retokenHeaders(entry.headers!) } : entry,
-        ),
-        status:
-          base.status && hasAuth(base.status.headers)
-            ? { ...base.status, headers: retokenHeaders(base.status.headers!) }
-            : base.status,
-        notice:
-          base.notice && hasAuth(base.notice.headers)
-            ? { ...base.notice, headers: retokenHeaders(base.notice.headers!) }
-            : base.notice,
-        token_refresh: base.token_refresh
-          ? { ...base.token_refresh, refresh_token: result.refresh_token }
-          : undefined,
-      }));
-      setRefreshToken(result.refresh_token);
-      setRefreshTestResult({
-        ok: true,
-        text: `通了，新 token 已填入，点保存生效${result.refresh_token_rotated ? "（Refresh Token 已换新）" : ""}`,
-      });
-    } catch (error) {
-      setRefreshTestResult({ ok: false, text: `测试失败：${errorText(error)}` });
-    } finally {
-      setRefreshTesting(false);
-    }
-  }
-
-  function formState(): SiteFormState {
-    return { id, url, ratioUrl, statusUrl, statusGroupsText, noticeUrl, models, endpointHeadersText };
-  }
 
   // 续签配置 → token_refresh 字段；续签 URL 清空视为整体移除。
-  // overrides：onChange 里刚敲入的值还没进 React 状态，必须显式传入，否则会同步成旧值
-  type RefreshOverride = Partial<{
-    method: string;
-    url: string;
-    refresh_token: string;
-    body: string;
-    response_sample: string;
-    access_token_field: string;
-    refresh_token_field: string;
-  }>;
+  // overrides：子弹窗里刚敲入的值还没进 React 状态，必须显式传入，否则会同步成旧值
   function tokenRefreshConfig(overrides: RefreshOverride = {}): SiteConfig["token_refresh"] | null {
-    const url = (overrides.url ?? refreshUrl).trim();
-    if (!url) return null;
+    const targetUrl = (overrides.url ?? refreshUrl).trim();
+    if (!targetUrl) return null;
     const body = (overrides.body ?? refreshBody).trim();
     const atField = (overrides.access_token_field ?? accessTokenField).trim();
     const rtField = (overrides.refresh_token_field ?? refreshTokenField).trim();
     const sample = (overrides.response_sample ?? refreshSample).trim();
     return {
-      url,
+      url: targetUrl,
       method: overrides.method ?? refreshMethod,
       refresh_token: (overrides.refresh_token ?? refreshToken).trim(),
       ...(body ? { body } : {}),
@@ -612,10 +1176,12 @@ function SiteModal({
     syncAdvanced((base) => {
       const next = tokenRefreshConfig(overrides);
       if (next === null) {
-        const { token_refresh: _dropped, ...rest } = base;
-        return rest as SiteConfig;
+        // 清空地址多半是在改地址，此刻删整个 token_refresh 会连带丢掉 refresh_token/请求体；
+        // 先不动 JSON，"地址为空 = 移除续签"留到保存时统一处理
+        return base;
       }
-      return { ...base, token_refresh: next };
+      const merged = base.token_refresh ? { ...base.token_refresh, ...next } : next;
+      return { ...base, token_refresh: merged };
     });
   }
 
@@ -637,8 +1203,7 @@ function SiteModal({
   function configToForm(config: SiteConfig) {
     setId(typeof config.id === "string" ? config.id : "");
     setUrl(typeof config.network?.url === "string" ? config.network.url : "");
-    const nextRatioUrl = typeof config.network?.ratio_url === "string" ? config.network.ratio_url : "";
-    setRatioUrl(nextRatioUrl);
+    setRatioUrl(typeof config.network?.ratio_url === "string" ? config.network.ratio_url : "");
     const nextStatusUrl =
       typeof (config.status as { url?: unknown } | null | undefined)?.url === "string"
         ? (config.status as { url: string }).url
@@ -648,7 +1213,11 @@ function SiteModal({
     setStatusGroupsText(
       Array.isArray(nextGroups) ? nextGroups.filter((item): item is string => typeof item === "string").join(", ") : "",
     );
-    if (nextRatioUrl || nextStatusUrl) setExtraOpen(true);
+    setNoticeUrl(
+      typeof (config.notice as { url?: unknown } | null | undefined)?.url === "string"
+        ? (config.notice as { url: string }).url
+        : "",
+    );
     setModels((config.models ?? []).filter((item): item is string => typeof item === "string"));
     setEndpointHeadersText(dictToText(config.network?.headers));
     const refresh = config.token_refresh ?? null;
@@ -659,7 +1228,7 @@ function SiteModal({
     setRefreshSample(typeof refresh?.response_sample === "string" ? refresh.response_sample : "");
     setAccessTokenField(typeof refresh?.access_token_field === "string" ? refresh.access_token_field : "");
     setRefreshTokenField(typeof refresh?.refresh_token_field === "string" ? refresh.refresh_token_field : "");
-    if (refresh) setExtraOpen(true);
+    setHeadless(headlessFromConfig(config));
   }
 
   // 双向同步：手动编辑 JSON 且合法时，把核心字段回填到表单控件；JSON 未写完（非法）时只更新文本
@@ -689,6 +1258,110 @@ function SiteModal({
     return applyForm(base, formState());
   }
 
+  function formState(): SiteFormState {
+    return { id, url, ratioUrl, statusUrl, statusGroupsText, noticeUrl, models, endpointHeadersText };
+  }
+
+  // 真实调用一次续签接口（由认证子弹窗触发）：验证地址、凭证、响应结构是否都能对上；
+  // 返回新 token 交给子弹窗暂存，点确定才随表单一并写回草稿
+  async function runRefreshTest(overrides: RefreshOverride): Promise<{ ok: boolean; text: string; result?: RefreshTestResult }> {
+    const config = buildConfig();
+    if (!config) return { ok: false, text: "高级配置 JSON 格式不对，改好才能测试" };
+    const targetRefresh = tokenRefreshConfig(overrides);
+    if (!targetRefresh) return { ok: false, text: "先填续签接口地址再测试" };
+    try {
+      const result = await apiSend<RefreshTestResult>("/api/sites/test-token-refresh", "POST", {
+        config: { ...config, token_refresh: targetRefresh },
+      });
+      return {
+        ok: true,
+        text: `通了，新 token 已填入，点保存生效${result.refresh_token_rotated ? "（Refresh Token 已换新）" : ""}`,
+        result,
+      };
+    } catch (error) {
+      return { ok: false, text: `测试失败：${errorText(error)}` };
+    }
+  }
+
+  // 认证子弹窗确定：表单字段 + 测试续签拿到的新 token 一并写回草稿
+  function commitAuth(fields: AuthFields, rotation?: RefreshTestResult) {
+    setRefreshMethod(fields.method);
+    setRefreshUrl(fields.url);
+    setRefreshToken(fields.token);
+    setRefreshBody(fields.body);
+    setRefreshSample(fields.sample);
+    setAccessTokenField(fields.accessTokenField);
+    setRefreshTokenField(fields.refreshTokenField);
+    setEndpointHeadersText(fields.endpointHeadersText);
+    syncTokenRefresh({
+      method: fields.method,
+      url: fields.url,
+      refresh_token: fields.token,
+      body: fields.body,
+      response_sample: fields.sample,
+      access_token_field: fields.accessTokenField,
+      refresh_token_field: fields.refreshTokenField,
+    });
+    syncAdvanced((base) => {
+      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+      setOptionalDict(network, "headers", fields.endpointHeadersText);
+      return { ...base, network: network as SiteConfig["network"] };
+    });
+    if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
+    setActiveSub(null);
+  }
+
+  // 无头浏览器子弹窗确定：写回表单草稿并同步进高级 JSON；开关关且内容全空时移除该字段
+  function commitHeadless(next: HeadlessForm) {
+    setHeadless(next);
+    syncAdvanced((base) => {
+      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+      const hasData = next.cookies.length > 0 || next.localStorage.length > 0;
+      if (next.enabled || hasData) {
+        network.headless = {
+          enabled: next.enabled,
+          ...(next.cookies.length > 0 ? { cookies: next.cookies.map((item) => ({ name: item.name.trim(), value: item.value })) } : {}),
+          ...(next.localStorage.length > 0
+            ? { localStorage: Object.fromEntries(next.localStorage.map((item) => [item.key.trim(), item.value])) }
+            : {}),
+          wait_seconds: Number(next.waitSeconds) || 0,
+        };
+      } else {
+        delete network.headless;
+      }
+      return { ...base, network: network as SiteConfig["network"] };
+    });
+    setActiveSub(null);
+  }
+
+  // 渠道状态子弹窗确定：地址清空移除整个 status，有地址时合并分组
+  function commitStatus(nextUrl: string, nextGroupsText: string) {
+    setStatusUrl(nextUrl);
+    setStatusGroupsText(nextGroupsText);
+    syncAdvanced((base) => {
+      const trimmed = nextUrl.trim();
+      if (!trimmed) {
+        const { status: _dropped, ...rest } = base;
+        return rest as SiteConfig;
+      }
+      const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
+      const groups = nextGroupsText
+        .split(/[,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const status = { ...existing, url: trimmed, ...(groups.length > 0 ? { groups } : {}) };
+      if (groups.length === 0) delete status.groups;
+      return { ...base, status };
+    });
+    setActiveSub(null);
+  }
+
+  const headlessConfigured = headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0;
+  // 地址输入框旁的提示随网页模式切换：开无头浏览器后页面可以要登录
+  const urlHint = headless.enabled
+    ? "将用无头浏览器打开页面并注入上面的 Cookie 和登录信息，可采集需要登录的页面"
+    : "站点提供价格数据的接口地址；要带参数就直接拼在地址后面，如 ?page=1&lang=zh。填网页地址（而不是接口）时，该页面必须无需登录就能打开——我们不会像浏览器那样带上你的登录状态";
+
   async function save() {
     if (refreshUrlError || refreshBodyError || refreshSampleError) {
       toast("续签配置里还有标红的填写问题，改好再保存");
@@ -700,12 +1373,34 @@ function SiteModal({
     }
     const config = buildConfig();
     if (!config) return;
+    // 地址清空 = 移除续签配置（同步时不动 JSON，统一在保存时落地）
+    if (!refreshUrl.trim() && config.token_refresh) delete config.token_refresh;
+    // 打开编辑期间续签可能已自动跑过、服务端换了新的 refresh_token；
+    // 用户没改过这个输入框时以服务端最新值为准，避免旧值覆盖回去
+    let note = "";
+    if (!isNew) {
+      try {
+        const { sites } = await apiSend<{ sites: SiteConfig[] }>("/api/sites", "GET");
+        const server = (sites ?? []).find((item) => item.id === originalId);
+        const serverToken =
+          typeof server?.token_refresh?.refresh_token === "string" ? server.token_refresh.refresh_token : "";
+        const initialToken =
+          typeof initial.token_refresh?.refresh_token === "string" ? initial.token_refresh.refresh_token : "";
+        if (serverToken && serverToken !== initialToken && refreshToken.trim() === initialToken.trim() && server?.token_refresh) {
+          config.token_refresh = { ...(config.token_refresh ?? server.token_refresh), refresh_token: serverToken };
+          setRefreshToken(serverToken);
+          note = "续签凭证在编辑期间已自动换新，已采用最新值";
+        }
+      } catch {
+        // 拉不到服务端最新配置就以表单为准
+      }
+    }
     setSaving(true);
     try {
       const saved = isNew
         ? await apiSend<{ warning?: string }>("/api/sites", "POST", { config })
         : await apiSend<{ warning?: string }>(`/api/sites/${encodeURIComponent(originalId)}`, "PUT", { config });
-      toast(saved.warning ? `站点已保存；${saved.warning}` : "站点已保存");
+      toast([saved.warning, note].filter(Boolean).join("；") || "站点已保存");
       onSaved();
       onClose();
     } catch (error) {
@@ -718,375 +1413,180 @@ function SiteModal({
   return (
     <>
       <Modal
-      open
-      onClose={onClose}
-      title={
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          <span>{isNew ? "新增站点" : `编辑站点：${originalId}`}</span>
-          <Btn
-            variant="text"
-            size="sm"
-            title="高级配置 JSON：这里和表单会自动保持一致"
-            onClick={() => setJsonOpen(true)}
-          >
-            <span className="mono" style={{ fontWeight: 600 }}>{"{ }"}</span>
-          </Btn>
-        </span>
-      }
-      width={620}
-      footer={
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <Btn onClick={onClose}>取消</Btn>
-          <Btn
-            variant="primary"
-            loading={saving}
-            disabled={advancedError !== null}
-            title={advancedError ? "高级配置 JSON 格式不对，改好才能保存" : undefined}
-            onClick={save}
-          >
-            保存
-          </Btn>
-        </div>
-      }
-    >
-      <div style={{ display: "grid", gap: 14, gridTemplateColumns: "minmax(0, 1fr)" }}>
-        <SettingRow label="站点 ID">
-          <Input
-            value={id}
-            onChange={(value) => {
-              setId(value);
-              syncAdvanced((base) => ({ ...base, id: value.trim() }));
-            }}
-            placeholder="例如 example-newapi"
-            style={{ width: "min(280px, 100%)" }}
-          />
-        </SettingRow>
-        <div style={{ display: "grid", gap: 12, minWidth: 0, padding: "2px 0" }}>
-          <SettingRow label="价格接口 URL" hint="站点提供价格数据的接口地址；要带参数就直接拼在地址后面，如 ?page=1&lang=zh">
-          <Input
-            value={url}
-            onChange={(value) => {
-              setUrl(value);
-              syncAdvanced((base) => ({ ...base, network: { ...(base.network ?? {}), url: value.trim() || null } }));
-            }}
-            placeholder="https://example.com/api/pricing"
-            style={{ width: "min(360px, 100%)" }}
-          />
-        </SettingRow>
-        <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
-          <ModelMultiSelect
-            value={models}
-            onChange={(next) => {
-              setModels(next);
-              syncAdvanced((base) => ({ ...base, models: next }));
-            }}
-          />
-        </SettingRow>
-        <SettingRow label="检测分组" hint="选填：只检测这些分组，从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就检测全部渠道">
-          <Input
-            value={statusGroupsText}
-            onChange={(value) => {
-              setStatusGroupsText(value);
-              syncAdvanced((base) => {
-                const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
-                const groups = value
-                  .split(/[,，\n]/)
-                  .map((item) => item.trim())
-                  .filter(Boolean);
-                const status = { ...existing, ...(groups.length > 0 ? { groups } : {}) };
-                if (groups.length === 0) delete status.groups;
-                return { ...base, status };
-              });
-            }}
-            placeholder="svip, vip"
-            style={{ width: "min(360px, 100%)" }}
-          />
-          {statusGroupsText.trim() && (
-            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-              保存后，这个站点没被选中的分组的历史检测记录会被清掉，且无法恢复
-            </span>
-          )}
-        </SettingRow>
-          <SettingRow label="请求头（每行 Key: Value）" hint="只对上面的价格接口生效。站点级的认证 Token 和 Cookie 是通用的：价格、渠道状态、公告采集都会自动带上，不用在这里重复填">
-            <div style={{ display: "grid", gap: 6, width: "100%" }}>
-            {authOverrideWarnings.length > 0 && (
-              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-                {authOverrideWarnings.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
-              </span>
-            )}
-            <textarea
-              className="input mono textarea"
-              value={endpointHeadersText}
-              onChange={(event) => {
-                const value = event.target.value;
-                setEndpointHeadersText(value);
-                syncAdvanced((base) => {
-                  const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-                  setOptionalDict(network, "headers", value);
-                  return { ...base, network: network as SiteConfig["network"] };
-                });
-              }}
-              rows={2}
-              spellCheck={false}
-              style={{ fontSize: 12 }}
-            />
-            </div>
-          </SettingRow>
-          <div style={{ display: "flex", justifyContent: "center" }}>
+        open
+        onClose={onClose}
+        title={isNew ? "新增站点" : `编辑站点：${originalId}`}
+        width={620}
+        footer={
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Btn onClick={onClose}>取消</Btn>
             <Btn
-              variant="text"
-              size="sm"
-              title={extraOpen ? "收起更多接口配置" : "展开更多接口配置"}
-              ariaLabel={extraOpen ? "收起更多接口配置" : "展开更多接口配置"}
-              onClick={() => setExtraOpen((open) => !open)}
+              variant="primary"
+              loading={saving}
+              disabled={advancedError !== null}
+              title={advancedError ? "高级配置 JSON 格式不对，改好才能保存" : undefined}
+              onClick={save}
             >
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    transform: extraOpen ? "rotate(180deg)" : "none",
-                    transition: "transform 150ms ease",
-                  }}
-                >
-                  <IconChevronDown size={14} />
-                </span>
-                {extraOpen ? "收起更多接口配置" : "更多接口配置（站点公告、渠道状态、倍率接口、Token 续签）"}
-              </span>
+              保存
             </Btn>
           </div>
-          {extraOpen && (
-            <>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            下面这些接口不用再填认证：采集时会自动带上站点通用的认证 Token、Cookie 和请求头，续签换新也全部生效
-          </span>
-          <SettingRow label="站点公告 URL" hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知">
-            <Input
-              value={noticeUrl}
-              onChange={(value) => {
-                setNoticeUrl(value);
-                syncAdvanced((base) => {
-                  const trimmed = value.trim();
-                  const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
-                  if (!trimmed) {
-                    const { notice: _dropped, ...rest } = base;
-                    return rest as SiteConfig;
-                  }
-                  return { ...base, notice: { ...existing, url: trimmed } };
-                });
-              }}
-              placeholder="https://example.com/api/notice"
-              style={{ width: "min(360px, 100%)" }}
-            />
-          </SettingRow>
-          <SettingRow label="渠道状态 URL" hint="填站点的渠道状态接口地址，每次采集会顺带检查各渠道是否正常，有变化会记成事件">
-            <Input
-              value={statusUrl}
-              onChange={(value) => {
-                setStatusUrl(value);
-                syncAdvanced((base) => {
-                  const trimmed = value.trim();
-                  const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
-                  if (!trimmed) {
-                    const { status: _dropped, ...rest } = base;
-                    return rest as SiteConfig;
-                  }
-                  return { ...base, status: { ...existing, url: trimmed } };
-                });
-              }}
-              placeholder="https://example.com/api/status"
-              style={{ width: "min(360px, 100%)" }}
-            />
-          </SettingRow>
-          <SettingRow label="倍率接口 URL" hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价">
-            <Input
-              value={ratioUrl}
-              onChange={(value) => {
-                setRatioUrl(value);
-                syncAdvanced((base) => {
-                  const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-                  setOptionalText(network, "ratio_url", value);
-                  return { ...base, network: network as SiteConfig["network"] };
-                });
-              }}
-              placeholder="https://example.com/api/public/model-pricing"
-              style={{ width: "min(360px, 100%)" }}
-            />
-          </SettingRow>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div
-              role="button"
-              tabIndex={0}
-              title={refreshOpen ? "收起 Token 续签" : "展开 Token 续签"}
-              onClick={() => setRefreshOpen((open) => !open)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setRefreshOpen((open) => !open);
-                }
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                width: "100%",
-                padding: "5px 0",
-                background: "transparent",
-                cursor: "pointer",
-                transition: "background 150ms ease, color 150ms ease",
-              }}
-              onMouseEnter={(event) => {
-                event.currentTarget.style.background = "var(--panel-2)";
-              }}
-              onMouseLeave={(event) => {
-                event.currentTarget.style.background = "transparent";
-              }}
-            >
-              <span style={{ fontSize: 13.5 }}>Token 续签</span>
-              <span
-                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <Btn variant="text" size="sm" loading={refreshTesting} onClick={testTokenRefresh}>
-                  测试续签
-                </Btn>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    transform: refreshOpen ? "rotate(180deg)" : "none",
-                    transition: "transform 150ms ease",
-                  }}
-                >
-                  <IconChevronDown size={14} />
-                </span>
-              </span>
-            </div>
-            {refreshOpen && (
-            <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Sel
-                value={refreshMethod}
-                onChange={onRefreshMethodChange}
-                options={["GET", "POST", "PUT", "PATCH"].map((method) => ({ value: method, label: method }))}
-                style={{ width: 92 }}
-              />
-              <Input
-                value={refreshUrl}
-                onChange={(value) => {
-                  setRefreshUrl(value);
-                  // 首次填地址时自动补上标准请求体，手填过的不覆盖
-                  const autoBody = value.trim() && !refreshBody.trim() ? '{"refresh_token": "${refresh_token}"}' : null;
-                  if (autoBody !== null) setRefreshBody(autoBody);
-                  setRefreshTestResult(null);
-                  syncTokenRefresh(autoBody !== null ? { url: value, body: autoBody } : { url: value });
-                }}
-                placeholder="续签接口地址，如 https://example.com/api/v1/auth/refresh"
-                style={{ flex: 1, minWidth: 220 }}
-              />
-            </div>
-            {refreshUrlError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshUrlError}</span>}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Input
-                value={refreshToken}
-                onChange={(value) => {
-                  setRefreshToken(value);
-                  syncTokenRefresh({ refresh_token: value });
-                }}
-                placeholder="Refresh Token，续签成功后会自动更新"
-                style={{ flex: 1, minWidth: 220 }}
-              />
-              <Input
-                value={refreshBody}
-                onChange={(value) => {
-                  setRefreshBody(value);
-                  syncTokenRefresh({ body: value });
-                }}
-                placeholder={'请求体，如 {"refresh_token": "${refresh_token}"}'}
-                style={{ flex: 1, minWidth: 220 }}
-              />
-            </div>
-            {refreshBodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshBodyError}</span>}
-            <textarea
-              className="input mono textarea"
-              value={refreshSample}
-              onChange={(event) => {
-                setRefreshSample(event.target.value);
-                syncTokenRefresh({ response_sample: event.target.value });
-              }}
-              rows={3}
-              spellCheck={false}
-              placeholder="响应数据结构案例（选填）：贴一段续签接口实际返回的 JSON，保存时会自动分析出新 token 在哪"
-              style={{ fontSize: 12 }}
-            />
-            {refreshSampleError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshSampleError}</span>}
-            {(accessTokenField.trim() || refreshTokenField.trim()) && (
-              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-                已识别 token 位置：
-                {[accessTokenField.trim() && `access_token = ${accessTokenField.trim()}`, refreshTokenField.trim() && `refresh_token = ${refreshTokenField.trim()}`]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-            )}
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              续签请求会自动带上上面的站点请求头；不贴案例时按常见返回结构自动找 token，贴了更准
-            </span>
-            {refreshTestResult && (
-              <span style={{ fontSize: 12.5, color: refreshTestResult.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
-                {refreshTestResult.text}
-              </span>
-            )}
-            </div>
-            )}
-          </div>
-            </>
-          )}
-        </div>
-        {advancedError && (
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误</span>
-          </div>
-        )}
-      </div>
-    </Modal>
-      <Modal
-        open={jsonOpen}
-        onClose={() => setJsonOpen(false)}
-        title="高级配置 JSON"
-        width={780}
-        footer={
-          <Btn
-            variant="text"
-            size="sm"
-            onClick={() => {
-              try {
-                setAdvanced(JSON.stringify(JSON.parse(advanced) as SiteConfig, null, 2));
-              } catch {
-                toast("JSON 格式不对，先改对再格式化");
-              }
-            }}
-          >
-            格式化
-          </Btn>
         }
       >
-        <div style={{ display: "grid", gap: 8 }}>
-          {advancedError ? (
-            <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误：{advancedError}</span>
-          ) : (
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              JSON 合法；这里和表单会自动保持一致。
-            </span>
+        <div style={{ display: "grid", gap: 14, gridTemplateColumns: "minmax(0, 1fr)" }}>
+          <SettingRow label="站点 ID">
+            <Input
+              value={id}
+              onChange={(value) => {
+                setId(value);
+                syncAdvanced((base) => ({ ...base, id: value.trim() }));
+              }}
+              placeholder="例如 example-newapi"
+              style={{ width: "min(280px, 100%)" }}
+            />
+          </SettingRow>
+          <SettingRow label="采集地址" hint={urlHint}>
+            <Input
+              value={url}
+              onChange={(value) => {
+                setUrl(value);
+                syncAdvanced((base) => ({ ...base, network: { ...(base.network ?? {}), url: value.trim() || null } }));
+              }}
+              placeholder="https://example.com/api/pricing"
+              style={{ width: "min(360px, 100%)" }}
+            />
+          </SettingRow>
+          <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
+            <ModelMultiSelect
+              value={models}
+              onChange={(next) => {
+                setModels(next);
+                syncAdvanced((base) => ({ ...base, models: next }));
+              }}
+            />
+          </SettingRow>
+
+          {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿 */}
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
+            <EntryCard
+              title="认证与续签"
+              desc="填 Token 续签接口，token 失效自动换新"
+              configured={Boolean(refreshUrl.trim() || endpointHeadersText.trim())}
+              onClick={() => setActiveSub("auth")}
+            />
+            <EntryCard
+              title="网页模式·无头浏览器"
+              desc="要登录才能看价格的页面用这个"
+              configured={headlessConfigured}
+              onClick={() => setActiveSub("headless")}
+            />
+            <EntryCard
+              title="倍率地址"
+              desc="按站点倍率把基准价折算成实售价"
+              configured={Boolean(ratioUrl.trim())}
+              onClick={() => setActiveSub("ratio")}
+            />
+            <EntryCard
+              title="渠道状态"
+              desc="顺带检查各渠道是否正常"
+              configured={Boolean(statusUrl.trim())}
+              onClick={() => setActiveSub("status")}
+            />
+            <EntryCard
+              title="站点公告"
+              desc="公告有变化时记录并通知"
+              configured={Boolean(noticeUrl.trim())}
+              onClick={() => setActiveSub("notice")}
+            />
+            <EntryCard
+              title="高级 JSON"
+              desc="直接编辑整份站点配置"
+              configured={false}
+              onClick={() => setActiveSub("json")}
+            />
+          </div>
+          {advancedError && (
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误</span>
+            </div>
           )}
-          <textarea
-            className="input mono textarea"
-            value={advanced}
-            onChange={(event) => onAdvancedChange(event.target.value)}
-            rows={22}
-            spellCheck={false}
-            style={{ fontSize: 12, minHeight: 0 }}
-          />
         </div>
       </Modal>
+
+      {/* 子弹窗：进入时以当前草稿为初值，确定才写回，取消直接丢弃 */}
+      {activeSub === "auth" && (
+        <AuthSubModal
+          initial={{
+            method: refreshMethod,
+            url: refreshUrl,
+            token: refreshToken,
+            body: refreshBody,
+            sample: refreshSample,
+            accessTokenField,
+            refreshTokenField,
+            endpointHeadersText,
+          }}
+          overrideWarnings={authOverrideWarnings}
+          runTest={runRefreshTest}
+          onCommit={commitAuth}
+          onClose={() => setActiveSub(null)}
+        />
+      )}
+      {activeSub === "headless" && (
+        <HeadlessSubModal initial={headless} onCommit={commitHeadless} onClose={() => setActiveSub(null)} />
+      )}
+      {activeSub === "ratio" && (
+        <UrlSubModal
+          title="倍率地址"
+          label="倍率接口 URL"
+          hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价"
+          placeholder="https://example.com/api/public/model-pricing"
+          initial={ratioUrl}
+          onCommit={(value) => {
+            setRatioUrl(value);
+            syncAdvanced((base) => {
+              const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+              setOptionalText(network, "ratio_url", value);
+              return { ...base, network: network as SiteConfig["network"] };
+            });
+            setActiveSub(null);
+          }}
+          onClose={() => setActiveSub(null)}
+        />
+      )}
+      {activeSub === "status" && (
+        <StatusSubModal
+          initialUrl={statusUrl}
+          initialGroups={statusGroupsText}
+          onCommit={commitStatus}
+          onClose={() => setActiveSub(null)}
+        />
+      )}
+      {activeSub === "notice" && (
+        <UrlSubModal
+          title="站点公告"
+          label="站点公告 URL"
+          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知。公告请求会自动带上价格接口的认证请求头，不用重复填"
+          placeholder="https://example.com/api/notice"
+          initial={noticeUrl}
+          onCommit={(value) => {
+            setNoticeUrl(value);
+            syncAdvanced((base) => {
+              const trimmed = value.trim();
+              const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
+              if (!trimmed) {
+                const { notice: _dropped, ...rest } = base;
+                return rest as SiteConfig;
+              }
+              return { ...base, notice: { ...existing, url: trimmed } };
+            });
+            setActiveSub(null);
+          }}
+          onClose={() => setActiveSub(null)}
+        />
+      )}
+      {activeSub === "json" && (
+        <JsonSubModal initial={advanced} onCommit={onAdvancedChange} onClose={() => setActiveSub(null)} />
+      )}
     </>
   );
 }

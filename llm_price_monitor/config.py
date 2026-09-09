@@ -236,6 +236,39 @@ def _validate_token_refresh(raw: dict[str, Any], site_id: str) -> None:
         raise ValueError(f"站点 {site_id} 的 token_refresh.refresh_token 不能为空")
 
 
+def _validate_headless(network: dict[str, Any], site_id: str) -> None:
+    """校验站点 network.headless 段；未启用时只校验 enabled 本身，其余字段可以不填。"""
+    headless = network.get("headless")
+    if headless is None:
+        return
+    if not isinstance(headless, dict):
+        raise ValueError(f"站点 {site_id} 的 network.headless 必须是对象")
+    enabled = headless.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"站点 {site_id} 的 network.headless.enabled 必须是布尔值")
+    if not enabled:
+        return
+    cookies = headless.get("cookies")
+    if cookies is not None:
+        if not isinstance(cookies, list):
+            raise ValueError(f"站点 {site_id} 的 network.headless.cookies 必须是数组")
+        for index, item in enumerate(cookies):
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item.get("name", "").strip():
+                raise ValueError(f"站点 {site_id} 的 network.headless.cookies[{index}].name 必须是非空字符串")
+            if not isinstance(item.get("value"), str) or not item.get("value", "").strip():
+                raise ValueError(f"站点 {site_id} 的 network.headless.cookies[{index}].value 必须是非空字符串")
+    local_storage = headless.get("localStorage")
+    if local_storage is not None:
+        if not isinstance(local_storage, dict) or any(
+            not isinstance(key, str) or not isinstance(storage_value, str)
+            for key, storage_value in local_storage.items()
+        ):
+            raise ValueError(f"站点 {site_id} 的 network.headless.localStorage 必须是字符串键值对象")
+    wait_seconds = headless.get("wait_seconds", 3)
+    if isinstance(wait_seconds, bool) or not isinstance(wait_seconds, (int, float)) or not 0 <= wait_seconds <= 60:
+        raise ValueError(f"站点 {site_id} 的 network.headless.wait_seconds 必须是 0~60 之间的数字")
+
+
 def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
     sites = []
     for raw_value in values:
@@ -290,6 +323,7 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
         for network_field in ("params", "headers"):
             if network_field in network and not isinstance(network[network_field], dict):
                 raise ValueError(f"站点 {site_id} 的 network.{network_field} 必须是对象")
+        _validate_headless(network, site_id)
         raw_networks = value.get("networks", [])
         if not isinstance(raw_networks, list):
             raise ValueError(f"站点 {site_id} 的 networks 必须是数组")

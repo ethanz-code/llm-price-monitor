@@ -189,6 +189,16 @@ export interface SiteConfig {
     ratio_url?: string | null;
     params?: Record<string, string>;
     headers?: Record<string, string>;
+    /** 网页模式·无头浏览器：开启后用无头浏览器打开网页并注入登录信息，可采集需要登录的页面 */
+    headless?: {
+      enabled?: boolean;
+      /** 注入的 Cookie；每项只需 name/value，domain/path 由后端按站点 URL 域名自动补 */
+      cookies?: { name: string; value: string }[];
+      /** 注入的 localStorage 键值 */
+      localStorage?: Record<string, string>;
+      /** 页面加载后等待秒数（0~60），默认 3 */
+      wait_seconds?: number;
+    } | null;
   } | null;
   networks?: NetworkEndpoint[];
   /** 渠道状态数据地址：每次采集顺带 GET 并存档，变化写入状态事件 */
@@ -200,6 +210,8 @@ export interface SiteConfig {
   token_refresh?: {
     url: string;
     method?: string;
+    params?: Record<string, string>;
+    headers?: Record<string, string>;
     /** 请求体模板，${refresh_token} 会替换成下面的 refresh_token */
     body?: string;
     /** 响应数据结构案例：保存时交给 AI 分析出 token 字段路径，不落库 */

@@ -301,6 +301,22 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
     return list(records.values())
 
 
+class _BrowserPageResponse:
+    """无头浏览器抓到的页面伪装成 httpx.Response 的最小接口，让后续 HTML 解析路径直接复用。"""
+
+    def __init__(self, url: str, text: str) -> None:
+        self.url = url
+        self.text = text
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+
+    def json(self) -> Any:
+        raise ValueError("无头浏览器页面没有 JSON 载荷")
+
+    def raise_for_status(self) -> None:
+        return None
+
+
 class NetworkAdapter:
     def collect(
         self,
@@ -343,7 +359,13 @@ class NetworkAdapter:
                 raise PriceMonitorError(f"站点 {spec.id} 未配置 network.url")
             # 扁平形态：params/headers 等直接挂在 network 下
             entry = resolve_endpoint({**network, "url": url_value}, spec=spec, label="network")
-        response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+        headless_config = network.get("headless") or {}
+        if isinstance(headless_config, dict) and headless_config.get("enabled"):
+            from llm_price_monitor.browser_fetch import fetch_page_html
+
+            response: Any = _BrowserPageResponse(entry.url, fetch_page_html(entry.url, headless_config))
+        else:
+            response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         if response.status_code in {401, 403}:
             return auth_required_records(spec, f"网络价格接口返回 HTTP {response.status_code}", str(response.url))
         response.raise_for_status()

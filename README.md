@@ -54,6 +54,21 @@ uv run price-web --with-frontend
 
 - `status`：渠道状态数据地址，与价格同一次采集顺带执行，存时序 `status_records`，变化写入 `status_events`
 - `notice`：公告地址，默认自动请求站点根地址的 `GET /api/notice`（new-api/one-api 系标配），多版本公告存 `notice_records`
+- `network.headless`：网页需登录才能看到价格时，启用无头浏览器（Playwright Chromium）渲染后再解析，打开网页前注入 cookies 和 localStorage 登录态：
+
+```json
+"network": {
+  "url": "https://example.com/dashboard/pricing",
+  "headless": {
+    "enabled": true,
+    "cookies": [{ "name": "session", "value": "abc" }],
+    "localStorage": { "token": "xxx" },
+    "wait_seconds": 3
+  }
+}
+```
+
+cookies 和 localStorage 的归属域自动取 `network.url`，不用填；`wait_seconds` 是页面渲染等待秒数（0~60，默认 3）。部署环境需安装：`pip install playwright && playwright install chromium`。
 
 计价规则、采集方式、AI 抽取约束与数据结构见 [docs/pricing.md](docs/pricing.md)。
 
