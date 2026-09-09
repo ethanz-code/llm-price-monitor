@@ -16,7 +16,6 @@
 git clone https://github.com/ethanz-code/llm-price-monitor.git
 cd llm-price-monitor
 uv sync
-cp .env.example .env   # Docker 部署必须先创建；本地直跑可跳过
 
 # 开发模式：前端热加载 + Python 改动自动重启，日常用这个
 uv run price-web --dev
@@ -51,7 +50,7 @@ uv run price-web --with-frontend
 }
 ```
 
-请求头支持 `${ENV_VAR}` 注入，敏感值不落盘。可选字段：
+请求头支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。可选字段：
 
 - `status`：渠道状态数据地址，与价格同一次采集顺带执行，存时序 `status_records`，变化写入 `status_events`
 - `notice`：公告地址，默认自动请求站点根地址的 `GET /api/notice`（new-api/one-api 系标配），多版本公告存 `notice_records`
@@ -62,8 +61,9 @@ uv run price-web --with-frontend
 
 | 端点 | 鉴权 | 说明 |
 | ---- | ---- | ---- |
-| `GET /api/overview` / `latest` / `history` / `events` / `status` / `notice` / `catalog` / `discount` / `meta` | 公开 | 数据读取（`status` 另有 `/api/status/latest`、`/api/status/events`；`notice` 另有 `/api/notice/events`） |
+| `GET /api/overview` / `latest` / `history` / `feed` / `status` / `notice` / `catalog` / `discount` / `meta` | 公开 | 数据读取（`feed` 为价格事件+站点公告合并的统一事件流；`status` 另有 `/api/status/latest`、`/api/status/events`） |
 | `GET /api/geo` | 公开 | 逐站点解析公网 IP 归属地（带缓存），供首页监控地球使用 |
+| `GET /api/assistant/status`、`POST /api/assistant/ask`（含 `/stream` 流式） | 公开（按 IP 每日限次） | AI 智能助手：基于平台采集的站点、价格与状态数据答问，未配置 AI 时入口隐藏 |
 | `POST /api/setup` | 公开 | 首次设置：创建管理员账号（仅库里没有账号时可用） |
 | `POST /api/auth/login` / `POST /api/auth/logout` | 公开 | 登录签发 30 天会话 cookie / 登出清除 |
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
@@ -79,6 +79,7 @@ Next.js 16（App Router）+ React 19 服务端渲染，自研轻量 UI kit，支
 | 页面 | 内容 |
 | ---- | ---- |
 | `/` | 品牌首页：实时统计条、监控地球、最新事件流与快照预览 |
+| 右下角 AI 助手 | 全站悬浮球：用自然语言问价格、比价、折扣与渠道状态（需在管理面板配置 AI，流式输出） |
 | `/overview` | 中转站检测：全部站点 × 模型的最新单价；`/overview/status/{siteId}` 看单站渠道状态、公告与访问统计 |
 | `/history` | 历史与事件：价格趋势图 + 变化事件列表 |
 | `/catalog` | 官方价库：各厂商模型官方原价，可切「全量渠道」页签 |

@@ -21,8 +21,7 @@
 | --- | --- | --- |
 | web 容器 | 宿主 `3000` | Next.js 生产服务，页面与 `/api` 反代入口 |
 | api 容器 | 仅容器网络 `8000` | FastAPI 后端 + 内置定时采集，永不直接暴露公网 |
-| `./var/` | — | SQLite 库、官方价目录、事件流等全部运行数据 |
-| `./.env` | — | 密钥占位文件（密钥实际在管理面板配置、存数据库），只挂进 api 容器 |
+| `./var/` | — | SQLite 库、官方价目录、事件流等全部运行数据（密钥也在其中，见下） |
 
 ## 前置条件
 
@@ -37,15 +36,12 @@ cd /opt
 git clone https://github.com/ethanz-code/llm-price-monitor.git
 cd llm-price-monitor
 
-# 2. 创建 .env（必须先做：compose 会把 .env 挂进 api 容器；密钥后面在面板里填，不在 .env 里）
-cp .env.example .env
+# 2.（可选）首次启动前预置站点：编辑 config/default-seed.json
 
-# 3.（可选）首次启动前预置站点：编辑 config/default-seed.json
-
-# 4. 构建并启动（首次构建几分钟）
+# 3. 构建并启动（首次构建几分钟）
 docker compose up -d --build
 
-# 5. 跟日志确认两个容器都健康
+# 4. 跟日志确认两个容器都健康
 docker compose logs -f
 ```
 
@@ -109,13 +105,13 @@ docker compose exec api price-admin
 # 在线备份 SQLite（推荐，不停服务）
 sqlite3 var/monitor.db ".backup 'var/backup-$(date +%F).db'"
 
-# 或停机冷备：运行数据 + 密钥一起打包
+# 或停机冷备：运行数据一起打包（密钥在数据库里，随 var/ 一起备份）
 docker compose stop api
-tar czf price-backup-$(date +%F).tgz var/ .env
+tar czf price-backup-$(date +%F).tgz var/
 docker compose start api
 ```
 
-恢复：停掉容器，把备份的 `var/` 覆盖回 `./var`、`.env` 放回仓库根目录，再 `docker compose up -d`。
+恢复：停掉容器，把备份的 `var/` 覆盖回 `./var`，再 `docker compose up -d`。
 
 ## 数据与目录
 
@@ -123,7 +119,6 @@ docker compose start api
 | --- | --- | --- |
 | `./var/monitor.db` | 站点配置、采集历史、事件、管理员账号 | 唯一真相源，定期备份 |
 | `./var/` 其余文件 | 官方价目录、汇率缓存、事件流 | 可随库一起备份 |
-| `./.env` | 密钥 | 挂进 api 容器；改完 `docker compose restart api` 生效 |
 | 镜像内 `config/default-seed.json` | 首次启动种子 | 只在空库时生效；改它需要重新 build api 镜像，或放开 compose 里注释的 config 挂载 |
 
 ## FAQ
@@ -132,8 +127,6 @@ docker compose start api
 - **构建卡死 / 内存不足**：1 GB 机器先加 2 GB swap：
   `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`，然后重新 build。
 - **首页能开但数据请求 404**：前端镜像构建时反代目标不对。确认 Dockerfile 的 `PRICE_WEB_API_URL` ARG 与 compose 里 web 的 environment 都是 `http://api:8000`，然后 `docker compose build web && docker compose up -d`。
-- **改了 .env 不生效**：`docker compose restart api`。
-- **.env 忘了创建就 up 了**：Docker 会把缺失的挂载源创建成同名空目录，api 容器起不来。删掉它重建文件：`rm -rf .env && cp .env.example .env && docker compose up -d`。
 - **磁盘越来越满**：`docker system df` 看占用，`docker image prune -f` 清掉旧构建的悬空镜像。
 - **时间不对**：镜像默认 `TZ=Asia/Shanghai`，需改时区时调整 Dockerfile / compose 里的 TZ。
 - **能否多开几个 api 副本扩容**：不能。定时调度与任务状态都在 api 进程内存里，多副本会重复采集、任务状态错乱，只允许单实例。

@@ -9,7 +9,7 @@
 | 架构 | 双容器：`api`（FastAPI + 内置定时采集，容器内 8000）+ `web`（Next.js，容器内 3000），`docker compose` 编排 |
 | 对外端口 | 仅宿主 3000（前端）。8000 永不发布、永不放行公网 |
 | 数据 | `./var/monitor.db`（SQLite，bind mount）。备份它 = 备份一切 |
-| 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；`./.env` 仅需存在并挂进 api 容器。部署第一步仍是 `cp .env.example .env` |
+| 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；不使用 `.env` 文件 |
 | 健康检查 | `GET /api/meta`（api 容器内返回 200）；compose 已自带 healthcheck |
 | 首次启动 | 库中无账号时访问管理页跳 `/setup` 创建管理员，**没有默认账号密码** |
 | 忘记密码 | `docker compose exec api price-admin` 重置 |
@@ -47,13 +47,13 @@ test -d /www/server/panel && echo HAS_BT      # 宝塔
 2. 不占用 80 / 443 / 22；这三个端口只让面板或既有 Nginx 接管。
 3. 8000 永不发布到宿主机、永不写进任何防火墙放行列表。
 4. 3000 不对公网放行，反代可达即可。
-5. 不删除或覆盖 `var/`、`.env`、`.env.keys`；`.env*` 不进 git、不贴进对话记录、不上传任何外部服务。
+5. 不删除或覆盖 `var/`；密钥只在数据库里，不贴进对话记录、不上传任何外部服务。
 6. 不 kill 1Panel / 宝塔自身进程；不执行 `docker system prune -a` 这类会连面板容器一起清掉的命令。
 7. 拿不准就停下来问用户，不要猜。
 
 ## 4. 标准部署流程
 
-按 [docker-compose.md](docker-compose.md)「首次部署」一节逐步执行：clone → `cp .env.example .env` → `docker compose up -d --build` → `docker compose logs -f`。命令以该文档为准，此处不重复。
+按 [docker-compose.md](docker-compose.md)「首次部署」一节逐步执行：clone → `docker compose up -d --build` → `docker compose logs -f`。命令以该文档为准，此处不重复。
 
 ## 5. 反向代理与 HTTPS（域名 + 证书是默认要求）
 
@@ -100,7 +100,7 @@ curl -sI https://域名 | head -1                                      # 200/2xx
 
 | 症状 | 先执行 | 处置 |
 | --- | --- | --- |
-| api 容器重启循环 / unhealthy | `docker compose logs --tail=100 api` | 常见是 `.env` 未创建，Docker 把挂载源建成了同名空目录：`rm -rf .env && cp .env.example .env && docker compose up -d` |
+| api 容器重启循环 / unhealthy | `docker compose logs --tail=100 api` | 看日志定位；最近一次部署若是旧版本编排仍挂载 `.env`，先 `git pull` 再重新 up |
 | 首页能开、`/api` 全 404 | `docker compose exec web env \| grep PRICE` | 反代烘焙值不对 → 确认 Dockerfile ARG 与 compose environment 都是 `http://api:8000`，`docker compose build web` 后重新 up |
 | 反代 502 | `curl -I http://127.0.0.1:3000` | 容器挂了先看 logs；容器活着则是反代目标写错（1Panel 场景多半是写了 127.0.0.1） |
 | 构建卡死 / 被 OOM 杀 | `free -h` | 加 swap 后重新 build |
