@@ -3,6 +3,8 @@
 export interface DiscountInfo {
   input: number | null;
   output: number | null;
+  input_price_cny: number | null;
+  output_price_cny: number | null;
   official_input_cny: number | null;
   official_output_cny: number | null;
   source_url: string;
@@ -51,6 +53,8 @@ export interface OverviewData {
   collect_status?: Record<string, SiteStatus>;
   /** 各站点最新公告（每站一条；没采集到公告的站点无键） */
   notices?: Record<string, { content: string; captured_at?: number | null }>;
+  /** 各站点配置信息完整度（0–3）：监控模型、认证凭证、附加采集地址各 1 分 */
+  site_completeness?: Record<string, number>;
 }
 
 /** 单站点最近一次采集状态（后端 documents.collect_status，与 run_once/site_status_from_records 对齐）。 */
@@ -69,15 +73,19 @@ export interface EventRow {
   previous?: PriceRecord | null;
 }
 
-export interface EventListData {
-  events: EventRow[];
-  total: number;
-  /** 展示汇率（USD→CNY，快照优先实时兜底）；缺失时前端回落原币展示 */
-  rate?: number;
+/** 趋势点（price_trend 精简列）：每次采集一条，供价格趋势图使用。 */
+export interface TrendRecord {
+  site_id: string;
+  model: string;
+  group?: string;
+  input_price: number | null;
+  output_price: number | null;
+  unit: string;
+  captured_at: number;
 }
 
 export interface HistoryListData {
-  records: PriceRecord[];
+  records: TrendRecord[];
   total: number;
   /** 展示汇率（USD→CNY，快照优先实时兜底）；缺失时前端回落原币展示 */
   rate?: number;
@@ -89,6 +97,8 @@ export interface CatalogEntry {
   /** models.dev 的展示名（如 Claude Sonnet 4.6） */
   name?: string;
   vendor: string;
+  /** 厂商 logo 地址（models.dev 托管，仅全量渠道目录带；官方视图走本地内置 SVG） */
+  logo?: string | null;
   currency: string;
   list?: { input?: number; output?: number };
   /** 快照汇率换算的人民币价（刷新时锁定），仅供展示 */
@@ -186,6 +196,19 @@ export interface SiteConfig {
   /** 站点公告地址：默认从 network.url 推导 /api/notice；也可指向纯文本/Markdown 公告页 */
   notice?: { url?: string | null; params?: Record<string, string>; headers?: Record<string, string> } | null;
   request_headers?: Record<string, string> | null;
+  /** 认证续签：token 失效时调用该接口换新 token 并自动回写配置 */
+  token_refresh?: {
+    url: string;
+    method?: string;
+    /** 请求体模板，${refresh_token} 会替换成下面的 refresh_token */
+    body?: string;
+    /** 响应数据结构案例：保存时交给 AI 分析出 token 字段路径，不落库 */
+    response_sample?: string;
+    /** 响应里 token 的字段路径（如 data.access_token）；留空自动探测 data.access_token / access_token */
+    access_token_field?: string;
+    refresh_token_field?: string;
+    refresh_token: string;
+  } | null;
   enabled?: boolean;
   [key: string]: unknown;
 }
@@ -215,6 +238,9 @@ export interface TaskInfo {
   error?: string | null;
   /** 列表接口只带日志行数；完整日志经 /api/tasks/{id} 详情获取。 */
   log_count?: number;
+  /** 日志中 level=error 的行数与最后一条错误内容，供列表行内提示。 */
+  error_count?: number;
+  error_summary?: string | null;
 }
 
 /** 任务过程日志行：level=error 在界面标红。 */
@@ -273,7 +299,17 @@ export interface NoticeEvent {
   content: string;
 }
 
-export type NoticeEventListData = { events: NoticeEvent[]; total: number };
+/** 事件流条目：价格事件（带模型与前后价格）或公告事件（带公告正文）。 */
+export type FeedEvent = EventRow | NoticeEvent;
+
+/** /api/feed：价格事件与公告事件按时间合并的统一事件流 */
+export interface FeedData {
+  events: FeedEvent[];
+  /** 价格事件全量总数（events 可能被 limit 截断，计数用它才准确） */
+  price_total: number;
+  /** 公告事件全量总数 */
+  notice_total: number;
+}
 
 /** 单条页面访问记录（后端 visit_logs 表，/api/analytics/logs 输出）。 */
 export interface VisitLog {
@@ -303,5 +339,7 @@ export interface AnalyticsSummary {
   oses: { name: string; pv: number }[];
   top_paths: { path: string; pv: number; uv: number }[];
   top_ips: { ip: string; pv: number; last_seen: number }[];
+  /** 近 30 天按国家聚合的访问分布（中文名，匹配世界地图；"未知"为解析失败）。 */
+  regions: { name: string; pv: number; uv: number }[];
   retained_days: number;
 }

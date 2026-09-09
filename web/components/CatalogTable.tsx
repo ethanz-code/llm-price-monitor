@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { Empty, Input, Sel } from "./ui";
+import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
@@ -27,8 +27,24 @@ const VENDOR_KEY: Record<string, string> = {
   xai: "xai",
 };
 
-/** 厂商 Logo：真实品牌 SVG（单色随主题适配、彩色带品牌色），未收录厂商用首字母色块兜底。 */
-export function VendorBadge({ vendor }: { vendor: string }) {
+/** 厂商 Logo：全量渠道优先用 models.dev 托管的品牌图，加载失败回落；官方视图走本地内置 SVG；都没有则首字母色块。 */
+export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (logo && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={logo}
+        alt=""
+        aria-hidden
+        title={vendor}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="vendor-logo"
+        style={{ objectFit: "contain" }}
+      />
+    );
+  }
   const key = VENDOR_KEY[vendor.trim().toLowerCase()];
   const svg = key ? VENDOR_LOGOS[key] : undefined;
   if (svg) {
@@ -220,7 +236,7 @@ export function CatalogTable({ data }: { data: CatalogData }) {
           onChange={setKeyword}
           prefix={<IconSearch size={14} />}
         />
-        <Sel
+        <Pick
           value={vendor}
           onChange={setVendor}
           style={{ width: 160, maxWidth: "100%" }}

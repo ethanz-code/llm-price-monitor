@@ -7,6 +7,7 @@ import { LogoMark } from "./LogoMark";
 import { FeedbackModal } from "./FeedbackModal";
 import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
 import { ChromeMosaic } from "./ChromeMosaic";
+import { footer, site } from "@/lib/copy";
 
 /** 全站页脚：品牌 + 一句话说明合并数据免责；联系方式图标与低调管理入口在底行。 */
 export function SiteFooter() {
@@ -19,28 +20,26 @@ export function SiteFooter() {
         <div className="site-footer-brand">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <LogoMark size={20} />
-            <span style={{ fontWeight: 600, color: "var(--text)" }}>LLM 价格监控</span>
+            <span style={{ fontWeight: 600, color: "var(--text)" }}>{site.name}</span>
           </div>
-          <p>
-            盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成对任何站点的使用推荐。
-          </p>
+          <p>{footer.brandLine}</p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
               className="footer-icon"
               href="https://github.com/ethanz-code/llm-price-monitor"
               target="_blank"
               rel="noreferrer"
-              aria-label="GitHub 仓库"
+              aria-label={footer.aria.github}
             >
               <IconGithub size={18} />
             </a>
-            <a className="footer-icon" href={`mailto:${CONTACT_EMAIL}`} aria-label="邮件联系">
+            <a className="footer-icon" href={`mailto:${CONTACT_EMAIL}`} aria-label={footer.aria.mail}>
               <IconMail size={18} />
             </a>
             <button
               type="button"
               className="footer-icon"
-              aria-label="企业微信联系"
+              aria-label={footer.aria.wecom}
               onClick={() => setContactOpen(true)}
             >
               <IconWecom size={18} />
@@ -49,12 +48,12 @@ export function SiteFooter() {
         </div>
       </div>
       <div className="site-footer-meta">
-        <span>© 2026 LLM 价格监控</span>
+        <span>© 2026 {site.name}</span>
         <span className="site-footer-meta-links">
-          <Link href="/discount">折扣对比</Link>
-          <Link href="/catalog">厂商定价</Link>
-          <button type="button" onClick={() => setFeedbackOpen(true)}>提建议</button>
-          <Link href="/admin" className="footer-admin-link">管理</Link>
+          <Link href="/discount">{footer.links.discount}</Link>
+          <Link href="/catalog">{footer.links.catalog}</Link>
+          <button type="button" onClick={() => setFeedbackOpen(true)}>{footer.links.feedback}</button>
+          <Link href="/admin" className="footer-admin-link">{footer.links.admin}</Link>
         </span>
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />

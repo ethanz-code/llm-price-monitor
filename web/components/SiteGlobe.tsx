@@ -3,11 +3,13 @@
 /** 监控地球：基于 cobe（点阵 WebGL 地球，~5KB），站点按真实 IP 归属地经纬度落点。
  *  球面点带 DOM 标签（cobe CSS anchor 绑定，转到背面自动淡出），悬停可点进检测档案；
  *  清单悬停选中站点时，球把该站点转到正面中心；也可以直接按住球面拖拽转动。
- *  定位数据由 /api/geo 提供。 */
+ *  坐标完全相同的站点（CDN 边缘等）会围绕原点位环形散开，避免节点叠在一起；
+ *  定位数据到达后节点带错峰弹入动画。定位数据由 /api/geo 提供。 */
 
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "@/app/providers";
+import { rateLevel } from "@/lib/channelStatus";
 import createGlobe from "cobe";
 
 export interface GlobeSite {
@@ -29,16 +31,84 @@ export interface SiteGeo {
   city: string;
 }
 
+interface MarkerDef {
+  location: [number, number];
+  size: number;
+  color: [number, number, number];
+  id: string;
+}
+
 const DEG = Math.PI / 180;
 const MARKER_ID = (siteId: string) => `m-${siteId}`;
 /** 默认视线倾角：对齐 cobe 官方 demo 的 theta 0.2，微微俯视北半球 */
 const REST_THETA = 0.2;
 /** 常态自转速度（弧度/帧） */
 const REST_SPEED = 0.0016;
+/** 弹入动画：单个节点的时长与相邻节点的错峰间隔（ms） */
+const POP_MS = 480;
+const POP_STAGGER_MS = 90;
+
+/** 节点状态色：与站点清单的分档一致（绿=优秀 ≥80%、黄=60–80%、红=<60%、灰=无检测数据/停用）。 */
+function statusHex(site: GlobeSite, dark: boolean): string {
+  if (site.availability == null || !site.enabled) return dark ? "#9DA3A6" : "#ADACA8";
+  const level = rateLevel(site.availability);
+  if (level === "warn") return dark ? "#E0B45C" : "#B45309";
+  if (level === "down") return dark ? "#E27B78" : "#DC2626";
+  return dark ? "#C8FF00" : "#86C200";
+}
 
 /** marker 十六进制色 → cobe 需要的 0–1 RGB。 */
 function rgb01(hex: string): [number, number, number] {
   return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
+}
+
+/** 坐标几乎相同的节点（CDN 边缘节点常解析到同一点）围绕原位环形散开。 */
+function spreadDuplicates(markers: MarkerDef[]): MarkerDef[] {
+  const groups = new Map<string, number[]>();
+  markers.forEach((marker, index) => {
+    const key = `${marker.location[0].toFixed(1)}|${marker.location[1].toFixed(1)}`;
+    const list = groups.get(key);
+    if (list) list.push(index);
+    else groups.set(key, [index]);
+  });
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue;
+    const radius = Math.min(6, 1.4 + 1.1 * (indexes.length - 1));
+    indexes.forEach((index, k) => {
+      const angle = (k / indexes.length) * Math.PI * 2 + 0.6;
+      const [lat, lon] = markers[index].location;
+      markers[index] = {
+        ...markers[index],
+        location: [
+          Math.max(-80, Math.min(80, lat + radius * Math.cos(angle))),
+          lon + (radius * Math.sin(angle)) / Math.max(0.3, Math.cos(lat * DEG)),
+        ],
+      };
+    });
+  }
+  return markers;
+}
+
+/** 由站点清单 + 定位数据构建节点：颜色随状态分档，坐标去重散开，size 先置 0 由弹入动画抬起来。 */
+function buildMarkers(sites: GlobeSite[], geo: Record<string, SiteGeo>, dark: boolean): MarkerDef[] {
+  const markers = sites.flatMap((site) => {
+    const loc = geo[site.id];
+    if (!loc) return [];
+    return [
+      {
+        location: [loc.lat, loc.lon] as [number, number],
+        size: site.enabled ? 0.05 : 0.035,
+        color: rgb01(statusHex(site, dark)),
+        id: MARKER_ID(site.id),
+      },
+    ];
+  });
+  return spreadDuplicates(markers);
+}
+
+/** easeOutCubic：节点弹入用。 */
+function popEase(t: number): number {
+  return 1 - Math.pow(1 - Math.min(Math.max(t, 0), 1), 3);
 }
 
 export function SiteGlobe({
@@ -64,6 +134,10 @@ export function SiteGlobe({
   const geoRef = useRef(geo);
   const dragRef = useRef({ active: false, x: 0, y: 0 });
   const lastInteractRef = useRef(0);
+  const globeRef = useRef<ReturnType<typeof createGlobe> | null>(null);
+  const markersRef = useRef<MarkerDef[]>([]);
+  /** 节点弹入动画的起始时刻；0 表示没有动画在进行 */
+  const popStartRef = useRef(0);
 
   useEffect(() => {
     activeRef.current = activeId;
@@ -75,24 +149,12 @@ export function SiteGlobe({
     geoRef.current = geo;
   }, [geo]);
 
+  // 球体实例只在挂载/主题切换时重建；站点与定位变化只 update 节点，避免整球闪一下
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const markers = sites.flatMap((site) => {
-      const loc = geoRef.current[site.id];
-      if (!loc) return [];
-      return [
-        {
-          location: [loc.lat, loc.lon] as [number, number],
-          size: site.enabled ? 0.085 : 0.055,
-          color: rgb01(site.enabled ? (dark ? "#C8FF00" : "#86C200") : dark ? "#9DA3A6" : "#ADACA8"),
-          id: MARKER_ID(site.id),
-        },
-      ];
-    });
-
     let phi = 0.9;
     let theta = REST_THETA;
     let width = canvas.offsetWidth;
@@ -115,8 +177,12 @@ export function SiteGlobe({
       // 标记点两种主题都用品牌绿（亮色下用深一档的 #86C200 保证对比度）
       markerColor: dark ? [0.78, 1, 0] : [0.525, 0.76, 0],
       glowColor: dark ? [0.15, 0.19, 0.06] : [1, 1, 1],
-      markers,
+      markers: [],
     });
+    globeRef.current = globe;
+    // 入场淡入改由首帧驱动：WebGL 首帧（建上下文+编译着色器）要滞后几百毫秒，
+    // 之前 CSS 定时动画会在这段空白期就淡入完成，露出一块白底；现在首帧画完才加 is-ready
+    canvas.classList.remove("is-ready");
 
     // npm 上的 cobe 2.0.1 没有内部渲染循环（onRender 是仓库未发布代码），
     // 每帧自己算好经纬角再调 update() 驱动重绘，标签锚点也会随之更新。
@@ -140,7 +206,25 @@ export function SiteGlobe({
         if (!reducedMotion) phi += spin;
         spin += (REST_SPEED - spin) * 0.02;
       }
-      globe.update({ phi, theta });
+
+      // 节点错峰弹入：动画期间每帧按缓动放大 size，结束后恢复整组节点
+      const state: { phi: number; theta: number; markers?: MarkerDef[] } = { phi, theta };
+      const start = popStartRef.current;
+      if (start > 0) {
+        const elapsed = performance.now() - start;
+        const last = markersRef.current.length * POP_STAGGER_MS + POP_MS;
+        if (elapsed >= last) {
+          popStartRef.current = 0;
+        } else {
+          state.markers = markersRef.current.map((marker, index) => ({
+            ...marker,
+            size: marker.size * popEase((elapsed - index * POP_STAGGER_MS) / POP_MS),
+          }));
+        }
+      }
+      globe.update(state);
+      canvas.classList.add("is-ready");
+
       raf = requestAnimationFrame(frame);
     };
     let raf = requestAnimationFrame(frame);
@@ -190,7 +274,22 @@ export function SiteGlobe({
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       globe.destroy();
+      globeRef.current = null;
     };
+  }, [dark]);
+
+  // 站点或定位数据变化：只换节点并触发弹入动画，不重建球体
+  useEffect(() => {
+    markersRef.current = buildMarkers(sites, geo, dark);
+    if (markersRef.current.length === 0) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion) {
+      popStartRef.current = 0;
+      globeRef.current?.update({ markers: markersRef.current });
+      return;
+    }
+    popStartRef.current = performance.now();
+    globeRef.current?.update({ markers: markersRef.current.map((marker) => ({ ...marker, size: 0 })) });
   }, [sites, geo, dark]);
 
   if (sites.length === 0) {
@@ -204,38 +303,57 @@ export function SiteGlobe({
       <canvas ref={canvasRef} aria-label="监控站点地球：站点按服务器所在地落点，悬停查看，点击进入检测档案" />
       {located.map((site) => {
         const anchor = `--cobe-${MARKER_ID(site.id)}`;
-        const tone = site.availability != null && site.availability < 90;
+        const level = site.availability != null ? rateLevel(site.availability) : null;
+        const pulseColor = statusHex(site, dark);
         return (
-          <button
-            key={site.id}
-            type="button"
-            className={`cobe-label mono${tone ? " warn" : ""}`}
-            style={
-              {
-                positionAnchor: anchor,
-                opacity: `var(--cobe-visible-${MARKER_ID(site.id)}, 0)`,
-              } as React.CSSProperties
-            }
-            onMouseEnter={() => {
-              labelHoverRef.current = site.id;
-              hoverReportRef.current?.(site.id);
-            }}
-            onMouseLeave={() => {
-              labelHoverRef.current = null;
-              hoverReportRef.current?.(null);
-            }}
-            onFocus={() => {
-              labelHoverRef.current = site.id;
-              hoverReportRef.current?.(site.id);
-            }}
-            onBlur={() => {
-              labelHoverRef.current = null;
-              hoverReportRef.current?.(null);
-            }}
-            onClick={() => router.push(`/overview/status/${encodeURIComponent(site.id)}`)}
-          >
-            {site.name}
-          </button>
+          <Fragment key={site.id}>
+            {/* 波纹环：钉在节点位置向外扩散，状态色随分档；无数据/停用的灰色站点不扩散 */}
+            {level != null && site.enabled && (
+              <span
+                aria-hidden
+                className="cobe-pulse"
+                style={
+                  {
+                    positionAnchor: anchor,
+                    opacity: `var(--cobe-visible-${MARKER_ID(site.id)}, 0)`,
+                    "--pulse-color": pulseColor,
+                  } as React.CSSProperties
+                }
+              >
+                <i />
+                <i />
+              </span>
+            )}
+            <button
+              type="button"
+              className={`cobe-label mono${level === "down" ? " down" : level === "warn" ? " warn" : ""}`}
+              style={
+                {
+                  positionAnchor: anchor,
+                  opacity: `var(--cobe-visible-${MARKER_ID(site.id)}, 0)`,
+                } as React.CSSProperties
+              }
+              onMouseEnter={() => {
+                labelHoverRef.current = site.id;
+                hoverReportRef.current?.(site.id);
+              }}
+              onMouseLeave={() => {
+                labelHoverRef.current = null;
+                hoverReportRef.current?.(null);
+              }}
+              onFocus={() => {
+                labelHoverRef.current = site.id;
+                hoverReportRef.current?.(site.id);
+              }}
+              onBlur={() => {
+                labelHoverRef.current = null;
+                hoverReportRef.current?.(null);
+              }}
+              onClick={() => router.push(`/overview/status/${encodeURIComponent(site.id)}`)}
+            >
+              {site.name}
+            </button>
+          </Fragment>
         );
       })}
     </div>

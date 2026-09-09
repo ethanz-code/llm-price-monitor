@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { Empty, Input, Sel } from "./ui";
+import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { ToneTag } from "./ToneTag";
@@ -39,9 +39,9 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       title: "渠道 / 厂商",
       dataIndex: "vendor",
       width: 190,
-      render: (v: string) => (
+      render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
-          <VendorBadge vendor={v} />
+          <VendorBadge vendor={v} logo={row.logo} />
           {v}
         </span>
       ),
@@ -181,7 +181,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
           onChange={setKeyword}
           prefix={<IconSearch size={14} />}
         />
-        <Sel
+        <Pick
           value={vendor}
           onChange={setVendor}
           style={{ width: 200, maxWidth: "100%" }}

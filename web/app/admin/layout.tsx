@@ -47,7 +47,6 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
   return (
     <>
       {/* 通栏光晕挂在 .page 之外：视口宽于内容区（如折叠浏览器侧栏）时最右侧不留空缺 */}
-      <div className="admin-backdrop" aria-hidden />
       <div className="page">
         <div className="admin-shell">
         <aside className="admin-rail" aria-label="管理面板导航">

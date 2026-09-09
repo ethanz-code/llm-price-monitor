@@ -2,21 +2,26 @@
 
 import { useMemo } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { StatCard } from "./PageHeader";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { DiscountBars, DiscountRangeBar } from "./DiscountBars";
 import { getSiteInfo } from "@/lib/sites";
+import { useNarrow } from "@/lib/useNarrow";
 import { formatDiscount, formatPrice } from "@/lib/format";
+import { dotsOfGroup, type ChannelDotRow } from "@/lib/channelStatus";
+import { ChannelDotMatrix } from "./ChannelDotMatrix";
 import type { DiscountData, DiscountRow, DiscountSummaryItem } from "@/lib/types";
 
-export function DiscountTable({ data }: { data: DiscountData }) {
+export function DiscountTable({
+  data,
+  statusDots,
+}: {
+  data: DiscountData;
+  /** 站点渠道检测点序列；缺失时渠道列显示 — */
+  statusDots?: Record<string, ChannelDotRow[]>;
+}) {
+  const narrow = useNarrow();
   const summaryRows = useMemo(() => Object.values(data.summary), [data.summary]);
-  const best = useMemo(() => {
-    const inputs = data.discounts.map((d) => d.input).filter((v): v is number => v !== null);
-    return inputs.length ? Math.min(...inputs) : null;
-  }, [data.discounts]);
-
   // 明细按模型分组：厂商价同模型完全一致，收进组头只出现一次，消除逐行重复
   const groups = useMemo(() => {
     const byModel = new Map<string, DiscountRow[]>();
@@ -80,36 +85,11 @@ export function DiscountTable({ data }: { data: DiscountData }) {
         </span>
       ),
     },
-    { title: "对比站点数", dataIndex: "sites_compared", align: "right", width: 120 },
+    { title: "对比站点数", dataIndex: "sites_compared", align: "right", width: 120, mobileHide: true },
   ];
 
   return (
     <div className="section-gap rise-in" style={{ display: "grid", gap: 24 }}>
-      <div className="stat-grid">
-        <StatCard label="对比条目" value={data.discounts.length} hint={`${data.skipped.length} 条暂缺可比厂商价`} />
-        <StatCard
-          label={
-            <>
-              最低输入折扣
-              <TermTip term="discount_input" />
-            </>
-          }
-          value={best !== null ? formatDiscount(best) : "—"}
-          hint="全网最便宜的站点价"
-        />
-        <StatCard label="覆盖模型" value={summaryRows.length} hint="至少一个站点有可用价" />
-        <StatCard
-          label={
-            <>
-              汇率 USD/CNY
-              <TermTip term="rate" />
-            </>
-          }
-          value={data.usd_cny_rate}
-          hint={data.rate_source}
-        />
-      </div>
-
       {summaryRows.length > 0 && (
         <div className="panel" style={{ overflow: "hidden" }}>
           <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", fontWeight: 550, fontSize: 15 }}>
@@ -120,6 +100,7 @@ export function DiscountTable({ data }: { data: DiscountData }) {
             columns={summaryColumns}
             rows={summaryRows}
             scrollX={710}
+            mobileScrollX={620}
           />
         </div>
       )}
@@ -128,21 +109,35 @@ export function DiscountTable({ data }: { data: DiscountData }) {
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", fontWeight: 550, fontSize: 15 }}>
           逐站点明细
           <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400, marginLeft: 10 }}>
-            按模型分组，组内按输入折扣从低到高，绿色行是该模型全网最低
+            同一模型的各站点放在一起比，绿色行就是该模型的全网最低
           </span>
         </div>
         {data.discounts.length === 0 ? (
-          <div className="empty">暂无可对比的价格</div>
+          <div className="empty">还没有可比的折扣数据，先去管理端添加站点并跑一轮采集，再回来看看</div>
         ) : (
           <div className="dtable-wrap">
             <div className="dtable-scroll">
-              <table className="dtable" style={{ minWidth: "min(620px, 100%)" }}>
+              {/* 窄屏隐藏「厂商定价页」列后只需站点+分组+折扣三列，收紧最小宽度避免空滚动 */}
+              <table
+                className="dtable"
+                style={{ minWidth: narrow ? "min(510px, 100%)" : "min(1060px, 100%)" }}
+              >
                 <thead>
                   <tr>
-                    <th style={{ width: 150 }}>站点</th>
-                    <th>
+                    <th style={{ width: 190 }}>站点</th>
+                    <th style={{ width: 180 }}>
+                      分组<TermTip term="group" />
+                    </th>
+                    <th style={{ minWidth: 130, textAlign: "right" }}>
                       折扣<span className="thead-unit">相对厂商价</span>
                       <TermTip term="discount" />
+                    </th>
+                    <th style={{ width: 150, textAlign: "right" }} className="col-hide-m">
+                      站点价<span className="thead-unit">CNY / 1M tokens</span>
+                      <TermTip term="unit" />
+                    </th>
+                    <th style={{ width: 190 }} className="col-hide-m">
+                      渠道<TermTip term="channels" />
                     </th>
                     <th style={{ width: 110, textAlign: "right" }} className="col-hide-m">
                       厂商定价页
@@ -152,7 +147,7 @@ export function DiscountTable({ data }: { data: DiscountData }) {
                 {groups.map((group) => (
                   <tbody key={group.model}>
                     <tr className="disc-group-head">
-                      <td colSpan={3}>
+                      <td colSpan={6}>
                         <span className="disc-group-inner">
                           <span className="mono disc-group-model">{group.model}</span>
                           <span className="mono disc-group-price">
@@ -172,10 +167,33 @@ export function DiscountTable({ data }: { data: DiscountData }) {
                             </RiskLink>
                           </td>
                           <td>
+                            {row.group && row.group !== "default" ? (
+                              <span className="mono">{row.group}</span>
+                            ) : (
+                              <span style={{ color: "var(--text-3)" }}>默认</span>
+                            )}
+                          </td>
+                          <td>
                             {/* 3 列布局下表格会撑满面板，给折扣条限宽避免被拉到整行 */}
-                            <div style={{ maxWidth: 320 }}>
+                            <div style={{ maxWidth: 240, marginLeft: "auto" }}>
                               <DiscountBars discount={{ input: row.input, output: row.output }} />
                             </div>
+                          </td>
+                          <td style={{ textAlign: "right" }} className="col-hide-m">
+                            {row.input_price_cny !== null || row.output_price_cny !== null ? (
+                              <span className="mono">
+                                ¥{formatPrice(row.input_price_cny)} / ¥{formatPrice(row.output_price_cny)}
+                              </span>
+                            ) : (
+                              <span style={{ color: "var(--text-3)" }}>—</span>
+                            )}
+                          </td>
+                          <td className="col-hide-m">
+                            <ChannelDotMatrix
+                              dots={dotsOfGroup(statusDots?.[row.site_id], row.group ?? undefined)}
+                              name={row.group ?? row.model}
+                              href={`/overview/status/${encodeURIComponent(row.site_id)}`}
+                            />
                           </td>
                           <td style={{ textAlign: "right" }} className="col-hide-m">
                             {row.source_url ? (

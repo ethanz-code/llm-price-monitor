@@ -10,6 +10,8 @@ export type ChromeCell = {
   /** 呼吸动效的相位与时长（秒），由 CSS keyframes chr-shimmer 消费 */
   delay: number;
   dur: number;
+  /** 归一化到椭圆的距离（0 中心 ~ 1 边缘），用作蔓延波纹的传播延迟 */
+  dist: number;
 };
 
 export function buildChromeCells({
@@ -51,6 +53,7 @@ export function buildChromeCells({
         opacity: 0.55 + rnd() * 0.45,
         delay: rnd() * 7,
         dur: 3.5 + rnd() * 4,
+        dist: d,
       });
     }
   }

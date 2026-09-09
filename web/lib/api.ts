@@ -3,7 +3,9 @@
 
 import type { MetaData } from "./types";
 
-const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000";
+// 服务端直连 FastAPI；浏览器侧必须走同源 /api 代理（直连会撞 CORS，且拿不到 HttpOnly cookie）
+const API_BASE =
+  typeof window === "undefined" ? (process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000") : "";
 
 export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers });

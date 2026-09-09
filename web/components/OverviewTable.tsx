@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DataTable, type DColumn } from "./DataTable";
-import { StatCard } from "./PageHeader";
 import { Empty } from "./ui";
 import { IconMonitor } from "./icons";
 import { ToneTag, RulePriceMark } from "./ToneTag";
@@ -12,14 +11,16 @@ import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
 import { effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
-import { canonicalModel, hasUsablePrice, mergeModelRows, modelRowKey, smartOrderRows } from "@/lib/priceRows";
-import { channelSuccessRate, filterDotsByGroups, type ChannelDotRow } from "@/lib/channelStatus";
+import { canonicalModel, hasUsablePrice, smartOrderRows } from "@/lib/priceRows";
+import { dotsOfGroup, dotsSuccessRate, type ChannelDot, type ChannelDotRow } from "@/lib/channelStatus";
+import { ChannelDotMatrix } from "./ChannelDotMatrix";
 import { DiscountBars } from "./DiscountBars";
 import { PriceCell } from "./PriceCell";
 import type { OverviewData, OverviewRecord, SiteStatus } from "@/lib/types";
 
-// 渠道点阵：每行是一个渠道/分组（异常在前），取该渠道最近 15 次检测的小点；行首为渠道/分组名
-const CHANNEL_DOT_COLS = 15;
+/** 行唯一键：同站点同模型不再折叠，不同分组/单位各占一行。 */
+const rowKeyOf = (row: OverviewRecord) =>
+  `${row.site_id}:${row.model}:${row.unit}:${row.metadata?.group ?? ""}`;
 
 interface ModelGroup {
   /** 归一后的分组键：大小写/连字符等写法差异不产生重复的表 */
@@ -75,55 +76,41 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
 
   const active = models.find((group) => group.key === activeModel) ?? models[0];
 
-  // 表内仍沿用"同站点同分组合并为一行"的口径：代表行取最低价，其余展开可见
-  const merged = useMemo(
-    () =>
-      active
-        ? mergeModelRows(active.rows)
-        : { parentRows: [] as OverviewRecord[], childRowsOf: new Map<string, OverviewRecord[]>() },
-    [active],
-  );
-  const childRowsOf = merged.childRowsOf;
-
-  // 渠道点阵按合并组过滤：父行只显示该站点+模型涉及的分组（父+子记录的分组并集）；
-  // 目标分组为空或一行都匹配不上（渠道形态接口，行名不是分组名）时不过滤
+  // 渠道点阵按行取数：只认与本行分组名对得上的渠道行，不做全量回退；
+  // 没有分组或匹配不上（渠道形态接口，行名不是分组名）时不显示点阵
   const dotsByRowKey = useMemo(() => {
-    const result = new Map<string, ChannelDotRow[]>();
-    const mergeInfo = new Map<string, { siteId: string; groups: Set<string> }>();
+    const result = new Map<string, ChannelDot[]>();
     for (const row of active?.rows ?? []) {
-      const key = modelRowKey(row);
-      let info = mergeInfo.get(key);
-      if (!info) {
-        info = { siteId: row.site_id, groups: new Set() };
-        mergeInfo.set(key, info);
-      }
-      const group = row.metadata?.group;
-      if (group) info.groups.add(group);
-    }
-    for (const [key, { siteId, groups }] of mergeInfo) {
-      const dots = statusDots?.[siteId];
-      if (dots?.length) result.set(key, filterDotsByGroups(dots, groups));
+      const dots = dotsOfGroup(statusDots?.[row.site_id], row.metadata?.group);
+      if (dots) result.set(rowKeyOf(row), dots);
     }
     return result;
   }, [active, statusDots]);
 
-  // 默认行序（智能排序）：综合价（输入 3 : 输出 1）低、扣分少的在前；点表头排序循环回"无排序"即回到此序
+  // 默认行序（智能排序）：综合价（输入 3 : 输出 1）低的在前、扣分少的在前；点表头排序循环回"无排序"即回到此序
   const parentRows = useMemo(
     () =>
       smartOrderRows(
-        merged.parentRows,
+        active?.rows ?? [],
         (row) => {
-          // 缺信息扣分：渠道按平均成功率扣 0–3 分，没配置渠道状态、没有公告各扣 1
-          const success = channelSuccessRate(dotsByRowKey.get(modelRowKey(row)));
+          // 缺信息扣分：渠道按本行分组的成功率扣 0–3 分，没配置渠道状态、没有公告各扣 1；
+          // 站点配置信息填得越少扣得越多（每缺一项 0.5 分，最多 1.5 分）
+          const success = dotsSuccessRate(dotsByRowKey.get(rowKeyOf(row)));
           let penalty = 0;
           if (success == null) penalty += 1;
           else penalty += (1 - success) * 3;
           if (!data.notices?.[row.site_id]?.content) penalty += 1;
+          const filled = data.site_completeness?.[row.site_id] ?? 0;
+          penalty += (3 - Math.min(3, Math.max(0, filled))) * 0.5;
+          // 数据滞后扣分：价格是沿用上次快照的（last_price_at 落后 captured_at），多半是 token 过期
+          // 没取到新数据；滞后超过 1 天开始扣，每多滞后一天多扣 1 分，最多 3 分，把它往后排
+          const staleSeconds = row.captured_at - (row.last_price_at ?? row.captured_at);
+          penalty += Math.min(3, Math.max(0, staleSeconds / 86400 - 1));
           return penalty;
         },
         rate,
       ),
-    [merged.parentRows, dotsByRowKey, rate, data.notices],
+    [active, dotsByRowKey, rate, data.notices, data.site_completeness],
   );
 
   const attentionSites = useMemo(() => {
@@ -131,18 +118,6 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       .filter(([, status]) => status.status === "error" || status.status === "auth_required")
       .map(([siteId, status]) => ({ siteId, ...status }) satisfies { siteId: string } & SiteStatus);
   }, [data.collect_status]);
-
-  const stats = useMemo(() => {
-    const sites = new Set(records.map((row) => row.site_id));
-    const modelsCount = new Set(records.map((row) => row.model));
-    const latest = records.reduce<number | undefined>(
-      (acc, row) => (acc === undefined || row.captured_at > acc ? row.captured_at : acc),
-      undefined,
-    );
-    const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
-    const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
-    return { sites: sites.size, models: modelsCount.size, latest, avgInput };
-  }, [records]);
 
   const columns: DColumn<OverviewRecord>[] = [
     {
@@ -245,29 +220,13 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       width: 250,
       mobileHide: true,
       render: (_v: unknown, row) => {
-        const key = modelRowKey(row);
-        // 折叠子行不重复渲染点阵，渠道状态只在父行显示
-        if (childRowsOf.get(key)?.includes(row)) return <span style={{ color: "var(--text-3)" }}>—</span>;
-        const rows = dotsByRowKey.get(key) ?? [];
-        if (rows.length === 0) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        const dots = dotsByRowKey.get(rowKeyOf(row));
         return (
-          <Link href={`/overview/status/${encodeURIComponent(row.site_id)}`} className="ch-matrix" title="每行是一个渠道/分组的最近检测（异常在前），点击查看趋势图">
-            {rows.map((channel) => (
-              <span key={channel.name} className="ch-line-dots">
-                <span className="ch-line-name" title={channel.name}>
-                  {channel.name}
-                </span>
-                {channel.dots.slice(-CHANNEL_DOT_COLS).map((dot, index) => (
-                  <span
-                    key={index}
-                    aria-hidden
-                    title={`${channel.name}：${dot.status}${dot.at != null ? ` · ${formatTime(dot.at)}` : ""}`}
-                    className={`ch-mini ${dot.ok ? "ch-ok" : "ch-down"}`}
-                  />
-                ))}
-              </span>
-            ))}
-          </Link>
+          <ChannelDotMatrix
+            dots={dots}
+            name={row.metadata?.group ?? row.model}
+            href={`/overview/status/${encodeURIComponent(row.site_id)}`}
+          />
         );
       },
     },
@@ -330,27 +289,6 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
           })}
         </div>
       )}
-      <div className="stat-grid rise-in" style={{ marginBottom: 20 }}>
-        <StatCard tone="blue" label="监控站点" value={stats.sites} hint="按配置批量采集" />
-        <StatCard tone="gray" label="跟踪模型" value={stats.models} hint={`${records.length} 条价格记录`} />
-        <StatCard
-          tone="yellow"
-          label="最近采集"
-          value={stats.latest ? formatTime(stats.latest).slice(0, 10) : "—"}
-          hint={stats.latest ? formatTime(stats.latest).slice(11) : undefined}
-        />
-        <StatCard
-          tone="green"
-          label={
-            <>
-              平均输入折扣
-              <TermTip term="discount_input" />
-            </>
-          }
-          value={stats.avgInput !== null ? formatDiscount(stats.avgInput) : "—"}
-          hint="相对厂商原价"
-        />
-      </div>
       {models.length > 0 && (
         <div className="rise-in" style={{ overflowX: "auto", marginBottom: 16 }}>
           <span className="seg" role="tablist">
@@ -398,7 +336,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             )}
             {active && (
               <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
-                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同分组合并取最低价 · 默认综合价低、渠道正常的在前 · 点名称右侧 +N 展开其余写法，点行内其他位置查看站点检测详情
+                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同模型的各分组各占一行 · 默认综合价低、渠道正常的在前 · 点行内查看站点检测详情
               </span>
             )}
           </span>
@@ -413,10 +351,9 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
           )}
         </div>
         <DataTable<OverviewRecord>
-          rowKey={(row) => `${row.site_id}:${row.model}:${row.metadata?.group ?? ""}`}
+          rowKey={rowKeyOf}
           columns={columns}
           rows={parentRows}
-          childrenOf={(row) => childRowsOf.get(modelRowKey(row))}
           paginated
           scrollX={1020}
           mobileScrollX={500}

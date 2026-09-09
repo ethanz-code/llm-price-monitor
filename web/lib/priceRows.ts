@@ -9,53 +9,17 @@ export function canonicalModel(model: string): string {
   return model.toLowerCase().replace(/[\s\-_.]+/g, "");
 }
 
-/** 行合并键：同站点 + 同模型（归一后）+ 同单位视为同一模型的变体（不同分组/倍率）；单位不同不并组。 */
-export function modelRowKey(row: OverviewRecord): string {
-  return `${row.site_id}:${canonicalModel(row.model)}:${row.unit}`;
-}
-
 /** 有效价 = 顶层价格或阶梯档价任一可得；无效行（需认证/无数据）在时间排序中沉底。 */
 export function hasUsablePrice(row: OverviewRecord): boolean {
   return effectivePrice(row, "input_price") != null || effectivePrice(row, "output_price") != null;
 }
 
-/** 站点+模型 合并为一行：代表行取价格最低的一条，其余记录展开后可见；单位不同的记录不并组。 */
-export function mergeModelRows(records: OverviewRecord[]): {
-  parentRows: OverviewRecord[];
-  childRowsOf: Map<string, OverviewRecord[]>;
-} {
-  const groups = new Map<string, OverviewRecord[]>();
-  for (const row of records) {
-    const key = modelRowKey(row);
-    const list = groups.get(key);
-    if (list) list.push(row);
-    else groups.set(key, [row]);
-  }
-  // 代表行：有可用价者优先；输入价最低（阶梯取最低档），其次输出价最低；再同取最新
-  const better = (a: OverviewRecord, b: OverviewRecord) => {
-    if (hasUsablePrice(a) !== hasUsablePrice(b)) return hasUsablePrice(a);
-    const inputA = effectivePrice(a, "input_price") ?? Number.POSITIVE_INFINITY;
-    const inputB = effectivePrice(b, "input_price") ?? Number.POSITIVE_INFINITY;
-    if (inputA !== inputB) return inputA < inputB;
-    const outputA = effectivePrice(a, "output_price") ?? Number.POSITIVE_INFINITY;
-    const outputB = effectivePrice(b, "output_price") ?? Number.POSITIVE_INFINITY;
-    if (outputA !== outputB) return outputA < outputB;
-    return a.captured_at > b.captured_at;
-  };
-  const parentRows: OverviewRecord[] = [];
-  const childRowsOf = new Map<string, OverviewRecord[]>();
-  for (const [key, list] of groups) {
-    const best = list.reduce((acc, row) => (better(row, acc) ? row : acc), list[0]);
-    parentRows.push(best);
-    const rest = list.filter((row) => row !== best);
-    if (rest.length > 0) childRowsOf.set(key, rest);
-  }
-  // 有效价行在前（时间倒序），需认证/无数据的行沉底
-  parentRows.sort((a, b) => {
+/** 最新快照的展示行序：有可用价在前，同状态按采集时间倒序；不再按站点+模型折叠，各分组各占一行。 */
+export function sortSnapshotRows(records: OverviewRecord[]): OverviewRecord[] {
+  return [...records].sort((a, b) => {
     if (hasUsablePrice(a) !== hasUsablePrice(b)) return hasUsablePrice(a) ? -1 : 1;
     return b.captured_at - a.captured_at;
   });
-  return { parentRows, childRowsOf };
 }
 
 /** 综合价（排序用）：输入 3 : 输出 1 加权，统一折算 RMB；缺一项用另一项，都缺返回 null。 */
@@ -66,8 +30,9 @@ export function blendedCnyPrice(row: OverviewRecord, rate: number | null): numbe
   return input ?? output;
 }
 
-/** 智能排序（总览表默认行序）：有价在前 → 扣分少的在前（调用方按渠道成功率、缺渠道/缺公告扣分）→
- *  综合价低的在前；折扣与抓取时间破平。规则价与确认价同等对待；点表头单列排序循环回"无排序"即回到此序。 */
+/** 智能排序（总览表默认行序）：有价在前 → 综合价低的在前（输入 3 : 输出 1 加权）→
+ *  扣分少的在前（调用方按渠道成功率、缺渠道/缺公告、信息完整度扣分）；
+ *  折扣与抓取时间破平。规则价与确认价同等对待；点表头单列排序循环回"无排序"即回到此序。 */
 export function smartOrderRows(
   rows: OverviewRecord[],
   penaltyOf: (row: OverviewRecord) => number,
@@ -78,12 +43,12 @@ export function smartOrderRows(
     const pricedB = hasUsablePrice(b);
     if (pricedA !== pricedB) return pricedA ? -1 : 1;
     if (pricedA) {
-      const penaltyA = penaltyOf(a);
-      const penaltyB = penaltyOf(b);
-      if (penaltyA !== penaltyB) return penaltyA - penaltyB;
       const blendA = blendedCnyPrice(a, rate) ?? Number.POSITIVE_INFINITY;
       const blendB = blendedCnyPrice(b, rate) ?? Number.POSITIVE_INFINITY;
       if (blendA !== blendB) return blendA - blendB;
+      const penaltyA = penaltyOf(a);
+      const penaltyB = penaltyOf(b);
+      if (penaltyA !== penaltyB) return penaltyA - penaltyB;
       const discountA = a.discount?.input ?? 9;
       const discountB = b.discount?.input ?? 9;
       if (discountA !== discountB) return discountA - discountB;

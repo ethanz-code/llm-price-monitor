@@ -3,7 +3,7 @@
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { toast, Btn, Check, Empty, Input, Modal, Switch } from "./ui";
+import { toast, Btn, Check, Empty, Input, Modal, Sel, Switch } from "./ui";
 import { IconAppstore, IconCheck, IconChevronDown } from "./icons";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
@@ -12,7 +12,7 @@ import { RiskLink } from "./RiskLink";
 import { formatTime, looseIncludes, statusMeta } from "@/lib/format";
 import { ToneTag } from "./ToneTag";
 import { SiteTestButton } from "./SiteTestButton";
-import type { CatalogData, SiteConfig, SitesData, SiteStatus, TaskInfo } from "@/lib/types";
+import type { CatalogData, SiteConfig, SitesData, SiteStatus } from "@/lib/types";
 
 /** 新建站点用的默认字段模板；认证等高级字段留空，需要时在高级配置 JSON 里补充。 */
 function siteSkeleton(id = ""): SiteConfig {
@@ -59,6 +59,7 @@ type SiteFormState = {
   url: string;
   ratioUrl: string;
   statusUrl: string;
+  statusGroupsText: string;
   noticeUrl: string;
   models: string[];
   endpointHeadersText: string;
@@ -135,9 +136,17 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
   };
   const statusUrl = form.statusUrl.trim();
   if (statusUrl) {
+    const existingStatus =
+      typeof base.status === "object" && base.status !== null && !Array.isArray(base.status) ? base.status : {};
+    // 检测分组：逗号分隔的分组名列表，留空清掉该字段（采集全量渠道）
+    const groups = form.statusGroupsText
+      .split(/[,，\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
     next.status = {
-      ...(typeof base.status === "object" && base.status !== null && !Array.isArray(base.status) ? base.status : {}),
+      ...existingStatus,
       url: statusUrl,
+      ...(groups.length > 0 ? { groups } : {}),
     };
   } else if ("status" in next) delete next.status;
   const noticeUrl = form.noticeUrl.trim();
@@ -153,10 +162,11 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
 function SettingRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div style={{ display: "grid", gap: 4 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+      {/* label 包裹控件：读屏软件能把字段名和输入框关联起来 */}
+      <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <span style={{ fontSize: 13.5 }}>{label}</span>
         {children}
-      </div>
+      </label>
       {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
     </div>
   );
@@ -277,6 +287,8 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
             </span>
             <span
               title="移除"
+              role="button"
+              aria-label={`移除 ${id}`}
               onClick={(event) => {
                 event.stopPropagation();
                 onChange(value.filter((item) => item !== id));
@@ -310,6 +322,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
                 className="input"
                 autoFocus
                 value={query}
+                aria-label="搜索或添加模型"
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") commitInput();
@@ -352,7 +365,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
                         borderRadius: 4,
                         border: `1px solid ${picked ? "var(--accent)" : "var(--border-strong)"}`,
                         background: picked ? "var(--accent)" : "transparent",
-                        color: picked ? "#fff" : "transparent",
+                        color: picked ? "var(--accent-contrast)" : "transparent",
                         display: "grid",
                         placeItems: "center",
                         flexShrink: 0,
@@ -408,30 +421,202 @@ function SiteModal({
       ? ((initial.status as { url: string }).url)
       : "",
   );
+  const [statusGroupsText, setStatusGroupsText] = useState(() => {
+    const groups = (initial.status as { groups?: unknown } | null | undefined)?.groups;
+    return Array.isArray(groups) ? groups.filter((item): item is string => typeof item === "string").join(", ") : "";
+  });
   const [noticeUrl, setNoticeUrl] = useState(
     typeof (initial.notice as { url?: unknown } | null | undefined)?.url === "string"
       ? ((initial.notice as { url: string }).url)
       : "",
   );
-  // 倍率/渠道状态/站点公告折叠区：编辑已有配置且任一 URL 已填时自动展开，避免用户以为值丢了
+  // 倍率/Token 续签/渠道状态/站点公告折叠区：编辑已有配置且任一项已填时自动展开，避免用户以为值丢了
   const [extraOpen, setExtraOpen] = useState(
     Boolean(
       (typeof initial.network?.ratio_url === "string" && initial.network.ratio_url) ||
         (initial.status as { url?: unknown } | null | undefined)?.url ||
-        (initial.notice as { url?: unknown } | null | undefined)?.url,
+        (initial.notice as { url?: unknown } | null | undefined)?.url ||
+        initial.token_refresh,
     ),
   );
+  // Token 续签子折叠：已配置过续签接口时自动展开，避免用户以为值丢了
+  const [refreshOpen, setRefreshOpen] = useState(Boolean(initial.token_refresh?.url || initial.token_refresh?.refresh_token));
   const [models, setModels] = useState<string[]>(
     (initial.models ?? []).filter((item): item is string => typeof item === "string"),
   );
   const [endpointHeadersText, setEndpointHeadersText] = useState(dictToText(initial.network?.headers));
+  // Token 续签：站点认证 token 短效时，配置一个续签接口，采集遇到"需认证"就自动换新 token 并重试
+  const [refreshMethod, setRefreshMethod] = useState(
+    typeof initial.token_refresh?.method === "string" ? initial.token_refresh.method.toUpperCase() : "POST",
+  );
+  const [refreshUrl, setRefreshUrl] = useState(typeof initial.token_refresh?.url === "string" ? initial.token_refresh.url : "");
+  const [refreshToken, setRefreshToken] = useState(
+    typeof initial.token_refresh?.refresh_token === "string" ? initial.token_refresh.refresh_token : "",
+  );
+  const [refreshBody, setRefreshBody] = useState(typeof initial.token_refresh?.body === "string" ? initial.token_refresh.body : "");
+  const [refreshSample, setRefreshSample] = useState(
+    typeof initial.token_refresh?.response_sample === "string" ? initial.token_refresh.response_sample : "",
+  );
+  // AI 分析出的字段路径没有表单入口，编辑时原样保留，避免一次无关修改把它抹掉
+  const [accessTokenField, setAccessTokenField] = useState(
+    typeof initial.token_refresh?.access_token_field === "string" ? initial.token_refresh.access_token_field : "",
+  );
+  const [refreshTokenField, setRefreshTokenField] = useState(
+    typeof initial.token_refresh?.refresh_token_field === "string" ? initial.token_refresh.refresh_token_field : "",
+  );
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [refreshTesting, setRefreshTesting] = useState(false);
+  const [refreshTestResult, setRefreshTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
 
+  // 续签即时校验：地址格式、请求体 JSON、响应案例 JSON，填错当场提示不用等保存
+  const refreshUrlError = refreshUrl.trim() && !/^https?:\/\/\S+\.\S+/.test(refreshUrl.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
+  const refreshBodyError =
+    refreshBody.trim() && !refreshBody.includes("${refresh_token}")
+      ? "请求体里要写 ${refresh_token}，续签时才能自动代入凭证"
+      : "";
+
+  // 认证凭证（auth_token/Cookie）是站点级通用的，价格、渠道状态、公告采集都会自动带上；
+  // 哪个接口的 headers 里手写了 Authorization/Cookie 就会盖掉通用凭证（续签换新后旧的会失效），这里集中检测提醒
+  const authOverrideWarnings = (() => {
+    let base: SiteConfig;
+    try {
+      base = JSON.parse(advanced) as SiteConfig;
+    } catch {
+      return [];
+    }
+    return (["network", "status", "notice"] as const).flatMap((section) => {
+      const headers = (base[section] as { headers?: Record<string, unknown> } | null)?.headers ?? {};
+      return Object.keys(headers)
+        .filter((key) => /^(authorization|cookie)$/i.test(key))
+        .map((key) => `${section}.headers.${key}`);
+    });
+  })();
+  const refreshSampleError = (() => {
+    const sample = refreshSample.trim();
+    if (!sample) return "";
+    try {
+      JSON.parse(sample);
+      return "";
+    } catch {
+      return "案例不是合法 JSON，AI 分析不了；贴一段接口实际返回的 JSON";
+    }
+  })();
+
+  // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
+  function onRefreshMethodChange(method: string) {
+    setRefreshMethod(method);
+    const nextBody = method !== "GET" && !refreshBody.trim() ? '{"refresh_token": "${refresh_token}"}' : null;
+    if (nextBody !== null) setRefreshBody(nextBody);
+    setRefreshTestResult(null);
+    syncTokenRefresh(nextBody !== null ? { method, body: nextBody } : { method });
+  }
+
+  // 真实调用一次续签接口：验证地址、凭证、响应结构是否都能对上
+  async function testTokenRefresh() {
+    const config = buildConfig();
+    if (!config) return;
+    if (!refreshUrl.trim()) {
+      setRefreshTestResult({ ok: false, text: "先填续签接口地址再测试" });
+      return;
+    }
+    setRefreshTesting(true);
+    setRefreshTestResult(null);
+    try {
+      const result = await apiSend<{ access_token: string; refresh_token: string; refresh_token_rotated: boolean }>(
+        "/api/sites/test-token-refresh",
+        "POST",
+        { config },
+      );
+      // 新 token 回填到高级 JSON 和表单，点保存才落库；写死在采集地址 headers 里的认证头也一并换新
+      const retokenHeaders = (headers: Record<string, string>): Record<string, string> =>
+        Object.fromEntries(
+          Object.entries(headers).map(([key, value]) => {
+            if (key.toLowerCase() !== "authorization" || typeof value !== "string") return [key, value];
+            const space = value.indexOf(" ");
+            return [key, space > 0 ? `${value.slice(0, space)} ${result.access_token}` : result.access_token];
+          }),
+        );
+      const hasAuth = (headers: Record<string, string> | undefined) =>
+        !!headers && Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
+      syncAdvanced((base) => ({
+        ...base,
+        auth_token: result.access_token,
+        network:
+          base.network && hasAuth(base.network.headers)
+            ? { ...base.network, headers: retokenHeaders(base.network.headers!) }
+            : base.network,
+        networks: (base.networks ?? []).map((entry) =>
+          hasAuth(entry.headers) ? { ...entry, headers: retokenHeaders(entry.headers!) } : entry,
+        ),
+        status:
+          base.status && hasAuth(base.status.headers)
+            ? { ...base.status, headers: retokenHeaders(base.status.headers!) }
+            : base.status,
+        notice:
+          base.notice && hasAuth(base.notice.headers)
+            ? { ...base.notice, headers: retokenHeaders(base.notice.headers!) }
+            : base.notice,
+        token_refresh: base.token_refresh
+          ? { ...base.token_refresh, refresh_token: result.refresh_token }
+          : undefined,
+      }));
+      setRefreshToken(result.refresh_token);
+      setRefreshTestResult({
+        ok: true,
+        text: `通了，新 token 已填入，点保存生效${result.refresh_token_rotated ? "（Refresh Token 已换新）" : ""}`,
+      });
+    } catch (error) {
+      setRefreshTestResult({ ok: false, text: `测试失败：${errorText(error)}` });
+    } finally {
+      setRefreshTesting(false);
+    }
+  }
+
   function formState(): SiteFormState {
-    return { id, url, ratioUrl, statusUrl, noticeUrl, models, endpointHeadersText };
+    return { id, url, ratioUrl, statusUrl, statusGroupsText, noticeUrl, models, endpointHeadersText };
+  }
+
+  // 续签配置 → token_refresh 字段；续签 URL 清空视为整体移除。
+  // overrides：onChange 里刚敲入的值还没进 React 状态，必须显式传入，否则会同步成旧值
+  type RefreshOverride = Partial<{
+    method: string;
+    url: string;
+    refresh_token: string;
+    body: string;
+    response_sample: string;
+    access_token_field: string;
+    refresh_token_field: string;
+  }>;
+  function tokenRefreshConfig(overrides: RefreshOverride = {}): SiteConfig["token_refresh"] | null {
+    const url = (overrides.url ?? refreshUrl).trim();
+    if (!url) return null;
+    const body = (overrides.body ?? refreshBody).trim();
+    const atField = (overrides.access_token_field ?? accessTokenField).trim();
+    const rtField = (overrides.refresh_token_field ?? refreshTokenField).trim();
+    const sample = (overrides.response_sample ?? refreshSample).trim();
+    return {
+      url,
+      method: overrides.method ?? refreshMethod,
+      refresh_token: (overrides.refresh_token ?? refreshToken).trim(),
+      ...(body ? { body } : {}),
+      ...(sample ? { response_sample: sample } : {}),
+      ...(atField ? { access_token_field: atField } : {}),
+      ...(rtField ? { refresh_token_field: rtField } : {}),
+    };
+  }
+
+  function syncTokenRefresh(overrides: RefreshOverride = {}) {
+    syncAdvanced((base) => {
+      const next = tokenRefreshConfig(overrides);
+      if (next === null) {
+        const { token_refresh: _dropped, ...rest } = base;
+        return rest as SiteConfig;
+      }
+      return { ...base, token_refresh: next };
+    });
   }
 
   // 表单字段变更实时合并进高级 JSON；JSON 非法时保留原文，不打断手动编辑
@@ -459,9 +644,22 @@ function SiteModal({
         ? (config.status as { url: string }).url
         : "";
     setStatusUrl(nextStatusUrl);
+    const nextGroups = (config.status as { groups?: unknown } | null | undefined)?.groups;
+    setStatusGroupsText(
+      Array.isArray(nextGroups) ? nextGroups.filter((item): item is string => typeof item === "string").join(", ") : "",
+    );
     if (nextRatioUrl || nextStatusUrl) setExtraOpen(true);
     setModels((config.models ?? []).filter((item): item is string => typeof item === "string"));
     setEndpointHeadersText(dictToText(config.network?.headers));
+    const refresh = config.token_refresh ?? null;
+    setRefreshMethod(typeof refresh?.method === "string" ? refresh.method.toUpperCase() : "POST");
+    setRefreshUrl(typeof refresh?.url === "string" ? refresh.url : "");
+    setRefreshToken(typeof refresh?.refresh_token === "string" ? refresh.refresh_token : "");
+    setRefreshBody(typeof refresh?.body === "string" ? refresh.body : "");
+    setRefreshSample(typeof refresh?.response_sample === "string" ? refresh.response_sample : "");
+    setAccessTokenField(typeof refresh?.access_token_field === "string" ? refresh.access_token_field : "");
+    setRefreshTokenField(typeof refresh?.refresh_token_field === "string" ? refresh.refresh_token_field : "");
+    if (refresh) setExtraOpen(true);
   }
 
   // 双向同步：手动编辑 JSON 且合法时，把核心字段回填到表单控件；JSON 未写完（非法）时只更新文本
@@ -492,13 +690,22 @@ function SiteModal({
   }
 
   async function save() {
+    if (refreshUrlError || refreshBodyError || refreshSampleError) {
+      toast("续签配置里还有标红的填写问题，改好再保存");
+      return;
+    }
+    if (refreshUrl.trim() && !refreshToken.trim()) {
+      toast("配了续签接口就要填 Refresh Token，续签全靠它换新凭证");
+      return;
+    }
     const config = buildConfig();
     if (!config) return;
     setSaving(true);
     try {
-      if (isNew) await apiSend("/api/sites", "POST", { config });
-      else await apiSend(`/api/sites/${encodeURIComponent(originalId)}`, "PUT", { config });
-      toast("站点已保存");
+      const saved = isNew
+        ? await apiSend<{ warning?: string }>("/api/sites", "POST", { config })
+        : await apiSend<{ warning?: string }>(`/api/sites/${encodeURIComponent(originalId)}`, "PUT", { config });
+      toast(saved.warning ? `站点已保存；${saved.warning}` : "站点已保存");
       onSaved();
       onClose();
     } catch (error) {
@@ -575,7 +782,38 @@ function SiteModal({
             }}
           />
         </SettingRow>
-          <SettingRow label="请求头（每行 Key: Value）" hint="一般不用填；站点要求特殊请求头时在这里加">
+        <SettingRow label="检测分组" hint="选填：只检测这些分组，从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就检测全部渠道">
+          <Input
+            value={statusGroupsText}
+            onChange={(value) => {
+              setStatusGroupsText(value);
+              syncAdvanced((base) => {
+                const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
+                const groups = value
+                  .split(/[,，\n]/)
+                  .map((item) => item.trim())
+                  .filter(Boolean);
+                const status = { ...existing, ...(groups.length > 0 ? { groups } : {}) };
+                if (groups.length === 0) delete status.groups;
+                return { ...base, status };
+              });
+            }}
+            placeholder="svip, vip"
+            style={{ width: "min(360px, 100%)" }}
+          />
+          {statusGroupsText.trim() && (
+            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+              保存后，这个站点没被选中的分组的历史检测记录会被清掉，且无法恢复
+            </span>
+          )}
+        </SettingRow>
+          <SettingRow label="请求头（每行 Key: Value）" hint="只对上面的价格接口生效。站点级的认证 Token 和 Cookie 是通用的：价格、渠道状态、公告采集都会自动带上，不用在这里重复填">
+            <div style={{ display: "grid", gap: 6, width: "100%" }}>
+            {authOverrideWarnings.length > 0 && (
+              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+                {authOverrideWarnings.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
+              </span>
+            )}
             <textarea
               className="input mono textarea"
               value={endpointHeadersText}
@@ -592,6 +830,7 @@ function SiteModal({
               spellCheck={false}
               style={{ fontSize: 12 }}
             />
+            </div>
           </SettingRow>
           <div style={{ display: "flex", justifyContent: "center" }}>
             <Btn
@@ -611,24 +850,31 @@ function SiteModal({
                 >
                   <IconChevronDown size={14} />
                 </span>
-                {extraOpen ? "收起更多接口配置" : "更多接口配置（倍率接口、渠道状态、站点公告）"}
+                {extraOpen ? "收起更多接口配置" : "更多接口配置（站点公告、渠道状态、倍率接口、Token 续签）"}
               </span>
             </Btn>
           </div>
           {extraOpen && (
             <>
-          <SettingRow label="倍率接口 URL" hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价">
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            下面这些接口不用再填认证：采集时会自动带上站点通用的认证 Token、Cookie 和请求头，续签换新也全部生效
+          </span>
+          <SettingRow label="站点公告 URL" hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知">
             <Input
-              value={ratioUrl}
+              value={noticeUrl}
               onChange={(value) => {
-                setRatioUrl(value);
+                setNoticeUrl(value);
                 syncAdvanced((base) => {
-                  const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-                  setOptionalText(network, "ratio_url", value);
-                  return { ...base, network: network as SiteConfig["network"] };
+                  const trimmed = value.trim();
+                  const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
+                  if (!trimmed) {
+                    const { notice: _dropped, ...rest } = base;
+                    return rest as SiteConfig;
+                  }
+                  return { ...base, notice: { ...existing, url: trimmed } };
                 });
               }}
-              placeholder="https://example.com/api/public/model-pricing"
+              placeholder="https://example.com/api/notice"
               style={{ width: "min(360px, 100%)" }}
             />
           </SettingRow>
@@ -651,25 +897,147 @@ function SiteModal({
               style={{ width: "min(360px, 100%)" }}
             />
           </SettingRow>
-          <SettingRow label="站点公告 URL" hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知">
+          <SettingRow label="倍率接口 URL" hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价">
             <Input
-              value={noticeUrl}
+              value={ratioUrl}
               onChange={(value) => {
-                setNoticeUrl(value);
+                setRatioUrl(value);
                 syncAdvanced((base) => {
-                  const trimmed = value.trim();
-                  const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
-                  if (!trimmed) {
-                    const { notice: _dropped, ...rest } = base;
-                    return rest as SiteConfig;
-                  }
-                  return { ...base, notice: { ...existing, url: trimmed } };
+                  const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+                  setOptionalText(network, "ratio_url", value);
+                  return { ...base, network: network as SiteConfig["network"] };
                 });
               }}
-              placeholder="https://example.com/api/notice"
+              placeholder="https://example.com/api/public/model-pricing"
               style={{ width: "min(360px, 100%)" }}
             />
           </SettingRow>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div
+              role="button"
+              tabIndex={0}
+              title={refreshOpen ? "收起 Token 续签" : "展开 Token 续签"}
+              onClick={() => setRefreshOpen((open) => !open)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setRefreshOpen((open) => !open);
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                width: "100%",
+                padding: "5px 0",
+                background: "transparent",
+                cursor: "pointer",
+                transition: "background 150ms ease, color 150ms ease",
+              }}
+              onMouseEnter={(event) => {
+                event.currentTarget.style.background = "var(--panel-2)";
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.background = "transparent";
+              }}
+            >
+              <span style={{ fontSize: 13.5 }}>Token 续签</span>
+              <span
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <Btn variant="text" size="sm" loading={refreshTesting} onClick={testTokenRefresh}>
+                  测试续签
+                </Btn>
+                <span
+                  style={{
+                    display: "inline-flex",
+                    transform: refreshOpen ? "rotate(180deg)" : "none",
+                    transition: "transform 150ms ease",
+                  }}
+                >
+                  <IconChevronDown size={14} />
+                </span>
+              </span>
+            </div>
+            {refreshOpen && (
+            <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Sel
+                value={refreshMethod}
+                onChange={onRefreshMethodChange}
+                options={["GET", "POST", "PUT", "PATCH"].map((method) => ({ value: method, label: method }))}
+                style={{ width: 92 }}
+              />
+              <Input
+                value={refreshUrl}
+                onChange={(value) => {
+                  setRefreshUrl(value);
+                  // 首次填地址时自动补上标准请求体，手填过的不覆盖
+                  const autoBody = value.trim() && !refreshBody.trim() ? '{"refresh_token": "${refresh_token}"}' : null;
+                  if (autoBody !== null) setRefreshBody(autoBody);
+                  setRefreshTestResult(null);
+                  syncTokenRefresh(autoBody !== null ? { url: value, body: autoBody } : { url: value });
+                }}
+                placeholder="续签接口地址，如 https://example.com/api/v1/auth/refresh"
+                style={{ flex: 1, minWidth: 220 }}
+              />
+            </div>
+            {refreshUrlError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshUrlError}</span>}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Input
+                value={refreshToken}
+                onChange={(value) => {
+                  setRefreshToken(value);
+                  syncTokenRefresh({ refresh_token: value });
+                }}
+                placeholder="Refresh Token，续签成功后会自动更新"
+                style={{ flex: 1, minWidth: 220 }}
+              />
+              <Input
+                value={refreshBody}
+                onChange={(value) => {
+                  setRefreshBody(value);
+                  syncTokenRefresh({ body: value });
+                }}
+                placeholder={'请求体，如 {"refresh_token": "${refresh_token}"}'}
+                style={{ flex: 1, minWidth: 220 }}
+              />
+            </div>
+            {refreshBodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshBodyError}</span>}
+            <textarea
+              className="input mono textarea"
+              value={refreshSample}
+              onChange={(event) => {
+                setRefreshSample(event.target.value);
+                syncTokenRefresh({ response_sample: event.target.value });
+              }}
+              rows={3}
+              spellCheck={false}
+              placeholder="响应数据结构案例（选填）：贴一段续签接口实际返回的 JSON，保存时会自动分析出新 token 在哪"
+              style={{ fontSize: 12 }}
+            />
+            {refreshSampleError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{refreshSampleError}</span>}
+            {(accessTokenField.trim() || refreshTokenField.trim()) && (
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                已识别 token 位置：
+                {[accessTokenField.trim() && `access_token = ${accessTokenField.trim()}`, refreshTokenField.trim() && `refresh_token = ${refreshTokenField.trim()}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+              续签请求会自动带上上面的站点请求头；不贴案例时按常见返回结构自动找 token，贴了更准
+            </span>
+            {refreshTestResult && (
+              <span style={{ fontSize: 12.5, color: refreshTestResult.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
+                {refreshTestResult.text}
+              </span>
+            )}
+            </div>
+            )}
+          </div>
             </>
           )}
         </div>
@@ -723,107 +1091,6 @@ function SiteModal({
   );
 }
 
-/** 批量采集所选站点：正式写入历史与事件，与「测试采集」的仅预览区分；任务进度用轮询跟踪。 */
-function CollectSelectedModal({
-  siteIds,
-  onClose,
-  onCollected,
-}: {
-  siteIds: string[];
-  onClose: () => void;
-  onCollected: () => void;
-}) {
-  const [submitting, setSubmitting] = useState(false);
-  const [task, setTask] = useState<TaskInfo | null>(null);
-  const [elapsed, setElapsed] = useState<number | null>(null);
-
-  async function poll(taskId: string, startedAt: number) {
-    for (;;) {
-      const res = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
-      const info = (await res.json()) as TaskInfo;
-      setTask(info);
-      if (info.status !== "running") {
-        setElapsed(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
-  }
-
-  async function start() {
-    setSubmitting(true);
-    setTask(null);
-    setElapsed(null);
-    const startedAt = Date.now();
-    try {
-      const res = await fetch("/api/collect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ site_ids: siteIds, persist: true }),
-      });
-      if (res.status === 401) {
-        window.location.href = "/login";
-        throw new Error("需要管理员登录");
-      }
-      if (!res.ok) {
-        const detail = ((await res.json()) as { detail?: string }).detail;
-        throw new Error(detail ?? `HTTP ${res.status}`);
-      }
-      const { task_id: taskId } = (await res.json()) as { task_id: string };
-      await poll(taskId, startedAt);
-      onCollected();
-    } catch (error) {
-      toast(`采集失败: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const running = task?.status === "running";
-  const records = (task?.result?.records as unknown[] | undefined)?.length ?? 0;
-  const events = (task?.result?.events as string[] | undefined)?.length ?? 0;
-  const errors = (task?.result?.errors as { site_id: string; error: string }[] | undefined) ?? [];
-
-  return (
-    <Modal
-      open
-      onClose={() => {
-        if (!running) onClose();
-      }}
-      title={`采集所选站点（${siteIds.length}）`}
-    >
-      <div style={{ display: "grid", gap: 14 }}>
-        <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
-          将按已保存配置立即采集所选 {siteIds.length} 个启用中的站点，并写入历史与事件；结果可在总览与历史页查看。
-        </p>
-        {task && (
-          <div style={{ display: "grid", gap: 6 }}>
-            {task.status === "running" && <ToneTag tone="blue">采集中…</ToneTag>}
-            {task.status === "done" && (
-              <ToneTag tone="green">
-                完成：{records} 条记录，{events} 个事件{elapsed !== null ? ` · 耗时 ${elapsed} 秒` : ""}
-              </ToneTag>
-            )}
-            {task.status === "failed" && <ToneTag tone="red">失败：{task.error}</ToneTag>}
-            {errors.map((item) => (
-              <p key={item.site_id} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>
-                {item.site_id}: {item.error}
-              </p>
-            ))}
-          </div>
-        )}
-        {!running && (
-          <div>
-            <Btn variant="primary" onClick={start} loading={submitting}>
-              开始采集
-            </Btn>
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
 /** 删除站点确认弹窗：行内单删与勾选批删共用；勾选清理时后端同时删除该站点的历史与事件数据。 */
 function DeleteSitesModal({
   ids,
@@ -871,7 +1138,6 @@ export function AdminSites() {
   const [deleting, setDeleting] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [multiSelect, setMultiSelect] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
 
   const reloadSites = useCallback(() => {
     apiSend<SitesData>("/api/sites", "GET")
@@ -930,19 +1196,37 @@ export function AdminSites() {
     {
       key: "id",
       title: "站点",
-      width: 140,
+      // 站点名 + 公告/状态/倍率标注标签的最小实宽，窄了标签会把名字挤换行
+      width: 200,
       render: (_value, row) => {
         const site = getSiteInfo(row.id, typeof row.network?.url === "string" ? row.network.url : undefined);
-        return site.homepage ? (
-          <RiskLink href={site.homepage} variant="site">
+        // 已开启的扩展接口小标注：公告/渠道状态/倍率，扫一眼就知道每个站点配了哪些采集
+        const extraMarks: { label: string; tip: string }[] = [];
+        if (typeof row.notice?.url === "string" && row.notice.url) extraMarks.push({ label: "公告", tip: `站点公告：${row.notice.url}` });
+        if (typeof row.status?.url === "string" && row.status.url) extraMarks.push({ label: "状态", tip: `渠道状态：${row.status.url}` });
+        if (typeof row.network?.ratio_url === "string" && row.network.ratio_url)
+          extraMarks.push({ label: "倍率", tip: `倍率接口：${row.network.ratio_url}` });
+        const nameNode = (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
             <span className="mono" style={{ fontWeight: 550 }}>
               {site.name}
             </span>
+            {extraMarks.length > 0 && (
+              <span
+                title={extraMarks.map((mark) => mark.tip).join("\n")}
+                style={{ flexShrink: 0, fontSize: 11.5, color: "var(--text-3)", whiteSpace: "nowrap" }}
+              >
+                {extraMarks.map((mark) => mark.label).join("·")}
+              </span>
+            )}
+          </span>
+        );
+        return site.homepage ? (
+          <RiskLink href={site.homepage} variant="site">
+            {nameNode}
           </RiskLink>
         ) : (
-          <span className="mono" style={{ fontWeight: 550 }}>
-            {site.name}
-          </span>
+          nameNode
         );
       },
     },
@@ -1001,7 +1285,7 @@ export function AdminSites() {
           <Btn variant="text" size="sm" onClick={() => setEditing({ config: row, isNew: false })}>
             编辑
           </Btn>
-          <SiteTestButton site={row} />
+          <SiteTestButton site={row} onDone={reloadSites} />
         </span>
       ),
     },
@@ -1023,44 +1307,10 @@ export function AdminSites() {
 
   return (
     <>
-      <div className="admin-toolbar">
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
-          <span className="admin-toolbar-hint">{sites?.length ?? 0} 个站点</span>
-          {selected.size > 0 && (
-            <>
-              <span style={{ fontSize: 12.5, color: "var(--text-2)" }}>已选 {selected.size} 个站点</span>
-              <Btn size="sm" variant="primary" onClick={() => setBatchOpen(true)}>
-                采集所选
-              </Btn>
-              <Btn size="sm" onClick={() => setDeleting([...selected])}>
-                删除所选
-              </Btn>
-              <Btn size="sm" variant="text" onClick={() => setSelected(new Set())}>
-                清除选择
-              </Btn>
-            </>
-          )}
-        </span>
-        <span style={{ display: "inline-flex", gap: 10 }}>
-          <Btn
-            size="sm"
-            variant={multiSelect ? "primary" : "ghost"}
-            title="显示勾选列，可批量采集或删除站点"
-            onClick={() =>
-              setMultiSelect((open) => {
-                if (open) setSelected(new Set());
-                return !open;
-              })
-            }
-          >
-            批量管理
-          </Btn>
-          <Btn size="sm" onClick={() => setEditing({ config: siteSkeleton(), isNew: true })}>
-            新增站点
-          </Btn>
-        </span>
-      </div>
-      <div className="panel" style={{ overflow: "hidden" }}>
+      <div
+        className="panel"
+        style={{ overflow: "hidden", borderBottom: "none", borderRadius: "8px 8px 0 0" }}
+      >
         {sites === null ? (
           <div style={{ padding: "16px 20px", color: "var(--text-2)", fontSize: 13 }}>加载中…</div>
         ) : (
@@ -1068,8 +1318,8 @@ export function AdminSites() {
             rowKey="id"
             columns={siteColumns}
             rows={sites}
-            scrollX={850}
-            mobileScrollX={548}
+            scrollX={910}
+            mobileScrollX={608}
             empty={
               <Empty
                 icon={<IconAppstore size={18} />}
@@ -1086,6 +1336,41 @@ export function AdminSites() {
         )}
       </div>
 
+      {/* 表格底部操作条：与表格面板拼接，滚动时贴住屏幕底部始终可点 */}
+      <div className="table-bottom-bar">
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+          {selected.size > 0 && (
+            <>
+              <span style={{ fontSize: 12.5, color: "var(--text-2)" }}>已选 {selected.size} 个站点</span>
+              <Btn size="sm" onClick={() => setDeleting([...selected])}>
+                删除所选
+              </Btn>
+              <Btn size="sm" variant="text" onClick={() => setSelected(new Set())}>
+                清除选择
+              </Btn>
+            </>
+          )}
+        </span>
+        <span style={{ display: "inline-flex", gap: 10 }}>
+          <Btn
+            size="sm"
+            variant={multiSelect ? "primary" : "ghost"}
+            title="显示勾选列，可批量删除站点"
+            onClick={() =>
+              setMultiSelect((open) => {
+                if (open) setSelected(new Set());
+                return !open;
+              })
+            }
+          >
+            批量管理
+          </Btn>
+          <Btn size="sm" variant="primary" onClick={() => setEditing({ config: siteSkeleton(), isNew: true })}>
+            新增站点
+          </Btn>
+        </span>
+      </div>
+
       {editing && (
         <SiteModal
           initial={editing.config}
@@ -1097,10 +1382,6 @@ export function AdminSites() {
 
       {deleting && (
         <DeleteSitesModal ids={deleting} onClose={() => setDeleting(null)} onDeleted={(purge) => removeSites(deleting, purge)} />
-      )}
-
-      {batchOpen && (
-        <CollectSelectedModal siteIds={[...selected]} onClose={() => setBatchOpen(false)} onCollected={reloadSites} />
       )}
     </>
   );

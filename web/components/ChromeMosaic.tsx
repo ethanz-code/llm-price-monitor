@@ -40,7 +40,14 @@ export function ChromeMosaic() {
               width={cell.size}
               height={cell.size}
               fill={cell.fill}
-              style={{ "--o": cell.opacity, animationDelay: `${cell.delay}s`, animationDuration: `${cell.dur}s` } as CSSProperties}
+              style={
+                {
+                  "--o": cell.opacity,
+                  "--sd": `${cell.delay.toFixed(2)}s`,
+                  "--sdur": `${cell.dur.toFixed(2)}s`,
+                  "--rd": `${(cell.dist * 1.1).toFixed(2)}s`,
+                } as CSSProperties
+              }
             />
           ))}
         </g>

@@ -2,69 +2,69 @@ import Link from "next/link";
 import { apiGet } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
+  currencySymbol,
   eventMeta,
+  formatPrice,
   formatTime,
   isNoticeEvent,
   noticeExcerpt,
+  toCnyPrice,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import { mergeModelRows } from "@/lib/priceRows";
-import { availabilityBySite, rateLevel, type RateLevel } from "@/lib/channelStatus";
+import { sortSnapshotRows } from "@/lib/priceRows";
+import {
+  buildSiteViews,
+  latencyLevel,
+  rateLevel,
+  type RateLevel,
+} from "@/lib/channelStatus";
 import type {
-  EventListData,
-  EventRow,
+  FeedData,
+  FeedEvent,
   HistoryListData,
   MetaData,
-  NoticeEvent,
-  NoticeEventListData,
   OverviewData,
-  StatusLatest,
   StatusSnapshot,
 } from "@/lib/types";
 import { ComingSoon } from "@/components/ui";
-import { GlobePanel } from "@/components/GlobePanel";
+import { Reveal } from "@/components/Reveal";
+import { HeroType } from "@/components/HeroType";
+import { HeroArea } from "@/components/HeroArea";
 import type { GlobeSite } from "@/components/SiteGlobe";
 import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
-import { HeroBackdrop } from "@/components/HeroBackdrop";
+import { alerts, home } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
 
 interface LandingData {
   overview: OverviewData | null;
   meta: MetaData | null;
-  events: EventListData | null;
-  noticeEvents: NoticeEventListData | null;
+  feed: FeedData | null;
   history: HistoryListData | null;
   status: StatusSnapshot[];
   error: string | null;
 }
 
-/** 渠道检测色点：三档语义色，与可用率趋势图的分段着色一致。 */
+/** 渠道检测色点：三档色与详情页图表 statusColors 同一套（亮/暗各一组，见 globals.css --chart-*），
+ *  阈值一致：可用率 80/60 三档，延迟 1000/3000ms 三档。 */
 const STRIP_TONE: Record<RateLevel, string> = {
-  ok: "var(--tone-green-text)",
-  warn: "var(--tone-yellow-text)",
-  down: "var(--tone-red-text)",
+  ok: "var(--chart-ok)",
+  warn: "var(--chart-warn)",
+  down: "var(--chart-down)",
 };
 
 async function loadLanding(): Promise<LandingData> {
   try {
-    const [overview, meta, events, noticeEvents, status, statusLatest] = await Promise.all([
+    // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
+    const [overview, meta, feed, status] = await Promise.all([
       apiGet<OverviewData>("/api/overview"),
       apiGet<MetaData>("/api/meta"),
-      apiGet<EventListData>("/api/events?limit=8"),
-      // 公告事件拉取失败只影响侧栏条目，不阻塞整页
-      apiGet<NoticeEventListData>("/api/notice/events?limit=8").catch(() => ({
-        events: [],
-        total: 0,
-      })),
-      // 渠道检测档案拉取失败只影响星球与站点卡片，不阻塞整页
-      apiGet<{ records: StatusSnapshot[] }>("/api/status?limit=200").catch(() => ({
+      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8").catch(() => null),
+      apiGet<{ records: StatusSnapshot[] }>("/api/status?per_site=30").catch(() => ({
         records: [] as StatusSnapshot[],
       })),
-      // 列表接口有单站条数上限，低频站点会被挤出；latest 兜底每站最新一条
-      apiGet<StatusLatest>("/api/status/latest").catch(() => ({} as StatusLatest)),
     ]);
     // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
     let history: HistoryListData | null;
@@ -73,17 +73,12 @@ async function loadLanding(): Promise<LandingData> {
     } catch {
       history = null;
     }
-    // 两路按站点+时间戳去重合并，覆盖所有已接入检测的站点
-    const byStamp = new Map<string, StatusSnapshot>();
-    for (const row of status.records) byStamp.set(`${row.site_id}:${row.captured_at}`, row);
-    for (const row of Object.values(statusLatest)) byStamp.set(`${row.site_id}:${row.captured_at}`, row);
-    return { overview, meta, events, noticeEvents, history, status: [...byStamp.values()], error: null };
+    return { overview, meta, feed, history, status: status.records, error: null };
   } catch (cause) {
     return {
       overview: null,
       meta: null,
-      events: null,
-      noticeEvents: null,
+      feed: null,
       history: null,
       status: [],
       error: cause instanceof Error ? cause.message : String(cause),
@@ -115,232 +110,376 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 }
 
 export default async function LandingPage() {
-  const { overview, meta, events, noticeEvents, history, status, error } =
-    await loadLanding();
+  const { overview, meta, feed, history, status, error } = await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
   // 站点价统一按 RMB 展示：汇率取厂商价快照口径
   const rate = overview?.catalog?.usd_cny_rate ?? null;
-  // 价格事件与公告事件合并成最新事件侧栏；公告事件没有模型行，展示公告摘要
-  const latestEvents: (EventRow | NoticeEvent)[] = [
-    ...(events?.events ?? []),
-    ...(noticeEvents?.events ?? []),
-  ]
-    .sort((a, b) => b.detected_at - a.detected_at)
-    .slice(0, 4);
+  // 最新事件侧栏直接用统一事件流；公告事件没有模型行，展示公告摘要
+  const latestEvents: FeedEvent[] = (feed?.events ?? []).slice(0, 4);
   const historyRecords = history?.records ?? [];
 
-  // 站点检测档案：可用率序列供星球悬停与站点卡片色点共用
-  const availBySite = availabilityBySite(status);
+  // 站点检测档案：可用率序列供星球悬停与站点卡片色点共用，延迟序列供站点卡片延迟着色；
+  // 阈值与详情页一致：可用率 80/60 三档，延迟 1000/3000ms 三档
+  const siteViews = buildSiteViews(status);
+  const availBySite = siteViews.availability;
+  const latencyBySite = siteViews.latency;
   const globeSites: GlobeSite[] = sites.map((site) => {
     const series = availBySite[site.id] ?? [];
     const latestPoint = series[series.length - 1];
+    // 节点百分比用近期多次检测的平均渠道正常比例，比"最新一瞬"更能代表日常可用性
+    const availability = series.length
+      ? Math.round(series.reduce((sum, point) => sum + point.pct, 0) / series.length)
+      : null;
     return {
       id: site.id,
       name: getSiteInfo(site.id, site.sourceUrl).name,
       models: site.models,
       enabled: site.enabled,
-      availability: latestPoint?.pct ?? null,
+      availability,
       down: latestPoint?.down.length ?? 0,
       checks: series.length,
     };
   });
   /** 站点卡片上的最近 15 次渠道检测色点 */
   const stripOf = (siteId: string) => (availBySite[siteId] ?? []).slice(-15);
+  /** 站点当前延迟：取最新时刻各渠道里最高的一个（最差口径，与详情页着色共用同一阈值） */
+  const latestLatencyOf = (siteId: string): number | null => {
+    const series = latencyBySite[siteId] ?? [];
+    const last = series[series.length - 1];
+    if (!last) return null;
+    const values = Object.values(last.values);
+    return values.length > 0 ? Math.max(...values) : null;
+  };
   // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
   const statusSiteIds = new Set(status.map((row) => row.site_id));
 
-  // 最新快照与价格总览同一套合并口径：同站点同模型取最低价一行
-  const { parentRows, childRowsOf } = mergeModelRows(records);
+  // 最新快照与价格总览同一口径：不折叠，各分组各占一行
+  const parentRows = sortSnapshotRows(records);
+
+  // 终端演示窗内容用真实数据渲染：没有快照时整个窗不出现，不放占位假数
+  const termPriceLines = parentRows.slice(0, 3).map((row) => {
+    const converted = toCnyPrice(row.input_price, row.unit, rate);
+    const price = converted ?? row.input_price;
+    const symbol = converted !== null || currencySymbol(row.unit) === "¥" ? "¥" : currencySymbol(row.unit);
+    return `site: ${row.site_id}  model: ${row.model}  ${symbol} ${formatPrice(price)} /1M`;
+  });
+  const firstNotice = Object.values(overview?.notices ?? {})[0];
+  const termNoticeLine =
+    firstNotice?.content
+      ? `「${noticeExcerpt(firstNotice.content, 1).slice(0, 40)}」${
+          firstNotice.captured_at ? ` · ${formatTime(firstNotice.captured_at)} 存档` : ""
+        }`
+      : null;
+  const uptimeSample = sites.map((site) => stripOf(site.id)).find((list) => list.length > 0);
+  const termUptimeLine = uptimeSample
+    ? `${uptimeSample
+        .slice(-5)
+        .map((point) => (point.pct >= 95 ? "✓" : "✗"))
+        .join(" ")}  近 ${uptimeSample.length} 次渠道检测 · 最新正常 ${
+        uptimeSample[uptimeSample.length - 1].pct
+      }%`
+    : null;
 
   return (
     <>
-      <HeroBackdrop />
       <div className="page landing">
-        <section className="hero">
-          <div className="hero-main">
-            <h1 className="hero-title">
-              中转站
-              <br />
-              集成式检测平台
-            </h1>
-            <p className="hero-sub">
-              自己用的中转站，是不是时不时就不能用？想找个靠谱的，先来对照各家价格、公告和渠道状态。不推荐任何站点。
-            </p>
-            <div className="hero-actions">
-              <Link href="/overview">
-                <Btn variant="primary" size="lg">
-                  进入中转站定价 →
-                </Btn>
-              </Link>
-              <Link href="/discount">
-                <Btn size="lg">查看折扣对比</Btn>
-              </Link>
-            </div>
-          </div>
-          <aside className="hero-globe">
-            <GlobePanel sites={globeSites} />
-          </aside>
-        </section>
+        <HeroArea
+          sites={globeSites}
+          main={
+            <>
+              <h1 className="hero-title">
+                <HeroType />
+              </h1>
+              <p className="hero-sub">{home.heroSub}</p>
+              <div className="hero-actions">
+                <Link href="/overview">
+                  <Btn variant="primary" size="lg">
+                    {home.heroButtons.primary}
+                  </Btn>
+                </Link>
+                <Link href="/discount">
+                  <Btn size="lg">{home.heroButtons.secondary}</Btn>
+                </Link>
+              </div>
+            </>
+          }
+        />
 
-        <section className="landing-section landing-duo">
-          <div>
-            <div className="landing-section-head">
-              <h2>价格走势</h2>
+        <Reveal>
+          <section className="landing-intro">
+            <p>{home.intro}</p>
+          </section>
+        </Reveal>
+
+        {records.length > 0 && (
+          <Reveal>
+            <section className="landing-section">
+              <div className="landing-section-head">
+                <div className="landing-section-title">
+                  <span className="section-num">01</span>
+                  <h2>{home.sections.latestPrice}</h2>
+                </div>
+                <Link href="/overview" className="landing-more">
+                  {home.viewAll}
+                </Link>
+              </div>
+              <p className="landing-section-sub">{home.sectionSubs.latestPrice}</p>
+              <SnapshotPreview rows={parentRows.slice(0, 6)} rate={rate} />
+            </section>
+          </Reveal>
+        )}
+
+        <Reveal>
+          <section className="landing-section landing-duo">
+            <div>
+              <div className="landing-section-head">
+                <div className="landing-section-title">
+                  <span className="section-num">02</span>
+                  <h2>{home.sections.trend}</h2>
+                </div>
+              </div>
+              <HeroTrendChart records={historyRecords} rate={rate} activeModels={[...new Set(records.map((r) => r.model))]} />
             </div>
-            <HeroTrendChart records={historyRecords} rate={rate} />
-          </div>
-          <div>
-            <div className="landing-section-head">
-              <h2>最新事件</h2>
-              <Link href="/history" className="landing-more">
-                全部事件 →
-              </Link>
-            </div>
-            {latestEvents.length > 0 ? (
-              <div className="landing-events">
-                {latestEvents.map((event, index) => {
-                  const meta = eventMeta(event.kind);
-                  const site = isNoticeEvent(event)
-                    ? getSiteInfo(event.site_id)
-                    : getSiteInfo(
-                        event.site_id,
-                        event.current?.source_url ?? event.previous?.source_url,
-                      );
-                  return (
-                    <Link
-                      key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
-                      href="/history"
-                      className="side-note"
-                    >
-                      <span className="side-note-line">
-                        <span className={`side-dot dot-${meta.tone}`} />
-                        <span className="side-note-title">
-                          {site.name} · {meta.label}
-                        </span>
-                      </span>
-                      <span className="side-note-sub">
-                        {isNoticeEvent(event) ? (
-                          <span title={event.content}>
-                            {noticeExcerpt(event.content)}
+            <div>
+              <div className="landing-section-head">
+                <h2>{home.sections.events}</h2>
+                <Link href="/history" className="landing-more">
+                  {home.viewAllEvents}
+                </Link>
+              </div>
+              {latestEvents.length > 0 ? (
+                <div className="landing-events">
+                  {latestEvents.map((event, index) => {
+                    const meta = eventMeta(event.kind);
+                    const site = isNoticeEvent(event)
+                      ? getSiteInfo(event.site_id)
+                      : getSiteInfo(
+                          event.site_id,
+                          event.current?.source_url ??
+                            event.previous?.source_url,
+                        );
+                    return (
+                      <Link
+                        key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
+                        href="/history"
+                        className="side-note"
+                      >
+                        <span className="side-note-line">
+                          <span className={`side-dot dot-${meta.tone}`} />
+                          <span className="side-note-title">
+                            {site.name} · {meta.label}
                           </span>
+                        </span>
+                        <span className="side-note-sub">
+                          {isNoticeEvent(event) ? (
+                            <span title={event.content}>
+                              {noticeExcerpt(event.content)}
+                            </span>
+                          ) : (
+                            <span className="mono">{event.model}</span>
+                          )}{" "}
+                          · {formatTime(event.detected_at)}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p style={{ color: "var(--text-3)", fontSize: 13, margin: 0 }}>
+                  {home.empty.events}
+                </p>
+              )}
+            </div>
+          </section>
+        </Reveal>
+
+        {error && (
+          <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />
+        )}
+
+        <Reveal>
+          <section className="landing-section">
+            <div className="landing-section-head">
+              <div className="landing-section-title">
+                <span className="section-num">03</span>
+                <h2>{home.sections.sites}</h2>
+              </div>
+              <ComingSoon
+                label={home.submitSite}
+                variant="text"
+                title={home.submitSite}
+                description={home.submitSiteDesc}
+              />
+            </div>
+            <p className="landing-section-sub">{home.sectionSubs.sites}</p>
+            {sites.length > 0 ? (
+              <div className="site-cards">
+                {sites.map((site) => {
+                  const info = getSiteInfo(site.id, site.sourceUrl);
+                  const href = info.homepage || site.sourceUrl || "";
+                  const strip = stripOf(site.id);
+                  const latestPoint = strip[strip.length - 1];
+                  const latestLatency = latestLatencyOf(site.id);
+                  const notice = overview?.notices?.[site.id];
+                  return (
+                    <div key={site.id} className="site-card">
+                      <div className="site-card-head">
+                        <span
+                          aria-hidden
+                          className="site-dot"
+                          style={{
+                            background: site.enabled
+                              ? "var(--accent)"
+                              : "var(--text-3)",
+                          }}
+                        />
+                        <span className="site-name">
+                          <Link
+                            href={`/overview/status/${encodeURIComponent(site.id)}`}
+                            className="site-link"
+                          >
+                            {info.name}
+                          </Link>
+                        </span>
+                        <span className="site-count mono">
+                          {site.models} 模型{site.enabled ? "" : ` · ${home.empty.siteDisabled}`}
+                        </span>
+                      </div>
+                      {strip.length > 0 && latestPoint ? (
+                        <>
+                          <div className="site-strip" aria-hidden>
+                            {strip.map((point, index) => (
+                              <span
+                                key={index}
+                                className="site-strip-dot"
+                                style={{
+                                  background: STRIP_TONE[rateLevel(point.pct)],
+                                }}
+                                title={`${formatTime(point.at)} · 正常 ${point.pct}%`}
+                              />
+                            ))}
+                          </div>
+                          <span className="site-card-more">
+                            近 {strip.length} {home.siteCard.checkSuffix}{" "}
+                            {latestPoint.pct}%
+                            {latestLatency != null && (
+                              <>
+                                {" "}
+                                · {home.siteCard.latencySuffix}{" "}
+                                <span
+                                  className="mono"
+                                  style={{
+                                    color: STRIP_TONE[latencyLevel(latestLatency)],
+                                  }}
+                                  title="延迟 ≥3000ms 红、≥1000ms 黄、其余绿，与站点检测详情页一致"
+                                >
+                                  {latestLatency} ms
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="site-card-nostatus">
+                          {statusSiteIds.has(site.id)
+                            ? home.empty.siteNoCheckRecord
+                            : home.empty.siteCheckNotEnabled}
+                        </span>
+                      )}
+                      <p
+                        className="site-notice"
+                        title={notice?.content ?? undefined}
+                      >
+                        {notice ? (
+                          <>
+                            {notice.captured_at ? (
+                              <span className="mono site-notice-time">
+                                {formatTime(notice.captured_at)}
+                              </span>
+                            ) : null}
+                            {noticeExcerpt(notice.content)}
+                          </>
                         ) : (
-                          <span className="mono">{event.model}</span>
-                        )}{" "}
-                        · {formatTime(event.detected_at)}
-                      </span>
-                    </Link>
+                          <span style={{ color: "var(--text-3)" }}>
+                            {home.empty.siteNotice}
+                          </span>
+                        )}
+                      </p>
+                    </div>
                   );
                 })}
               </div>
             ) : (
-              <p style={{ color: "var(--text-3)", fontSize: 13, margin: 0 }}>
-                还没有事件记录。
-              </p>
+              <p style={{ color: "var(--text-2)" }}>{home.empty.sites}</p>
             )}
-          </div>
-        </section>
+          </section>
+        </Reveal>
 
-        {error && (
-          <SiteAlert
-            title="暂时读不到监控数据"
-            detail={error}
-            fix="请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。"
-          />
-        )}
-
-        {records.length > 0 && (
+        <Reveal>
           <section className="landing-section">
             <div className="landing-section-head">
-              <h2>最新价格</h2>
-              <Link href="/overview" className="landing-more">
-                查看全部 →
-              </Link>
+              <div className="landing-section-title">
+                <span className="section-num">04</span>
+                <h2>{home.sections.dataSource}</h2>
+              </div>
             </div>
-            <p className="landing-section-sub">站点标多少记多少，每条价格都附来源链接，点开就能核对</p>
-            <SnapshotPreview
-              rows={parentRows.slice(0, 6)}
-              childRowsOf={childRowsOf}
-              rate={rate}
-            />
-          </section>
-        )}
-
-        <section className="landing-section">
-          <div className="landing-section-head">
-            <h2>监控中的站点</h2>
-            <ComingSoon
-              label="提交监控站点"
-              variant="text"
-              title="提交监控站点"
-              description="站点提报功能即将上线，届时填写站点地址即可申请加入监控清单，我们会逐个核验后接入。"
-            />
-          </div>
-          <p className="landing-section-sub">每个站点的渠道检测与公告都自动存档，点站点名进检测档案</p>
-          {sites.length > 0 ? (
-            <div className="site-cards">
-              {sites.map((site) => {
-                const info = getSiteInfo(site.id, site.sourceUrl);
-                const href = info.homepage || site.sourceUrl || "";
-                const strip = stripOf(site.id);
-                const latestPoint = strip[strip.length - 1];
-                const notice = overview?.notices?.[site.id];
-                return (
-                  <div key={site.id} className="site-card">
-                    <div className="site-card-head">
-                      <span
-                        aria-hidden
-                        className="site-dot"
-                        style={{ background: site.enabled ? "var(--accent)" : "var(--text-3)" }}
-                      />
-                      <span className="site-name">
-                        <Link href={`/overview/status/${encodeURIComponent(site.id)}`} className="site-link">
-                          {info.name}
-                        </Link>
-                      </span>
-                      <span className="site-count mono">
-                        {site.models} 模型{site.enabled ? "" : " · 已停用"}
-                      </span>
-                    </div>
-                    {strip.length > 0 && latestPoint ? (
-                      <>
-                        <div className="site-strip" aria-hidden>
-                          {strip.map((point, index) => (
-                            <span
-                              key={index}
-                              className="site-strip-dot"
-                              style={{ background: STRIP_TONE[rateLevel(point.pct)] }}
-                              title={`${formatTime(point.at)} · 正常 ${point.pct}%`}
-                            />
-                          ))}
-                        </div>
-                        <span className="site-card-more">
-                          近 {strip.length} 次渠道检测 · 最新正常 {latestPoint.pct}%
-                        </span>
-                      </>
-                    ) : (
-                      <span className="site-card-nostatus">
-                        {statusSiteIds.has(site.id) ? "暂无渠道检测记录" : "渠道检测未接入"}
-                      </span>
-                    )}
-                    <p className="site-notice" title={notice?.content ?? undefined}>
-                      {notice ? (
-                        <>
-                          {notice.captured_at ? <span className="mono site-notice-time">{formatTime(notice.captured_at)}</span> : null}
-                          {noticeExcerpt(notice.content)}
-                        </>
-                      ) : (
-                        <span style={{ color: "var(--text-3)" }}>暂无公告</span>
-                      )}
-                    </p>
+            <div className="landing-truth">
+              <ul className="landing-points">
+                {home.dataPoints.map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+              {termPriceLines.length > 0 && (
+                <div className="term" aria-hidden>
+                  <div className="term-bar">
+                    <span />
+                    <span />
+                    <span />
+                    <span className="term-title">monitor.sh</span>
                   </div>
-                );
-              })}
+                  <pre className="term-body">
+                    {`$ curl -s /api/overview | head -3
+${termPriceLines.join("\n")}${termNoticeLine ? `\n\n$ cat notices.log | tail -1\n${termNoticeLine}` : ""}${
+                      termUptimeLine ? `\n\n$ tail -5 uptime.log\n${termUptimeLine}` : ""
+                    }`}
+                    <span className="term-cursor" />
+                  </pre>
+                </div>
+              )}
             </div>
-          ) : (
-            <p style={{ color: "var(--text-2)" }}>还没有站点数据。</p>
-          )}
-        </section>
+          </section>
+        </Reveal>
+
+        <Reveal>
+          <section className="landing-section">
+            <div className="landing-section-head">
+              <div className="landing-section-title">
+                <span className="section-num">05</span>
+                <h2>{home.sections.faq}</h2>
+              </div>
+            </div>
+            <div className="faq-list">
+              {home.faq.map((item) => (
+                <details className="faq-item" key={item.q}>
+                  <summary>{item.q}</summary>
+                  <p>{item.a}</p>
+                </details>
+              ))}
+            </div>
+          </section>
+        </Reveal>
+
+        <Reveal>
+          <section className="landing-cta">
+            <h2>{home.ctaTitle}</h2>
+            <Link href="/overview">
+              <Btn variant="primary" size="lg">
+                进入中转站定价 →
+              </Btn>
+            </Link>
+          </section>
+        </Reveal>
       </div>
     </>
   );

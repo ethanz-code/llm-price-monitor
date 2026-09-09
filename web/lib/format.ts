@@ -9,6 +9,7 @@ export const EVENT_META: Record<string, { label: string; tone: Tone }> = {
   price_decreased: { label: "降价", tone: "green" },
   restored: { label: "恢复", tone: "green" },
   status_changed: { label: "状态变化", tone: "yellow" },
+  group_removed: { label: "分组下线", tone: "red" },
   notice_init: { label: "公告建档", tone: "blue" },
   notice_changed: { label: "公告更新", tone: "yellow" },
 };
@@ -82,7 +83,8 @@ export interface TierPrice {
   price: number;
 }
 
-/** 某价格字段的阶梯档单价（label 已格式化）；顶层已有价或非阶梯计价返回 []。 */
+/** 某价格字段的阶梯档单价（label 已格式化）；非阶梯或只有单档返回 []。
+ *  顶层价可能是回填的代表档（standard），不能作为"非阶梯"的判断依据。 */
 export function tieredPrices(
   row:
     | {
@@ -94,7 +96,6 @@ export function tieredPrices(
     | undefined,
   field: "input_price" | "output_price",
 ): TierPrice[] {
-  if (row?.[field] != null) return [];
   const rules = row?.metadata?.pricing_rules as { groups?: { tiers?: Record<string, unknown>[] }[] } | undefined;
   const result: TierPrice[] = [];
   for (const tier of (rules?.groups ?? []).flatMap((group) => group.tiers ?? [])) {
@@ -102,7 +103,8 @@ export function tieredPrices(
     if (typeof price !== "number") continue;
     result.push({ label: tierLabel(tier), price });
   }
-  return result;
+  // 单档（或空）没有可展开的阶梯：普通价直接用顶层，单档阶梯价也已被回填到顶层
+  return result.length > 1 ? result : [];
 }
 
 /** 排序与比较用的有效价：顶层价优先，否则取阶梯最低档价。 */
@@ -221,7 +223,7 @@ export const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   confirmed: { label: "正常", tone: "green" },
   rule_only: { label: "规则价", tone: "blue" },
   candidate: { label: "待确认", tone: "blue" },
-  inferred: { label: "仅推断价", tone: "yellow" },
+  inferred: { label: "规则价", tone: "yellow" },
   auth_required: { label: "需认证", tone: "yellow" },
   no_data: { label: "未抓到价格", tone: "yellow" },
   unavailable: { label: "无数据", tone: "gray" },

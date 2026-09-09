@@ -12,6 +12,7 @@ import type { TaskDetail, TaskInfo, TasksData } from "@/lib/types";
 
 const TASK_KIND_LABELS: Record<string, string> = {
   collect: "全量采集",
+  "collect-test": "测试采集",
   "collect-price": "价格采集",
   "collect-status": "渠道状态采集",
   "collect-notice": "站点公告采集",
@@ -141,13 +142,21 @@ export function AdminTasks() {
       title: "备注",
       render: (_v, row) => {
         if (row.error) return <span style={{ color: "var(--tone-red-text)", fontSize: 12.5 }}>{row.error}</span>;
-        if (row.status !== "done" || !row.result) return null;
-        const result = row.result as { records?: unknown[]; models_found?: number };
+        const hasErrors = (row.error_count ?? 0) > 0;
+        if (row.status !== "done" || (!row.result && !hasErrors)) return null;
+        const result = row.result as { records?: unknown[]; models_found?: number } | undefined;
+        const countText =
+          row.kind === "catalog-refresh"
+            ? `找到 ${String(result?.models_found ?? 0)} 条`
+            : `${(result?.records ?? []).length} 条记录`;
         return (
-          <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>
-            {row.kind === "catalog-refresh"
-              ? `找到 ${String(result.models_found ?? 0)} 条`
-              : `${(result.records ?? []).length} 条记录`}
+          <span style={{ display: "grid", gap: 2 }}>
+            {hasErrors && (
+              <span style={{ color: "var(--tone-red-text)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {row.error_count} 处错误：{row.error_summary}
+              </span>
+            )}
+            {result && <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>{countText}</span>}
           </span>
         );
       },
@@ -177,8 +186,8 @@ export function AdminTasks() {
           empty={
             <Empty
               icon={<IconBolt size={18} />}
-              title="暂无任务记录"
-              description="点「立即采集」或「刷新厂商定价」后，进度会显示在这里。"
+                title="暂无任务记录"
+                description="系统会按「系统设置」里的频率自动采集，任务进度会显示在这里。"
             />
           }
         />

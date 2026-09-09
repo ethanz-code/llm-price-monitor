@@ -1,6 +1,6 @@
 "use client";
 
-/** 单站测试：按已保存配置立即拉取一次价格（不落盘），弹窗展示记录明细与错误；任务进度用轮询跟踪。 */
+/** 单站测试：按已保存配置立即采集一次价格+渠道状态+站点公告并入库，弹窗展示有数据的部分；任务进度用轮询跟踪。 */
 
 import { useState } from "react";
 import { toast, Btn, Modal } from "./ui";
@@ -20,6 +20,10 @@ type TestRecord = {
   status_reason: string | null;
 };
 
+type TestNotice = { site_id: string; kind: string | null; content: string };
+type TestNoticeResult = { site_id: string; outcome: string; content: string; latest?: string };
+type TestStatus = { site_id: string; kind: string | null; changes: { op: string }[] };
+
 function priceCell(value: number | null, unit: string | null) {
   return (
     <span className="mono">
@@ -29,11 +33,14 @@ function priceCell(value: number | null, unit: string | null) {
   );
 }
 
-export function SiteTestButton({ site }: { site: SiteConfig }) {
+export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: () => void }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
+
+  // 轮询兜底：任务卡死时最多等 5 分钟，超时后不再锁死弹窗
+  const POLL_MAX_MS = 5 * 60 * 1000;
 
   async function poll(taskId: string, startedAt: number) {
     for (;;) {
@@ -42,6 +49,13 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
       setTask(info);
       if (info.status !== "running") {
         setElapsed(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
+        // 测试采集会入库并更新最近采集状态，通知外层刷新列表
+        if (info.status === "done") onDone?.();
+        return;
+      }
+      if (Date.now() - startedAt > POLL_MAX_MS) {
+        // 本地按失败收尾，解锁弹窗；真实任务状态以后台任务列表为准
+        setTask((prev) => (prev ? { ...prev, status: "failed", error: "测试超时：任务仍在后台执行，可稍后在任务列表查看结果" } : prev));
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -57,7 +71,7 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
       const res = await fetch("/api/collect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ site_id: site.id, persist: false }),
+        body: JSON.stringify({ site_id: site.id, persist: true }),
       });
       if (res.status === 401) {
         window.location.href = "/login";
@@ -79,6 +93,10 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
   const running = task?.status === "running";
   const records = (task?.result?.records as TestRecord[] | undefined) ?? [];
   const errors = (task?.result?.errors as { site_id: string; error: string }[] | undefined) ?? [];
+  // 公告只在新增/更新时有记录；渠道状态只回传有变化的事件，没有就不展示
+  const notices = (task?.result?.notices as TestNotice[] | undefined) ?? [];
+  const noticeResults = (task?.result?.notice_results as TestNoticeResult[] | undefined) ?? [];
+  const statuses = (task?.result?.statuses as TestStatus[] | undefined) ?? [];
   // 无有效价格的记录：占位（unavailable，如 token 过期需认证）或两类单价都缺失
   const invalid = records.filter(
     (row) => row.price_status === "unavailable" || (row.input_price === null && row.output_price === null),
@@ -113,7 +131,7 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
       <Btn
         variant="text"
         size="sm"
-        title="按已保存配置立即拉取一次价格（仅预览，不写入历史；不含未保存的修改）"
+        title="按已保存配置立即采集一次价格、渠道状态和站点公告，结果会写入历史（不含未保存的修改）"
         onClick={() => {
           setTask(null);
           setElapsed(null);
@@ -122,10 +140,10 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
       >
         测试采集
       </Btn>
-      <Modal open={open} onClose={() => { if (!running) setOpen(false); }} title={`测试站点：${site.id}`}>
+      <Modal open={open} onClose={() => { if (!running) setOpen(false); }} title={`测试站点：${site.id}`} width={720}>
         <div style={{ display: "grid", gap: 14 }}>
           <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
-            按已保存配置对该站点立即请求一次价格，仅预览不写入历史；停用中的站点也可测试。
+            按已保存配置对该站点立即采集一次：价格、渠道状态、站点公告都会拉一遍，采到什么存什么；停用中的站点也可测试。
           </p>
           {task && (
             <div style={{ display: "grid", gap: 8 }}>
@@ -143,12 +161,38 @@ export function SiteTestButton({ site }: { site: SiteConfig }) {
               )}
               {task.status === "failed" && <ToneTag tone="red">失败：{task.error}</ToneTag>}
               {task.status === "done" && records.length > 0 && (
-                <DataTable<TestRecord> rowKey={(row) => `${row.model}:${row.group ?? ""}`} columns={columns} rows={records} />
+                <DataTable<TestRecord>
+                  rowKey={(row) => `${row.model}:${row.group ?? ""}`}
+                  columns={columns}
+                  rows={records}
+                  scrollX={520}
+                  mobileScrollX={430}
+                />
               )}
               {task.status === "done" && records.length === 0 && errors.length === 0 && (
                 <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13 }}>
                   没有解析到价格：请确认目标模型名与站点返回的数据一致后重试；本地解析失败时会自动交给 AI 兜底。
                 </p>
+              )}
+              {task.status === "done" && notices.length > 0 && (
+                <ToneTag tone="blue">
+                  公告{notices[0].kind === "notice_init" ? "新增" : "更新"}：{notices[0].content.length > 80 ? `${notices[0].content.slice(0, 80)}…` : notices[0].content}
+                </ToneTag>
+              )}
+              {task.status === "done" && notices.length === 0 && noticeResults[0] && noticeResults[0].outcome !== "error" && (
+                <ToneTag tone={noticeResults[0].outcome === "empty" ? "gray" : noticeResults[0].outcome === "unchanged" ? "green" : "gray"}>
+                  {noticeResults[0].outcome === "unchanged" && "公告采集正常，内容无变化"}
+                  {noticeResults[0].outcome === "empty" &&
+                    (noticeResults[0].latest
+                      ? `站点没有发布新公告。当前公告：${noticeResults[0].latest.length > 80 ? `${noticeResults[0].latest.slice(0, 80)}…` : noticeResults[0].latest}`
+                      : "站点没有发布公告")}
+                  {noticeResults[0].outcome === "none" && "未检测到公告接口（站点没有 /api/notice 且未配置公告地址）"}
+                </ToneTag>
+              )}
+              {task.status === "done" && statuses.length > 0 && (
+                <ToneTag tone="blue">
+                  渠道状态{statuses[0].kind === "status_init" ? "首次采集成功" : `有变化：${statuses[0].changes.length} 处`}
+                </ToneTag>
               )}
               {errors.map((item) => (
                 <p key={item.site_id} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>

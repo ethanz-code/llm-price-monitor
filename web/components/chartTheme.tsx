@@ -36,7 +36,7 @@ export function ChartBubble({
   return (
     <div
       style={{
-        background: "rgba(23, 26, 31, 0.96)",
+        background: "var(--tooltip-bg)",
         color: "rgba(255,255,255,0.92)",
         padding: "8px 12px",
         borderRadius: 6,

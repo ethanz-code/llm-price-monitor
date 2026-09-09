@@ -30,34 +30,67 @@ export interface ChannelDotRow extends ChannelStatus {
 /** 点阵行名归一：去首尾空格、忽略大小写，用于与计价分组名匹配。 */
 const normalizeChannelName = (name: string) => name.trim().toLowerCase();
 
-/**
- * 按目标分组过滤点阵行（总览渠道列用）：只要有一行名字对得上目标分组，
- * 就只显示匹配的行；目标分组为空或一行都对不上（渠道形态接口、站点无分组概念）时不过滤。
- * 渠道状态详情页展示全量，不走这里。
- */
-export function filterDotsByGroups(dots: ChannelDotRow[], groups: ReadonlySet<string>): ChannelDotRow[] {
-  if (groups.size === 0) return dots;
-  const targets = new Set(Array.from(groups, normalizeChannelName));
-  const matched = dots.filter((row) => targets.has(normalizeChannelName(row.name)));
-  return matched.length > 0 ? matched : dots;
+
+/** 分桶保峰抽稀：把时间升序序列按时间跨度等分成 max 桶，每桶保留一个代表点——
+ *  worse 返回桶内更"坏"的那个（可用率取最低、延迟取最高），平稳桶自然只剩普通点；
+ *  始终保留序列最后一个点。短暂故障不会被均匀抽稀跳过，点数上限稳定可控。 */
+export function downsampleWorst<T extends { at: number }>(points: T[], max: number, worse: (a: T, b: T) => T): T[] {
+  if (points.length <= max) return points;
+  const span = points[points.length - 1].at - points[0].at;
+  const size = Math.max(span / max, 1);
+  const out: T[] = [];
+  let index = 0;
+  while (index < points.length) {
+    const limit = points[index].at + size;
+    let rep = points[index];
+    while (index < points.length && points[index].at < limit) {
+      if (worse(points[index], rep) === points[index]) rep = points[index];
+      index += 1;
+    }
+    out.push(rep);
+  }
+  if (out[out.length - 1] !== points[points.length - 1]) out.push(points[points.length - 1]);
+  return out;
 }
 
-/** 成功率窗口：取每个渠道最近 15 次检测，与总览渠道点阵展示的列数一致。 */
+/** 趋势序列抽稀后的点数上限：7 天分钟级约 1 万个快照，抽到这个量渲染依旧轻快。 */
+const MAX_SERIES_POINTS = 1440;
+
+/** 各渠道检测点序列（时间升序、只留带时间戳的点）与一个只进不退的游标。 */
+interface DotCursor {
+  name: string;
+  dots: (ChannelDot & { at: number })[];
+  index: number;
+}
+
+/** 游标推进到时刻 at，返回该渠道在 at 时最新的检测点；at 早于其全部点时返回 null。 */
+function latestAt(cursor: DotCursor, at: number): ChannelDot | null {
+  while (cursor.index + 1 < cursor.dots.length && cursor.dots[cursor.index + 1].at <= at) cursor.index += 1;
+  const dot = cursor.dots[cursor.index];
+  return dot && dot.at <= at ? dot : null;
+}
+
+/** 成功率窗口：取最近 15 次检测，与总览渠道点阵单行展示的列数一致。 */
 const RECENT_DOT_WINDOW = 15;
 
-/** 行的平均渠道成功率：每个渠道取最近检测的正常占比，再对各渠道求平均（0–1）；
- *  无检测数据返回 null，由调用方按缺数据处理。 */
-export function channelSuccessRate(dots: ChannelDotRow[] | undefined): number | null {
+/** 一组检测点的成功率：最近检测的正常占比（0–1）；无数据返回 null。 */
+export function dotsSuccessRate(dots: ChannelDot[] | undefined): number | null {
   if (!dots || dots.length === 0) return null;
-  let sum = 0;
-  let count = 0;
-  for (const row of dots) {
-    const recent = row.dots.slice(-RECENT_DOT_WINDOW);
-    if (recent.length === 0) continue;
-    sum += recent.filter((dot) => dot.ok).length / recent.length;
-    count += 1;
-  }
-  return count > 0 ? sum / count : null;
+  const recent = dots.slice(-RECENT_DOT_WINDOW);
+  return recent.filter((dot) => dot.ok).length / recent.length;
+}
+
+/** 严格取某分组的检测点：只认渠道行名对得上的行（不做「匹配不上就全量」的回退），
+ *  同名多行（写法差异）的点合并后按时间升序返回；没有匹配行返回 null。
+ *  总览渠道列与排序扣分共用，保证「这一行的渠道列 = 这一行分组的可用度」。 */
+export function dotsOfGroup(dots: ChannelDotRow[] | undefined, group: string | undefined): ChannelDot[] | null {
+  if (!dots || dots.length === 0 || !group) return null;
+  const target = normalizeChannelName(group);
+  const merged = dots
+    .filter((row) => normalizeChannelName(row.name) === target)
+    .flatMap((row) => row.dots)
+    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  return merged.length > 0 ? merged : null;
 }
 
 /** 判定为“正常”的状态词表；其余取值一律按异常/未知渲染灰色。 */
@@ -90,7 +123,7 @@ const FALLBACK_NAME_KEYS = new Set(["items", "channels", "data", "list", "models
 const TIMELINE_KEYS = new Set(["timeline", "history", "checks", "events", "logs", "log", "uptime"]);
 const TIME_KEYS = ["checked_at", "checkedAt", "checked", "timestamp", "detected_at", "time", "at", "ts"];
 const MAX_CHANNELS = 64;
-const MAX_DOTS = 60;
+const MAX_DOTS = 720;
 
 function isUp(raw: string): boolean {
   return UP_WORDS.has(raw.trim().toLowerCase());
@@ -283,14 +316,53 @@ export interface AvailabilityPoint {
   down: string[];
 }
 
-/** 可用率三档：<80% 大面积异常、80–95% 有渠道异常、≥95% 正常。 */
+/** 可用率三档：<60% 大面积异常、60–80% 有渠道异常、≥80% 正常。 */
 export type RateLevel = "ok" | "warn" | "down";
 
 /** 按当次正常渠道占比归档；阈值与趋势图分段着色、KPI 数字着色共用。 */
 export function rateLevel(pct: number): RateLevel {
-  if (pct >= 95) return "ok";
-  if (pct >= 80) return "warn";
+  // 多分组聚合口径：平均可用率 80% 以上算优秀，60% 是及格线
+  if (pct >= 80) return "ok";
+  if (pct >= 60) return "warn";
   return "down";
+}
+
+/** 时段可用率色块的一个桶：起止时间、检测次数、平均/最差正常率与异常渠道名单。 */
+export interface UptimeBucket {
+  start: number;
+  end: number;
+  count: number;
+  avg: number;
+  worst: number;
+  down: string[];
+}
+
+/** 时段色块分桶：把检测点按时间跨度等分成 ~target 段，每段聚合平均/最差正常率与异常名单。
+ *  在数据源头（服务端）预计算，客户端只渲染桶，不再传输整段检测点。 */
+export function buildUptimeBuckets(points: AvailabilityPoint[], target = 28): (UptimeBucket | null)[] {
+  if (points.length === 0) return [];
+  const t0 = points[0].at;
+  const t1 = points[points.length - 1].at;
+  const size = Math.max((t1 - t0) / target, 1);
+  const total = Math.min(Math.max(Math.ceil((t1 - t0) / size), 1), target);
+  const slots: (UptimeBucket | null)[] = Array.from({ length: total }, () => null);
+  for (const point of points) {
+    const index = Math.min(Math.floor((point.at - t0) / size), total - 1);
+    const bucket = slots[index];
+    if (bucket) {
+      bucket.end = point.at;
+      bucket.count += 1;
+      bucket.avg += point.pct;
+      bucket.worst = Math.min(bucket.worst, point.pct);
+      for (const name of point.down) {
+        if (!bucket.down.includes(name)) bucket.down.push(name);
+      }
+    } else {
+      slots[index] = { start: point.at, end: point.at, count: 1, avg: point.pct, worst: point.pct, down: [...point.down] };
+    }
+  }
+  for (const bucket of slots) if (bucket) bucket.avg = Math.round(bucket.avg / bucket.count);
+  return slots;
 }
 
 /** 异常渠道名单文案：最多点名 6 个，更多时截断并标注总数。趋势图与时段条悬停共用。 */
@@ -309,35 +381,39 @@ export function latencyLevel(ms: number): RateLevel {
 
 /**
  * 按站点把渠道检测点合并成可用率时间序列：每个检测时刻取各渠道当时的最新状态，
- * 站点自带逐分钟时间线时密度就是分钟级。
+ * 站点自带逐分钟时间线时密度就是分钟级。全量快照用双指针合并（点序列已升序），
+ * 再分桶保峰抽到 ~1440 点：异常桶保留最低点，短暂故障不会被抽丢。
  */
 export function availabilityBySite(records: { site_id: string; captured_at: number; data: unknown }[]): Record<string, AvailabilityPoint[]> {
-  const bySite = channelDotsBySite(records);
+  return availabilityFromDots(channelDotsBySite(records));
+}
+
+function availabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
   const result: Record<string, AvailabilityPoint[]> = {};
   for (const [site, rows] of Object.entries(bySite)) {
+    const cursors: DotCursor[] = rows.map((row) => ({
+      name: row.name,
+      dots: row.dots.filter((dot): dot is ChannelDot & { at: number } => dot.at != null),
+      index: 0,
+    }));
     const times = new Set<number>();
-    for (const row of rows) for (const dot of row.dots) if (dot.at != null) times.add(dot.at);
-    const sorted = [...times].sort((a, b) => a - b).slice(-120);
-    const series: AvailabilityPoint[] = [];
+    for (const cursor of cursors) for (const dot of cursor.dots) times.add(dot.at);
+    const sorted = [...times].sort((a, b) => a - b);
+    const full: AvailabilityPoint[] = [];
     for (const at of sorted) {
       let ok = 0;
       let total = 0;
       const down: string[] = [];
-      for (const row of rows) {
-        let latest: ChannelDot | null = null;
-        for (const dot of row.dots) {
-          if (dot.at == null) continue;
-          if (dot.at <= at) latest = dot;
-          else break;
-        }
+      for (const cursor of cursors) {
+        const latest = latestAt(cursor, at);
         if (!latest) continue;
         total += 1;
         if (latest.ok) ok += 1;
-        else down.push(row.name);
+        else down.push(cursor.name);
       }
-      if (total > 0) series.push({ at, pct: Math.round((ok / total) * 100), down });
+      if (total > 0) full.push({ at, pct: Math.round((ok / total) * 100), down });
     }
-    result[site] = series;
+    result[site] = downsampleWorst(full, MAX_SERIES_POINTS, (a, b) => (a.pct < b.pct ? a : b));
   }
   return result;
 }
@@ -348,31 +424,52 @@ export interface LatencyPoint {
   values: Record<string, number>;
 }
 
-/** 按站点把带延迟的检测点合并成「时刻 → 各渠道延迟」序列，供延迟趋势图使用。 */
+/** 按站点把带延迟的检测点合并成「时刻 → 各渠道延迟」序列，供延迟趋势图使用。
+ *  同样双指针 + 分桶保峰：异常桶保留延迟最高的点，毛刺不会被抽平。 */
 export function latencyBySite(records: { site_id: string; captured_at: number; data: unknown }[]): Record<string, LatencyPoint[]> {
-  const bySite = channelDotsBySite(records);
+  return latencyFromDots(channelDotsBySite(records));
+}
+
+function latencyFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, LatencyPoint[]> {
   const result: Record<string, LatencyPoint[]> = {};
   for (const [site, rows] of Object.entries(bySite)) {
-    const withLatency = rows.filter((row) => row.dots.some((dot) => dot.latency != null));
-    if (withLatency.length === 0) continue;
+    const cursors: DotCursor[] = rows
+      .filter((row) => row.dots.some((dot) => dot.latency != null))
+      .map((row) => ({
+        name: row.name,
+        dots: row.dots.filter((dot): dot is ChannelDot & { at: number } => dot.at != null),
+        index: 0,
+      }));
+    if (cursors.length === 0) continue;
     const times = new Set<number>();
-    for (const row of withLatency) for (const dot of row.dots) if (dot.at != null) times.add(dot.at);
-    const sorted = [...times].sort((a, b) => a - b).slice(-120);
-    const series: LatencyPoint[] = [];
+    for (const cursor of cursors) for (const dot of cursor.dots) times.add(dot.at);
+    const sorted = [...times].sort((a, b) => a - b);
+    const full: LatencyPoint[] = [];
     for (const at of sorted) {
       const values: Record<string, number> = {};
-      for (const row of withLatency) {
-        let latest: ChannelDot | null = null;
-        for (const dot of row.dots) {
-          if (dot.at == null) continue;
-          if (dot.at <= at) latest = dot;
-          else break;
-        }
-        if (latest?.latency != null) values[row.name] = latest.latency;
+      for (const cursor of cursors) {
+        const latest = latestAt(cursor, at);
+        if (latest?.latency != null) values[cursor.name] = latest.latency;
       }
-      series.push({ at, values });
+      full.push({ at, values });
     }
-    result[site] = series;
+    const peak = (point: LatencyPoint) => Math.max(...Object.values(point.values), 0);
+    result[site] = downsampleWorst(full, MAX_SERIES_POINTS, (a, b) => (peak(a) >= peak(b) ? a : b));
   }
   return result;
+}
+
+/** 详情页视图集合：渠道行、可用率序列、延迟序列共享同一次 channelDotsBySite 全量走查，
+ *  避免页面把同一批记录解析三遍。 */
+export function buildSiteViews(records: { site_id: string; captured_at: number; data: unknown }[]): {
+  channels: Record<string, ChannelDotRow[]>;
+  availability: Record<string, AvailabilityPoint[]>;
+  latency: Record<string, LatencyPoint[]>;
+} {
+  const bySite = channelDotsBySite(records);
+  return {
+    channels: bySite,
+    availability: availabilityFromDots(bySite),
+    latency: latencyFromDots(bySite),
+  };
 }
