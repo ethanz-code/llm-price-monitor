@@ -111,6 +111,8 @@ export function AssistantDock() {
     const text = question.trim();
     if (!text || pending) return;
     setInput("");
+    // 带上最近几轮有内容的对话，后端才能理解"我刚才问了什么"这类指代
+    const history = messages.filter((message) => message.content.trim()).slice(-6);
     setMessages((prev) => [...prev, { role: "user", content: text }, { role: "assistant", content: "" }]);
     setPending(true);
     const appendReply = (chunk: string) =>
@@ -124,7 +126,7 @@ export function AssistantDock() {
       const res = await fetch("/api/assistant/ask/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({ question: text, history }),
       });
       if (!res.ok || !res.body) {
         const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;

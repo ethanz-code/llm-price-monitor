@@ -166,3 +166,48 @@ def test_ask_gate_general_skips_data_json(workspace: Path, monkeypatch):
     # general 计入每日次数：已用 1 次，再问即超限
     limited = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
     assert limited.status_code == 429
+
+
+def test_ask_forwards_recent_history(workspace: Path, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, *, headers: dict, json: dict, timeout: float) -> _FakeResponse:
+        captured["body"] = json
+        return _FakeResponse()
+
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    res = client.post("/api/assistant/ask", json={
+        "question": "我刚才问了什么？",
+        "history": [
+            {"role": "user", "content": "demo 站现在什么价？"},
+            {"role": "assistant", "content": "demo-model 输入 5.0。"},
+            {"role": "system", "content": "应被忽略"},
+            {"role": "user", "content": "   "},
+        ],
+    })
+    assert res.status_code == 200
+    prompt = captured["body"]["messages"][-1]["content"]
+    assert "demo 站现在什么价？" in prompt and "最近对话" in prompt
+    assert "应被忽略" not in prompt
+
+
+def test_ask_stream_failure_does_not_consume_quota(workspace: Path, monkeypatch):
+    def failing_stream(*args: Any, **kwargs: Any):
+        raise assistant.httpx.ConnectError("boom")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(assistant, "ai_stream", failing_stream)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    client.app.state.store.set_document("settings", {"assistant_daily_limit": 1})
+    res = client.post("/api/assistant/ask/stream", json={"question": "demo 什么价？"})
+    assert res.status_code == 200
+    assert '"error"' in res.text
+    # 失败不扣次数：下一次提问仍可通过配额校验并正常回答
+    monkeypatch.setattr(assistant, "ai_stream", lambda *args, **kwargs: iter(["demo-model 现价 5.0。"]))
+    res2 = client.post("/api/assistant/ask/stream", json={"question": "demo 什么价？"})
+    frames = [line[6:] for line in res2.text.splitlines() if line.startswith("data: ")]
+    import json as _json
+    assert any(_json.loads(frame).get("done") for frame in frames)

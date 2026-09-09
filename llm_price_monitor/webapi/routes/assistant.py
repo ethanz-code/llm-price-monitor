@@ -20,6 +20,8 @@ from llm_price_monitor.webapi.deps import client_ip
 # 送给 AI 的数据摘要体量上限：价格行与站点数都做截断，避免撑爆输入窗口
 _MAX_LATEST_ROWS = 40
 _MAX_SITES = 30
+# 随问题携带的最近对话轮数：再多 token 浪费、收益很小
+_MAX_HISTORY_TURNS = 6
 
 _SYSTEM_PROMPT = (
     "你是 LLM 价格监控平台的智能分析助手。回答要依据本平台采集的数据：监控站点（含站点地址）"
@@ -44,8 +46,26 @@ _GATE_PROMPT = (
 _REFUSAL = "抱歉，我是本平台的 AI 助手，只能回答模型价格与监控站点相关的问题。"
 
 
+class HistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
 class AskBody(BaseModel):
     question: str
+    history: list[HistoryTurn] = []
+
+
+def recent_history(body: AskBody) -> list[HistoryTurn]:
+    turns = [turn for turn in body.history if turn.role in ("user", "assistant") and turn.content.strip()]
+    return turns[-_MAX_HISTORY_TURNS:]
+
+
+def history_text(turns: list[HistoryTurn]) -> str:
+    if not turns:
+        return ""
+    lines = [f"{'用户' if turn.role == 'user' else '助手'}：{turn.content.strip()}" for turn in turns]
+    return "\n\n最近对话（供理解指代与上下文）：\n" + "\n".join(lines)
 
 
 def build_router(store: Store) -> APIRouter:
@@ -104,21 +124,31 @@ def build_router(store: Store) -> APIRouter:
         return settings_from_raw(store.get_document("settings") or {}, resolve_env=False).assistant_daily_limit
 
     def consume_quota(ip: str) -> None:
-        """每 IP 每天限次：发出去的问题就计数（含被 AI 拒答的）；超限抛 429，0 表示不限制。"""
+        """每 IP 每天限次的次数校验：超限抛 429，0 表示不限制；实际计数在回答成功后由 record_quota 完成。"""
         limit = assistant_limit()
         if limit <= 0:
             return
         today = time.strftime("%Y-%m-%d")
-        # 顺带清掉非今天的旧计数，文档不会越积越大
         usage = {
             key: item
             for key, item in (store.get_document("assistant_usage") or {}).items()
             if isinstance(item, dict) and item.get("date") == today
         }
-        count = int(usage.get(ip, {}).get("count", 0))
-        if count >= limit:
+        if int(usage.get(ip, {}).get("count", 0)) >= limit:
             raise HTTPException(status_code=429, detail="今天的提问次数用完了，明天再来吧")
-        usage[ip] = {"date": today, "count": count + 1}
+
+    def record_quota(ip: str) -> None:
+        """回答成功后计数：AI 失败、拒答都不扣次数。"""
+        limit = assistant_limit()
+        if limit <= 0:
+            return
+        today = time.strftime("%Y-%m-%d")
+        usage = {
+            key: item
+            for key, item in (store.get_document("assistant_usage") or {}).items()
+            if isinstance(item, dict) and item.get("date") == today
+        }
+        usage[ip] = {"date": today, "count": int(usage.get(ip, {}).get("count", 0)) + 1}
         store.set_document("assistant_usage", usage)
 
     @router.get("/api/assistant/status")
@@ -127,10 +157,10 @@ def build_router(store: Store) -> APIRouter:
         available, model = ai_ready()
         return {"available": available, "model": model or None}
 
-    def gate(config: Any, model: str, question: str) -> str:
+    def gate(config: Any, model: str, question: str, turns: list[HistoryTurn]) -> str:
         """前置分类：refuse / general / data；判定或网络失败时按 data 处理，宁可多带数据也不答错。"""
         try:
-            url, headers, request_body = ai_request(config, model, _GATE_PROMPT, f"用户问题：{question}", json_mode=True)
+            url, headers, request_body = ai_request(config, model, _GATE_PROMPT, f"用户问题：{question}{history_text(turns)}", json_mode=True)
             response = httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
             response.raise_for_status()
             text = chat_content(response.json())
@@ -139,11 +169,12 @@ def build_router(store: Store) -> APIRouter:
         except (httpx.HTTPError, AIExtractionError, ValueError, json.JSONDecodeError, AttributeError):
             return "data"
 
-    def build_prompt(action: str, question: str) -> tuple[str, str]:
+    def build_prompt(action: str, question: str, turns: list[HistoryTurn]) -> tuple[str, str]:
         """按分类组装系统提示词与用户消息：只有 data 才携带平台数据 JSON。"""
+        context = history_text(turns)
         if action == "general":
-            return _GENERAL_PROMPT, f"用户问题：{question}"
-        return _SYSTEM_PROMPT, f"用户问题：{question}\n\n平台当前数据 JSON：\n{data_summary()}"
+            return _GENERAL_PROMPT, f"用户问题：{question}{context}"
+        return _SYSTEM_PROMPT, f"用户问题：{question}{context}\n\n平台当前数据 JSON：\n{data_summary()}"
 
     @router.post("/api/assistant/ask")
     def ask(request: Request, body: AskBody) -> dict[str, Any]:
@@ -153,12 +184,13 @@ def build_router(store: Store) -> APIRouter:
         available, model = ai_ready()
         if not available:
             raise HTTPException(status_code=400, detail="还没有配置 AI 模型，请先在管理页设置")
+        turns = recent_history(body)
         config = ai_from_raw(store.get_document("ai") or {}, cache=None)
-        action = gate(config, model, question)
+        action = gate(config, model, question, turns)
         if action == "refuse":
             return {"answer": _REFUSAL}
         consume_quota(client_ip(request))
-        system, user = build_prompt(action, question)
+        system, user = build_prompt(action, question, turns)
         url, headers, request_body = ai_request(config, model, system, user, json_mode=False)
         try:
             response = httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
@@ -170,6 +202,7 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=502, detail=f"AI 服务暂时连不上：{exc}") from exc
         except AIExtractionError as exc:
             raise HTTPException(status_code=502, detail=f"AI 返回的内容无法解析：{exc}") from exc
+        record_quota(client_ip(request))
         return {"answer": answer}
 
     @router.post("/api/assistant/ask/stream")
@@ -181,8 +214,9 @@ def build_router(store: Store) -> APIRouter:
         available, model = ai_ready()
         if not available:
             raise HTTPException(status_code=400, detail="还没有配置 AI 模型，请先在管理页设置")
+        turns = recent_history(body)
         config = ai_from_raw(store.get_document("ai") or {}, cache=None)
-        action = gate(config, model, question)
+        action = gate(config, model, question, turns)
         if action == "refuse":
             refusal = _REFUSAL
             return StreamingResponse(
@@ -191,8 +225,9 @@ def build_router(store: Store) -> APIRouter:
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        consume_quota(client_ip(request))
-        system, user = build_prompt(action, question)
+        ip = client_ip(request)
+        consume_quota(ip)
+        system, user = build_prompt(action, question, turns)
 
         def frames() -> Iterator[str]:
             def emit(payload: dict[str, Any]) -> str:
@@ -201,6 +236,7 @@ def build_router(store: Store) -> APIRouter:
             try:
                 for chunk in ai_stream(config, model, system, user):
                     yield emit({"delta": chunk})
+                record_quota(ip)
                 yield emit({"done": True})
             except (httpx.HTTPError, AIExtractionError) as exc:
                 yield emit({"error": str(exc)})
