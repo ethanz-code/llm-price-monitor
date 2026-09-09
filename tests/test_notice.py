@@ -6,6 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from llm_price_monitor.ai import AIConfig, extract_notice_content
 from llm_price_monitor.config import MonitorConfig, PriceMonitorError, SiteSpec, load_config, sites_from_raw
 from llm_price_monitor.notice import fetch_site_notice, resolve_notice_url
 from llm_price_monitor.report import run_once
@@ -165,6 +166,60 @@ def test_fetch_site_notice_empty_data_yields_empty_content():
     assert record["content"] == ""
 
 
+def test_fetch_site_notice_reuses_network_headers():
+    """公告请求（含 /api/status）继承 network.headers 的认证/Cookie 头。"""
+    seen: dict[str, dict[str, str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.path] = {k.lower(): v for k, v in request.headers.items()}
+        if request.url.path == "/api/notice":
+            return httpx.Response(200, json={"success": True, "data": "公告"})
+        return httpx.Response(200, json={"success": True, "data": {}})
+
+    spec = sites_from_raw([{
+        "id": "demo",
+        "models": ["m"],
+        "network": {"url": "https://demo.test/api/pricing", "headers": {"Authorization": "Bearer tok", "New-Api-User": "9391"}},
+    }])[0]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_site_notice(spec, client, 10.0, "ua/1")
+    assert seen["/api/notice"]["authorization"] == "Bearer tok"
+    assert seen["/api/notice"]["new-api-user"] == "9391"
+    assert seen["/api/status"]["authorization"] == "Bearer tok"
+
+
+def test_fetch_site_notice_ai_fallback(monkeypatch):
+    """固定解析认不出的响应结构（announcements 数组）交给 AI 提取正文。"""
+    spec = _spec({"url": "https://demo.test/api/announcements"})
+
+    def fake_extract(config, raw_text, *, client=None):
+        assert '"announcements"' in raw_text
+        return "## 平台公告\n\n切换 GPT-6。"
+
+    monkeypatch.setattr("llm_price_monitor.notice.extract_notice_content", fake_extract)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"announcements": [{"id": 1, "title": "平台公告", "content": "切换 GPT-6。"}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1", ai=AIConfig(enabled=True))
+    assert record["parse"] == "ai"
+    assert "GPT-6" in record["content"]
+
+
+def test_extract_notice_content_parses_json_reply():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"content": "公告正文"}'}}]})
+
+    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", api_key="k", models=("m1",))
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert extract_notice_content(ai, '{"announcements": []}', client=client) == "公告正文"
+
+
+def test_extract_notice_content_disabled_returns_none():
+    assert extract_notice_content(AIConfig(enabled=False), "anything") is None
+
+
 # ---------- run_once 集成 ----------
 
 def _patch_collect(monkeypatch) -> None:
@@ -282,8 +337,10 @@ def test_webapi_notice_endpoints(tmp_path: Path, monkeypatch):
         "total": 1,
     }
     assert client.get("/api/notice", params={"site_id": "missing"}).json()["total"] == 0
-    events = client.get("/api/notice/events").json()
-    assert events["total"] == 1 and events["events"][0]["kind"] == "notice_init"
+    # 公告事件并入统一事件流 /api/feed
+    feed = client.get("/api/feed").json()
+    assert feed["notice_total"] == 1
+    assert [e["kind"] for e in feed["events"] if e["kind"] == "notice_init"] == ["notice_init"]
 
 
 def test_scan_notices_runs_independently_of_prices(tmp_path: Path, monkeypatch):

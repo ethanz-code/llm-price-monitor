@@ -99,8 +99,10 @@ def test_latest_history_events_official_endpoints(workspace: Path):
     history = client.get("/api/history", params={"model": "demo-model"}).json()
     assert history["total"] == 2 and len(history["records"]) == 2
     assert client.get("/api/history", params={"model": "other"}).json()["records"] == []
-    events = client.get("/api/events", params={"kind": "new"}).json()
-    assert events["total"] == 1
+    # 价格事件与公告事件合并进统一事件流：总数分开计，列表按时间倒序
+    feed = client.get("/api/feed", params={"events_limit": 10, "notice_limit": 10}).json()
+    assert feed["price_total"] == 1 and feed["notice_total"] == 0
+    assert [e["kind"] for e in feed["events"]] == ["new"]
     catalog = client.get("/api/catalog").json()
     assert catalog["models"]["demomodel"]["vendor"] == "Demo"
 
@@ -121,6 +123,8 @@ def test_overview_attaches_discount_and_catalog_context(workspace: Path):
     data = client.get("/api/overview").json()
     assert data["catalog"]["enabled"] is True
     assert data["records"][0]["discount"]["input"] == 0.5
+    # 信息完整度：demo 只填了监控模型（models），认证/续签/附加地址都没配，得 1 分
+    assert data["site_completeness"] == {"demo": 1}
 
 
 def test_catalog_missing_returns_404(workspace: Path):
@@ -168,9 +172,10 @@ def test_catalog_auto_syncs_on_first_start(workspace: Path, monkeypatch):
     import llm_price_monitor.webapi.jobs as jobs
     from llm_price_monitor.webapi import tasks
 
-    # 等上一个测试留下的 catalog-refresh 线程退出，避免启动时的 submit 撞上运行中同名任务
-    for _ in range(100):
-        if not any(t["kind"] == "catalog-refresh" and t["status"] == "running" for t in tasks.recent(100)):
+    # 等上一个测试留下的后台采集线程全部退出：任务注册表是进程级共享的，
+    # 残留的 running 任务会让本测试启动时的 catalog-refresh 提交撞互斥被 409 拒绝
+    for _ in range(500):
+        if not any(t["status"] == "running" for t in tasks.recent(100)):
             break
         time.sleep(0.02)
 
@@ -207,7 +212,15 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
 
     def fake_run_once(config, *, persist=True, **_kwargs):
         assert persist is False
-        return MonitorReport(0.0, 1.0, [{"model": "demo-model"}], [], [])
+        return MonitorReport(
+            0.0,
+            1.0,
+            [{"model": "demo-model"}],
+            [],
+            [],
+            status_events=[{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}],
+            notice_records=[{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}],
+        )
 
     monkeypatch.setattr(collect_routes, "run_once", fake_run_once)
     client = _admin_client(workspace)
@@ -222,6 +235,9 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
     assert task["result"]["errors"] == []
     assert task["result"]["persisted"] is False
     assert [row["model"] for row in task["result"]["records"]] == ["demo-model"]
+    # 公告与渠道状态结果随任务带回：公告含正文，状态只回传有变化的事件
+    assert task["result"]["notices"] == [{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}]
+    assert task["result"]["statuses"] == [{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}]
 
 
 def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeypatch):
@@ -445,6 +461,34 @@ def test_sites_crud_requires_admin_and_validates(workspace: Path):
     assert client.delete("/api/sites/x").status_code == 200
     assert client.delete("/api/sites/x").status_code == 404
 
+def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
+    """编辑站点设置分组过滤时，库里未选中分组的历史状态数据一并清理；口径不变或清空则不动。"""
+    from llm_price_monitor.store import Store
+
+    client = _admin_client(workspace)
+    config = client.get("/api/sites").json()["sites"][0]
+    store = Store(workspace / "var" / "monitor.db")
+    store.append_status_records([
+        {
+            "site_id": "demo",
+            "captured_at": 1.0,
+            "data": {"channels": [{"name": "svip", "state": "ok"}, {"name": "vip", "state": "down"}]},
+        },
+    ])
+
+    status = {"url": "https://demo.test/status", "groups": ["svip"]}
+    saved = client.put("/api/sites/demo", json={"config": {**config, "status": status}})
+    assert saved.status_code == 200 and saved.json()["cleaned"]["records"] == 1
+    records, _ = store.read_status(site_id="demo")
+    assert records[0]["data"]["channels"] == [{"name": "svip", "state": "ok"}]
+
+    # 相同分组重复保存不再清理；去掉过滤恢复全量采集，也不动数据
+    again = client.put("/api/sites/demo", json={"config": {**config, "status": status}})
+    assert "cleaned" not in again.json()
+    cleared = client.put("/api/sites/demo", json={"config": {**config, "status": {"url": "https://demo.test/status"}}})
+    assert cleared.status_code == 200 and "cleaned" not in cleared.json()
+
+
 def test_site_delete_purge_optionally_cleans_history(workspace: Path):
     """DELETE ?purge=true 同时清理站点相关数据；默认删除保留历史与事件。"""
     client = _admin_client(workspace)
@@ -458,7 +502,7 @@ def test_site_delete_purge_optionally_cleans_history(workspace: Path):
     assert client.post("/api/sites", json={"config": config}).status_code == 200
     assert client.delete("/api/sites/demo", params={"purge": "true"}).status_code == 200
     assert client.get("/api/history", params={"site_id": "demo"}).json()["total"] == 0
-    assert client.get("/api/events", params={"site_id": "demo"}).json()["total"] == 0
+    assert client.get("/api/feed").json()["price_total"] == 0
     assert "demo:demo-model:default" not in client.get("/api/latest").json()
     assert client.delete("/api/sites/demo").status_code == 404
 
@@ -895,3 +939,157 @@ def test_site_geo_endpoint_mocked(workspace: Path, monkeypatch):
     client = TestClient(create_app(_config(workspace)))
     body = client.get("/api/geo").json()
     assert body["geo"]["demo"]["lat"] == 35.0 and body["geo"]["demo"]["country"] == "中国"
+
+
+def test_site_token_refresh_sample_analyzed_on_save(workspace: Path, monkeypatch):
+    """保存站点时响应案例交给 AI 分析字段路径：成功写入路径，失败降级保存；案例本身不落库。"""
+    import llm_price_monitor.webapi.routes.sites as sites_routes
+
+    client = _admin_client(workspace)
+    demo = client.get("/api/sites").json()["sites"][0]
+    config = {
+        **demo,
+        "id": "rt",
+        "token_refresh": {
+            "url": "https://rt.test/auth/refresh",
+            "refresh_token": "rt_x",
+            "response_sample": '{"data": {"access_token": "at", "refresh_token": "rt2"}}',
+        },
+    }
+
+    monkeypatch.setattr(
+        sites_routes, "infer_token_fields",
+        lambda _ai, _sample: {"access_token_field": "data.access_token", "refresh_token_field": "data.refresh_token"},
+    )
+    saved = client.post("/api/sites", json={"config": config})
+    assert saved.status_code == 200 and "warning" not in saved.json()
+    stored = {site["id"]: site for site in client.get("/api/sites").json()["sites"]}["rt"]
+    assert stored["token_refresh"]["access_token_field"] == "data.access_token"
+    assert "response_sample" not in stored["token_refresh"]
+
+    monkeypatch.setattr(
+        sites_routes, "infer_token_fields",
+        lambda _ai, _sample: (_ for _ in ()).throw(RuntimeError("AI 挂了")),
+    )
+    updated = client.put("/api/sites/rt", json={"config": {**stored, "token_refresh": {**stored["token_refresh"], "response_sample": "{}"}}})
+    assert updated.status_code == 200 and "warning" in updated.json()
+    reloaded = {site["id"]: site for site in client.get("/api/sites").json()["sites"]}["rt"]
+    assert "access_token_field" not in reloaded["token_refresh"]
+    assert "response_sample" not in reloaded["token_refresh"]
+
+
+def test_persist_refresh_updates_hardcoded_auth_header(workspace: Path):
+    """续签落盘时，写死在 network/networks/status/notice headers 里的 Authorization / Cookie 也要换成新 token（保留前缀）。"""
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.token_refresh import persist_refreshed_config
+
+    store = Store(workspace / "persist-refresh.db")
+    store.upsert_site(
+        "hard",
+        {
+            "id": "hard",
+            "models": ["m1"],
+            "network": {
+                "url": "https://hard.test/api/pricing",
+                "headers": {"Authorization": "Bearer old_access", "referer": "https://hard.test"},
+            },
+            "networks": [
+                {"url": "https://hard.test/api/alt", "headers": {"authorization": "Bearer old_alt"}},
+                {"url": "https://hard.test/api/cookie", "headers": {"Cookie": "session=old_cookie"}},
+            ],
+            "status": {"url": "https://hard.test/api/monitor", "headers": {"Authorization": "Bearer old_status"}},
+            "notice": {"url": "https://hard.test/api/notice", "headers": {"authorization": "Bearer old_notice"}},
+        },
+    )
+    persist_refreshed_config(store, "hard", "new_access", "new_refresh")
+    config = store.get_site_config("hard")
+    assert config["auth_token"] == "new_access"
+    assert config["network"]["headers"]["Authorization"] == "Bearer new_access"
+    assert config["network"]["headers"]["referer"] == "https://hard.test"
+    assert config["networks"][0]["headers"]["authorization"] == "Bearer new_access"
+    assert config["networks"][1]["headers"]["Cookie"] == "session=new_access"
+    assert config["status"]["headers"]["Authorization"] == "Bearer new_access"
+    assert config["notice"]["headers"]["authorization"] == "Bearer new_access"
+    assert config["token_refresh"]["refresh_token"] == "new_refresh"
+
+
+def test_token_refresh_test_endpoint(workspace: Path, monkeypatch):
+    """测试续签端点：成功返回完整新 token 与换新标记，失败转 400 可读提示，未填地址 400。"""
+    import llm_price_monitor.webapi.routes.sites as sites_routes
+    from llm_price_monitor.tracker import PriceRecord  # noqa: F401 - 仅确认模块可用
+
+    client = _admin_client(workspace)
+    demo = client.get("/api/sites").json()["sites"][0]
+    config = {**demo, "id": "rt", "token_refresh": {"url": "https://rt.test/auth/refresh", "refresh_token": "rt_old"}}
+
+    monkeypatch.setattr(sites_routes, "refresh_site_token", lambda spec, http, timeout, ua: ("at_1234567890abcd", "rt_old"))
+    ok = client.post("/api/sites/test-token-refresh", json={"config": config})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["ok"] is True and body["access_token"] == "at_1234567890abcd" and body["refresh_token"] == "rt_old" and body["refresh_token_rotated"] is False
+
+    def _boom(*_args):
+        raise RuntimeError("HTTP 401")
+
+    monkeypatch.setattr(sites_routes, "refresh_site_token", _boom)
+    failed = client.post("/api/sites/test-token-refresh", json={"config": config})
+    assert failed.status_code == 400 and "续签测试失败" in failed.json()["detail"]
+
+    missing = client.post("/api/sites/test-token-refresh", json={"config": {"id": "rt"}})
+    assert missing.status_code == 400
+
+
+def test_task_logs_roll_oldest_when_full():
+    """日志满上限后滚动保留最新，而不是丢弃新日志。"""
+    from llm_price_monitor.webapi import tasks as tasks_mod
+
+    tasks_mod.reset()
+    max_lines = tasks_mod.DEFAULT_MAX_LOG_LINES
+    tasks_mod._tasks["t1"] = {"id": "t1", "logs": [{"time": 0, "message": f"old-{i}", "level": "info"} for i in range(max_lines)]}
+    for i in range(3):
+        tasks_mod._append_log("t1", f"new-{i}", "info")
+    logs = tasks_mod._tasks["t1"]["logs"]
+    assert len(logs) == max_lines
+    assert logs[-1]["message"] == "new-2"
+    assert any("滚动覆盖" in log["message"] and log["level"] == "warn" for log in logs)
+    tasks_mod.reset()
+
+
+def test_assistant_daily_ip_limit(workspace: Path, monkeypatch):
+    """AI 助手按 IP 每日限次：发出去就计数（含被 AI 拒答），超限 429；0 表示不限制。"""
+    import llm_price_monitor.webapi.routes.assistant as assistant_routes
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "答"}}]}
+
+    monkeypatch.setattr(assistant_routes.httpx, "post", lambda *args, **kwargs: _FakeResponse())
+    config_path = _config(workspace)
+    doc = json.loads(config_path.read_text(encoding="utf-8"))
+    doc["ai"] = {"enabled": True, "base_url": "https://ai.test/v1", "models": ["m-a"], "api_key": "sk-x"}
+    config_path.write_text(json.dumps(doc), encoding="utf-8")
+    client = TestClient(create_app(config_path))
+    client.app.state.store.set_document("settings", {"assistant_daily_limit": 2})
+
+    def ask(**kwargs) -> object:
+        return client.post("/api/assistant/ask", json={"question": "demo-model 现在多少钱？"}, **kwargs)
+
+    assert ask().status_code == 200
+    assert ask().status_code == 200
+    limited = ask()
+    assert limited.status_code == 429 and "明天" in limited.json()["detail"]
+
+    # 限额按 IP 独立：回环对端才信任转发头（见 deps.client_ip），换一个真实 IP 不受影响
+    loopback = TestClient(create_app(config_path), client=("127.0.0.1", 50000))
+    assert loopback.post(
+        "/api/assistant/ask",
+        json={"question": "demo-model 现在多少钱？"},
+        headers={"x-forwarded-for": "198.51.100.9"},
+    ).status_code == 200
+
+    # 0 = 不限制
+    client.app.state.store.set_document("settings", {"assistant_daily_limit": 0})
+    assert ask().status_code == 200

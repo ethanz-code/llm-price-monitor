@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from llm_price_monitor.config import AIConfig, MonitorConfig, PriceMonitorError, SiteSpec, load_config, sites_from_raw
 from llm_price_monitor.report import run_once
 from llm_price_monitor.status import ai_extract_status, diff_status, fetch_site_status
+from llm_price_monitor.timeline import strip_status_delta
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.app import create_app
 
@@ -258,6 +259,88 @@ def test_store_status_round_trip(tmp_path: Path):
     assert events[0]["kind"] == "status_changed"
 
 
+def test_prune_status_history_keeps_only_selected_groups(tmp_path: Path):
+    """保存分组过滤后清理历史：快照与参照只留选中分组，指向未选中分组的事件变化被剔除。"""
+    store = Store(tmp_path / "monitor.db")
+    store.append_status_records([
+        {
+            "site_id": "a",
+            "captured_at": 1.0,
+            "data": {"channels": [{"name": "svip", "state": "ok"}, {"name": "vip", "state": "down"}]},
+        },
+        {"site_id": "a", "captured_at": 2.0, "data": {"channels": [{"name": "svip", "state": "warn"}]}},
+    ])
+    store.set_document("status_ref:a", {
+        "data": {"channels": [{"name": "svip", "state": "warn"}, {"name": "vip", "state": "down"}]}
+    })
+    store.append_status_events([
+        {
+            "site_id": "a",
+            "kind": "status_changed",
+            "detected_at": 3.0,
+            "changes": [
+                {"op": "change", "path": "$.channels[0].state"},
+                {"op": "change", "path": "$.channels[1].state"},
+            ],
+        },
+    ])
+
+    stats = store.prune_status_history("a", ["svip"])
+    assert stats["records"] == 1 and stats["ref"] == 1
+    assert stats["events"] == 1 and stats["events_removed"] == 0
+
+    records, _ = store.read_status(site_id="a")
+    assert [channel["name"] for record in records for channel in record["data"]["channels"]] == ["svip", "svip"]
+    assert store.status_reference("a")["data"]["channels"] == [{"name": "svip", "state": "warn"}]
+    events, _ = store.read_status_events(site_id="a")
+    assert events[0]["changes"] == [{"op": "change", "path": "$.channels[0].state"}]
+
+    # 幂等：重复执行不再有改动；事件变化全部落到未选中分组时整条删除
+    assert store.prune_status_history("a", ["svip"]) == {"records": 0, "ref": 0, "events": 0, "events_removed": 0}
+    store.append_status_events([
+        {"site_id": "a", "kind": "status_changed", "detected_at": 4.0,
+         "changes": [{"op": "change", "path": "$.channels[0].state"}]},
+    ])
+    store.set_document("status_ref:a", {"data": {"channels": [{"name": "vip", "state": "down"}]}})
+    # 参照已换成仅剩未选中分组：两条事件的变化都归因到未选中分组，全部整条删除
+    stats = store.prune_status_history("a", ["svip"])
+    assert stats["events_removed"] == 2
+    assert store.read_status_events(site_id="a")[1] == 0
+
+
+def test_store_status_since_filters_by_time(tmp_path: Path):
+    """since 只取该时间之后的快照，plain 与 per_site 两条路径一致，total 同步收窄。"""
+    store = Store(tmp_path / "monitor.db")
+    store.append_status_records([
+        {"site_id": "a", "captured_at": 1.0, "data": {"ok": True}},
+        {"site_id": "a", "captured_at": 5.0, "data": {"ok": False}},
+        {"site_id": "b", "captured_at": 9.0, "data": {"ok": True}},
+    ])
+    records, total = store.read_status(since=2.0)
+    assert total == 2
+    assert [record["captured_at"] for record in records] == [5.0, 9.0]
+
+    per_site_records, per_site_total = store.read_status(per_site=10, since=2.0)
+    assert per_site_total == 2
+    assert [record["captured_at"] for record in per_site_records] == [5.0, 9.0]
+
+
+def test_store_status_max_records_samples_evenly(tmp_path: Path):
+    """窗口内记录超过 max_records 时按 id 均匀抽样返回，total 仍是全量行数。"""
+    store = Store(tmp_path / "monitor.db")
+    store.append_status_records([
+        {"site_id": "a", "captured_at": float(i), "data": {"ok": True}} for i in range(1, 21)
+    ])
+    records, total = store.read_status(site_id="a", max_records=5)
+    assert total == 20
+    assert [record["captured_at"] for record in records] == [4.0, 8.0, 12.0, 16.0, 20.0]
+
+    # 窗口内不超过 max_records 时不抽样，逐条返回
+    all_records, all_total = store.read_status(site_id="a", max_records=100)
+    assert all_total == 20
+    assert len(all_records) == 20
+
+
 # ---------- webapi ----------
 
 def test_webapi_status_endpoints(tmp_path: Path, monkeypatch):
@@ -315,3 +398,87 @@ def test_scan_statuses_runs_independently_of_prices(tmp_path: Path, monkeypatch)
         report = scan_prices(config, store=store, client=client)
     assert calls["collect"] == 1
     assert report.status_records == []  # 独立价格采集不碰渠道状态
+
+
+# ---------- 时间线增量裁剪与 diff 噪音 ----------
+
+def test_strip_status_delta_keeps_only_new_timeline_entries():
+    """时间线按检测时间戳去重：只留上一条没有的条目；无内容可裁时原对象返回。"""
+    previous = {"groups": [{"name": "a", "state": "operational", "timeline": [
+        {"state": "operational", "time": 1}, {"state": "down", "time": 2},
+    ]}]}
+    current = {"groups": [{"name": "a", "state": "operational", "timeline": [
+        {"state": "operational", "time": 2}, {"state": "operational", "time": 3},
+    ]}]}
+    stripped = strip_status_delta(previous, current)
+    assert stripped["groups"][0]["timeline"] == [{"state": "operational", "time": 3}]
+    # 当前状态字段不属于时间线，不裁
+    assert stripped["groups"][0]["state"] == "operational"
+    # 没有可裁内容时 identity 相等，调用方据此跳过重写
+    assert strip_status_delta(None, current) is current
+
+
+def test_diff_status_skips_timeline_arrays_but_keeps_state_changes():
+    """时间线是滚动窗口，diff 必须跳过；渠道当前状态字段的变化仍要报。"""
+    previous = {"state": "operational", "timeline": [{"state": "ok", "time": 1}]}
+    same_state_grown = {"state": "operational", "timeline": [{"state": "ok", "time": 1}, {"state": "ok", "time": 2}]}
+    assert diff_status(previous, same_state_grown) == []
+    degraded = {"state": "degraded", "timeline": []}
+    changes = diff_status(previous, degraded)
+    assert [change["path"] for change in changes] == ["$.state"]
+
+
+def test_strip_sliding_synthetic_timeline_collapses():
+    """时间戳与上一条完全无交集的窗口是滑动合成时间轴：整条裁掉，时序由采集时刻的状态点承载。"""
+    base = [{"state": "operational", "checked_at": 1000 + i * 10080} for i in range(60)]
+    slid = [{"state": "operational", "checked_at": 1100 + i * 10080} for i in range(60)]
+    out = strip_status_delta({"timeline": base}, {"timeline": slid}, timeline_key="timeline")
+    assert out["timeline"] == []
+    # 双方都没有可解析时间戳：内容一致才裁
+    plain_a = [{"state": "operational"}, {"state": "down"}]
+    plain_b = [{"state": "operational"}, {"state": "down"}]
+    assert strip_status_delta({"timeline": plain_a}, {"timeline": plain_b}, timeline_key="timeline")["timeline"] == []
+    plain_c = [{"state": "operational"}, {"state": "operational"}]
+    kept = strip_status_delta({"timeline": plain_a}, {"timeline": plain_c}, timeline_key="timeline")
+    assert kept["timeline"] == plain_c
+
+
+def test_store_status_delta_append_and_compact(tmp_path):
+    """写入只存时间线增量、参照保留原文；压缩后合并视图仍还原状态序列。"""
+    def t(time: int, state: str = "operational") -> dict:
+        return {"state": state, "time": time}
+
+    def snapshot(captured_at: float, timeline: list[dict], state: str = "operational") -> dict:
+        return {"site_id": "a", "captured_at": captured_at, "data": {"data": {"groups": [
+            {"name": "g1", "state": state, "timeline": timeline},
+        ]}}}
+
+    store = Store(tmp_path / "monitor.db")
+    store.append_status_records([snapshot(1.0, [t(1), t(2), t(3)])])
+    store.append_status_records([snapshot(2.0, [t(3), t(4, "degraded")], state="degraded")])  # 3 已存，只留 4
+    rows, total = store.read_status(site_id="a")
+    assert total == 2
+    assert rows[1]["data"]["data"]["groups"][0]["timeline"] == [t(4, "degraded")]
+    reference = store.status_reference("a")
+    assert [item["time"] for item in reference["data"]["data"]["groups"][0]["timeline"]] == [3, 4]
+
+    noisy_changes = [
+        {"op": "change", "path": "$.data.data.groups[0].timeline[3].state", "old": "x", "new": "y"},
+        {"op": "change", "path": "$.data.data.groups[0].state", "old": "operational", "new": "degraded"},
+    ]
+    store.append_status_events([{"site_id": "a", "kind": "status_changed", "detected_at": 2.0, "changes": noisy_changes}])
+    stats = store.compact_status_history()
+    assert stats["records"] == 2
+    rows_after = store.read_status(site_id="a")[0]
+    merged_times = [
+        item["time"]
+        for row in rows_after
+        for group in row["data"]["data"]["groups"]
+        for item in group["timeline"]
+    ]
+    assert merged_times == [1, 2, 3]
+    # 最新状态不依赖被裁掉的时间线：渠道当前字段原样保留
+    assert rows_after[1]["data"]["data"]["groups"][0]["state"] == "degraded"
+    # 噪音 change 被清洗，真实状态变化保留
+    events, _ = store.read_status_events(site_id="a")
+    assert events[0]["changes"] == [noisy_changes[1]]

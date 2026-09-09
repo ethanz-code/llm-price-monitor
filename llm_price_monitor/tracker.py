@@ -135,6 +135,25 @@ def looks_like_newapi_pricing(payload: Any) -> bool:
         for item in payload["data"]
     )
 
+def looks_like_platform_pricing(payload: Any) -> bool:
+    """平台分桶定价结构（totokens 等新版接口）：data[] 按 platforms 分桶，模型带 pricing.final_prices 分组单价。"""
+    if isinstance(payload, dict):
+        payload = payload.get("data")
+    if not isinstance(payload, list):
+        return False
+    for item in payload:
+        platforms = item.get("platforms") if isinstance(item, dict) else None
+        for platform in platforms if isinstance(platforms, list) else ():
+            models = platform.get("supported_models") if isinstance(platform, dict) else None
+            if isinstance(models, list) and any(
+                isinstance(model, dict)
+                and isinstance(model.get("pricing"), dict)
+                and isinstance(model["pricing"].get("final_prices"), list)
+                for model in models
+            ):
+                return True
+    return False
+
 
 class GroupRatioUnavailableError(ValueError):
     """站点未公开该分组的倍率，无法确定性计价。"""

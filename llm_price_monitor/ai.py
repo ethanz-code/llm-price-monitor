@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -30,7 +31,7 @@ from llm_price_monitor.matching import canonical_target, contains_model_alias
 from llm_price_monitor.tracker import PriceRecord, _TextParser
 from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none
 
-NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析 one-api/new-api 风格的中转站价格接口。响应通常包含顶层 data 数组和 group_ratio 字典；data 中模型字段包括 model_ratio、completion_ratio、cache_ratio、create_cache_ratio、enable_groups，部分模型包含 billing_mode/billing_expr 或 pricing_rules。普通模式以 model_ratio=1 对应的站点基准价（默认 2 CNY/1M tokens，除非证据或配置明确说明其他币种/基准）计算：输入单价=model_ratio×基准价，输出单价=输入单价×completion_ratio，缓存读取=输入单价×cache_ratio，缓存写入=输入单价×create_cache_ratio，最后乘 group_ratio[分组名]。模型的 enable_groups 是可用分组列表，必须为每个分组分别输出，不能按显示顺序猜分组。billing_mode=tiered_expr 时忽略普通 model_ratio 公式，执行 billing_expr；表达式中的系数就是最终每 1M tokens 单价，不再乘基准价。len 是总上下文 token 数，p/c/cr 分别是输入/输出/缓存读取 token 数；若存在 pricing_rules.tiers，也要保留每个上下文阶梯。单次请求费用按各类 token 数除以 1,000,000 后乘对应单价。没有明确证据时填 null/unavailable，不要把倍率、余额或官方参考价冒充实际价格。"""
+NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析中转站的价格接口响应（one-api/new-api 及各种自研结构）。自己判断响应的组织方式和价格字段：从原始 JSON 里找到目标模型的价格节点，按字段名和数量级判断单价口径（每 token 还是每 1M tokens，必要时换算成 CNY/1M tokens），同一模型的多份价格（分组/阶梯）逐个展开各输出一条。只使用证据里的数据，不得把倍率、余额或官方参考价冒充实际价格；拿不准口径就在 notes 写明推断依据并标 candidate，不要因此放弃。"""
 
 
 class AIExtractionError(PriceMonitorError):
@@ -98,6 +99,97 @@ def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = No
     return ai_content(config.api_format, response.json()).strip()
 
 
+def _stream_delta(api_format: str, payload: dict[str, Any]) -> str:
+    """从各家流式响应的单个 SSE data 帧里提取增量文本；无增量的帧返回空串。"""
+    if api_format == "chat_completions":
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            delta = choices[0].get("delta")
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                return delta["content"]
+        return ""
+    if api_format == "openai_responses":
+        if payload.get("type") == "response.output_text.delta" and isinstance(payload.get("delta"), str):
+            return payload["delta"]
+        return ""
+    if api_format == "anthropic":
+        if payload.get("type") == "content_block_delta" and isinstance(payload.get("delta"), dict):
+            text = payload["delta"].get("text")
+            return text if isinstance(text, str) else ""
+        return ""
+    if api_format == "gemini":
+        candidates = payload.get("candidates")
+        if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+            content = candidates[0].get("content")
+            if isinstance(content, dict) and isinstance(content.get("parts"), list):
+                return "".join(part.get("text", "") for part in content["parts"] if isinstance(part, dict))
+        return ""
+    raise AIExtractionError(f"未知的 AI 接口结构: {api_format}")
+
+
+def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_tokens: int | None = None) -> Iterator[str]:
+    """流式对话：逐段产出模型输出文本；四种接口结构都走各自的 stream 模式，HTTP 错误原样抛出。"""
+    url, headers, body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=False)
+    api_format = config.api_format
+    if api_format in {"chat_completions", "openai_responses", "anthropic"}:
+        body["stream"] = True
+    elif api_format == "gemini":
+        url = url.replace(":generateContent", ":streamGenerateContent?alt=sse")
+    with httpx.Client(timeout=config.timeout) as client:
+        with client.stream("POST", url, headers=headers, json=body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                chunk = _stream_delta(api_format, payload)
+                if chunk:
+                    yield chunk
+
+
+def infer_token_fields(config: AIConfig, sample: str) -> dict[str, str]:
+    """把续签接口的响应案例交给 AI，找 access_token / refresh_token 的字段路径。
+
+    返回形如 {"access_token_field": "data.access_token"}，找不到的键不出现；AI 未配置或
+    调用失败抛异常，由调用方决定是否降级。
+    """
+    sample = sample.strip()
+    if not config.base_url or not (config.models or config.model):
+        raise AIExtractionError("AI 未配置，无法分析响应案例")
+    if len(sample) > config.max_input_chars:
+        sample = sample[: config.max_input_chars]
+    system = (
+        "你是接口响应结构分析器。用户会贴一段 token 续签接口的响应 JSON 案例。"
+        "找出新的访问令牌（access_token / token / id_token 之类）和刷新令牌（refresh_token 之类）各自所在的字段路径，"
+        "路径用点号逐层写，如 data.access_token；找不到的令牌路径填 null。"
+        "只返回 JSON 对象：{\"access_token_field\": string|null, \"refresh_token_field\": string|null}，不要解释。"
+    )
+    model = config.pick_model()
+    url, headers, request_body = ai_request(config, model, system, sample)
+    own_client = httpx.Client(timeout=config.timeout)
+    try:
+        response = own_client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+    finally:
+        own_client.close()
+    response.raise_for_status()
+    parsed = json_content(ai_content(config.api_format, response.json()))
+    result: dict[str, str] = {}
+    for key in ("access_token_field", "refresh_token_field"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip() and value.strip().lower() != "null":
+            result[key] = value.strip()
+    return result
+
+
 def chat_content(payload: dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -117,13 +209,19 @@ def json_content(value: str) -> dict[str, Any]:
     text = value.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise AIExtractionError(f"AI 没有返回合法 JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise AIExtractionError("AI 标准化结果必须是 JSON 对象")
-    return parsed
+    parsed: Any = text
+    for _ in range(2):
+        # 兼容两类供应商形态：返回 JSON 数组（缺 models 包装）、把 JSON 双重编码成字符串
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except json.JSONDecodeError as exc:
+                raise AIExtractionError(f"AI 没有返回合法 JSON: {exc}") from exc
+        if isinstance(parsed, dict):
+            return parsed
+    if isinstance(parsed, list):
+        return {"models": parsed}
+    raise AIExtractionError("AI 标准化结果必须是 JSON 对象")
 
 
 def _responses_endpoint(base_url: str) -> str:
@@ -253,13 +351,53 @@ def ai_content(api_format: str, payload: dict[str, Any]) -> str:
         return "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
     return chat_content(payload)
 
+def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Client | None = None) -> str | None:
+    """让 AI 从公告接口的原始响应中提取公告正文（Markdown），站点没有公告时返回空串。
+
+    原始响应可能是任意结构（new-api 包装、announcements 数组、HTML 片段等），
+    固定解析规则认不出的形态交给 AI 判断什么是真正要拿的数据；AI 未启用、
+    未配置或请求失败时返回 None，由调用方回落到固定解析结果。
+    """
+    if not config.enabled or not config.base_url:
+        return None
+    if not config.pick_model():
+        return None
+    text = raw_text.strip()
+    if not text:
+        return None
+    system = (
+        "你是站点公告数据提取器。用户消息是某个 API 站点公告接口的原始响应（可能是 JSON、HTML 或纯文本）。"
+        "从中提取站方发布的公告正文，整理成简洁的 Markdown 纯文本：保留公告标题、日期和正文内容，"
+        "去掉样式、脚本、样式属性等与内容无关的标记；多条公告按时间从新到旧分节。"
+        "只能使用原始响应中的内容，禁止凭常识补全。站点没有发布任何公告时，content 返回空字符串。"
+        '必须只返回 JSON：{"content": "公告正文 Markdown"}，不要解释。'
+    )
+    user = f"公告接口原始响应：\n{text[:config.max_input_chars]}"
+    own = client is None
+    client = client or httpx.Client(timeout=config.timeout)
+    try:
+        if not config.api_key:
+            return None
+        url, headers, body = ai_request(config, config.pick_model(), system, user)
+        response = client.post(url, headers=headers, json=body, timeout=config.timeout)
+        response.raise_for_status()
+        payload = json_content(ai_content(config.api_format, response.json()))
+        content = payload.get("content")
+        return content.strip() if isinstance(content, str) and content.strip() else ""
+    except (httpx.HTTPError, ValueError, AIExtractionError):
+        return None
+    finally:
+        if own:
+            client.close()
+
 
 class AIPriceExtractor:
     def __init__(self, config: AIConfig) -> None:
         self.config = config
 
     def _cache_key(self, spec: SiteSpec, expected_models: list[str], evidence: str) -> str:
-        return payload_hash({"version": 2, "site": spec.id, "models": expected_models, "evidence": evidence})
+                # version=3：币种回退规则上线后旧缓存结果不可信，整体失效重抽。
+        return payload_hash({"version": 3, "site": spec.id, "models": expected_models, "evidence": evidence})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -395,13 +533,12 @@ class AIPriceExtractor:
             NEWAPI_ONEAPI_PRICING_GUIDANCE
             + "\n\n你是模型价格数据抽取器。只能使用 user 消息中的网页证据，禁止凭常识补全或猜测价格。"
             "只分析 expected_models 指定的目标模型，不要识别其他模型。"
-            "调用方只会提供标准模型名，不要求用户预先填写 aliases；请从原始 JSON、页面证据和接口字段中自动识别展示名、供应商前缀、版本写法和接口 model ID，并分别填入 observed_model 与 aliases。确认一个模型后，aliases 必须至少同时列出接口原始 ID、规范展示名、供应商前缀 ID。例如识别到 gpt-5.6-sol 时，aliases 必须为 [\"gpt-5.6-sol\", \"GPT-5.6 Sol\", \"openai/gpt-5.6-sol\"]。这些是同一已确认模型的格式规范化，允许基于已确认 ID 生成；不得把不同模型当作别名。"
-            "每个模型必须独立建立证据闭环：模型名称、输入价格、输出价格必须出现在同一条页面或网络证据中。"
-            "严禁把一个模型的价格复制、平均、换算或推断到另一个模型；严禁用其他模型的价格填补缺失字段。"
-            "请识别模型列表来源中的目标模型价格字段，并用页面与网络证据交叉核对。"
-            "监控目标是站点实际售价，不是官方参考价。页面卡片同时出现站点价和“官方价”时，输入/输出字段必须取未标注“官方价”的站点价；官方价只能作为参考证据，绝不能填入 input_price 或 output_price。"
-            "若同一页面卡片或结构中明确出现 expected_models 的精确 model ID，该 ID 对价格归属优先于 display_name、上游模型名或备注名；即使这些展示名称不一致，也必须按精确 model ID 归属于该目标模型。"
-            "若页面卡片已明确标注 expected_models 的精确 model ID 和站点价格，即使网络响应没有同名模型记录，也要保留该页面价格并标记 candidate，不得因此输出 unavailable，也不得用网络中的相似模型价格替代。"
+            "调用方只提供标准模型名；请从证据中自动识别展示名、供应商前缀、版本写法和接口 model ID，"
+            "并按输出结构填入 observed_model 与 aliases（aliases 要求见下方规则 2）。"
+            "若页面卡片或结构中明确出现 expected_models 的精确 model ID，价格归属以该 ID 为准，"
+            "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
+            "若页面卡片已明确标注精确 model ID 和站点价格，即使网络响应没有同名模型记录，"
+            "也要保留该页面价格并标 candidate，不得输出 unavailable，也不得用网络中的相似模型价格替代。"
             "必须只返回 JSON，不要 Markdown，不要解释。"
         )
         user = f"""请将以下价格页面证据标准化。
@@ -414,8 +551,8 @@ class AIPriceExtractor:
     "aliases": ["属于该标准模型的展示名称或模型 ID，不要填标准模型名本身"],
     "input_price": 0,
     "output_price": 0,
-    "unit": "USD/1M tokens",
-    "currency": "USD",
+    "unit": "CNY/1M tokens",
+    "currency": "CNY",
     "status": "confirmed|candidate|rule_only|unavailable",
     "confidence": 0.0,
     "group": "default",
@@ -424,7 +561,7 @@ class AIPriceExtractor:
     "cache_read_price": null,
     "cache_create_price": null,
     "cache_create_1h_price": null,
-    "pricing_rules": {{"groups": [{{"name": "default", "tiers": [{{"context_min": 0, "context_max": null, "input_price": 0, "output_price": 0, "cache_read_price": null, "cache_create_price": null, "cache_create_1h_price": null, "unit": "USD/1M tokens"}}]}}]}},
+    "pricing_rules": {{"groups": [{{"name": "default", "tiers": [{{"context_min": 0, "context_max": null, "input_price": 0, "output_price": 0, "cache_read_price": null, "cache_create_price": null, "cache_create_1h_price": null, "unit": "CNY/1M tokens"}}]}}]}},
     "network_evidence": [{{"source": "model_list", "url": "实际捕获的响应 URL", "resource_type": "fetch|xhr", "match_basis": ["response_url|response_body"], "quote": "响应正文中的目标模型证据"}}],
     "page_evidence": [{{"source": "model_list", "url": "页面 URL", "target_model": "目标模型", "quote": "目标模型卡片中的原始页面证据"}}],
     "notes": ""
@@ -433,28 +570,18 @@ class AIPriceExtractor:
 }}
 
 规则：
-- 只输出 expected_models 中的目标模型，忽略其他模型。
-- model 必须填写 expected_models 中的标准名，不能填写页面显示名或接口模型 ID。
-- observed_model 填写证据中实际出现的原始模型名（例如 \"Claude Opus 5\"）。
-- aliases 表示该标准模型对应的展示名称和模型 ID。确认模型后必须提供接口原始 ID、规范展示名、供应商前缀 ID 三种形式；例如 gpt-5.6-sol 输出 [\"gpt-5.6-sol\", \"GPT-5.6 Sol\", \"openai/gpt-5.6-sol\"]。可以基于已确认 ID 进行大小写/前缀规范化，但不得把其他模型名放进来。
-- model_list 是唯一来源；页面文字和网络响应都存在时必须比较并说明是否一致。
-- input_price、output_price 不明确时填 null，不得把倍率或余额当成价格。
-- 站点页面同时显示“输入 ¥X/1M 官方价 $Y/1M”或“输出 ¥X/1M 官方价 $Y/1M”时，必须填 X，不得填 Y；currency/unit 按站点价（例如 CNY）填写。
-- network_evidence 中的 official_pricing、official_price 等字段属于官方参考价，不能覆盖页面显示的站点实际售价。
-- 页面中多个价格的显示顺序不等于价格归属；只有页面明确标注来源时才填写对应价格，否则填写 null 并在 notes 说明无法映射。
-- 同一 page_evidence 中的“页面共享价格字段说明”是该页面模型卡片共用的表头或字段定义；只有它明确给出字段顺序时，才可将同一卡片的数值映射为输入、输出或缓存价格。不得把其他模型的数值当作表头或目标模型价格。
-- 价格按分组或上下文长度变化时，必须保留所有分组和 tiers，不得只返回第一条；每个 tier 记录 context_min/context_max、输入/输出和缓存价格。group 缺省为 default。
-- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤、截断或只取第一条。只在最终 models 输出中保留 expected_models 指定的模型。
-- 上下文阶梯必须按证据中的明确边界填写，例如 `context_max=278000` 与下一档 `context_min=278001`；不要猜测边界，不要把“超过某长度”改写成固定数字。
-- 如果响应使用公式、倍率或字段名不清晰，也要保留原始 pricing_rules，并在 notes 说明未能换算成确定单价；不要丢弃原始规则。
-- 统一定价的网站也必须输出一个 default 分组和一个无上限 tier；若输入/输出明确且页面与网络证据一致，可确认，不要因为没有梯度就输出 unavailable。
-- 只有页面文字无法把数字映射到输入/输出，或仅有官方参考价时，才填 null/candidate；不得把官方价当站点价。
-- 每个模型单独校验，不能用跨模型的相同倍率、汇率、顺序或相邻卡片推导价格。
-- cross_validation.conflicts 只能描述同一个模型的证据冲突；不同模型之间没有可比关系时不要生成冲突。
-- status=confirmed 只有在网络响应证据和页面可见证据都存在且一致时才允许。
-- status=rule_only 用于只有 quota 倍率、公式或计费规则的站点。
-- network_evidence 只能引用下面 network_evidence 中真实出现的 source、URL 和 quote。
-- network_evidence 和 page_evidence 的 quote 只能保留能证明当前模型及价格的短原文片段，每条最多 500 个字符；不得回显完整网络响应或整页文本。
+- 只输出 expected_models 中的目标模型；model 必须填标准名，页面显示名和接口模型 ID 分别填进 observed_model 与 aliases，忽略其他模型。
+- aliases：确认模型后必须至少列出接口原始 ID、规范展示名、供应商前缀 ID 三种形式（如识别到 gpt-5.6-sol，aliases 为 ["gpt-5.6-sol", "GPT-5.6 Sol", "openai/gpt-5.6-sol"]）；只允许基于已确认 ID 做格式规范化，不得把其他模型当别名。
+- 监控目标是站点实际售价，不是官方参考价：页面同时出现站点价与“官方价”时必须填站点价；official_pricing、official_price 等官方价字段只能作参考证据，绝不能填入 input_price 或 output_price。
+- input_price、output_price 不明确时填 null，不得把倍率或余额当成价格。页面多个价格的显示顺序不等于归属；只有页面明确标注来源时才映射，否则填 null 并在 notes 说明无法映射。
+- 同一 page_evidence 中的“页面共享价格字段说明”是页面模型卡片共用的表头或字段定义；只有它明确给出字段顺序时，才可将同一卡片的数值映射为输入、输出或缓存价格，不得把其他模型的数值当表头或目标模型价格。
+- currency/unit 必须依据证据中的币种标识（如 ¥/元/人民币/$/USD、priceMicroUsd 等字段名）填写；证据完全没说明币种时按人民币回退，填 CNY 与 "CNY/1M tokens" 并在 notes 说明；不得凭字段是纯数字就猜 USD。
+- 价格按分组或上下文长度变化时，必须保留所有分组和 tiers（每个 tier 记 context_min/context_max、输入/输出和缓存价格），group 缺省为 default；上下文阶梯边界必须按证据原文填写（如 context_max=278000 与下一档 context_min=278001），不要猜测或改写。统一定价的站点也要输出一个 default 分组和一个无上限 tier，不要因为没有梯度就输出 unavailable。
+- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。
+- 响应使用公式、倍率或字段名不清晰时，保留原始 pricing_rules 并在 notes 说明未能换算成确定单价，不要丢弃原始规则；status=rule_only 用于只有 quota 倍率、公式或计费规则的站点。
+- 每个模型必须独立建立证据闭环：模型名称、输入价格、输出价格必须出现在同一条页面或网络证据中；严禁把一个模型的价格复制、平均、换算或推断到另一个模型，严禁用其他模型的价格填补缺失字段。
+- status=confirmed 只有在网络响应证据和页面可见证据都存在且一致时才允许；cross_validation.conflicts 只能描述同一个模型的证据冲突，不同模型之间不要生成冲突。
+- network_evidence 和 page_evidence 只能引用下方证据中真实出现的 source、URL 和 quote；quote 只保留能证明当前模型及价格的短原文片段，每条最多 500 个字符，不得回显完整网络响应或整页文本。
 - 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。
 
 expected_models：
@@ -667,6 +794,16 @@ expected_models：
             evidence_text = json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False)
             currency = item.get("currency")
             unit = str(item.get("unit") or "来源未说明单位")
+            evidence_casefold = evidence_text.casefold()
+            has_usd_marker = any(marker in evidence_casefold for marker in ("$", "usd", "美元", "dollar"))
+            if (input_price is not None or output_price is not None) and (
+                currency not in ("CNY", "USD") or (currency == "USD" and not has_usd_marker)
+            ):
+                # 纯数字接口没标币种、或 AI 声称 USD 但证据里找不到任何美元标识时，
+                # 按人民币回退，不得猜 USD。
+                currency = "CNY"
+                unit = "CNY/1M tokens"
+                item["notes"] = f"证据未标明美元，按人民币回退；{item.get('notes', '')}".strip()
             if ("¥" in evidence_text or "人民币" in evidence_text) and currency == "USD":
                 currency = "CNY"
                 unit = unit.replace("USD", "CNY")
@@ -748,41 +885,4 @@ expected_models：
             ))
         return records
 
-
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-class AISchemaNormalizer:
-    """AI 字段归一化兜底：把未知形态的价格证据归一化为标准 schema。
-
-    只做字段映射（字段名/嵌套结构可能因站点而异），不推算、不换算任何数值；
-    归一化结果仍由适配器确定性计价，产出记录标记 candidate。
-    """
-
-    def __init__(self, config: AIConfig):
-        self.config = config
-
-    def available(self) -> bool:
-        return bool(self.config.enabled and self.config.base_url and self.config.pick_model())
-
-    def _chat_json(self, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
-        ai_model = self.config.pick_model()
-        if not self.config.base_url or not ai_model:
-            raise AIExtractionError("配置文件 ai.base_url 或 ai.model/ai.models 未配置")
-        if not self.config.api_key:
-            raise AIExtractionError("配置文件 ai.api_key 未配置")
-        url, headers, request_body = ai_request(self.config, ai_model, system, user)
-        own = client is None
-        client = client or httpx.Client(timeout=self.config.timeout)
-        try:
-            try:
-                response = client.post(url, headers=headers, json=request_body, timeout=self.config.timeout)
-                response.raise_for_status()
-                return json_content(ai_content(self.config.api_format, response.json()))
-            except (httpx.HTTPError, ValueError) as exc:
-                raise AIExtractionError(f"AI schema 归一化请求失败: {exc}{_response_detail(exc)}") from exc
-        finally:
-            if own:
-                client.close()
 

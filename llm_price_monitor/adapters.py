@@ -16,13 +16,14 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor, AISchemaNormalizer
+from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import is_preferred_response_url, payload_hash, redact_url
 from llm_price_monitor.tracker import (
     GroupRatioUnavailableError,
     PriceRecord,
     looks_like_newapi_pricing,
+    looks_like_platform_pricing,
     newapi_price_record,
 )
 
@@ -56,7 +57,16 @@ def headers(spec: SiteSpec, user_agent: str) -> dict[str, str]:
 
 
 def expand_header_value(value: str) -> str:
-    return _ENV_VALUE_PATTERN.sub(lambda match: os.getenv(match.group(1), ""), value)
+    def _expand(match: re.Match[str]) -> str:
+        name = match.group(1)
+        resolved = os.getenv(name)
+        if resolved is None:
+            raise ValueError(
+                f"请求头引用的环境变量未设置: {name}（请在运行进程的环境中提供 {name}，如 docker compose 的 environment 或 shell export）"
+            )
+        return resolved
+
+    return _ENV_VALUE_PATTERN.sub(_expand, value)
 
 
 @dataclass(frozen=True)
@@ -214,6 +224,80 @@ def network_pricing_records(
                 },
                 "unavailable",
             )
+    return list(records.values())
+
+def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> list[PriceRecord]:
+    """确定性解析 platforms/supported_models/final_prices 结构。
+
+    final_prices 里各字段是每 token 单价，×1,000,000 换算为 CNY/1M tokens；
+    接口不标币种，按系统约定回落人民币。input/output 齐全为 confirmed，缺一为 candidate。
+    """
+    response_source_url = str(captured[0].get("url") or "") if captured else str(spec.network.get("url") or "")
+    payload = captured[0].get("payload") if captured else None
+    if isinstance(payload, dict):
+        payload = payload.get("data")
+    buckets = payload if isinstance(payload, list) else []
+    records: dict[tuple[str, str], PriceRecord] = {}
+    for item in buckets:
+        platforms = item.get("platforms") if isinstance(item, dict) else None
+        if not isinstance(platforms, list):
+            continue
+        for platform in platforms:
+            models = platform.get("supported_models") if isinstance(platform, dict) else None
+            if not isinstance(models, list):
+                continue
+            for model in models:
+                if not isinstance(model, dict):
+                    continue
+                target = next(
+                    (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
+                    None,
+                )
+                if target is None:
+                    continue
+                pricing = model.get("pricing") or {}
+                final_prices = pricing.get("final_prices")
+                if not isinstance(final_prices, list):
+                    continue
+                for entry in final_prices:
+                    if not isinstance(entry, dict):
+                        continue
+                    group = str(entry.get("group_name") or "default")
+                    def scaled(field: str) -> float | None:
+                        value = entry.get(field)
+                        return value * 1_000_000 if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+                    input_price = scaled("input_price")
+                    output_price = scaled("output_price")
+                    key = (target.name, group)
+                    if key in records:
+                        continue
+                    metadata = {
+                        "adapter": "network",
+                        "pricing_kind": "explicit_price",
+                        "group": group,
+                        "group_ratio": entry.get("rate_multiplier"),
+                        "currency": "CNY",
+                        "network_evidence": [{
+                            "source": "model_list",
+                            "url": redact_url(str(captured[0].get("url", ""))),
+                            "resource_type": captured[0].get("resource_type"),
+                            "status": captured[0].get("status"),
+                            "payload_sha256": payload_hash(payload),
+                        }],
+                        "page_evidence": [],
+                        "notes": "platforms 定价接口直读：final_prices 每 token 单价 ×1,000,000 换算为 CNY/1M tokens；证据未标明币种，按人民币回退。",
+                    }
+                    status = "confirmed" if input_price is not None and output_price is not None else "candidate"
+                    records[key] = PriceRecord(
+                        target.name,
+                        input_price,
+                        output_price,
+                        "CNY/1M tokens",
+                        response_source_url,
+                        time.time(),
+                        metadata,
+                        status,
+                    )
     return list(records.values())
 
 
@@ -374,6 +458,11 @@ class NetworkAdapter:
                 except AIExtractionError:
                     pass
             return direct_records
+        if looks_like_platform_pricing(payload):
+            # 新版平台分桶定价结构：直读 final_prices，不再依赖 AI 逐分组映射
+            platform_records = platform_pricing_records(spec, [captured])
+            if platform_records:
+                return platform_records
         if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
             return AIPriceExtractor(ai).extract(
                 spec,

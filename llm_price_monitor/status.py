@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+from llm_price_monitor.timeline import TIMELINE_KEYS
 from llm_price_monitor.ai import (
     AIExtractionError,
     _fit_text,
@@ -29,6 +30,15 @@ _JSON_START_PATTERN = re.compile(r"[=:=(]\s*([\[{])")
 # 状态语义键名片段：决定内嵌 JSON 候选的优先级
 _STATUS_KEY_HINTS = ("status", "state", "channel", "health", "available", "online", "可用", "渠道", "状态")
 _MAX_JSON_CANDIDATES = 50
+# 渠道条目的名字候选键：与前端 channelStatus.ts 的 NAME_KEYS 口径一致
+_CHANNEL_NAME_KEYS = ("name", "channel", "model", "id", "title", "key")
+
+
+def filter_status_groups(data: dict[str, Any], groups: list[str]) -> dict[str, Any]:
+    """按配置的分组名过滤状态数据：带名字的渠道条目只保留名字对得上的（忽略大小写）；
+    一个都没匹配上时保留原数据，避免配置写错把整份状态清空。"""
+    result, matched = prune_status_groups(data, groups)
+    return result if matched else data
 
 
 def _status_key_names(data: dict[str, Any], depth: int = 2) -> list[str]:
@@ -155,6 +165,10 @@ def fetch_site_status(
             parse_kind = "ai"
         else:
             raise PriceMonitorError(f"站点 {spec.id} 的渠道状态地址返回 HTML/文本，且未配置可用 AI")
+    # 配置了 status.groups 时只保留指定分组的渠道条目，采集与事件都只看这些分组
+    raw_groups = spec.status.get("groups")
+    if isinstance(raw_groups, list) and raw_groups:
+        data = filter_status_groups(data, [str(item) for item in raw_groups])
     return {
         "site_id": spec.id,
         "captured_at": time.time(),
@@ -179,6 +193,10 @@ def diff_status(previous: Any, current: Any, path: str = "$") -> list[dict[str, 
         changes: list[dict[str, Any]] = []
         for key in sorted(set(previous) | set(current), key=str):
             if _is_volatile_time_key(str(key)):
+                continue
+            if str(key).lower() in TIMELINE_KEYS:
+                # 时间线是站点返回的滚动窗口：新点进、旧点出，按下标的 diff 会把整条历史错位报成噪音变化；
+                # 检测点明细由 status_records 承载，这里只关心渠道当前状态字段
                 continue
             child_path = f"{path}.{key}"
             if key not in previous:

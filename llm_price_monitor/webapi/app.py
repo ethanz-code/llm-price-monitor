@@ -19,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from llm_price_monitor.catalog import jsonio
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, config_from_store
-from llm_price_monitor.env import load_env_files
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth, routes, scheduler, tasks
 from llm_price_monitor.webapi.deps import is_admin
@@ -44,6 +43,9 @@ def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
             "user_agent_platforms",
             "user_agent_chrome_versions",
             "user_agent_version_window",
+            "retention_price_days",
+            "retention_visit_days",
+            "retention_status_days",
             "schedule",
         )
         if key in raw
@@ -178,13 +180,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.status.build_router(store))
     app.include_router(routes.geo.build_router(store))
     app.include_router(routes.analytics.build_router(store))
+    app.include_router(routes.assistant.build_router(store))
     scheduler.start_scheduler(store)
 
     return app
 
 
 def main() -> None:
-    load_env_files()
     parser = argparse.ArgumentParser(description="启动 llm-price-monitor Web 服务（API + 前端）")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -217,7 +219,7 @@ def main() -> None:
 
     try:
         if args.dev:
-            # 热重载要求 import string；.env 已在父进程注入 os.environ，子进程会继承
+            # 热重载要求 import string；父进程环境会被子进程继承
             uvicorn.run(
                 "llm_price_monitor.webapi.app:create_app",
                 factory=True,

@@ -7,7 +7,13 @@
       "status": 5,
       "notice": 30,
       "catalog": 1440
-    }
+    },
+    "retention_price_days": 90,
+    "retention_visit_days": 90,
+    "retention_status_days": 90,
+    "max_task_runs": 100,
+    "max_task_log_lines": 500,
+    "assistant_daily_limit": 10
   },
   "ai": {
     "enabled": true,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -27,9 +27,9 @@ context（上下文 token 上限，可能缺失）、output_modalities（输出�
 - null：预览与实验模型、图像/音频/embedding/实时等专用产物、小参数低成本档、已过时的旧代模型。
 
 规则：flagship 从严，每厂商通常 1-2 个，证据不足就给 mainstream 或 null；只依据清单内信息判断。
-发布日期是判定"当前代"的硬依据：同一产品线（family 相同或名称相近）已有更新的代次在售时，
-旧代模型一律不得 flagship；release_date 距 today 超过约 18 个月的模型一律不得 flagship，
-哪怕它曾是当年的旗舰（如 gpt-4-turbo 之于更新的 GPT 代次），最多给 mainstream。
+发布日期是判定"当前代"的硬依据，也决定主流档：同一厂商内已有明显更新的代次在售时（两代发布间隔很长），
+发布日期较久的旧代模型一律给 null，不得 flagship 也不得 mainstream——哪怕它仍在售、曾是当年的主力
+（如 gpt-4-turbo 之于更新的 GPT 代次）。仅当整个清单都属于旧代、厂商没有更新替代在售时，旧代主力才可给 mainstream。
 只输出 JSON：{"verdicts": [{"model": "<清单中的 model 原文>", "tier": "flagship" | "mainstream" | null}]}，
 verdicts 必须覆盖清单中每个模型。"""
 
@@ -37,6 +37,21 @@ verdicts 必须覆盖清单中每个模型。"""
 BATCH_SIZE = 40
 
 VALID_TIERS = ("flagship", "mainstream", None)
+
+# 同厂商已有约 18 个月内的代次在售时，发布超过该期限的旧代不给 flagship/mainstream
+STALE_DAYS = 550
+
+
+def _is_stale(entry: dict[str, Any], cutoff: date) -> bool:
+    """发布日期早于 cutoff 视为旧代；缺失或无法解析的日期不参与硬校验。"""
+    raw = entry.get("release_date")
+    if not raw:
+        return False
+    try:
+        released = date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return False
+    return released < cutoff
 
 
 def ai_available(config: AIConfig) -> bool:
@@ -82,7 +97,29 @@ def attach_ai_tiers(
                 classified += _classify_batch(config, vendor, items[start : start + BATCH_SIZE], client)
             except (AIExtractionError, httpx.HTTPError, ValueError):
                 break  # 该厂商本轮失败，条目保持无 tier，下一轮重试
+    _demote_stale_models(output)
     return classified
+
+
+def _demote_stale_models(output: dict[str, Any]) -> None:
+    """硬校验兜底：同厂商已有新一代（约 18 个月内发布）在售时，旧代档位一律降为 null。
+
+    覆盖 AI 判定与指纹沿用两条路径；整条产品线都旧或缺日期时不干预，交给 AI 判定。
+    """
+    cutoff = date.today() - timedelta(days=STALE_DAYS)
+    by_vendor: dict[str, list[dict[str, Any]]] = {}
+    for entry in output.get("models", {}).values():
+        if isinstance(entry, dict):
+            by_vendor.setdefault(str(entry.get("vendor", "")), []).append(entry)
+    for entries in by_vendor.values():
+        has_recent = any(
+            entry.get("release_date") and not _is_stale(entry, cutoff) for entry in entries
+        )
+        if not has_recent:
+            continue
+        for entry in entries:
+            if _is_stale(entry, cutoff) and entry.get("tier") in ("flagship", "mainstream"):
+                entry["tier"] = None
 
 
 def _classify_batch(
@@ -131,7 +168,7 @@ def _classify_batch(
 
 
 def _chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
-    """一次 JSON 对话请求（与 ai.AISchemaNormalizer 同一套响应解析）。"""
+    """一次 JSON 对话请求（与 ai.AIPriceExtractor 同一套响应解析）。"""
     ai_model = config.pick_model()
     if not config.base_url or not ai_model:
         raise AIExtractionError("ai.base_url 或 ai.model/ai.models 未配置")

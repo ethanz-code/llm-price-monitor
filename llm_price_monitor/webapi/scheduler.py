@@ -7,6 +7,7 @@ schedule_state 文档，重启后按真实间隔计算，不会重启即全量�
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -19,6 +20,7 @@ from llm_price_monitor.webapi.jobs import catalog_refresh_job, notice_scan_job, 
 CHECK_INTERVAL_SECONDS = 30
 
 _STOP = threading.Event()
+_log = logging.getLogger("llm_price_monitor.scheduler")
 
 
 def stop_scheduler() -> None:
@@ -78,7 +80,8 @@ def start_scheduler(store: Store) -> None:
             try:
                 _run_due(store)
             except Exception:
-                pass  # 坏配置、存储异常等下一轮再试
+                # 坏配置、存储异常等下一轮再试，但必须留痕：静默失败会让采集停摆且无从排查
+                _log.exception("调度轮失败，下一轮重试")
             _STOP.wait(CHECK_INTERVAL_SECONDS)  # wait 而非 sleep：stop 时立即退出，不拖到间隔结束
 
     threading.Thread(target=_loop, daemon=True, name="webapi-scheduler").start()

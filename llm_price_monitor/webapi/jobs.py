@@ -1,6 +1,7 @@
 """采集任务体工厂：手动触发端点与后台调度器共用同一套任务实现与结果摘要。"""
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -20,6 +21,11 @@ def price_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[str
     """价格采集任务体：records 为 summary 行，与全量采集的摘要同构。"""
     def _run() -> dict[str, Any]:
         report = scan_prices(config, store=store)
+        # 顺带执行保留清理：趋势点只留配置的天数；价格事件属于变更记录，永不清理
+        cutoff = time.time() - config.settings.retention_price_days * 86400
+        purged_points = store.purge_history(cutoff)
+        if purged_points:
+            tasklog.emit(f"保留清理：移除 {purged_points} 个过期趋势点")
         return {
             "records": [summary_row(row) for row in report.records],
             "events": [event["kind"] for event in report.events],
@@ -34,6 +40,11 @@ def status_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
     """渠道状态采集任务体：只拉 status.url，diff 变化写入状态事件。"""
     def _run() -> dict[str, Any]:
         scan = scan_statuses(config, store=store)
+        # 顺带执行保留清理：状态时序只留配置的天数；状态事件永不清理
+        cutoff = time.time() - config.settings.retention_status_days * 86400
+        purged = store.purge_status(cutoff)
+        if purged:
+            tasklog.emit(f"保留清理：移除 {purged} 条过期状态记录")
         return {
             "records": scan.records,
             "events": [event["kind"] for event in scan.events],

@@ -25,6 +25,7 @@ from llm_price_monitor.catalog import discount as catalog_discount, fx as catalo
 from llm_price_monitor.notice import fetch_site_notice
 from llm_price_monitor.status import diff_status, fetch_site_status
 from llm_price_monitor.store import Store
+from llm_price_monitor.token_refresh import needs_refresh, refresh_and_recollect
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class PriceEvent:
     model: str
     kind: ChangeKind
     previous: dict[str, Any] | None
-    current: dict[str, Any]
+    current: dict[str, Any] | None
     detected_at: float
 
 
@@ -48,6 +49,7 @@ class MonitorReport:
     status_events: list[dict[str, Any]] = field(default_factory=list)
     notice_records: list[dict[str, Any]] = field(default_factory=list)
     notice_events: list[dict[str, Any]] = field(default_factory=list)
+    notice_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 def record_dict(site_id: str, record: PriceRecord) -> dict[str, Any]:
@@ -134,6 +136,8 @@ class SectionScan:
     records: list[dict[str, Any]] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
+    # 逐站结果摘要（当前仅公告扫描填充），供测试采集等场景无条件回传各站 outcome
+    site_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _merge_collect_status(store: Store, config: MonitorConfig, site_status: dict[str, dict[str, Any]]) -> None:
@@ -154,14 +158,17 @@ def _has_price(row: dict[str, Any]) -> bool:
 
 def _carry_last_price(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     """本次只产出无价占位（需认证/无数据）而上次快照有价时，沿用上次的价格字段：
-    定价页继续展示上次已知价，不因一次采集失败把价格打成 "-"；状态统一标"需认证"，
-    last_price_at 记录上次实际取到价的时间。metadata 以本次为准叠加：
-    保留上次的 pricing_rules（阶梯价展示依赖），带上本次的失败原因 notes。
+    定价页继续展示上次已知价，不因一次采集失败把价格打成 "-"；状态按占位本来的性质标注
+    （接口 401/403 才标"需认证"），last_price_at 记录上次实际取到价的时间。
+    metadata 以本次为准叠加：保留上次的 pricing_rules（阶梯价展示依赖），带上本次的失败原因 notes。
     """
+    # 只有占位本身是"需认证"（接口 401/403）才沿用需认证；AI/解析没映射出来的占位
+    # 如实保持 unavailable，不得把"没数据"误标成"需认证"
+    current_auth = bool(current.get("requires_auth")) or (current.get("metadata") or {}).get("pricing_kind") == "auth_required"
     return {
         **previous,
         "price_status": current["price_status"],
-        "requires_auth": True,
+        "requires_auth": current_auth,
         "captured_at": current["captured_at"],
         "last_price_at": previous.get("last_price_at") or previous.get("captured_at"),
         "metadata": {**(previous.get("metadata") or {}), **(current.get("metadata") or {})},
@@ -190,17 +197,19 @@ def _scan_prices(
     user_agent: str,
     store: Store | None,
     latest: dict[str, dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], set[str]]:
     """价格采集主体：逐站点走适配器，与上次快照比对生成事件。
 
-    返回 (records, history_rows, events, errors, site_status)；history_rows 只含本次
-    真正取到价的记录——沿用上次价的占位行与无数据的跳过行都不写历史，避免重复记录。
+    返回 (records, history_rows, events, errors, site_status, removed_keys)；
+    history_rows 只含本次真正取到价的记录——沿用上次价的占位行与无数据的跳过行都不写历史；
+    removed_keys 是本轮分组下线从快照摘除的 key，需要从数据库显式删行。
     """
     records: list[dict[str, Any]] = []
     history_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     site_status: dict[str, dict[str, Any]] = {}
+    removed_keys: set[str] = set()
     enabled_count = sum(1 for spec in config.sites if spec.enabled)
     scan_started = time.time()
     tasklog.emit(f"开始价格采集：{enabled_count} 个站点")
@@ -215,17 +224,54 @@ def _scan_prices(
             tasklog.emit(f"[{spec.id}] 价格采集失败：未知适配器 {spec.adapter}", "error")
             continue
         # 多地址站点：主地址 + networks 附加地址依次采集；同一模型重复命中时主地址优先
-        collected = []
-        collect_errors: list[str] = []
-        for index, endpoint in enumerate([spec.network, *spec.networks]):
-            endpoint_spec = replace(spec, network=endpoint, networks=())
-            try:
-                endpoint_records = adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai)
-            except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
-                collect_errors.append(f"{'主地址' if index == 0 else f'附加地址{index}'}: {exc}")
-                continue
-            known = {(record.model, (record.metadata or {}).get("group")) for record in collected}
-            collected.extend(record for record in endpoint_records if (record.model, (record.metadata or {}).get("group")) not in known)
+        def collect_all(site_spec: SiteSpec) -> tuple[list[PriceRecord], list[str]]:
+            site_records: list[PriceRecord] = []
+            site_by_key: dict[tuple[str | None, str | None], PriceRecord] = {}
+            site_errors: list[str] = []
+            for index, endpoint in enumerate([site_spec.network, *site_spec.networks]):
+                endpoint_spec = replace(site_spec, network=endpoint, networks=())
+                try:
+                    endpoint_records = adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai)
+                except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
+                    site_errors.append(f"{'主地址' if index == 0 else f'附加地址{index}'}: {exc}")
+                    continue
+                # 同一模型+分组多地址命中时主地址优先；但主地址的"需认证/无数据"占位
+                # 不得挡掉附加地址的真价格（401 只说明该地址要登录，不代表分组没数据）
+                for record in endpoint_records:
+                    key = (record.model, (record.metadata or {}).get("group"))
+                    existing = site_by_key.get(key)
+                    if existing is not None and (existing.price_status != "unavailable" or record.price_status == "unavailable"):
+                        continue
+                    site_by_key[key] = record
+                    if existing is None:
+                        site_records.append(record)
+                    else:
+                        # 用下标原位替换：PriceRecord 值相等，按值 index 可能命中另一个相等对象
+                        for idx, item in enumerate(site_records):
+                            if item is existing:
+                                site_records[idx] = record
+                                break
+            return site_records, site_errors
+
+        collected, collect_errors = collect_all(spec)
+        # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
+        if spec.token_refresh and needs_refresh(collected):
+            tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
+            collected, refresh_error = refresh_and_recollect(
+                spec,
+                collected,
+                collect=collect_all,
+                client=client,
+                timeout=config.settings.timeout,
+                user_agent=user_agent,
+                store=store,
+            )
+            if refresh_error:
+                collect_errors.append(refresh_error)
+                tasklog.emit(f"[{spec.id}] {refresh_error}", "error")
+            else:
+                collect_errors = []
+                tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(collected)} 条价格")
         if collect_errors and not collected:
             message = "；".join(collect_errors)
             errors.append({"site_id": spec.id, "error": message})
@@ -237,11 +283,13 @@ def _scan_prices(
             tasklog.emit(f"[{spec.id}] 部分地址采集失败：{message}", "error")
         site_status[spec.id] = {"checked_at": time.time(), **site_status_from_records(collected)}
         site_changed = 0
+        site_keys: set[str] = set()
         for record in collected:
             current = _backfill_rule_price(record_dict(spec.id, record))
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定
             group = (record.metadata or {}).get("group") or "default"
             key = f"{spec.id}:{record.model}:{group}"
+            site_keys.add(key)
             previous = latest.get(key)
             if not _has_price(current):
                 if previous is None or not _has_price(previous):
@@ -255,28 +303,93 @@ def _scan_prices(
                 events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
                 site_changed += kind != "unchanged"
                 continue
+
             current["fingerprint"] = fingerprint(current)
             current["captured_at"] = record.captured_at
             records.append(current)
-            history_rows.append(current)
+            # 指纹去重：价格口径与上一轮一致就不写历史行，趋势表只保留真实变化点
+            if previous is None or previous.get("fingerprint") != current["fingerprint"]:
+                history_rows.append(current)
             kind = classify(previous, current)
             events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
             site_changed += kind != "unchanged"
             latest[key] = current
+        # 出现"需认证"占位行（401/403）时是我方凭证问题，不代表分组真的下线，
+        # 跳过缺失计数，避免 token 过期把分组刷成下线事件
+        if store is not None and not needs_refresh(collected):
+            removed_keys |= _detect_removed_groups(store, latest, spec.id, site_keys, events)
         tasklog.emit(f"[{spec.id}] 价格采集成功：{len(collected)} 条价格，{site_changed} 处变化，{time.time() - site_started:.1f}s")
     tasklog.emit(f"价格采集完成：{len(records)} 条记录，{len(errors)} 个错误，{time.time() - scan_started:.1f}s")
-    return records, history_rows, events, errors, site_status
+    return records, history_rows, events, errors, site_status, removed_keys
 
 
-def _persist_latest(store: Store, latest: dict[str, dict[str, Any]]) -> None:
-    """写回最新快照；顺带清理历史遗留的无价占位行——现行采集不再产出占位记录，
+# 分组连续缺失这么多次才判定"下线"：容忍单轮抓取抖动，避免误报刷屏
+GROUP_REMOVED_MISSES = 2
+
+
+def _detect_removed_groups(
+    store: Store, latest: dict[str, dict[str, Any]], site_id: str, seen_keys: set[str], events: list[dict[str, Any]]
+) -> set[str]:
+    """本轮采集成功的站点里，快照中存在但本轮没出现的分组视为一次缺失：
+    连续 GROUP_REMOVED_MISSES 次缺失记 group_removed 事件并从快照摘除；中途恢复则清零。
+    缺失计数持久化到 group_miss 文档，跨轮次累计；返回本轮摘除的快照 key。"""
+    watch = dict(store.get_document("group_miss") or {})
+    removed: set[str] = set()
+    changed = False
+    site_prefix = f"{site_id}:"
+    for key in [key for key in latest if key.startswith(site_prefix)]:
+        if key in seen_keys:
+            if watch.pop(key, None) is not None:
+                changed = True
+            continue
+        if not _has_price(latest[key]):
+            continue  # 无价占位行不属于"分组下线"
+        count = int(watch.get(key) or 0) + 1
+        if count >= GROUP_REMOVED_MISSES:
+            previous = latest.pop(key)
+            removed.add(key)
+            watch.pop(key, None)
+            model = key[len(site_prefix):].rsplit(":", 1)[0]
+            events.append({
+                "site_id": site_id,
+                "model": model,
+                "kind": "group_removed",
+                "previous": previous,
+                "current": None,
+                "detected_at": time.time(),
+            })
+            tasklog.emit(f"[{site_id}] 分组下线：{model}")
+        else:
+            watch[key] = count
+        changed = True
+    for key in [key for key in watch if key not in latest]:
+        watch.pop(key, None)  # 快照里已经没有的 key 不再计数（站点被删/已被摘除）
+        changed = True
+    if changed:
+        store.set_document("group_miss", watch)
+    return removed
+
+
+def _persist_latest(
+    store: Store,
+    latest: dict[str, dict[str, Any]],
+    *,
+    removed_keys: set[str] | None = None,
+) -> None:
+    """写回最新快照；replace_latest 只做 upsert，分组下线摘除的 key 需要显式删行。
+    顺带清理历史遗留的无价占位行——现行采集不再产出占位记录，
     快照里残留的无价行都是旧版本（或旧库）留下的，保留只会在定价页造成同模型重复。"""
     stale_keys = [key for key, row in latest.items() if isinstance(row, dict) and not _has_price(row)]
     if stale_keys:
         for key in stale_keys:
             del latest[key]
         store.remove_latest(stale_keys)
-    store.replace_latest(latest)
+    if removed_keys:
+        store.remove_latest(sorted(removed_keys))
+    # 增量写入：与库中现有快照比对，内容没变的行不重写
+    existing = store.latest_all()
+    changed = {key: row for key, row in latest.items() if existing.get(key) != row}
+    store.replace_latest(changed)
 
 
 def _scan_statuses(
@@ -296,7 +409,8 @@ def _scan_statuses(
             tasklog.emit(f"[{spec.id}] 渠道状态采集失败：{exc}", "error")
             continue
         scan.records.append(status_record)
-        previous_record = store.latest_status(spec.id) if store is not None else None
+        # diff 基准用未裁剪的参照快照：库里的快照只存时间线增量，直接拿会误报大量删除
+        previous_record = store.status_reference(spec.id) if store is not None else None
         previous_data = previous_record.get("data") if isinstance(previous_record, dict) else None
         if previous_data is None:
             changes: list[dict[str, Any]] = [{"op": "init", "path": "$"}]
@@ -304,6 +418,8 @@ def _scan_statuses(
         else:
             changes = diff_status(previous_data, status_record["data"])
             status_kind = "status_changed"
+        if len(changes) > 80:
+            changes = changes[:80] + [{"op": "truncated", "path": "$", "count": len(changes) - 80}]
         if changes:
             scan.events.append({
                 "site_id": spec.id,
@@ -332,31 +448,45 @@ def _scan_notices(
         if not spec.enabled:
             continue
         try:
-            notice_record = fetch_site_notice(spec, client, config.settings.timeout, user_agent)
+            notice_record = fetch_site_notice(spec, client, config.settings.timeout, user_agent, ai=config.ai)
         except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
             scan.errors.append({"site_id": spec.id, "error": f"站点公告采集失败: {exc}"})
+            scan.site_results.append({"site_id": spec.id, "outcome": "error", "content": ""})
             tasklog.emit(f"[{spec.id}] 站点公告采集失败：{exc}", "error")
             continue
-        if notice_record is not None and notice_record["content"]:
-            previous_notice = store.latest_notice(spec.id) if store is not None else None
-            previous_content = previous_notice.get("content") if isinstance(previous_notice, dict) else None
-            if previous_content is None:
-                notice_kind: str | None = "notice_init"
-            elif previous_content != notice_record["content"]:
-                notice_kind = "notice_changed"
-            else:
-                notice_kind = None
-            if notice_kind:
-                notice_record["kind"] = notice_kind
-                scan.records.append(notice_record)
-                scan.events.append({
-                    "site_id": spec.id,
-                    "kind": notice_kind,
-                    "detected_at": notice_record["captured_at"],
-                    "content": notice_record["content"],
-                })
-                # 公告无变化与未配置公告接口的站点不逐站记日志，避免刷屏
-                tasklog.emit(f"[{spec.id}] 公告{'新增' if notice_kind == 'notice_init' else '更新'}")
+        if notice_record is None:
+            scan.site_results.append({"site_id": spec.id, "outcome": "none", "content": ""})
+            continue
+        if not notice_record["content"]:
+            # 站点没发布公告是常态：带上库里最近一条公告，测试弹窗回显给用户看
+            latest = store.latest_notice(spec.id) if store is not None else None
+            scan.site_results.append({
+                "site_id": spec.id,
+                "outcome": "empty",
+                "content": "",
+                "latest": str(latest.get("content") or "") if isinstance(latest, dict) else "",
+            })
+            continue
+        previous_notice = store.latest_notice(spec.id) if store is not None else None
+        previous_content = previous_notice.get("content") if isinstance(previous_notice, dict) else None
+        if previous_content is None:
+            notice_kind: str | None = "notice_init"
+        elif previous_content != notice_record["content"]:
+            notice_kind = "notice_changed"
+        else:
+            notice_kind = None
+        scan.site_results.append({"site_id": spec.id, "outcome": notice_kind or "unchanged", "content": notice_record["content"]})
+        if notice_kind:
+            notice_record["kind"] = notice_kind
+            scan.records.append(notice_record)
+            scan.events.append({
+                "site_id": spec.id,
+                "kind": notice_kind,
+                "detected_at": notice_record["captured_at"],
+                "content": notice_record["content"],
+            })
+            # 公告无变化与未配置公告接口的站点不逐站记日志，避免刷屏
+            tasklog.emit(f"[{spec.id}] 公告{'新增' if notice_kind == 'notice_init' else '更新'}")
     tasklog.emit(f"站点公告采集完成：{len(scan.records)} 条公告，{len(scan.errors)} 个错误，{time.time() - scan_started:.1f}s")
     return scan
 
@@ -376,13 +506,13 @@ def scan_prices(
     client = client or httpx.Client(follow_redirects=True)
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status = _scan_prices(config, client, selected_user_agent, store, latest)
+        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest)
         # price_status 在确认/规则/无数据之间抖动不代表价格真的变了，这类事件不落库
         changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
             store.append_history(history_rows)
             store.append_events(changed_events)
-            _persist_latest(store, latest)
+            _persist_latest(store, latest, removed_keys=removed_keys)
             _merge_collect_status(store, config, site_status)
         return MonitorReport(started, time.time(), records, changed_events, errors)
     finally:
@@ -451,7 +581,7 @@ def run_once(
     client = client or httpx.Client(follow_redirects=True)
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status = _scan_prices(config, client, selected_user_agent, store, latest)
+        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest)
         status_scan = _scan_statuses(config, client, selected_user_agent, store)
         notice_scan = _scan_notices(config, client, selected_user_agent, store)
         errors = [*errors, *status_scan.errors, *notice_scan.errors]
@@ -459,7 +589,7 @@ def run_once(
         if persist and store is not None:
             store.append_history(history_rows)
             store.append_events(changed_events)
-            _persist_latest(store, latest)
+            _persist_latest(store, latest, removed_keys=removed_keys)
             store.append_status_records(status_scan.records)
             store.append_status_events(status_scan.events)
             store.append_notice_records(notice_scan.records)
@@ -475,6 +605,7 @@ def run_once(
             status_scan.events,
             notice_scan.records,
             notice_scan.events,
+            notice_scan.site_results,
         )
     finally:
         if own:

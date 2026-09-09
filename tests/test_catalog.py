@@ -369,6 +369,49 @@ def test_attach_ai_tiers_batches_large_vendors():
     assert calls["n"] == 2  # 超过单批上限分两次请求
 
 
+def test_attach_ai_tiers_demotes_stale_models_when_newer_generation_exists():
+    from datetime import date, timedelta
+
+    old_date = (date.today() - timedelta(days=800)).isoformat()
+    recent_date = (date.today() - timedelta(days=30)).isoformat()
+    models = {
+        "old": {
+            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
+        },
+        "recent": {
+            "found": True, "model": "m-new", "name": "M New", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": recent_date, "modalities": {"output": ["text"]},
+        },
+    }
+    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}, {"model": "m-new", "tier": "flagship"}]])
+    output = {"models": models}
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
+    assert output["models"]["old"]["tier"] is None  # 新一代在售，旧代硬降为 null
+    assert output["models"]["recent"]["tier"] == "flagship"
+
+
+def test_attach_ai_tiers_keeps_old_mainstream_without_newer_generation():
+    from datetime import date, timedelta
+
+    old_date = (date.today() - timedelta(days=800)).isoformat()
+    models = {
+        "old": {
+            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
+        },
+    }
+    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}]])
+    output = {"models": models}
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_tiers(output, None, _ai_config(), client) == 1
+    assert output["models"]["old"]["tier"] == "mainstream"  # 厂商无新一代在售，保留 AI 判定
+
+
 # ---------- catalog.translate（简介中译）----------
 
 

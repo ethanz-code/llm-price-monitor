@@ -19,8 +19,15 @@ from urllib.parse import urlsplit
 import httpx
 
 from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+from llm_price_monitor.ai import AIConfig, extract_notice_content
 from llm_price_monitor.config import PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import redact_url
+
+
+def _site_headers(spec: SiteSpec) -> dict[str, str]:
+    """站点 network.headers 里的认证/Cookie 头：公告请求与价格采集共用同一套凭据。"""
+    headers = spec.network.get("headers")
+    return {str(key): str(value) for key, value in headers.items()} if isinstance(headers, dict) else {}
 
 
 def resolve_notice_url(spec: SiteSpec) -> str | None:
@@ -57,7 +64,7 @@ def _fetch_announcements(
     if url is None:
         return []
     try:
-        entry = resolve_endpoint({"url": url}, spec=spec, label="notice")
+        entry = resolve_endpoint({"url": url, "headers": _site_headers(spec)}, spec=spec, label="notice")
         response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         response.raise_for_status()
         payload = response.json()
@@ -87,11 +94,17 @@ def _announcement_markdown(items: list[dict[str, Any]]) -> str:
 
 
 def fetch_site_notice(
-    spec: SiteSpec, client: httpx.Client, timeout: float, user_agent: str
-) -> dict[str, Any]:
+    spec: SiteSpec,
+    client: httpx.Client,
+    timeout: float,
+    user_agent: str,
+    ai: AIConfig | None = None,
+) -> dict[str, Any] | None:
     """采集单个站点的通知公告，返回含来源与解析方式的记录；content 为公告正文文本。
 
     未配置 notice.url 且自动推导地址返回 404 时返回 None（站点没有公告接口，静默跳过）。
+    公告请求继承 network.headers 的认证/Cookie 头；固定解析拿不到正文（或正文是 HTML）时
+    交给 AI 从原始响应中提取，AI 未启用或失败则保留固定解析结果。
     """
     url = resolve_notice_url(spec)
     if url is None:
@@ -99,6 +112,8 @@ def fetch_site_notice(
     explicit = isinstance(spec.notice.get("url"), str) and bool(str(spec.notice.get("url")).strip())
     notice_config = dict(spec.notice)
     notice_config.setdefault("url", url)
+    entry_headers = notice_config.get("headers")
+    notice_config["headers"] = {**_site_headers(spec), **{str(k): str(v) for k, v in entry_headers.items()}} if isinstance(entry_headers, dict) else _site_headers(spec)
     entry = resolve_endpoint(notice_config, spec=spec, label="notice")
     response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
     if response.status_code == 404:
@@ -120,11 +135,30 @@ def fetch_site_notice(
         data = payload.get("data")
         if isinstance(data, str):
             content = data.strip()
+        elif isinstance(data, dict) and isinstance(data.get("announcements"), list):
+            # /api/status 型响应（data 携带 announcements）：直接结构化解析成公告正文，
+            # 不再交给 AI，也不再向 /api/status 重复发起第二次请求。
+            content = _announcement_markdown(
+                [item for item in data["announcements"] if isinstance(item, dict) and str(item.get("content") or "").strip()]
+            )
+            parse = "status"
     elif payload is None:
         parse = "text"
         content = response.text.strip()
-    # new-api 系的多条公告走 /api/status：拿得到就按分节 Markdown 拼进正文（置顶公告在前）
-    announcement_md = _announcement_markdown(_fetch_announcements(spec, client, timeout, user_agent))
+    # 固定解析拿不到正文，或正文是 HTML 片段时交给 AI 提取——AI 认得出任意响应结构里
+    # 真正要拿的公告数据；未启用或失败时保留固定解析结果。
+    if ai is not None and parse != "status" and (not content or content.lstrip().startswith("<")):
+        extracted = extract_notice_content(ai, response.text)
+        if extracted is not None:
+            content = extracted
+            parse = "ai" if extracted else f"{parse}+ai-empty"
+    # new-api 系的多条公告走 /api/status：拿得到就按分节 Markdown 拼进正文（置顶公告在前）；
+    # 公告地址本身已返回 announcements（parse == "status"）时不重复请求。
+    announcement_md = (
+        ""
+        if parse == "status"
+        else _announcement_markdown(_fetch_announcements(spec, client, timeout, user_agent))
+    )
     if announcement_md:
         content = "\n\n".join(part for part in (content, announcement_md) if part)
         parse = f"{parse}+status"

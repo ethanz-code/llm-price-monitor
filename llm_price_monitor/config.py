@@ -16,7 +16,9 @@ from llm_price_monitor.store import Store
 from llm_price_monitor.useragent import DEFAULT_BROWSER_USER_AGENT
 
 PriceStatus = Literal["confirmed", "candidate", "rule_only", "unavailable"]
-ChangeKind = Literal["new", "changed", "unchanged", "recovered", "status_changed"]
+ChangeKind = Literal["new", "changed", "unchanged", "recovered", "status_changed", "group_removed"]
+
+
 
 # AI 调用的接口结构：同一套提示词按所选结构的 URL/请求体/响应格式发出
 AI_FORMATS = ("chat_completions", "openai_responses", "anthropic", "gemini")
@@ -65,7 +67,8 @@ class SiteSpec:
     network: dict[str, Any] = field(default_factory=dict)
     networks: tuple[dict[str, Any], ...] = ()  # 附加采集地址：与 network 同构，逐个采集后合并价格
     status: dict[str, Any] = field(default_factory=dict)
-    notice: dict[str, Any] = field(default_factory=dict)  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
+    notice: dict[str, Any] = field(default_factory=dict)
+    token_refresh: dict[str, Any] = field(default_factory=dict)  # 认证续签请求配置：url/method/params/headers/body/refresh_token  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
 
 
 class AIResultCache(Protocol):
@@ -86,6 +89,15 @@ class MonitorSettings:
     user_agent_platforms: tuple[str, ...] = ()
     user_agent_chrome_versions: tuple[str, ...] = ()
     user_agent_version_window: int = 2
+    # 数据保留天数：超期由对应采集任务/接口顺带清理；价格与站点事件永不清理
+    retention_price_days: int = 90
+    retention_visit_days: int = 90
+    retention_status_days: int = 90
+    # 任务记录保留条数（清理界限，超出淘汰最旧）与单任务日志滚动行数上限
+    max_task_runs: int = 100
+    max_task_log_lines: int = 500
+    # AI 助手每 IP 每天提问次数上限；0 表示不限制
+    assistant_daily_limit: int = 10
 
 
 @dataclass(frozen=True)
@@ -124,6 +136,16 @@ def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSetti
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
                 raise ValueError(f"settings.{key} 必须是字符串数组")
             values[key] = tuple(value)
+    for key in ("retention_price_days", "retention_visit_days", "retention_status_days"):
+        if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
+            raise ValueError(f"settings.{key} 必须是不小于 1 的整数（天）")
+    for key in ("max_task_runs", "max_task_log_lines"):
+        if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
+            raise ValueError(f"settings.{key} 必须是不小于 1 的整数")
+    if "assistant_daily_limit" in values and (
+        not isinstance(values["assistant_daily_limit"], int) or isinstance(values["assistant_daily_limit"], bool) or values["assistant_daily_limit"] < 0
+    ):
+        raise ValueError("settings.assistant_daily_limit 必须是不小于 0 的整数（0 表示不限制）")
     return MonitorSettings(**values)
 
 
@@ -136,16 +158,28 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
     api_format = str(raw.get("api_format", "chat_completions")).strip()
     if api_format not in AI_FORMATS:
         raise ValueError("配置文件 ai.api_format 必须是 chat_completions、openai_responses、anthropic 或 gemini")
+    base_url = str(raw.get("base_url", "")).strip()
+    if base_url:
+        parsed_base = urlsplit(base_url)
+        if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
+            raise ValueError("配置文件 ai.base_url 必须是完整的 http(s) URL")
+    timeout = float(raw.get("timeout", 60))
+    max_input_chars = int(raw.get("max_input_chars", 60000))
+    max_tokens = int(raw.get("max_tokens", 4000))
+    if not timeout > 0:
+        raise ValueError("配置文件 ai.timeout 必须是大于 0 的数字（秒）")
+    if max_input_chars < 1 or max_tokens < 1:
+        raise ValueError("配置文件 ai.max_input_chars / ai.max_tokens 必须是不小于 1 的整数")
     return AIConfig(
         enabled=bool(raw.get("enabled", True)),
-        base_url=str(raw.get("base_url", "")).strip(),
+        base_url=base_url,
         model=str(raw.get("model", "")).strip(),
         models=tuple(dict.fromkeys(item.strip() for item in raw_models if item.strip())),
         api_key=api_key or None,
         api_format=api_format,
-        timeout=float(raw.get("timeout", 60)),
-        max_input_chars=int(raw.get("max_input_chars", 60000)),
-        max_tokens=int(raw.get("max_tokens", 4000)),
+        timeout=timeout,
+        max_input_chars=max_input_chars,
+        max_tokens=max_tokens,
         enable_thinking=bool(raw.get("enable_thinking", False)),
         cache=cache,
     )
@@ -169,7 +203,37 @@ def _endpoint_section(raw: Any, site_id: str, name: str) -> dict[str, Any]:
         for section_field in ("params", "headers"):
             if section_field in raw and not isinstance(raw[section_field], dict):
                 raise ValueError(f"站点 {site_id} 的 {name}.{section_field} 必须是对象")
+        if "groups" in raw:
+            raw_groups = raw["groups"]
+            if not isinstance(raw_groups, list) or any(not isinstance(item, str) for item in raw_groups):
+                raise ValueError(f"站点 {site_id} 的 {name}.groups 必须是字符串数组")
     return raw
+
+
+def _validate_token_refresh(raw: dict[str, Any], site_id: str) -> None:
+    """token_refresh 续签请求配置校验：与 network 入口同风格的 URL/method/params/headers/body。"""
+    url = raw.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"站点 {site_id} 的 token_refresh.url 必须是非空 URL")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"站点 {site_id} 的 token_refresh.url 必须是完整的 http(s) URL")
+    method = str(raw.get("method") or "POST").upper()
+    if method not in {"GET", "POST", "PUT", "PATCH"}:
+        raise ValueError(f"站点 {site_id} 的 token_refresh.method 仅支持 GET/POST/PUT/PATCH")
+    for field_name in ("params", "headers"):
+        section = raw.get(field_name, {})
+        if not isinstance(section, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in section.items()):
+            raise ValueError(f"站点 {site_id} 的 token_refresh.{field_name} 必须是字符串键值对象")
+    body = raw.get("body")
+    if body is not None and not isinstance(body, str):
+        raise ValueError(f"站点 {site_id} 的 token_refresh.body 必须是字符串（支持 ${{refresh_token}} 占位）")
+    for field_name in ("access_token_field", "refresh_token_field"):
+        field_value = raw.get(field_name)
+        if field_value is not None and (not isinstance(field_value, str) or not field_value.strip()):
+            raise ValueError(f"站点 {site_id} 的 token_refresh.{field_name} 必须是非空字符串（如 data.access_token）")
+    if not str(raw.get("refresh_token") or "").strip():
+        raise ValueError(f"站点 {site_id} 的 token_refresh.refresh_token 不能为空")
 
 
 def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
@@ -246,6 +310,11 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
             normalized_networks.append(entry)
         raw_status = _endpoint_section(value.get("status"), site_id, "status")
         raw_notice = _endpoint_section(value.get("notice"), site_id, "notice")
+        raw_token_refresh = value.get("token_refresh", {})
+        if not isinstance(raw_token_refresh, dict):
+            raise ValueError(f"站点 {site_id} 的 token_refresh 必须是对象")
+        if raw_token_refresh:
+            _validate_token_refresh(raw_token_refresh, site_id)
         request_headers = value.get("request_headers", {})
         if not isinstance(request_headers, dict) or any(
             not isinstance(key, str) or not isinstance(header_value, str)
@@ -253,7 +322,7 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
         ):
             raise ValueError(f"站点 {site_id} 的 request_headers 必须是字符串键值对象")
         raw_models = value.get("models", [])
-        if any(not isinstance(item, str) for item in raw_models):
+        if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
             raise ValueError(f"站点 {site_id} 的 models 必须是字符串数组；模型分组/别名字段已下线，别名由 AI 自动解析")
         models = tuple(ModelTarget(item.strip()) for item in raw_models if item.strip())
         site_values = {

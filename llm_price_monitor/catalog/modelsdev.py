@@ -60,6 +60,7 @@ def _entry(
     vendor: str,
     rate: float,
     source_url: str,
+    logo: str | None = None,
 ) -> dict[str, Any]:
     """models.dev 模型条目 → 目录条目（价格统一 USD，人民币按快照汇率换算）。"""
     input_price, output_price = model["cost"]["input"], model["cost"]["output"]
@@ -69,6 +70,7 @@ def _entry(
         "model": model_id,
         "name": model.get("name"),
         "vendor": vendor,
+        "logo": logo,
         "currency": "USD",
         "list": {"input": input_price, "output": output_price},
         "list_cny": {
@@ -135,7 +137,8 @@ def fetch_catalogs(
             key = f"{normalize.model_key(str(provider_id))}:{normalize.model_key(str(model_id))}"
             if key in everything:
                 continue
-            everything[key] = _entry(str(model_id), model, label, rate, source_url)
+            logo = f"https://models.dev/logos/{provider_id}.svg"
+            everything[key] = _entry(str(model_id), model, label, rate, source_url, logo)
 
     meta = {
         "generated_at": now,

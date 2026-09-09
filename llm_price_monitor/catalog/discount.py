@@ -21,6 +21,8 @@ class DiscountEntry:
     group: Any
     input_discount: Any
     output_discount: Any
+    site_input_cny: Any
+    site_output_cny: Any
     official_input_cny: Any
     official_output_cny: Any
     source_url: str
@@ -29,6 +31,8 @@ class DiscountEntry:
         return {
             "input": self.input_discount,
             "output": self.output_discount,
+            "input_price_cny": self.site_input_cny,
+            "output_price_cny": self.site_output_cny,
             "official_input_cny": self.official_input_cny,
             "official_output_cny": self.official_output_cny,
             "source_url": self.source_url,
@@ -69,6 +73,8 @@ def build_discount(
         group=row.get("group"),
         input_discount=round2(site_input_cny / official_input_cny) if site_input_cny and official_input_cny else None,
         output_discount=round2(site_output_cny / official_output_cny) if site_output_cny and official_output_cny else None,
+        site_input_cny=site_input_cny,
+        site_output_cny=site_output_cny,
         official_input_cny=official_input_cny,
         official_output_cny=official_output_cny,
         source_url=official_entry.get("source_url") or "",

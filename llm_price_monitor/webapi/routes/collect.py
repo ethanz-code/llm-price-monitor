@@ -53,6 +53,20 @@ def _full_collect_job(config: MonitorConfig, store: Store, persist: bool) -> Cal
             "errors": report.errors,
             "persisted": persist,
             "catalog": output["catalog"],
+            # 公告只在内容新增/更新时产生记录；渠道状态只回传有变化的事件，无变化不展示
+            "notices": [
+                {"site_id": item["site_id"], "kind": item["kind"], "content": item["content"]}
+                for item in report.notice_records
+            ],
+            # 逐站公告结果（含无变化/无接口等常态），测试弹窗据此给每站一条公告反馈
+            "notice_results": [
+                {"site_id": item["site_id"], "outcome": item["outcome"], "content": item["content"]}
+                for item in report.notice_results
+            ],
+            "statuses": [
+                {"site_id": event["site_id"], "kind": event["kind"], "changes": event["changes"]}
+                for event in report.status_events
+            ],
         }
 
     return _run
@@ -71,7 +85,9 @@ def build_router(store: Store) -> APIRouter:
 
     @router.post("/api/collect")
     def collect(body: CollectBody) -> dict[str, str]:
-        return _submit("collect", body, lambda config, _store: _full_collect_job(config, _store, body.persist))
+        # 单站请求是测试采集，任务列表单独标记，不与正式全量采集混在同一类型里
+        kind = "collect-test" if body.site_id else "collect"
+        return _submit(kind, body, lambda config, _store: _full_collect_job(config, _store, body.persist))
 
     @router.post("/api/collect/price")
     def collect_price(body: CollectBody) -> dict[str, str]:

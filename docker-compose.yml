@@ -14,9 +14,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./var:/app/var # SQLite 与全部运行数据的唯一落盘位置
-      - ./.env:/app/.env:ro # 启动前必须先 cp .env.example .env，否则挂载会生成同名空目录导致启动失败
       # - ./config:/app/config:ro # 需要在不重建镜像的情况下改种子配置时放开
-      # - ./.env.keys:/app/.env.keys:ro # 使用 dotenvx 加密 .env 时放开
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/meta', timeout=5)"]
       interval: 30s

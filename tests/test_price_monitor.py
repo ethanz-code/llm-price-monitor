@@ -1472,3 +1472,94 @@ def test_ai_ping_model_maps_http_errors_for_caller():
     with pytest.raises(httpx.HTTPStatusError):
         ping_model(AIConfig(base_url="https://ai.test/v1"), "m-a", client=httpx.Client(transport=httpx.MockTransport(handler)))
 
+
+
+def test_group_removed_event_after_two_misses(tmp_path: Path, monkeypatch):
+    """分组连续两轮没出现才记 group_removed 并从快照摘除；单轮缺失不报（容忍抖动）。"""
+    groups = {"default", "vip"}
+
+    def collect(*_args):
+        return [
+            PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": group})
+            for group in sorted(groups)
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+    assert len(store.latest_all()) == 2
+
+    groups.discard("vip")
+    first = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in first.events] == []  # 第一轮缺失只计数
+    assert len(store.latest_all()) == 2
+
+    second = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in second.events] == ["group_removed"]
+    assert list(store.latest_all()) == ["demo:demo-model:default"]
+    removed = next(event for event in store.read_events(limit=10)[0] if event["kind"] == "group_removed")
+    assert removed["previous"]["metadata"]["group"] == "vip"
+
+
+def test_platform_pricing_records_parses_final_prices():
+    """totokens 新版结构（platforms/supported_models/final_prices）：确定性直读每 token 单价并 ×1e6 换算。"""
+    from llm_price_monitor.adapters import platform_pricing_records
+
+    payload = {
+        "code": "success",
+        "data": [{
+            "name": "demo",
+            "platforms": [{
+                "platform": "openai",
+                "groups": [{"id": 3, "name": "plus-优惠", "rate_multiplier": 0.178}],
+                "supported_models": [{
+                    "name": "gpt-5.6-sol",
+                    "platform": "openai",
+                    "pricing": {
+                        "billing_mode": "token",
+                        "final_prices": [{
+                            "group_id": 3,
+                            "group_name": "plus-优惠",
+                            "rate_multiplier": 0.178,
+                            "billing_mode": "token",
+                            "input_price": 8.9e-7,
+                            "output_price": 5.34e-6,
+                            "cache_read_price": 8.9e-8,
+                            "cache_write_price": None,
+                        }],
+                    },
+                }],
+            }],
+        }],
+    }
+    spec = SiteSpec(id="demo", models=[ModelTarget("gpt-5.6-sol")], network={"url": "https://demo.test/api/models"})
+    records = platform_pricing_records(spec, [{"url": "https://demo.test/api/models", "status": 200, "resource_type": "fetch", "payload": payload}])
+    assert len(records) == 1
+    record = records[0]
+    assert record.model == "gpt-5.6-sol"
+    assert record.metadata["group"] == "plus-优惠"
+    assert record.price_status == "confirmed"
+    assert record.input_price == pytest.approx(0.89)
+    assert record.output_price == pytest.approx(5.34)
+    assert record.metadata["group_ratio"] == 0.178
+
+
+def test_carry_last_price_keeps_auth_label_only_for_auth_placeholders():
+    """占位沿用上次价格时：接口 401/403 才标需认证，AI/解析没映射出的占位不再误标。"""
+    from llm_price_monitor.report import _carry_last_price
+
+    previous = {"model": "gpt-5.6-sol", "input_price": 0.89, "output_price": 5.34, "captured_at": 1.0, "metadata": {"group": "gpt-plus-稳定"}}
+    ai_missed = _carry_last_price(
+        {"price_status": "unavailable", "captured_at": 2.0, "metadata": {"group": "gpt-plus-稳定", "pricing_kind": "unavailable", "notes": "AI 未返回"}},
+        previous,
+    )
+    assert ai_missed["requires_auth"] is False
+    assert ai_missed["input_price"] == 0.89
+    auth = _carry_last_price(
+        {"price_status": "unavailable", "captured_at": 2.0, "requires_auth": True, "metadata": {"group": "gpt-plus-稳定", "pricing_kind": "auth_required", "error": "HTTP 401"}},
+        previous,
+    )
+    assert auth["requires_auth"] is True
