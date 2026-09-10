@@ -150,7 +150,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
     # /api/tasks/{task_id} 为动态路径，另行按前缀匹配
-    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs"}
+    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/admin/site-submissions"}
     admin_get_prefixes = ("/api/tasks/",)
 
     @app.middleware("http")
@@ -182,6 +182,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.status.build_router(store))
     app.include_router(routes.geo.build_router(store))
     app.include_router(routes.analytics.build_router(store))
+    app.include_router(routes.submissions.build_router(store))
     app.include_router(routes.assistant.build_router(store))
     app.include_router(routes.ai_logs.build_router(store))
     ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志

@@ -476,7 +476,7 @@ export function AdminSettings() {
           </SettingsSection>
           <SettingsSection
             title="通知推送（WxPusher）"
-            description="有新建议、或站点价格/状态/公告有变化时通知你；Token 留空就只保存不推送"
+            description="站点价格/状态/公告有变化、收到新建议、或有访客提交站点时通知你；Token 留空就只保存不推送"
             action={
               <Btn size="sm" loading={testing === "wxpusher"} onClick={() => runTest("wxpusher")}>
                 发测试消息

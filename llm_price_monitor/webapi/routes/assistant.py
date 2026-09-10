@@ -175,32 +175,19 @@ def build_router(store: Store) -> APIRouter:
         return settings_from_raw(store.get_document("settings") or {}, resolve_env=False).assistant_daily_limit
 
     def consume_quota(ip: str) -> None:
-        """每 IP 每天限次的次数校验：超限抛 429，0 表示不限制；实际计数在回答成功后由 record_quota 完成。"""
+        """每 IP 每天限次的次数校验：超限抛 429，0 表示不限制；实际计数在回答成功后由 record_quota 完成。
+        计数存 SQLite（assistant_usage 表），重启不丢、并发写由数据库事务保证。"""
         limit = assistant_limit()
         if limit <= 0:
             return
-        today = time.strftime("%Y-%m-%d")
-        usage = {
-            key: item
-            for key, item in (store.get_document("assistant_usage") or {}).items()
-            if isinstance(item, dict) and item.get("date") == today
-        }
-        if int(usage.get(ip, {}).get("count", 0)) >= limit:
+        if store.quota_used(ip, time.strftime("%Y-%m-%d")) >= limit:
             raise HTTPException(status_code=429, detail="今天的提问次数用完了，明天再来吧")
 
     def record_quota(ip: str) -> None:
         """回答成功后计数：AI 失败、拒答都不扣次数。"""
-        limit = assistant_limit()
-        if limit <= 0:
+        if assistant_limit() <= 0:
             return
-        today = time.strftime("%Y-%m-%d")
-        usage = {
-            key: item
-            for key, item in (store.get_document("assistant_usage") or {}).items()
-            if isinstance(item, dict) and item.get("date") == today
-        }
-        usage[ip] = {"date": today, "count": int(usage.get(ip, {}).get("count", 0)) + 1}
-        store.set_document("assistant_usage", usage)
+        store.record_quota(ip, time.strftime("%Y-%m-%d"))
 
     @router.get("/api/assistant/status")
     def status() -> dict[str, Any]:
@@ -211,7 +198,7 @@ def build_router(store: Store) -> APIRouter:
     def gate(config: Any, model: str, question: str, turns: list[HistoryTurn]) -> str:
         """前置分类：refuse / general / data；判定或网络失败时按 data 处理，宁可多带数据也不答错。"""
         try:
-            _, response = request_with_model_fallback(config, _GATE_PROMPT, f"用户问题：{question}{history_text(turns)}")
+            _, response = request_with_model_fallback(config, _GATE_PROMPT, f"用户问题：{question}{history_text(turns)}", scene="助手分类")
             text = chat_content(response.json())
             action = str(json.loads(text[text.index("{"): text.rindex("}") + 1]).get("action") or "")
             return action if action in {"refuse", "general", "data"} else "data"
@@ -241,7 +228,7 @@ def build_router(store: Store) -> APIRouter:
         consume_quota(client_ip(request))
         system, user = build_prompt(action, question, turns)
         try:
-            _, response = request_with_model_fallback(config, system, user, json_mode=False)
+            _, response = request_with_model_fallback(config, system, user, json_mode=False, scene="助手问答")
             answer = chat_content(response.json())
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=502, detail=f"AI 服务返回了错误（HTTP {exc.response.status_code}）：{exc.response.text[:200]}") from exc
@@ -281,7 +268,7 @@ def build_router(store: Store) -> APIRouter:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
             try:
-                for chunk in ai_stream_fallback(config, system, user):
+                for chunk in ai_stream_fallback(config, system, user, scene="助手问答"):
                     yield emit({"delta": chunk})
                 record_quota(ip)
                 yield emit({"done": True})

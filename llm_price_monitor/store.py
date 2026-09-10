@@ -118,6 +118,22 @@ CREATE TABLE IF NOT EXISTS ip_geo (
     ok INTEGER NOT NULL DEFAULT 1,
     resolved_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    models TEXT,
+    contact TEXT,
+    ip TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_usage (
+    ip TEXT NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (ip, day)
+);
 CREATE TABLE IF NOT EXISTS ai_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -404,6 +420,62 @@ class Store:
         return self._read_rows(
             "price_events", limit=limit, site_id=site_id, kind=kind, kind_column="kind", payload_column="payload"
         )
+
+    # ---------- 站点提交 ----------
+
+    def add_site_submission(
+        self, *, name: str, url: str, models: str | None, contact: str | None, ip: str
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO site_submissions (name, url, models, contact, ip, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?, 'new', ?)",
+                (name, url, models, contact, ip, time.time()),
+            )
+
+    def list_site_submissions(
+        self, *, limit: int = 100, offset: int = 0, status: str | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, min(limit, _MAX_ROW_LIMIT))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM site_submissions {where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM site_submissions {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def set_site_submission_status(self, submission_id: int, status: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE site_submissions SET status = ? WHERE id = ?", (status, submission_id)
+            )
+        return cursor.rowcount > 0
+
+    # ---------- AI 助手配额（SQLite 计数：重启不丢、并发不互相覆盖） ----------
+
+    def quota_used(self, ip: str, day: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT count FROM assistant_usage WHERE ip = ? AND day = ?", (ip, day)
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def record_quota(self, ip: str, day: str) -> None:
+        """计数 +1；顺带清理历史日期的行，避免表随天数无限增长。"""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO assistant_usage (ip, day, count) VALUES (?, ?, 1)"
+                " ON CONFLICT(ip, day) DO UPDATE SET count = count + 1",
+                (ip, day),
+            )
+            conn.execute("DELETE FROM assistant_usage WHERE day < ?", (day,))
 
     def append_feedback(self, content: str, contact: str | None) -> None:
         with self._conn() as conn:

@@ -1,4 +1,5 @@
 """智能分析助手接口：入口可见性、未配置拒答与带数据上下文的问答。"""
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +212,20 @@ def test_ask_stream_failure_does_not_consume_quota(workspace: Path, monkeypatch)
     frames = [line[6:] for line in res2.text.splitlines() if line.startswith("data: ")]
     import json as _json
     assert any(_json.loads(frame).get("done") for frame in frames)
+
+
+def test_quota_counted_in_sqlite_and_enforced(workspace: Path, monkeypatch):
+    """配额计数落 SQLite：提问成功后 assistant_usage 表 +1，重启/换文档都不影响限额判断。"""
+    captured: dict = {}
+    client = _gated_client(workspace, monkeypatch, ["general"], captured)
+    assert client.post("/api/assistant/ask", json={"question": "上下文长度是什么？"}).status_code == 200
+    with sqlite3.connect(workspace / "var" / "monitor.db") as conn:
+        rows = conn.execute("SELECT ip, day, count FROM assistant_usage").fetchall()
+    assert len(rows) == 1 and rows[0][2] == 1
+    assert client.app.state.store.get_document("assistant_usage") is None  # 不再写文档
+    # 表里计数达到限额后继续提问即 429
+    limited = client.post("/api/assistant/ask", json={"question": "再问一个"})
+    assert limited.status_code == 429
 
 
 def test_ask_falls_back_to_next_model_on_model_error(workspace: Path, monkeypatch):

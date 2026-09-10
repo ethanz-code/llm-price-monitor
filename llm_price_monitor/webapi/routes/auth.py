@@ -14,7 +14,7 @@ from llm_price_monitor.webapi.deps import client_ip
 SETUP_PATH = "/api/setup"
 # 登录/登出/首次设置与访客行为本身必须是公开写接口，否则永远进不了门；
 # 中间件（app.py）按这个集合放行
-PUBLIC_WRITE_PATHS = {SETUP_PATH, "/api/auth/login", "/api/auth/logout", "/api/feedback", "/api/analytics/track", "/api/assistant/ask", "/api/assistant/ask/stream"}
+PUBLIC_WRITE_PATHS = {SETUP_PATH, "/api/auth/login", "/api/auth/logout", "/api/feedback", "/api/analytics/track", "/api/site-submissions", "/api/assistant/ask", "/api/assistant/ask/stream"}
 
 # 登录失败限流：同一来源窗口期内最多 LOGIN_MAX_FAILURES 次失败，成功登录即清零
 LOGIN_MAX_FAILURES = 5

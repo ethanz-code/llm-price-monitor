@@ -52,6 +52,8 @@ uv run price-web --with-frontend
 
 请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）都支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。可选字段：
 
+> **安全说明**：站点凭据（cookie、access_token、refresh_token、请求头）与 AI 密钥以明文保存在 SQLite（`var/monitor.db`），本设计面向单管理员自部署场景，换取配置即改即生效的简单性。请确保数据库文件本身不对外暴露：不要把 `var/` 目录放进公开存储或镜像，服务器上做好文件权限即可。
+
 - `status`：渠道状态数据地址，与价格同一次采集顺带执行，存时序 `status_records`，变化写入 `status_events`
 - `notice`：公告地址，默认自动请求站点根地址的 `GET /api/notice`（new-api/one-api 系标配），多版本公告存 `notice_records`
 - `network.headless`：网页需登录才能看到价格时，启用无头浏览器（Playwright Chromium）渲染后再解析，打开网页前注入 cookies 和 localStorage 登录态：
@@ -79,6 +81,7 @@ cookies 和 localStorage 的归属域自动取 `network.url`，不用填；`wait
 | `GET /api/overview` / `latest` / `history` / `feed` / `status` / `notice` / `catalog` / `discount` / `meta` | 公开 | 数据读取（`feed` 为价格事件+站点公告合并的统一事件流；`status` 另有 `/api/status/latest`、`/api/status/events`） |
 | `GET /api/geo` | 公开 | 逐站点解析公网 IP 归属地（带缓存），供首页监控地球使用 |
 | `GET /api/assistant/status`、`POST /api/assistant/ask`（含 `/stream` 流式） | 公开（按 IP 每日限次） | AI 智能助手：基于平台采集的站点、价格与状态数据答问，未配置 AI 时入口隐藏 |
+| `POST /api/site-submissions` | 公开（按 IP 限次） | 访客提交监控站点申请；管理员经 `GET /api/admin/site-submissions` 查看，配置了 WxPusher 时每条新提交推送到微信 |
 | `POST /api/setup` | 公开 | 首次设置：创建管理员账号（仅库里没有账号时可用） |
 | `POST /api/auth/login` / `POST /api/auth/logout` | 公开 | 登录签发 30 天会话 cookie / 登出清除 |
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
