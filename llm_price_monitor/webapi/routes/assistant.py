@@ -20,6 +20,12 @@ from llm_price_monitor.webapi.deps import client_ip
 # 送给 AI 的数据摘要体量上限：价格行与站点数都做截断，避免撑爆输入窗口
 _MAX_LATEST_ROWS = 40
 _MAX_SITES = 30
+# 事件与公告条数上限：历史明细对回答帮助有限，全量送会一次烧掉十几万 token
+_MAX_EVENT_ROWS = 20
+# 公告与事件里长文本（正文/变更明细）的保留长度：标题和结论都在开头
+_MAX_TEXT_CHARS = 200
+# 状态事件里最多保留的渠道变更明细条数
+_MAX_CHANGES = 10
 # 随问题携带的最近对话轮数：再多 token 浪费、收益很小
 _MAX_HISTORY_TURNS = 6
 
@@ -105,18 +111,63 @@ def build_router(store: Store) -> APIRouter:
             out.append(row)
         return out
 
+    def _slim_price_row(row: dict[str, Any]) -> dict[str, Any]:
+        """价格行瘦身：剥掉 metadata 里的证据原文等大字段，只留回答问题需要的数值与分组。"""
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        return {
+            "site_id": row.get("site_id"),
+            "model": row.get("model"),
+            "input_price": row.get("input_price"),
+            "output_price": row.get("output_price"),
+            "unit": row.get("unit"),
+            "price_status": row.get("price_status"),
+            "group": metadata.get("group"),
+            "currency": metadata.get("currency"),
+            "captured_at": row.get("captured_at"),
+        }
+
+    def _clip(value: Any, limit: int = _MAX_TEXT_CHARS) -> Any:
+        """长文本截断：公告正文、事件变更明细这类内容只保留开头。"""
+        if isinstance(value, str) and len(value) > limit:
+            return value[:limit] + "…"
+        return value
+
     def data_summary() -> str:
-        """聚合站点配置、最新价格、渠道状态、价格/状态/公告事件与近期公告为一段紧凑 JSON（站点凭据不外送）。"""
+        """聚合站点配置、最新价格、渠道状态、价格/状态/公告事件与近期公告为一段紧凑 JSON（站点凭据不外送）。
+
+        事件与公告只送条数和文本长度受控的精简版：全量送会一次消耗十几万 token。
+        """
+        price_events = []
+        for event in store.read_events(limit=_MAX_EVENT_ROWS)[0]:
+            event = dict(event)
+            for side in ("previous", "current"):
+                if isinstance(event.get(side), dict):
+                    event[side] = _slim_price_row(event[side])
+            price_events.append(event)
+        status_events = []
+        for event in store.read_status_events(limit=_MAX_EVENT_ROWS)[0]:
+            event = dict(event)
+            changes = event.get("changes")
+            if isinstance(changes, list) and len(changes) > _MAX_CHANGES:
+                event["changes"] = changes[:_MAX_CHANGES] + [f"…其余 {len(changes) - _MAX_CHANGES} 条略"]
+            status_events.append(event)
         summary = {
             "sites": public_sites(),
-            "latest_prices": _readable(
-                list(store.latest_all().values())[:_MAX_LATEST_ROWS], "captured_at"
-            ),
+            "latest_prices": [
+                _slim_price_row(row)
+                for row in _readable(list(store.latest_all().values())[:_MAX_LATEST_ROWS], "captured_at")
+            ],
             "site_status": list(store.latest_status_all().values())[:_MAX_SITES],
-            "price_events": _readable(store.read_events(limit=50)[0], "detected_at"),
-            "status_events": _readable(store.read_status_events(limit=30)[0], "detected_at"),
-            "notice_events": _readable(store.read_notice_events(limit=30)[0], "detected_at"),
-            "notices": _readable(store.read_notice(limit=30)[0], "captured_at"),
+            "price_events": _readable(price_events, "detected_at"),
+            "status_events": _readable(status_events, "detected_at"),
+            "notice_events": [
+                {**event, "content": _clip(event.get("content"))}
+                for event in _readable(store.read_notice_events(limit=_MAX_EVENT_ROWS)[0], "detected_at")
+            ],
+            "notices": [
+                {**notice, "content": _clip(notice.get("content"))}
+                for notice in _readable(store.read_notice(limit=_MAX_EVENT_ROWS)[0], "captured_at")
+            ],
         }
         return json.dumps(summary, ensure_ascii=False, default=str)
 
