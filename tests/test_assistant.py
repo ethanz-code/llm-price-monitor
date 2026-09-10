@@ -100,7 +100,7 @@ def test_ask_stream_emits_delta_frames(workspace: Path, monkeypatch):
         yield "demo"
         yield "-model 现价 5.0。"
 
-    monkeypatch.setattr(assistant, "ai_stream", fake_stream)
+    monkeypatch.setattr(assistant, "ai_stream_fallback", fake_stream)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
     res = client.post("/api/assistant/ask/stream", json={"question": "demo 什么价？"})
@@ -198,7 +198,7 @@ def test_ask_stream_failure_does_not_consume_quota(workspace: Path, monkeypatch)
         raise assistant.httpx.ConnectError("boom")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(assistant, "ai_stream", failing_stream)
+    monkeypatch.setattr(assistant, "ai_stream_fallback", failing_stream)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
     client.app.state.store.set_document("settings", {"assistant_daily_limit": 1})
@@ -206,8 +206,35 @@ def test_ask_stream_failure_does_not_consume_quota(workspace: Path, monkeypatch)
     assert res.status_code == 200
     assert '"error"' in res.text
     # 失败不扣次数：下一次提问仍可通过配额校验并正常回答
-    monkeypatch.setattr(assistant, "ai_stream", lambda *args, **kwargs: iter(["demo-model 现价 5.0。"]))
+    monkeypatch.setattr(assistant, "ai_stream_fallback", lambda *args, **kwargs: iter(["demo-model 现价 5.0。"]))
     res2 = client.post("/api/assistant/ask/stream", json={"question": "demo 什么价？"})
     frames = [line[6:] for line in res2.text.splitlines() if line.startswith("data: ")]
     import json as _json
     assert any(_json.loads(frame).get("done") for frame in frames)
+
+
+def test_ask_falls_back_to_next_model_on_model_error(workspace: Path, monkeypatch):
+    import httpx
+
+    calls: list[str] = []
+
+    def fake_post(url: str, *, headers: dict, json: dict, timeout: float):
+        calls.append(json["model"])
+        if json["model"] == "bad-model":
+            request = httpx.Request("POST", url)
+            return httpx.Response(400, json={"error": {"message": "enable_thinking 参数受限"}}, request=request)
+        return _FakeResponse()
+
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    store = client.app.state.store
+    doc = dict(store.get_document("ai") or {})
+    doc["models"] = ["bad-model", "good-model"]
+    doc.pop("model", None)
+    store.set_document("ai", doc)
+    res = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
+    assert res.status_code == 200
+    assert "demo-model" in res.json()["answer"]
+    # 坏模型报 400 后自动换下一个模型，两个都被尝试过
+    assert set(calls) == {"bad-model", "good-model"}

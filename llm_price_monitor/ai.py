@@ -6,6 +6,7 @@ AI 只负责识别模型别名、补齐别名形式和标准化字段。
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from collections.abc import Iterator
@@ -84,6 +85,84 @@ def _response_detail(exc: httpx.HTTPError) -> str:
 def ai_endpoint(base_url: str) -> str:
     base = base_url.rstrip("/")
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+
+def model_pool(config: AIConfig) -> list[str]:
+    """models 与旧字段 model 合并去重后的候选池。"""
+    return [item for item in dict.fromkeys((*config.models, config.model)) if item]
+
+
+# 这类状态码多半是单个模型的问题（不支持参数、无权限、限流、上游抖动），换池子里下一个模型重试；
+# 401 是密钥问题，换模型没用，直接抛。
+_MODEL_FALLBACK_STATUSES = frozenset({400, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504})
+
+
+def request_with_model_fallback(
+    config: AIConfig,
+    system: str,
+    user: str,
+    *,
+    json_mode: bool = True,
+    max_tokens: int | None = None,
+    client: httpx.Client | None = None,
+) -> tuple[str, httpx.Response]:
+    """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
+
+    prompt 超长与 401 属于请求级/配置级问题，换模型无意义，原样抛出；池子耗尽时抛最后一个错误。
+    返回 (实际使用的模型, 响应)。
+    """
+    pool = model_pool(config)
+    if not pool:
+        raise AIExtractionError("配置文件 ai.model/ai.models 未配置")
+    order = pool[:]
+    random.shuffle(order)
+    passed_client = client is not None
+    client = client or httpx.Client(timeout=config.timeout)
+    last_exc: httpx.HTTPStatusError | None = None
+    try:
+        for model in order:
+            url, headers, request_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
+            try:
+                # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
+                response = (
+                    client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                    if passed_client
+                    else httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                )
+                response.raise_for_status()
+                return model, response
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 or _prompt_too_long(exc):
+                    raise
+                if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
+                    raise
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+    finally:
+        if not passed_client:
+            client.close()
+
+
+def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None) -> Iterator[str]:
+    """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。"""
+    pool = model_pool(config)
+    if not pool:
+        raise AIExtractionError("配置文件 ai.model/ai.models 未配置")
+    order = pool[:]
+    random.shuffle(order)
+    last_exc: httpx.HTTPStatusError | None = None
+    for model in order:
+        try:
+            for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens):
+                yield chunk
+            return
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401 or exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
+                raise
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
 
 
 def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None) -> str:
@@ -173,14 +252,7 @@ def infer_token_fields(config: AIConfig, sample: str) -> dict[str, str]:
         "路径用点号逐层写，如 data.access_token；找不到的令牌路径填 null。"
         "只返回 JSON 对象：{\"access_token_field\": string|null, \"refresh_token_field\": string|null}，不要解释。"
     )
-    model = config.pick_model()
-    url, headers, request_body = ai_request(config, model, system, sample)
-    own_client = httpx.Client(timeout=config.timeout)
-    try:
-        response = own_client.post(url, headers=headers, json=request_body, timeout=config.timeout)
-    finally:
-        own_client.close()
-    response.raise_for_status()
+    _, response = request_with_model_fallback(config, system, sample)
     parsed = json_content(ai_content(config.api_format, response.json()))
     result: dict[str, str] = {}
     for key in ("access_token_field", "refresh_token_field"):
@@ -379,9 +451,7 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
     try:
         if not config.api_key:
             return None
-        url, headers, body = ai_request(config, config.pick_model(), system, user)
-        response = client.post(url, headers=headers, json=body, timeout=config.timeout)
-        response.raise_for_status()
+        _, response = request_with_model_fallback(config, system, user, client=client)
         payload = json_content(ai_content(config.api_format, response.json()))
         content = payload.get("content")
         return content.strip() if isinstance(content, str) and content.strip() else ""
@@ -640,9 +710,7 @@ expected_models：
                     raise AIExtractionError("配置文件 ai.api_key 未配置")
                 searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
                 try:
-                    url, headers, request_body = ai_request(self.config, ai_model, system, user)
-                    response = client.post(url, headers=headers, json=request_body, timeout=self.config.timeout)
-                    response.raise_for_status()
+                    ai_model, response = request_with_model_fallback(self.config, system, user, client=client)
                     raw_result = json_content(ai_content(self.config.api_format, response.json()))
                     break
                 except httpx.HTTPStatusError as exc:

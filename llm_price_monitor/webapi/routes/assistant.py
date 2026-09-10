@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from fastapi.responses import StreamingResponse
 
-from llm_price_monitor.ai import AIExtractionError, ai_request, ai_stream, chat_content
+from llm_price_monitor.ai import AIExtractionError, ai_stream_fallback, chat_content, request_with_model_fallback
 from llm_price_monitor.config import ai_from_raw, settings_from_raw
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.deps import client_ip
@@ -211,9 +211,7 @@ def build_router(store: Store) -> APIRouter:
     def gate(config: Any, model: str, question: str, turns: list[HistoryTurn]) -> str:
         """前置分类：refuse / general / data；判定或网络失败时按 data 处理，宁可多带数据也不答错。"""
         try:
-            url, headers, request_body = ai_request(config, model, _GATE_PROMPT, f"用户问题：{question}{history_text(turns)}", json_mode=True)
-            response = httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
-            response.raise_for_status()
+            _, response = request_with_model_fallback(config, _GATE_PROMPT, f"用户问题：{question}{history_text(turns)}")
             text = chat_content(response.json())
             action = str(json.loads(text[text.index("{"): text.rindex("}") + 1]).get("action") or "")
             return action if action in {"refuse", "general", "data"} else "data"
@@ -242,10 +240,8 @@ def build_router(store: Store) -> APIRouter:
             return {"answer": _REFUSAL}
         consume_quota(client_ip(request))
         system, user = build_prompt(action, question, turns)
-        url, headers, request_body = ai_request(config, model, system, user, json_mode=False)
         try:
-            response = httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
-            response.raise_for_status()
+            _, response = request_with_model_fallback(config, system, user, json_mode=False)
             answer = chat_content(response.json())
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=502, detail=f"AI 服务返回了错误（HTTP {exc.response.status_code}）：{exc.response.text[:200]}") from exc
@@ -285,7 +281,7 @@ def build_router(store: Store) -> APIRouter:
                 return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
             try:
-                for chunk in ai_stream(config, model, system, user):
+                for chunk in ai_stream_fallback(config, system, user):
                     yield emit({"delta": chunk})
                 record_quota(ip)
                 yield emit({"done": True})
