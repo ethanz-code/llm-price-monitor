@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from llm_price_monitor.browser_setup import ensure_browser_ready
 from llm_price_monitor.catalog import jsonio
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, config_from_store
+from llm_price_monitor import ai
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth, routes, scheduler, tasks
 from llm_price_monitor.webapi.deps import is_admin
@@ -149,7 +150,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
     # /api/tasks/{task_id} 为动态路径，另行按前缀匹配
-    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs"}
+    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs"}
     admin_get_prefixes = ("/api/tasks/",)
 
     @app.middleware("http")
@@ -182,6 +183,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.geo.build_router(store))
     app.include_router(routes.analytics.build_router(store))
     app.include_router(routes.assistant.build_router(store))
+    app.include_router(routes.ai_logs.build_router(store))
+    ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志
     ensure_browser_ready(store)
     scheduler.start_scheduler(store)
 

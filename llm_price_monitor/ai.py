@@ -39,6 +39,46 @@ class AIExtractionError(PriceMonitorError):
     pass
 
 
+# AI 请求日志钩子：由应用启动时注入 store.add_ai_log，ai.py 不反向依赖存储层
+AiLogHook = Any
+ai_log_hook: AiLogHook | None = None
+
+# 日志里 prompt / 回复原文的截断长度
+_LOG_EXCERPT_CHARS = 500
+
+
+def log_ai_request(**fields: Any) -> None:
+    if ai_log_hook is None:
+        return
+    try:
+        ai_log_hook(**fields)
+    except Exception:
+        pass  # 日志失败绝不影响主流程
+
+
+def _excerpt(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value[:_LOG_EXCERPT_CHARS] + ("…" if len(value) > _LOG_EXCERPT_CHARS else "")
+
+
+def _usage_tokens(api_format: str, payload: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """从各家响应里取 token 用量，取不到就返回空。"""
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    if api_format == "anthropic":
+        prompt = usage.get("input_tokens")
+        completion = usage.get("output_tokens")
+    elif api_format == "gemini":
+        prompt = usage.get("promptTokenCount")
+        completion = usage.get("candidatesTokenCount")
+    else:
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+    total = usage.get("total_tokens")
+    to_int = lambda v: int(v) if isinstance(v, (int, float)) else None
+    return to_int(prompt), to_int(completion), to_int(total)
+
+
 # 证据超长被供应商拒绝时，按阶梯收紧单条证据文本上限逐级重试；None 表示不限制。
 EVIDENCE_CHAR_LADDER: tuple[int | None, ...] = (None, 240_000, 96_000, 40_000, 16_000)
 
@@ -105,11 +145,12 @@ def request_with_model_fallback(
     json_mode: bool = True,
     max_tokens: int | None = None,
     client: httpx.Client | None = None,
+    scene: str = "AI 请求",
 ) -> tuple[str, httpx.Response]:
     """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
 
     prompt 超长与 401 属于请求级/配置级问题，换模型无意义，原样抛出；池子耗尽时抛最后一个错误。
-    返回 (实际使用的模型, 响应)。
+    返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。
     """
     pool = model_pool(config)
     if not pool:
@@ -122,6 +163,7 @@ def request_with_model_fallback(
     try:
         for model in order:
             url, headers, request_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
+            started = time.monotonic()
             try:
                 # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
                 response = (
@@ -130,12 +172,30 @@ def request_with_model_fallback(
                     else httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
                 )
                 response.raise_for_status()
+                duration_ms = int((time.monotonic() - started) * 1000)
+                try:
+                    payload = response.json()
+                    prompt_tokens, completion_tokens, total_tokens = _usage_tokens(config.api_format, payload)
+                    answer_excerpt = _excerpt(ai_content(config.api_format, payload))
+                except Exception:
+                    prompt_tokens = completion_tokens = total_tokens = None
+                    answer_excerpt = None
+                log_ai_request(
+                    scene=scene, model=model, status="ok", duration_ms=duration_ms,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
+                    prompt_excerpt=_excerpt(user), response_excerpt=answer_excerpt,
+                )
                 return model, response
             except httpx.HTTPStatusError as exc:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                error_text = f"HTTP {exc.response.status_code}：{exc.response.text[:200]}"
                 if exc.response.status_code == 401 or _prompt_too_long(exc):
+                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
                     raise
                 if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
+                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
                     raise
+                log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
                 last_exc = exc
         assert last_exc is not None
         raise last_exc
@@ -144,7 +204,7 @@ def request_with_model_fallback(
             client.close()
 
 
-def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None) -> Iterator[str]:
+def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None, scene: str = "AI 请求") -> Iterator[str]:
     """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。"""
     pool = model_pool(config)
     if not pool:
@@ -153,14 +213,31 @@ def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: 
     random.shuffle(order)
     last_exc: httpx.HTTPStatusError | None = None
     for model in order:
+        started = time.monotonic()
+        received: list[str] = []
         try:
             for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens):
+                received.append(chunk)
                 yield chunk
+            log_ai_request(
+                scene=scene, model=model, status="ok", duration_ms=int((time.monotonic() - started) * 1000),
+                prompt_excerpt=_excerpt(user), response_excerpt=_excerpt("".join(received)),
+            )
             return
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401 or exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            error_text = f"HTTP {exc.response.status_code}：{exc.response.text[:200]}"
+            status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
+            log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
+            if exc.response.status_code == 401 or status == "error":
                 raise
             last_exc = exc
+        except (httpx.HTTPError, AIExtractionError) as exc:
+            log_ai_request(
+                scene=scene, model=model, status="error", duration_ms=int((time.monotonic() - started) * 1000),
+                error=str(exc)[:300], prompt_excerpt=_excerpt(user),
+            )
+            raise
     assert last_exc is not None
     raise last_exc
 
@@ -252,7 +329,7 @@ def infer_token_fields(config: AIConfig, sample: str) -> dict[str, str]:
         "路径用点号逐层写，如 data.access_token；找不到的令牌路径填 null。"
         "只返回 JSON 对象：{\"access_token_field\": string|null, \"refresh_token_field\": string|null}，不要解释。"
     )
-    _, response = request_with_model_fallback(config, system, sample)
+    _, response = request_with_model_fallback(config, system, sample, scene="token 分析")
     parsed = json_content(ai_content(config.api_format, response.json()))
     result: dict[str, str] = {}
     for key in ("access_token_field", "refresh_token_field"):
@@ -451,7 +528,7 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
     try:
         if not config.api_key:
             return None
-        _, response = request_with_model_fallback(config, system, user, client=client)
+        _, response = request_with_model_fallback(config, system, user, client=client, scene="公告提取")
         payload = json_content(ai_content(config.api_format, response.json()))
         content = payload.get("content")
         return content.strip() if isinstance(content, str) and content.strip() else ""
@@ -710,7 +787,7 @@ expected_models：
                     raise AIExtractionError("配置文件 ai.api_key 未配置")
                 searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
                 try:
-                    ai_model, response = request_with_model_fallback(self.config, system, user, client=client)
+                    ai_model, response = request_with_model_fallback(self.config, system, user, client=client, scene="价格抽取")
                     raw_result = json_content(ai_content(self.config.api_format, response.json()))
                     break
                 except httpx.HTTPStatusError as exc:

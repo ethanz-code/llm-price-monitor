@@ -440,6 +440,71 @@ class Store:
             cursor = conn.execute("DELETE FROM visit_logs WHERE ts < ?", (before_ts,))
             return int(cursor.rowcount)
 
+    # ---------- AI 请求日志 ----------
+
+    # 日志保留天数：写入时顺带清理，超过即淘汰
+    AI_LOG_RETENTION_DAYS = 7
+
+    def add_ai_log(
+        self,
+        *,
+        scene: str,
+        model: str,
+        status: str,
+        duration_ms: int,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        error: str | None = None,
+        prompt_excerpt: str | None = None,
+        response_excerpt: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            now = time.time()
+            conn.execute(
+                "INSERT INTO ai_logs (ts, scene, model, status, duration_ms, prompt_tokens, completion_tokens,"
+                " total_tokens, error, prompt_excerpt, response_excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    now,
+                    scene,
+                    model,
+                    status,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    error,
+                    prompt_excerpt,
+                    response_excerpt,
+                ),
+            )
+            conn.execute("DELETE FROM ai_logs WHERE ts < ?", (now - self.AI_LOG_RETENTION_DAYS * 86400,))
+
+    def read_ai_logs(
+        self, *, limit: int = 100, offset: int = 0, scene: str | None = None, status: str | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        conditions = []
+        params: list[Any] = []
+        if scene:
+            conditions.append("scene = ?")
+            params.append(scene)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._conn() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM ai_logs{where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM ai_logs{where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def purge_ai_logs(self, before_ts: float) -> int:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM ai_logs WHERE ts < ?", (before_ts,))
+            return int(cursor.rowcount)
+
     # ---------- 访客 IP 归属地 ----------
 
     def pending_geo_ips(self, *, cutoff: float, limit: int = 100, fail_ttl: float = 86400.0) -> list[str]:

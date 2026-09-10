@@ -11,6 +11,7 @@ import {
   IconDashboard,
   IconEye,
   IconSettings,
+  IconAim,
 } from "@/components/icons";
 
 const RAIL = [
@@ -18,6 +19,7 @@ const RAIL = [
   { href: "/admin/sites", label: "站点管理", icon: <IconAppstore size={15} /> },
   { href: "/admin/tasks", label: "采集任务", icon: <IconBolt size={15} /> },
   { href: "/admin/analytics", label: "访问统计", icon: <IconEye size={15} /> },
+  { href: "/admin/ai-logs", label: "AI 日志", icon: <IconAim size={15} /> },
   { href: "/admin/docs", label: "使用文档", icon: <IconBook size={15} /> },
   { href: "/admin/settings", label: "系统设置", icon: <IconSettings size={15} /> },
 ];
