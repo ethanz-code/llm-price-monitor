@@ -206,3 +206,67 @@ def test_ratio_headers_config_validation():
         sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "https://ratio.test", "headers": "bad"}})])
     with pytest.raises(ValueError, match="ratio_url.url 必须是完整的"):
         sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "not-a-url"}})])
+
+
+# ---------- 启动自检：browser_setup ----------
+
+def _store_with(tmp_path, network: dict):
+    from llm_price_monitor.store import Store
+
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("demo", _site(network))
+    return store
+
+
+def test_setup_skips_when_no_site_needs_browser(tmp_path, monkeypatch):
+    from llm_price_monitor import browser_setup
+
+    def fail_launch() -> bool:
+        raise AssertionError("无站点启用 headless 时不应检查浏览器")
+
+    monkeypatch.setattr(browser_setup, "_chromium_launches", fail_launch)
+    browser_setup.ensure_browser_ready(_store_with(tmp_path, {"url": "https://demo.test/pricing"}))
+    browser_setup.ensure_browser_ready(
+        _store_with(tmp_path, {"url": "https://demo.test/pricing", "headless": {"enabled": False}})
+    )
+
+
+def test_setup_passes_when_chromium_launches(tmp_path, monkeypatch):
+    from llm_price_monitor import browser_setup
+
+    monkeypatch.setattr(browser_setup, "_chromium_launches", lambda: True)
+    monkeypatch.setattr(browser_setup, "_install_chromium", lambda: (_ for _ in ()).throw(AssertionError("不应触发安装")))
+    browser_setup.ensure_browser_ready(
+        _store_with(tmp_path, {"url": "https://demo.test/pricing", "headless": {"enabled": True}})
+    )
+
+
+def test_setup_installs_when_chromium_missing(tmp_path, monkeypatch):
+    from llm_price_monitor import browser_setup
+
+    state = {"launches": 0, "installed": 0}
+
+    def fake_launch() -> bool:
+        state["launches"] += 1
+        return state["launches"] > 1  # 首次失败，安装后成功
+
+    def fake_install() -> None:
+        state["installed"] += 1
+
+    monkeypatch.setattr(browser_setup, "_chromium_launches", fake_launch)
+    monkeypatch.setattr(browser_setup, "_install_chromium", fake_install)
+    browser_setup.ensure_browser_ready(
+        _store_with(tmp_path, {"url": "https://demo.test/pricing", "headless": {"enabled": True}})
+    )
+    assert state == {"launches": 2, "installed": 1}
+
+
+def test_setup_reports_failure_without_crashing(tmp_path, monkeypatch):
+    from llm_price_monitor import browser_setup
+
+    monkeypatch.setattr(browser_setup, "_chromium_launches", lambda: False)
+    monkeypatch.setattr(browser_setup, "_install_chromium", lambda: (_ for _ in ()).throw(RuntimeError("网络不通")))
+    # 安装失败只写任务日志，不能让服务起不来
+    browser_setup.ensure_browser_ready(
+        _store_with(tmp_path, {"url": "https://demo.test/pricing", "headless": {"enabled": True}})
+    )

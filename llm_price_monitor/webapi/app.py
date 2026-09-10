@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from llm_price_monitor.browser_setup import ensure_browser_ready
 from llm_price_monitor.catalog import jsonio
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, config_from_store
 from llm_price_monitor.store import Store
@@ -181,6 +182,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.geo.build_router(store))
     app.include_router(routes.analytics.build_router(store))
     app.include_router(routes.assistant.build_router(store))
+    ensure_browser_ready(store)
     scheduler.start_scheduler(store)
 
     return app
