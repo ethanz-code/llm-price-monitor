@@ -26,6 +26,29 @@ from llm_price_monitor.notice import fetch_site_notice
 from llm_price_monitor.status import diff_status, fetch_site_status
 from llm_price_monitor.store import Store
 from llm_price_monitor.token_refresh import needs_refresh, refresh_and_recollect
+from llm_price_monitor import wxpusher
+
+
+def _push_notifications(
+    config: MonitorConfig,
+    *,
+    price_events: list[dict[str, Any]] | None = None,
+    status_events: list[dict[str, Any]] | None = None,
+    notice_events: list[dict[str, Any]] | None = None,
+) -> None:
+    """变化事件汇总推送到 WxPusher；未配置 appToken 或推送失败只记日志，不影响采集结果。"""
+    if not config.settings.wxpusher_app_token:
+        return
+    try:
+        wxpusher.send_change_digest(
+            app_token=config.settings.wxpusher_app_token,
+            uid=config.settings.wxpusher_uid,
+            price_events=price_events or [],
+            status_events=status_events or [],
+            notice_events=notice_events or [],
+        )
+    except Exception as exc:  # 推送是旁路能力，失败不能让采集任务标失败
+        tasklog.emit(f"WxPusher 推送失败：{exc}", "error")
 
 
 @dataclass(frozen=True)
@@ -197,6 +220,7 @@ def _scan_prices(
     user_agent: str,
     store: Store | None,
     latest: dict[str, dict[str, Any]],
+    persist: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], set[str]]:
     """价格采集主体：逐站点走适配器，与上次快照比对生成事件。
 
@@ -315,8 +339,9 @@ def _scan_prices(
             site_changed += kind != "unchanged"
             latest[key] = current
         # 出现"需认证"占位行（401/403）时是我方凭证问题，不代表分组真的下线，
-        # 跳过缺失计数，避免 token 过期把分组刷成下线事件
-        if store is not None and not needs_refresh(collected):
+        # 跳过缺失计数，避免 token 过期把分组刷成下线事件；
+        # 测试采集（persist=False）同样不计数——不完整的测试轮次不得污染正式下线阈值
+        if store is not None and persist and not needs_refresh(collected):
             removed_keys |= _detect_removed_groups(store, latest, spec.id, site_keys, events)
         tasklog.emit(f"[{spec.id}] 价格采集成功：{len(collected)} 条价格，{site_changed} 处变化，{time.time() - site_started:.1f}s")
     tasklog.emit(f"价格采集完成：{len(records)} 条记录，{len(errors)} 个错误，{time.time() - scan_started:.1f}s")
@@ -506,7 +531,7 @@ def scan_prices(
     client = client or httpx.Client(follow_redirects=True)
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest)
+        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)
         # price_status 在确认/规则/无数据之间抖动不代表价格真的变了，这类事件不落库
         changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
@@ -514,6 +539,7 @@ def scan_prices(
             store.append_events(changed_events)
             _persist_latest(store, latest, removed_keys=removed_keys)
             _merge_collect_status(store, config, site_status)
+            _push_notifications(config, price_events=changed_events)
         return MonitorReport(started, time.time(), records, changed_events, errors)
     finally:
         if own:
@@ -537,6 +563,7 @@ def scan_statuses(
         if persist and store is not None:
             store.append_status_records(scan.records)
             store.append_status_events(scan.events)
+            _push_notifications(config, status_events=scan.events)
         return scan
     finally:
         if own:
@@ -560,6 +587,7 @@ def scan_notices(
         if persist and store is not None:
             store.append_notice_records(scan.records)
             store.append_notice_events(scan.events)
+            _push_notifications(config, notice_events=scan.events)
         return scan
     finally:
         if own:
@@ -581,7 +609,7 @@ def run_once(
     client = client or httpx.Client(follow_redirects=True)
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest)
+        records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)
         status_scan = _scan_statuses(config, client, selected_user_agent, store)
         notice_scan = _scan_notices(config, client, selected_user_agent, store)
         errors = [*errors, *status_scan.errors, *notice_scan.errors]
@@ -595,6 +623,7 @@ def run_once(
             store.append_notice_records(notice_scan.records)
             store.append_notice_events(notice_scan.events)
             _merge_collect_status(store, config, site_status)
+            _push_notifications(config, price_events=changed_events, status_events=status_scan.events, notice_events=notice_scan.events)
         return MonitorReport(
             started,
             time.time(),

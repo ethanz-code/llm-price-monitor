@@ -142,7 +142,8 @@ def fetch_site_notice(
                 [item for item in data["announcements"] if isinstance(item, dict) and str(item.get("content") or "").strip()]
             )
             parse = "status"
-    elif payload is None:
+    elif payload is None or isinstance(payload, list):
+        # 非 JSON、或顶层是 JSON 数组：没有可结构化解析的公告对象，按原文处理
         parse = "text"
         content = response.text.strip()
     # 固定解析拿不到正文，或正文是 HTML 片段时交给 AI 提取——AI 认得出任意响应结构里

@@ -363,7 +363,7 @@ class NetworkAdapter:
         if isinstance(headless_config, dict) and headless_config.get("enabled"):
             from llm_price_monitor.browser_fetch import fetch_page_html
 
-            response: Any = _BrowserPageResponse(entry.url, fetch_page_html(entry.url, headless_config))
+            response: Any = _BrowserPageResponse(entry.url, fetch_page_html(entry.url, headless_config, user_agent))
         else:
             response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         if response.status_code in {401, 403}:
@@ -621,7 +621,7 @@ def _ratio_endpoint(network: dict[str, Any]) -> tuple[str, dict[str, str]] | Non
         headers = ratio_raw.get("headers")
         if not isinstance(url, str) or not url.strip():
             return None
-        return url.strip(), {str(key): str(value) for key, value in headers.items()} if isinstance(headers, dict) else {}
+        return url.strip(), {str(key): expand_header_value(str(value)) for key, value in headers.items()} if isinstance(headers, dict) else {}
     return None
 
 

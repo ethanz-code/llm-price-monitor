@@ -75,7 +75,7 @@ def test_fetch_price_uses_browser_when_headless_enabled(monkeypatch):
 
 
 def test_fetch_price_uses_httpx_when_headless_disabled(monkeypatch):
-    def fail_fetch(url: str, headless_config: dict) -> str:
+    def fail_fetch(url: str, headless_config: dict, user_agent: str | None = None) -> str:
         raise AssertionError("未启用 headless 时不应走浏览器分支")
 
     monkeypatch.setattr("llm_price_monitor.tracker._fetch_page_via_browser", fail_fetch)
@@ -119,8 +119,9 @@ def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_fetch_page_html(url: str, headless_config: dict) -> str:
+    def fake_fetch_page_html(url: str, headless_config: dict, user_agent: str | None = None) -> str:
         calls.append(url)
+        assert user_agent == "test-ua"  # UA 应与 HTTP 采集路径保持一致传入浏览器
         return _PAGE_HTML
 
     monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", fake_fetch_page_html)
@@ -138,7 +139,7 @@ def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
 def test_network_adapter_keeps_httpx_when_headless_disabled(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    def fail_fetch(url: str, headless_config: dict) -> str:
+    def fail_fetch(url: str, headless_config: dict, user_agent: str | None = None) -> str:
         raise AssertionError("未启用 headless 时不应走浏览器分支")
 
     monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", fail_fetch)
@@ -168,7 +169,7 @@ def _ratio_json() -> httpx.Response:
 def test_ratio_url_object_with_headers(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg: _RATIO_PAGE)
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None: _RATIO_PAGE)
     seen: list[httpx.Headers] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -188,7 +189,7 @@ def test_ratio_url_object_with_headers(monkeypatch):
 def test_ratio_url_string_still_works(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg: _RATIO_PAGE)
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None: _RATIO_PAGE)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "ratio.test":
@@ -199,6 +200,94 @@ def test_ratio_url_string_still_works(monkeypatch):
         records = NetworkAdapter().collect(_ratio_site("https://ratio.test/api/rate"), client, 20.0, "test-ua")
     priced = [item for item in records if item.model == "gpt-5.6-luna" and item.price_status == "confirmed"]
     assert priced and priced[0].output_price == 9.9 * 0.5
+
+
+def test_ratio_url_headers_expand_env_variables(monkeypatch):
+    from llm_price_monitor.adapters import NetworkAdapter
+
+    monkeypatch.setenv("TEST_RATIO_KEY", "rk-9")
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "ratio.test":
+            seen.append(request.headers)
+            return _ratio_json()
+        return httpx.Response(200, text=_RATIO_PAGE)
+
+    ratio = {"url": "https://ratio.test/api/rate", "headers": {"X-Rate-Key": "${TEST_RATIO_KEY}"}}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        NetworkAdapter().collect(_ratio_site(ratio), client, 20.0, "test-ua")
+    assert seen[0]["x-rate-key"] == "rk-9"
+
+
+# ---------- browser_fetch：异常类型、环境变量注入与 UA 透传 ----------
+
+def _fake_playwright(monkeypatch, captured: dict, *, fail: bool = False):
+    import sys
+    import types
+
+    class FakePage:
+        def goto(self, *args, **kwargs): ...
+        def wait_for_timeout(self, ms): ...
+        def content(self): return "<html>ok</html>"
+
+    class FakeContext:
+        def add_cookies(self, cookies): captured["cookies"] = cookies
+        def add_init_script(self, script): captured["script"] = script
+        def new_page(self): return FakePage()
+
+    class FakeBrowser:
+        def new_context(self, user_agent=None):
+            captured["ua"] = user_agent
+            return FakeContext()
+        def close(self): ...
+
+    class FakeChromium:
+        chromium = types.SimpleNamespace(launch=lambda headless: FakeBrowser())
+        def stop(self): ...
+
+    class FakePlaywright:
+        def start(self):
+            if fail:
+                raise OSError("chromium 启动失败")
+            return FakeChromium()
+        def stop(self): ...
+
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = FakePlaywright
+    playwright_mod = types.ModuleType("playwright")
+    playwright_mod.sync_api = sync_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright_mod)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+
+
+def test_fetch_page_html_wraps_failure_as_price_monitor_error(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import PriceMonitorError
+
+    _fake_playwright(monkeypatch, {}, fail=True)
+    with pytest.raises(PriceMonitorError, match="无头浏览器采集"):
+        fetch_page_html("https://demo.test/pricing", {"enabled": True})
+
+
+def test_fetch_page_html_expands_env_and_passes_user_agent(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    monkeypatch.setenv("TEST_HEADLESS_TOKEN", "tk-1")
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {
+            "enabled": True,
+            "cookies": [{"name": "session", "value": "${TEST_HEADLESS_TOKEN}"}],
+            "localStorage": {"token": "${TEST_HEADLESS_TOKEN}"},
+        },
+        "ua-1",
+    )
+    assert captured["cookies"][0]["value"] == "tk-1"
+    assert '"tk-1"' in captured["script"]
+    assert captured["ua"] == "ua-1"
 
 
 def test_ratio_headers_config_validation():

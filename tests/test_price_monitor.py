@@ -1505,6 +1505,34 @@ def test_group_removed_event_after_two_misses(tmp_path: Path, monkeypatch):
     assert removed["previous"]["metadata"]["group"] == "vip"
 
 
+def test_persist_false_scan_does_not_pollute_group_miss(tmp_path: Path, monkeypatch):
+    """测试采集（persist=False）不计入分组缺失：不完整的测试轮次不得加速"分组下线"判定。"""
+    groups = {"default", "vip"}
+
+    def collect(*_args):
+        return [
+            PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": group})
+            for group in sorted(groups)
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    groups.discard("vip")
+    for _ in range(2):  # 两次不完整测试轮次：group_miss 计数必须保持不动
+        run_once(config, store=store, client=httpx.Client(), persist=False)
+    assert not store.get_document("group_miss")
+
+    first = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in first.events] == []  # 真实缺失第一轮只计数
+    second = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in second.events] == ["group_removed"]
+
+
 def test_platform_pricing_records_parses_final_prices():
     """totokens 新版结构（platforms/supported_models/final_prices）：确定性直读每 token 单价并 ×1e6 换算。"""
     from llm_price_monitor.adapters import platform_pricing_records

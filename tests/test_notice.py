@@ -91,6 +91,21 @@ def test_fetch_site_notice_reads_newapi_data_field():
     assert record["source_url"] == "https://demo.test/api/notice"
 
 
+def test_fetch_site_notice_handles_json_list_payload():
+    """公告接口顶层是 JSON 数组时按原文处理，不再把正文丢成空串。"""
+    spec = _spec({"url": "https://demo.test/api/notice"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/notice":
+            return httpx.Response(200, json=[{"id": 1, "content": "数组公告正文"}])
+        return httpx.Response(200, json={"success": True, "data": {}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1")
+    assert record["parse"] == "text"
+    assert "数组公告正文" in record["content"]
+
+
 def test_fetch_site_notice_merges_status_announcements():
     """new-api 多条公告走 /api/status：分节拼进正文，置顶公告在前、列表最新在前。"""
     spec = _spec(None)

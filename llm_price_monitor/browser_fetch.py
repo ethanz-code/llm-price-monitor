@@ -5,21 +5,28 @@
 import json
 from urllib.parse import urlsplit
 
+from .config import PriceMonitorError
 
-def fetch_page_html(url: str, headless_config: dict) -> str:
-    """用 headless Chromium 打开 url，注入登录态后返回渲染后的 HTML。失败抛 RuntimeError。"""
+
+def fetch_page_html(url: str, headless_config: dict, user_agent: str | None = None) -> str:
+    """用 headless Chromium 打开 url，注入登录态后返回渲染后的 HTML。失败抛 PriceMonitorError。"""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        raise RuntimeError("服务器还没装无头浏览器组件，请在部署环境执行 pip install playwright && playwright install chromium") from exc
+        raise PriceMonitorError("服务器还没装无头浏览器组件，请在部署环境执行 pip install playwright && playwright install chromium") from exc
+
+    from .adapters import expand_header_value
 
     parsed = urlsplit(url)
     host = parsed.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
     cookies = [
-        {"name": item["name"], "value": item["value"], "domain": host, "path": "/"}
+        {"name": item["name"], "value": expand_header_value(item["value"]), "domain": host, "path": "/"}
         for item in headless_config.get("cookies") or []
     ]
-    local_storage = headless_config.get("localStorage") or {}
+    local_storage = {
+        key: expand_header_value(str(value))
+        for key, value in (headless_config.get("localStorage") or {}).items()
+    }
     wait_seconds = float(headless_config.get("wait_seconds", 3))
 
     playwright = None
@@ -27,7 +34,8 @@ def fetch_page_html(url: str, headless_config: dict) -> str:
     try:
         playwright = sync_playwright().start()
         browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context()
+        # UA 与 HTTP 采集路径保持一致，避免同一站点两条链路指纹不一致触发风控
+        context = browser.new_context(user_agent=user_agent) if user_agent else browser.new_context()
         if cookies:
             context.add_cookies(cookies)
         if local_storage:
@@ -42,7 +50,7 @@ def fetch_page_html(url: str, headless_config: dict) -> str:
         page.wait_for_timeout(int(wait_seconds * 1000))
         return page.content()
     except Exception as exc:
-        raise RuntimeError(f"无头浏览器采集 {url} 失败：{exc}") from exc
+        raise PriceMonitorError(f"无头浏览器采集 {url} 失败：{exc}") from exc
     finally:
         if browser is not None:
             browser.close()

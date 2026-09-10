@@ -63,7 +63,8 @@ def _entry(
     logo: str | None = None,
 ) -> dict[str, Any]:
     """models.dev 模型条目 → 目录条目（价格统一 USD，人民币按快照汇率换算）。"""
-    input_price, output_price = model["cost"]["input"], model["cost"]["output"]
+    cost = model.get("cost") or {}
+    input_price, output_price = cost.get("input"), cost.get("output")
     release_date = _release_date(model)
     return {
         "found": True,

@@ -209,6 +209,17 @@ def test_fetch_catalog_propagates_http_errors(monkeypatch):
 # ---------- report.attach_catalog_discounts ----------
 
 
+def test_fetch_catalog_tolerates_partial_cost_keys(monkeypatch):
+    """上游 cost 只有 output 没有 input 键时不应 KeyError 冲垮整个目录刷新。"""
+    monkeypatch.setattr(modelsdev.fx, "get_usd_cny_rate", lambda client, fallback=None: (7.0, "test"))
+    snapshot = {"openai": {"doc": "https://platform.openai.com/docs/models", "models": {
+        "partial": {"id": "partial", "name": "Partial", "release_date": "2026-01-01", "cost": {"output": 4.0}},
+    }}}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=snapshot))
+    doc = fetch_catalog(transport=transport)
+    assert doc["models"]["partial"]["list"] == {"input": None, "output": 4.0}
+
+
 def test_attach_catalog_discounts_prefers_snapshot_rate(monkeypatch):
     """collect 附加折扣优先用目录快照汇率，不做实时网络请求。"""
     def _fail(client, fallback=None):

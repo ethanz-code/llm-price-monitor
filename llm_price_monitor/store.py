@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS ip_geo (
     ok INTEGER NOT NULL DEFAULT 1,
     resolved_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    scene TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    error TEXT,
+    prompt_excerpt TEXT,
+    response_excerpt TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_logs_ts ON ai_logs(ts);
 """
 
 

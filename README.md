@@ -50,7 +50,7 @@ uv run price-web --with-frontend
 }
 ```
 
-请求头支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。可选字段：
+请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）都支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。可选字段：
 
 - `status`：渠道状态数据地址，与价格同一次采集顺带执行，存时序 `status_records`，变化写入 `status_events`
 - `notice`：公告地址，默认自动请求站点根地址的 `GET /api/notice`（new-api/one-api 系标配），多版本公告存 `notice_records`
