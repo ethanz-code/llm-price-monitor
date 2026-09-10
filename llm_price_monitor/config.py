@@ -313,13 +313,20 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
             parsed_network_url = urlsplit(network_url)
             if parsed_network_url.scheme not in {"http", "https"} or not parsed_network_url.netloc:
                 raise ValueError(f"站点 {site_id} 的 network.url 必须是完整的 http(s) URL")
-        ratio_url = network.get("ratio_url")
-        if ratio_url is not None:
+        # ratio_url 兼容两种写法：纯 URL 字符串（旧配置）或 {url, headers} 对象（倍率接口独立请求头）
+        ratio_raw = network.get("ratio_url")
+        if ratio_raw is not None:
+            ratio_value = {"url": ratio_raw} if isinstance(ratio_raw, str) else ratio_raw
+            if not isinstance(ratio_value, dict):
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url 必须是 URL 字符串或对象")
+            ratio_url = ratio_value.get("url")
             if not isinstance(ratio_url, str) or not ratio_url.strip():
-                raise ValueError(f"站点 {site_id} 的 network.ratio_url 必须是非空 URL")
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url.url 必须是非空 URL")
             parsed_ratio_url = urlsplit(ratio_url)
             if parsed_ratio_url.scheme not in {"http", "https"} or not parsed_ratio_url.netloc:
-                raise ValueError(f"站点 {site_id} 的 network.ratio_url 必须是完整的 http(s) URL")
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url.url 必须是完整的 http(s) URL")
+            if "headers" in ratio_value and not isinstance(ratio_value["headers"], dict):
+                raise ValueError(f"站点 {site_id} 的 network.ratio_url.headers 必须是对象")
         for network_field in ("params", "headers"):
             if network_field in network and not isinstance(network[network_field], dict):
                 raise ValueError(f"站点 {site_id} 的 network.{network_field} 必须是对象")

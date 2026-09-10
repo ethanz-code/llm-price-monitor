@@ -185,8 +185,9 @@ export interface SiteConfig {
   cookies?: Record<string, string> | null;
   network?: {
     url?: string | null;
-    /** 倍率接口：返回 {pricing: [{provider, model_display, rate}]}，基准价 × rate 折算实售价 */
-    ratio_url?: string | null;
+    /** 倍率接口：返回 {pricing: [{provider, model_display, rate}]}，基准价 × rate 折算实售价。
+     *  两种形态兼容：纯地址字符串（旧），或 {url, headers} 对象（倍率接口要专用请求头时）。 */
+    ratio_url?: string | { url: string; headers?: Record<string, string> } | null;
     params?: Record<string, string>;
     headers?: Record<string, string>;
     /** 网页模式·无头浏览器：开启后用无头浏览器打开网页并注入登录信息，可采集需要登录的页面 */

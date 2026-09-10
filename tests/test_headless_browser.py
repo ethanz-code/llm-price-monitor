@@ -150,3 +150,59 @@ def test_network_adapter_keeps_httpx_when_headless_disabled(monkeypatch):
         records = NetworkAdapter().collect(_spec(None), client, 20.0, "test-ua")
     record = next(item for item in records if item.model == "gpt-5.6-luna")
     assert record.input_price == 3.3 and record.output_price == 9.9
+
+
+# ---------- 倍率接口独立请求头（ratio_url 对象形态） ----------
+
+def _ratio_site(ratio: dict | str):
+    network = {"url": "https://demo.test/pricing", "ratio_url": ratio}
+    (spec,) = sites_from_raw([_site(network)])
+    return spec
+
+
+_RATIO_PAGE = '<html><body>{category:"text",models:["gpt-5.6-luna"],provider:"demo",input:3.3,output:9.9}</body></html>'
+def _ratio_json() -> httpx.Response:
+    return httpx.Response(200, json={"pricing": [{"provider": "demo", "rate": 0.5}]})
+
+
+def test_ratio_url_object_with_headers(monkeypatch):
+    from llm_price_monitor.adapters import NetworkAdapter
+
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg: _RATIO_PAGE)
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "ratio.test":
+            seen.append(request.headers)
+            return _ratio_json()
+        return httpx.Response(200, text=_RATIO_PAGE)
+
+    ratio = {"url": "https://ratio.test/api/rate", "headers": {"X-Rate-Key": "secret"}}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        records = NetworkAdapter().collect(_ratio_site(ratio), client, 20.0, "test-ua")
+    assert seen[0]["x-rate-key"] == "secret"
+    priced = [item for item in records if item.model == "gpt-5.6-luna" and item.price_status == "confirmed"]
+    assert priced and priced[0].output_price == 9.9 * 0.5
+
+
+def test_ratio_url_string_still_works(monkeypatch):
+    from llm_price_monitor.adapters import NetworkAdapter
+
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg: _RATIO_PAGE)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "ratio.test":
+            return _ratio_json()
+        return httpx.Response(200, text=_RATIO_PAGE)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        records = NetworkAdapter().collect(_ratio_site("https://ratio.test/api/rate"), client, 20.0, "test-ua")
+    priced = [item for item in records if item.model == "gpt-5.6-luna" and item.price_status == "confirmed"]
+    assert priced and priced[0].output_price == 9.9 * 0.5
+
+
+def test_ratio_headers_config_validation():
+    with pytest.raises(ValueError, match="ratio_url.headers 必须是对象"):
+        sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "https://ratio.test", "headers": "bad"}})])
+    with pytest.raises(ValueError, match="ratio_url.url 必须是完整的"):
+        sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "not-a-url"}})])

@@ -57,13 +57,45 @@ function advancedJsonError(text: string): string | null {
 type SiteFormState = {
   id: string;
   url: string;
-  ratioUrl: string;
   statusUrl: string;
   statusGroupsText: string;
   noticeUrl: string;
   models: string[];
   endpointHeadersText: string;
 };
+
+/** 请求头键值行编辑共用的行结构 */
+type KvRow = { key: string; value: string };
+
+/** 键值文本 → 行数组（请求头行编辑的初值） */
+function dictToRows(text: string): KvRow[] {
+  return Object.entries(textToDict(text)).map(([key, value]) => ({ key, value }));
+}
+
+/** 行数组 → 键值文本（"Key: Value" 多行，空行名跳过） */
+function rowsToText(rows: KvRow[]): string {
+  return rows
+    .filter((row) => row.key.trim())
+    .map((row) => `${row.key.trim()}: ${row.value}`)
+    .join("\n");
+}
+
+/** ratio_url 两种形态（纯字符串 / {url, headers} 对象）→ 表单用的地址与请求头文本 */
+function ratioFromConfig(network: SiteConfig["network"]): { url: string; headersText: string } {
+  const ratio = network?.ratio_url;
+  if (typeof ratio === "string") return { url: ratio, headersText: "" };
+  if (ratio !== null && typeof ratio === "object") {
+    return { url: typeof ratio.url === "string" ? ratio.url : "", headersText: dictToText(ratio.headers) };
+  }
+  return { url: "", headersText: "" };
+}
+
+/** 列表标注用：取出 ratio_url 里的地址文本（两种形态都兼容） */
+function ratioUrlText(row: SiteConfig): string {
+  const ratio = row.network?.ratio_url;
+  if (typeof ratio === "string") return ratio;
+  return ratio !== null && typeof ratio === "object" && typeof ratio.url === "string" ? ratio.url : "";
+}
 
 /** 键值对象 → "Key: Value" 多行文本。 */
 function dictToText(dict: Record<string, string> | null | undefined): string {
@@ -106,16 +138,8 @@ function networkFromForm(base: SiteConfig, form: SiteFormState): SiteConfig["net
   const network: Record<string, unknown> = { ...source };
   applyEntryUrl(network, "url", form.url);
   delete network.base_price_url;
-  setOptionalText(network, "ratio_url", form.ratioUrl);
   setOptionalDict(network, "headers", form.endpointHeadersText);
   return network as SiteConfig["network"];
-}
-
-/** 文本可选项写回：非空写入（trim），空且原配置有该字段时移除，避免保存时塞默认噪音。 */
-function setOptionalText(target: Record<string, unknown>, key: string, value: string, transform?: (v: string) => string) {
-  const next = (transform ?? ((v: string) => v.trim()))(value);
-  if (next) target[key] = next;
-  else if (key in target) delete target[key];
 }
 
 /** 键值对可选项写回：有内容写入；清空时已有字段置空对象。 */
@@ -426,7 +450,15 @@ type AuthFields = {
   sample: string;
   accessTokenField: string;
   refreshTokenField: string;
-  endpointHeadersText: string;
+};
+
+/** 价格采集子弹窗提交回主弹窗的字段集合 */
+type PriceFields = {
+  url: string;
+  headersText: string;
+  headless: HeadlessForm;
+  ratioUrl: string;
+  ratioHeadersText: string;
 };
 
 /** 网页模式·无头浏览器子弹窗的表单数据（localStorage 用行数组方便增删） */
@@ -562,38 +594,40 @@ function SubModalFooter({
   );
 }
 
-/* ---------- 子弹窗：倍率地址 / 站点公告（单地址输入共用） ---------- */
+/* ---------- 子弹窗：请求头编辑区（各地址专用请求头共用） ---------- */
 
-function UrlSubModal({
-  title,
-  label,
-  hint,
-  placeholder,
-  initial,
-  onCommit,
-  onClose,
+/** 单个地址的专用请求头编辑区：行编辑 + 覆盖提醒。warningKeys 为该地址 headers 里写死的认证头提示。 */
+function HeadersEditor({
+  rows,
+  onChange,
+  warningKeys,
 }: {
-  title: string;
-  label: string;
-  hint: string;
-  placeholder: string;
-  initial: string;
-  onCommit: (value: string) => void;
-  onClose: () => void;
+  rows: KvRow[];
+  onChange: (next: KvRow[]) => void;
+  warningKeys: string[];
 }) {
-  const [value, setValue] = useState(initial);
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title={title}
-      width={560}
-      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit(value)} />}
-    >
-      <SettingRow label={label} hint={hint}>
-        <Input value={value} onChange={setValue} placeholder={placeholder} style={{ width: "min(380px, 100%)" }} />
-      </SettingRow>
-    </Modal>
+    <div style={{ display: "grid", gap: 6 }}>
+      <span style={{ fontSize: 13.5 }}>请求头</span>
+      <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+        这里的请求头只发给这个地址，同名会盖掉站点级认证头
+      </span>
+      {warningKeys.length > 0 && (
+        <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+          {warningKeys.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
+        </span>
+      )}
+      <KeyValueRows
+        rows={rows}
+        onChange={onChange}
+        keyLabel="名字"
+        valueLabel="值"
+        keyPlaceholder="名字，如 X-API-Key"
+        valuePlaceholder="值"
+        addLabel="添加请求头"
+        ariaPrefix="请求头"
+      />
+    </div>
   );
 }
 
@@ -602,23 +636,33 @@ function UrlSubModal({
 function StatusSubModal({
   initialUrl,
   initialGroups,
+  initialHeadersText,
+  warningKeys,
   onCommit,
   onClose,
 }: {
   initialUrl: string;
   initialGroups: string;
-  onCommit: (url: string, groupsText: string) => void;
+  initialHeadersText: string;
+  warningKeys: string[];
+  onCommit: (url: string, groupsText: string, headersText: string) => void;
   onClose: () => void;
 }) {
   const [url, setUrl] = useState(initialUrl);
   const [groupsText, setGroupsText] = useState(initialGroups);
+  const [headerRows, setHeaderRows] = useState<KvRow[]>(() => dictToRows(initialHeadersText));
   return (
     <Modal
       open
       onClose={onClose}
       title="渠道状态"
       width={560}
-      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit(url, groupsText)} />}
+      footer={
+        <SubModalFooter
+          onCancel={onClose}
+          onConfirm={() => onCommit(url, groupsText, rowsToText(headerRows))}
+        />
+      }
     >
       <div style={{ display: "grid", gap: 14 }}>
         <SettingRow label="渠道状态 URL" hint="填站点的渠道状态接口地址，每次采集会顺带检查各渠道是否正常，有变化会记成事件">
@@ -645,6 +689,50 @@ function StatusSubModal({
             </span>
           )}
         </SettingRow>
+        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：站点公告 ---------- */
+
+function NoticeSubModal({
+  initialUrl,
+  initialHeadersText,
+  warningKeys,
+  onCommit,
+  onClose,
+}: {
+  initialUrl: string;
+  initialHeadersText: string;
+  warningKeys: string[];
+  onCommit: (url: string, headersText: string) => void;
+  onClose: () => void;
+}) {
+  const [url, setUrl] = useState(initialUrl);
+  const [headerRows, setHeaderRows] = useState<KvRow[]>(() => dictToRows(initialHeadersText));
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="站点公告"
+      width={560}
+      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit(url, rowsToText(headerRows))} />}
+    >
+      <div style={{ display: "grid", gap: 14 }}>
+        <SettingRow
+          label="站点公告 URL"
+          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知。公告请求会自动带上价格接口的认证请求头，不用重复填"
+        >
+          <Input
+            value={url}
+            onChange={setUrl}
+            placeholder="https://example.com/api/notice"
+            style={{ width: "min(380px, 100%)" }}
+          />
+        </SettingRow>
+        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
       </div>
     </Modal>
   );
@@ -654,14 +742,11 @@ function StatusSubModal({
 
 function AuthSubModal({
   initial,
-  overrideWarnings,
   runTest,
   onCommit,
   onClose,
 }: {
   initial: AuthFields;
-  /** network/status/notice headers 里写死认证头时的覆盖提醒（由主弹窗检测） */
-  overrideWarnings: string[];
   /** 真实调用续签接口；由主弹窗基于当前草稿组装完整配置发请求 */
   runTest: (overrides: RefreshOverride) => Promise<{ ok: boolean; text: string; result?: RefreshTestResult }>;
   onCommit: (fields: AuthFields, rotation?: RefreshTestResult) => void;
@@ -672,7 +757,6 @@ function AuthSubModal({
   const [token, setToken] = useState(initial.token);
   const [body, setBody] = useState(initial.body);
   const [sample, setSample] = useState(initial.sample);
-  const [headersText, setHeadersText] = useState(initial.endpointHeadersText);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
@@ -714,7 +798,6 @@ function AuthSubModal({
     sample,
     accessTokenField,
     refreshTokenField,
-    endpointHeadersText: headersText,
   });
 
   // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
@@ -759,27 +842,7 @@ function AuthSubModal({
   return (
     <Modal open onClose={onClose} title="认证与续签" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
       <div style={{ display: "grid", gap: 14 }}>
-        <div style={{ display: "grid", gap: 6 }}>
-          <span style={{ fontSize: 13.5 }}>采集请求头（每行 Key: Value）</span>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            只对价格接口生效。站点级的认证 Token 和 Cookie 是通用的：价格、渠道状态、公告采集都会自动带上，不用在这里重复填
-          </span>
-          {overrideWarnings.length > 0 && (
-            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-              {overrideWarnings.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
-            </span>
-          )}
-          <textarea
-            className="input mono textarea"
-            value={headersText}
-            onChange={(event) => setHeadersText(event.target.value)}
-            rows={2}
-            spellCheck={false}
-            style={{ fontSize: 12 }}
-          />
-        </div>
-
-        <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+        <div style={{ display: "grid", gap: 8 }}>
           <span style={{ fontSize: 13.5 }}>Token 续签</span>
           <span style={{ fontSize: 12, color: "var(--text-3)" }}>
             站点认证 token 短效时，配一个续签接口：采集遇到"需认证"就自动调它换新 token 并重试
@@ -917,81 +980,148 @@ function KeyValueRows({
   );
 }
 
-function HeadlessSubModal({
+/** 无头浏览器配置区（受控）：价格采集子弹窗内使用，开关开启后展开 Cookie/localStorage/等待时间 */
+function HeadlessSection({
+  value,
+  onChange,
+}: {
+  value: HeadlessForm;
+  onChange: (next: HeadlessForm) => void;
+}) {
+  // Cookie 与 localStorage 统一用 key/value 行编辑，写回时再映射回 name/value
+  const cookieRows = value.cookies.map((item) => ({ key: item.name, value: item.value }));
+  return (
+    <div style={{ display: "grid", gap: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+      <SettingRow label="用无头浏览器打开网页（注入登录信息）" hint="普通的接口采集不带登录状态；开启后改用无头浏览器打开页面，把下面的登录信息注进去">
+        <Switch checked={value.enabled} onChange={(next) => onChange({ ...value, enabled: next })} />
+      </SettingRow>
+      {value.enabled && (
+        <>
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 13.5 }}>Cookie</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+              只填名字和值就行，域名、路径会按采集地址自动带上
+            </span>
+            <KeyValueRows
+              rows={cookieRows}
+              onChange={(rows) =>
+                onChange({ ...value, cookies: rows.map((row) => ({ name: row.key, value: row.value })) })
+              }
+              keyLabel="名字"
+              valueLabel="值"
+              keyPlaceholder="名字，如 session"
+              valuePlaceholder="值，如 abc123"
+              addLabel="添加 Cookie"
+              ariaPrefix="Cookie"
+            />
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 13.5 }}>localStorage</span>
+            <KeyValueRows
+              rows={value.localStorage}
+              onChange={(rows) => onChange({ ...value, localStorage: rows })}
+              keyLabel="键"
+              valueLabel="值"
+              keyPlaceholder="键，如 token"
+              valuePlaceholder="值"
+              addLabel="添加一项"
+              ariaPrefix="localStorage"
+            />
+          </div>
+          <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
+            <Input
+              value={value.waitSeconds}
+              type="number"
+              ariaLabel="等待时间（秒）"
+              onChange={(next) => onChange({ ...value, waitSeconds: next })}
+              style={{ width: 100 }}
+            />
+          </SettingRow>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- 子弹窗：价格采集（价格接口 + 无头浏览器 + 倍率接口） ---------- */
+
+function PriceSubModal({
   initial,
+  warningKeys,
   onCommit,
   onClose,
 }: {
-  initial: HeadlessForm;
-  onCommit: (next: HeadlessForm) => void;
+  initial: PriceFields;
+  /** 价格接口与倍率接口 headers 里写死认证头的覆盖提醒 */
+  warningKeys: string[];
+  onCommit: (next: PriceFields) => void;
   onClose: () => void;
 }) {
-  const [enabled, setEnabled] = useState(initial.enabled);
-  // Cookie 与 localStorage 统一用 key/value 行编辑，提交时再映射回 name/value
-  const [cookies, setCookies] = useState(initial.cookies.map((item) => ({ key: item.name, value: item.value })));
-  const [storage, setStorage] = useState(initial.localStorage);
-  const [waitText, setWaitText] = useState(initial.waitSeconds);
+  const [url, setUrl] = useState(initial.url);
+  const [headerRows, setHeaderRows] = useState<KvRow[]>(() => dictToRows(initial.headersText));
+  const [headless, setHeadless] = useState(initial.headless);
+  const [ratioUrl, setRatioUrl] = useState(initial.ratioUrl);
+  const [ratioHeaderRows, setRatioHeaderRows] = useState<KvRow[]>(() => dictToRows(initial.ratioHeadersText));
 
   function commit() {
     // 等待时间收敛到 0~60；填空或非法回落默认 3
-    const parsed = Number(waitText.trim());
+    const parsed = Number(headless.waitSeconds.trim());
     const waitSeconds = Number.isFinite(parsed) ? Math.min(60, Math.max(0, Math.round(parsed))) : 3;
     onCommit({
-      enabled,
-      cookies: cookies.filter((item) => item.key.trim()).map((item) => ({ name: item.key.trim(), value: item.value })),
-      localStorage: storage.filter((item) => item.key.trim()),
-      waitSeconds: String(waitSeconds),
+      url,
+      headersText: rowsToText(headerRows),
+      headless: {
+        ...headless,
+        cookies: headless.cookies.filter((item) => item.name.trim()),
+        localStorage: headless.localStorage.filter((item) => item.key.trim()),
+        waitSeconds: String(waitSeconds),
+      },
+      ratioUrl,
+      ratioHeadersText: rowsToText(ratioHeaderRows),
     });
   }
 
   return (
-    <Modal open onClose={onClose} title="网页模式·无头浏览器" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
+    <Modal
+      open
+      onClose={onClose}
+      title="价格采集"
+      width={640}
+      footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}
+    >
       <div style={{ display: "grid", gap: 14 }}>
-        <SettingRow label="用无头浏览器打开网页（注入登录信息）" hint="普通的接口采集不带登录状态；开启后改用无头浏览器打开页面，把下面的登录信息注进去">
-          <Switch checked={enabled} onChange={(next) => setEnabled(next)} />
-        </SettingRow>
-        {enabled && (
-          <>
-            <div style={{ display: "grid", gap: 6 }}>
-              <span style={{ fontSize: 13.5 }}>Cookie</span>
-              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-                只填名字和值就行，域名、路径会按采集地址自动带上
-              </span>
-              <KeyValueRows
-                rows={cookies}
-                onChange={setCookies}
-                keyLabel="名字"
-                valueLabel="值"
-                keyPlaceholder="名字，如 session"
-                valuePlaceholder="值，如 abc123"
-                addLabel="添加 Cookie"
-                ariaPrefix="Cookie"
-              />
-            </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              <span style={{ fontSize: 13.5 }}>localStorage</span>
-              <KeyValueRows
-                rows={storage}
-                onChange={setStorage}
-                keyLabel="键"
-                valueLabel="值"
-                keyPlaceholder="键，如 token"
-                valuePlaceholder="值"
-                addLabel="添加一项"
-                ariaPrefix="localStorage"
-              />
-            </div>
-            <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
-              <Input
-                value={waitText}
-                type="number"
-                ariaLabel="等待时间（秒）"
-                onChange={setWaitText}
-                style={{ width: 100 }}
-              />
-            </SettingRow>
-          </>
-        )}
+        {/* 上块：价格接口 */}
+        <div style={{ display: "grid", gap: 14 }}>
+          <SettingRow
+            label="价格接口 URL"
+            hint="站点提供价格数据的接口地址；要带参数就直接拼在地址后面，如 ?page=1&lang=zh"
+          >
+            <Input
+              value={url}
+              onChange={setUrl}
+              placeholder="https://example.com/api/pricing"
+              style={{ width: "min(380px, 100%)" }}
+            />
+          </SettingRow>
+          <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
+          <HeadlessSection value={headless} onChange={setHeadless} />
+        </div>
+
+        {/* 下块：倍率接口（公开接口，没有无头浏览器） */}
+        <div style={{ display: "grid", gap: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+          <SettingRow
+            label="倍率接口 URL"
+            hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价"
+          >
+            <Input
+              value={ratioUrl}
+              onChange={setRatioUrl}
+              placeholder="https://example.com/api/public/model-pricing"
+              style={{ width: "min(380px, 100%)" }}
+            />
+          </SettingRow>
+          <HeadersEditor rows={ratioHeaderRows} onChange={setRatioHeaderRows} warningKeys={[]} />
+        </div>
       </div>
     </Modal>
   );
@@ -1057,7 +1187,7 @@ function JsonSubModal({
 /* ---------- 主弹窗 ---------- */
 
 /** 子弹窗标识：主弹窗同一时间最多打开一个 */
-type SubKey = "auth" | "headless" | "ratio" | "status" | "notice" | "json";
+type SubKey = "price" | "auth" | "status" | "notice" | "json";
 
 function SiteModal({
   initial,
@@ -1073,7 +1203,8 @@ function SiteModal({
   const originalId = initial.id ?? "";
   const [id, setId] = useState(originalId);
   const [url, setUrl] = useState(typeof initial.network?.url === "string" ? initial.network.url : "");
-  const [ratioUrl, setRatioUrl] = useState(typeof initial.network?.ratio_url === "string" ? initial.network.ratio_url : "");
+  const [ratioUrl, setRatioUrl] = useState(() => ratioFromConfig(initial.network).url);
+  const [ratioHeadersText, setRatioHeadersText] = useState(() => ratioFromConfig(initial.network).headersText);
   const [statusUrl, setStatusUrl] = useState(
     typeof (initial.status as { url?: unknown } | null | undefined)?.url === "string"
       ? ((initial.status as { url: string }).url)
@@ -1083,10 +1214,16 @@ function SiteModal({
     const groups = (initial.status as { groups?: unknown } | null | undefined)?.groups;
     return Array.isArray(groups) ? groups.filter((item): item is string => typeof item === "string").join(", ") : "";
   });
+  const [statusHeadersText, setStatusHeadersText] = useState(() =>
+    dictToText((initial.status as { headers?: Record<string, string> } | null | undefined)?.headers),
+  );
   const [noticeUrl, setNoticeUrl] = useState(
     typeof (initial.notice as { url?: unknown } | null | undefined)?.url === "string"
       ? ((initial.notice as { url: string }).url)
       : "",
+  );
+  const [noticeHeadersText, setNoticeHeadersText] = useState(() =>
+    dictToText((initial.notice as { headers?: Record<string, string> } | null | undefined)?.headers),
   );
   const [models, setModels] = useState<string[]>(
     (initial.models ?? []).filter((item): item is string => typeof item === "string"),
@@ -1136,20 +1273,32 @@ function SiteModal({
   })();
 
   // 认证凭证（auth_token/Cookie）是站点级通用的，价格、渠道状态、公告采集都会自动带上；
-  // 哪个接口的 headers 里手写了 Authorization/Cookie 就会盖掉通用凭证（续签换新后旧的会失效），这里集中检测提醒
-  const authOverrideWarnings = (() => {
+  // 哪个接口的 headers 里手写了 Authorization/Cookie 就会盖掉通用凭证（续签换新后旧的会失效），
+  // 这里按地址分组检测，提醒展示在各自子弹窗的请求头编辑区
+  const headerOverrideWarnings = (() => {
     let base: SiteConfig;
     try {
       base = JSON.parse(advanced) as SiteConfig;
     } catch {
-      return [];
+      return { price: [] as string[], status: [] as string[], notice: [] as string[] };
     }
-    return (["network", "status", "notice"] as const).flatMap((section) => {
-      const headers = (base[section] as { headers?: Record<string, unknown> } | null)?.headers ?? {};
-      return Object.keys(headers)
-        .filter((key) => /^(authorization|cookie)$/i.test(key))
-        .map((key) => `${section}.headers.${key}`);
-    });
+    const pick = (headers: Record<string, unknown>) =>
+      Object.keys(headers).filter((key) => /^(authorization|cookie)$/i.test(key));
+    const sectionKeys = (section: "network" | "status" | "notice") =>
+      pick((base[section] as { headers?: Record<string, unknown> } | null)?.headers ?? {}).map(
+        (key) => `${section}.headers.${key}`,
+      );
+    // 倍率接口支持 {url, headers} 对象形态，headers 里写死认证头同样会覆盖
+    const ratio = base.network?.ratio_url;
+    const ratioKeys =
+      ratio !== null && typeof ratio === "object"
+        ? pick((ratio as { headers?: Record<string, unknown> }).headers ?? {}).map((key) => `ratio_url.headers.${key}`)
+        : [];
+    return {
+      price: [...sectionKeys("network"), ...ratioKeys],
+      status: sectionKeys("status"),
+      notice: sectionKeys("notice"),
+    };
   })();
 
   // 续签配置 → token_refresh 字段；续签 URL 清空视为整体移除。
@@ -1203,7 +1352,9 @@ function SiteModal({
   function configToForm(config: SiteConfig) {
     setId(typeof config.id === "string" ? config.id : "");
     setUrl(typeof config.network?.url === "string" ? config.network.url : "");
-    setRatioUrl(typeof config.network?.ratio_url === "string" ? config.network.ratio_url : "");
+    const ratio = ratioFromConfig(config.network);
+    setRatioUrl(ratio.url);
+    setRatioHeadersText(ratio.headersText);
     const nextStatusUrl =
       typeof (config.status as { url?: unknown } | null | undefined)?.url === "string"
         ? (config.status as { url: string }).url
@@ -1213,11 +1364,13 @@ function SiteModal({
     setStatusGroupsText(
       Array.isArray(nextGroups) ? nextGroups.filter((item): item is string => typeof item === "string").join(", ") : "",
     );
+    setStatusHeadersText(dictToText((config.status as { headers?: Record<string, string> } | null)?.headers));
     setNoticeUrl(
       typeof (config.notice as { url?: unknown } | null | undefined)?.url === "string"
         ? (config.notice as { url: string }).url
         : "",
     );
+    setNoticeHeadersText(dictToText((config.notice as { headers?: Record<string, string> } | null)?.headers));
     setModels((config.models ?? []).filter((item): item is string => typeof item === "string"));
     setEndpointHeadersText(dictToText(config.network?.headers));
     const refresh = config.token_refresh ?? null;
@@ -1259,7 +1412,7 @@ function SiteModal({
   }
 
   function formState(): SiteFormState {
-    return { id, url, ratioUrl, statusUrl, statusGroupsText, noticeUrl, models, endpointHeadersText };
+    return { id, url, statusUrl, statusGroupsText, noticeUrl, models, endpointHeadersText };
   }
 
   // 真实调用一次续签接口（由认证子弹窗触发）：验证地址、凭证、响应结构是否都能对上；
@@ -1292,7 +1445,6 @@ function SiteModal({
     setRefreshSample(fields.sample);
     setAccessTokenField(fields.accessTokenField);
     setRefreshTokenField(fields.refreshTokenField);
-    setEndpointHeadersText(fields.endpointHeadersText);
     syncTokenRefresh({
       method: fields.method,
       url: fields.url,
@@ -1302,29 +1454,42 @@ function SiteModal({
       access_token_field: fields.accessTokenField,
       refresh_token_field: fields.refreshTokenField,
     });
-    syncAdvanced((base) => {
-      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-      setOptionalDict(network, "headers", fields.endpointHeadersText);
-      return { ...base, network: network as SiteConfig["network"] };
-    });
     if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
     setActiveSub(null);
   }
 
-  // 无头浏览器子弹窗确定：写回表单草稿并同步进高级 JSON；开关关且内容全空时移除该字段
-  function commitHeadless(next: HeadlessForm) {
-    setHeadless(next);
+  // 价格采集子弹窗确定：价格接口（地址/请求头/无头浏览器）与倍率接口（地址/请求头）一并写回草稿
+  function commitPrice(next: PriceFields) {
+    setUrl(next.url);
+    setEndpointHeadersText(next.headersText);
+    setHeadless(next.headless);
+    setRatioUrl(next.ratioUrl);
+    setRatioHeadersText(next.ratioHeadersText);
     syncAdvanced((base) => {
       const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-      const hasData = next.cookies.length > 0 || next.localStorage.length > 0;
-      if (next.enabled || hasData) {
+      applyEntryUrl(network, "url", next.url);
+      setOptionalDict(network, "headers", next.headersText);
+      // 倍率接口：有专用请求头时存成对象，否则存纯地址（兼容旧配置的简单形态）
+      const ratioTrimmed = next.ratioUrl.trim();
+      const ratioHeaders = textToDict(next.ratioHeadersText);
+      if (ratioTrimmed) {
+        network.ratio_url =
+          Object.keys(ratioHeaders).length > 0 ? { url: ratioTrimmed, headers: ratioHeaders } : ratioTrimmed;
+      } else {
+        delete network.ratio_url;
+      }
+      // 无头浏览器：开关关且内容全空时移除该字段
+      const hasData = next.headless.cookies.length > 0 || next.headless.localStorage.length > 0;
+      if (next.headless.enabled || hasData) {
         network.headless = {
-          enabled: next.enabled,
-          ...(next.cookies.length > 0 ? { cookies: next.cookies.map((item) => ({ name: item.name.trim(), value: item.value })) } : {}),
-          ...(next.localStorage.length > 0
-            ? { localStorage: Object.fromEntries(next.localStorage.map((item) => [item.key.trim(), item.value])) }
+          enabled: next.headless.enabled,
+          ...(next.headless.cookies.length > 0
+            ? { cookies: next.headless.cookies.map((item) => ({ name: item.name.trim(), value: item.value })) }
             : {}),
-          wait_seconds: Number(next.waitSeconds) || 0,
+          ...(next.headless.localStorage.length > 0
+            ? { localStorage: Object.fromEntries(next.headless.localStorage.map((item) => [item.key.trim(), item.value])) }
+            : {}),
+          wait_seconds: Number(next.headless.waitSeconds) || 0,
         };
       } else {
         delete network.headless;
@@ -1334,10 +1499,11 @@ function SiteModal({
     setActiveSub(null);
   }
 
-  // 渠道状态子弹窗确定：地址清空移除整个 status，有地址时合并分组
-  function commitStatus(nextUrl: string, nextGroupsText: string) {
+  // 渠道状态子弹窗确定：地址清空移除整个 status，有地址时合并分组与专用请求头
+  function commitStatus(nextUrl: string, nextGroupsText: string, nextHeadersText: string) {
     setStatusUrl(nextUrl);
     setStatusGroupsText(nextGroupsText);
+    setStatusHeadersText(nextHeadersText);
     syncAdvanced((base) => {
       const trimmed = nextUrl.trim();
       if (!trimmed) {
@@ -1349,9 +1515,33 @@ function SiteModal({
         .split(/[,，\n]/)
         .map((item) => item.trim())
         .filter(Boolean);
-      const status = { ...existing, url: trimmed, ...(groups.length > 0 ? { groups } : {}) };
-      if (groups.length === 0) delete status.groups;
+      const status: Record<string, unknown> = { ...existing, url: trimmed };
+      if (groups.length > 0) status.groups = groups;
+      else delete status.groups;
+      const headers = textToDict(nextHeadersText);
+      if (Object.keys(headers).length > 0) status.headers = headers;
+      else delete status.headers;
       return { ...base, status };
+    });
+    setActiveSub(null);
+  }
+
+  // 站点公告子弹窗确定：地址清空移除整个 notice，有地址时合并专用请求头
+  function commitNotice(nextUrl: string, nextHeadersText: string) {
+    setNoticeUrl(nextUrl);
+    setNoticeHeadersText(nextHeadersText);
+    syncAdvanced((base) => {
+      const trimmed = nextUrl.trim();
+      if (!trimmed) {
+        const { notice: _dropped, ...rest } = base;
+        return rest as SiteConfig;
+      }
+      const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
+      const notice: Record<string, unknown> = { ...existing, url: trimmed };
+      const headers = textToDict(nextHeadersText);
+      if (Object.keys(headers).length > 0) notice.headers = headers;
+      else delete notice.headers;
+      return { ...base, notice };
     });
     setActiveSub(null);
   }
@@ -1468,22 +1658,16 @@ function SiteModal({
           {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿 */}
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
             <EntryCard
+              title="价格采集"
+              desc="价格接口、请求头、无头浏览器与倍率"
+              configured={Boolean(url.trim() || endpointHeadersText.trim() || headlessConfigured || ratioUrl.trim())}
+              onClick={() => setActiveSub("price")}
+            />
+            <EntryCard
               title="认证与续签"
               desc="填 Token 续签接口，token 失效自动换新"
-              configured={Boolean(refreshUrl.trim() || endpointHeadersText.trim())}
+              configured={Boolean(refreshUrl.trim())}
               onClick={() => setActiveSub("auth")}
-            />
-            <EntryCard
-              title="网页模式·无头浏览器"
-              desc="要登录才能看价格的页面用这个"
-              configured={headlessConfigured}
-              onClick={() => setActiveSub("headless")}
-            />
-            <EntryCard
-              title="倍率地址"
-              desc="按站点倍率把基准价折算成实售价"
-              configured={Boolean(ratioUrl.trim())}
-              onClick={() => setActiveSub("ratio")}
             />
             <EntryCard
               title="渠道状态"
@@ -1513,6 +1697,20 @@ function SiteModal({
       </Modal>
 
       {/* 子弹窗：进入时以当前草稿为初值，确定才写回，取消直接丢弃 */}
+      {activeSub === "price" && (
+        <PriceSubModal
+          initial={{
+            url,
+            headersText: endpointHeadersText,
+            headless,
+            ratioUrl,
+            ratioHeadersText,
+          }}
+          warningKeys={headerOverrideWarnings.price}
+          onCommit={commitPrice}
+          onClose={() => setActiveSub(null)}
+        />
+      )}
       {activeSub === "auth" && (
         <AuthSubModal
           initial={{
@@ -1523,33 +1721,9 @@ function SiteModal({
             sample: refreshSample,
             accessTokenField,
             refreshTokenField,
-            endpointHeadersText,
           }}
-          overrideWarnings={authOverrideWarnings}
           runTest={runRefreshTest}
           onCommit={commitAuth}
-          onClose={() => setActiveSub(null)}
-        />
-      )}
-      {activeSub === "headless" && (
-        <HeadlessSubModal initial={headless} onCommit={commitHeadless} onClose={() => setActiveSub(null)} />
-      )}
-      {activeSub === "ratio" && (
-        <UrlSubModal
-          title="倍率地址"
-          label="倍率接口 URL"
-          hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价"
-          placeholder="https://example.com/api/public/model-pricing"
-          initial={ratioUrl}
-          onCommit={(value) => {
-            setRatioUrl(value);
-            syncAdvanced((base) => {
-              const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-              setOptionalText(network, "ratio_url", value);
-              return { ...base, network: network as SiteConfig["network"] };
-            });
-            setActiveSub(null);
-          }}
           onClose={() => setActiveSub(null)}
         />
       )}
@@ -1557,30 +1731,18 @@ function SiteModal({
         <StatusSubModal
           initialUrl={statusUrl}
           initialGroups={statusGroupsText}
+          initialHeadersText={statusHeadersText}
+          warningKeys={headerOverrideWarnings.status}
           onCommit={commitStatus}
           onClose={() => setActiveSub(null)}
         />
       )}
       {activeSub === "notice" && (
-        <UrlSubModal
-          title="站点公告"
-          label="站点公告 URL"
-          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知。公告请求会自动带上价格接口的认证请求头，不用重复填"
-          placeholder="https://example.com/api/notice"
-          initial={noticeUrl}
-          onCommit={(value) => {
-            setNoticeUrl(value);
-            syncAdvanced((base) => {
-              const trimmed = value.trim();
-              const existing = typeof base.notice === "object" && base.notice !== null ? base.notice : {};
-              if (!trimmed) {
-                const { notice: _dropped, ...rest } = base;
-                return rest as SiteConfig;
-              }
-              return { ...base, notice: { ...existing, url: trimmed } };
-            });
-            setActiveSub(null);
-          }}
+        <NoticeSubModal
+          initialUrl={noticeUrl}
+          initialHeadersText={noticeHeadersText}
+          warningKeys={headerOverrideWarnings.notice}
+          onCommit={commitNotice}
           onClose={() => setActiveSub(null)}
         />
       )}
@@ -1704,8 +1866,10 @@ export function AdminSites() {
         const extraMarks: { label: string; tip: string }[] = [];
         if (typeof row.notice?.url === "string" && row.notice.url) extraMarks.push({ label: "公告", tip: `站点公告：${row.notice.url}` });
         if (typeof row.status?.url === "string" && row.status.url) extraMarks.push({ label: "状态", tip: `渠道状态：${row.status.url}` });
-        if (typeof row.network?.ratio_url === "string" && row.network.ratio_url)
-          extraMarks.push({ label: "倍率", tip: `倍率接口：${row.network.ratio_url}` });
+        if (typeof row.network?.ratio_url === "string" || (row.network?.ratio_url && typeof row.network.ratio_url === "object")) {
+          const ratio = ratioUrlText(row);
+          if (ratio) extraMarks.push({ label: "倍率", tip: `倍率接口：${ratio}` });
+        }
         const nameNode = (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
             <span className="mono" style={{ fontWeight: 550 }}>
