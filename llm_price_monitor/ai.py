@@ -310,9 +310,10 @@ def ai_request(
         "temperature": 0,
         "max_tokens": limit,
         "messages": messages,
+        # DashScope 的 qwen3 系列默认开思考，思考会耗尽 max_tokens 导致正文为空，必须显式声明
+        "enable_thinking": config.enable_thinking,
     }
     if json_mode:
-        body["enable_thinking"] = config.enable_thinking
         body["response_format"] = {"type": "json_object"}
     return ai_endpoint(config.base_url), headers, body
 

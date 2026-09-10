@@ -1462,6 +1462,7 @@ def test_ai_ping_model_sends_minimal_request_and_returns_reply():
         "messages": [{"role": "user", "content": "连接测试，请只回复 ok"}],
         "max_tokens": 8,
         "temperature": 0,
+        "enable_thinking": False,
     }
 
 
