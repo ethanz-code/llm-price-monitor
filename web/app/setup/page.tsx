@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { apiAuthPost, apiSend, fetchMeta } from "@/lib/api";
+import { apiAuthPost, apiSend, fetchAuthState } from "@/lib/api";
 import { Btn, Input } from "@/components/ui";
 import { LogoMark } from "@/components/LogoMark";
 import { IconCheck } from "@/components/icons";
@@ -25,9 +25,9 @@ export default function SetupPage() {
   const [step, setStep] = useState<Step>(1);
 
   useEffect(() => {
-    fetchMeta().then((meta) => {
-      if (meta?.needs_setup) setChecking(false);
-      else router.replace(meta?.is_admin ? "/admin" : "/login");
+    fetchAuthState().then((state) => {
+      if (state?.needs_setup) setChecking(false);
+      else router.replace(state?.is_admin ? "/admin" : "/login");
     });
   }, [router]);
 

@@ -3,14 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { fetchMeta } from "@/lib/api";
+import { fetchAuthState } from "@/lib/api";
 import {
   IconAppstore,
   IconBolt,
   IconBook,
   IconDashboard,
-  IconEye,
-  IconFeedback,
   IconSettings,
   IconAim,
 } from "@/components/icons";
@@ -19,8 +17,6 @@ const RAIL = [
   { href: "/admin", label: "概览", icon: <IconDashboard size={15} />, exact: true },
   { href: "/admin/sites", label: "站点管理", icon: <IconAppstore size={15} /> },
   { href: "/admin/tasks", label: "采集任务", icon: <IconBolt size={15} /> },
-  { href: "/admin/submissions", label: "站点提交", icon: <IconFeedback size={15} /> },
-  { href: "/admin/analytics", label: "访问统计", icon: <IconEye size={15} /> },
   { href: "/admin/ai-logs", label: "AI 日志", icon: <IconAim size={15} /> },
   { href: "/admin/docs", label: "使用文档", icon: <IconBook size={15} /> },
   { href: "/admin/settings", label: "系统设置", icon: <IconSettings size={15} /> },
@@ -35,10 +31,10 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
 
   useEffect(() => {
     let alive = true;
-    fetchMeta().then((meta) => {
+    fetchAuthState().then((state) => {
       if (!alive) return;
-      if (!meta || meta.needs_setup) router.replace("/setup");
-      else if (!meta.is_admin) router.replace("/login");
+      if (!state || state.needs_setup) router.replace("/setup");
+      else if (!state.is_admin) router.replace("/login");
       else setReady(true);
     });
     return () => {
@@ -54,7 +50,7 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
       <div className="page">
         <div className="admin-shell">
         <aside className="admin-rail" aria-label="管理面板导航">
-          <div className="admin-rail-title">Admin</div>
+
           {RAIL.map((item) => {
             const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
             return (

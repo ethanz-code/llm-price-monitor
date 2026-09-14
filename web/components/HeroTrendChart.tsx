@@ -112,6 +112,7 @@ export function HeroTrendChart({
             value={series.model}
             onChange={setActive}
             options={seriesList.map((s) => ({ value: s.model, label: s.model }))}
+            ariaLabel="选择模型"
             style={{ flex: 1, minWidth: 0, maxWidth: 180 }}
           />
         )}

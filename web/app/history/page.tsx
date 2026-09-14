@@ -7,7 +7,7 @@ import { alerts, subtitles } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "历史与事件" };
+export const metadata = { title: "事件追踪" };
 
 export default async function HistoryPage() {
   let feed: FeedData | null = null;
@@ -26,8 +26,7 @@ export default async function HistoryPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="TIMELINE"
-        title="历史与事件"
+        title="事件追踪"
         subtitle={subtitles.history}
       />
       {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}

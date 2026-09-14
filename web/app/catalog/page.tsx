@@ -30,7 +30,6 @@ export default async function CatalogPage({
   return (
     <div className="page">
       <PageHeader
-        eyebrow="MODEL CATALOG"
         title="厂商定价"
         subtitle={subtitles.catalog}
       />

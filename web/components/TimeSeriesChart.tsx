@@ -18,6 +18,76 @@ export interface TimeSeries {
 const PAD = { left: 46, right: 12, top: 10, bottom: 22 };
 const MINI_HEIGHT = 34;
 const EDGE_GRAB_PX = 8;
+/** 概览条绘图区的上下留白：同样 34px 高度下让折线尽量占满。 */
+const MINI_INSET = 3;
+
+/** reduced-motion 用户跳过入场揭示动画，直接显示完整图表。 */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+interface Run {
+  from: number;
+  to: number;
+  level: RateLevel;
+}
+
+/** 把连续同档位的下标归成段：主图传可见窗口，概览条传全量。 */
+function buildRuns(from: number, to: number, levelOf: (index: number) => RateLevel): Run[] {
+  const list: Run[] = [];
+  for (let i = from; i <= to; i += 1) {
+    const level = levelOf(i);
+    const last = list[list.length - 1];
+    if (last && last.level === level) last.to = i;
+    else list.push({ from: i, to: i, level });
+  }
+  return list;
+}
+
+/** 用 P2/P98 而不是极值：个别自报异常点（如 58 秒）不会把其余数据压成一条直线。
+ *  分享图的延迟量程与这里同口径（全量数据算一次，抽稀只影响画法）。 */
+export function quantileRange(values: number[]): [number, number] {
+  if (values.length === 0) return [0, 1];
+  values.sort((a, b) => a - b);
+  const q = (p: number) =>
+    values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * p)))] ?? 0;
+  const lo = q(0.02);
+  const hi = q(0.98);
+  const pad = (hi - lo) * 0.12 || Math.max(Math.abs(hi) * 0.1, 1);
+  return [lo >= 0 ? Math.max(lo - pad, 0) : lo - pad, hi + pad];
+}
+
+/** 沿阶梯/直线走到 to（含）。project 决定坐标映射，主图与概览条各用各的。 */
+function walkPath(
+  ctx: CanvasRenderingContext2D,
+  s: TimeSeries,
+  from: number,
+  to: number,
+  project: (index: number, value: number) => [number, number],
+  step: boolean,
+): void {
+  ctx.beginPath();
+  let pen = false;
+  let prevY = 0;
+  for (let i = from; i <= to; i += 1) {
+    const v = s.values[i];
+    if (v == null) {
+      pen = false;
+      continue;
+    }
+    const [x, y] = project(i, v);
+    if (!pen) {
+      ctx.moveTo(x, y);
+      pen = true;
+    } else if (step) {
+      ctx.lineTo(x, prevY);
+      ctx.lineTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+    prevY = y;
+  }
+}
 
 /**
  * 自绘 canvas 时序图（主图 + 概览刷选条 + 图例），替代 recharts。
@@ -25,6 +95,9 @@ const EDGE_GRAB_PX = 8;
  * canvas 每次拖动只重画一张位图（万级点也在 1–2ms 内），这是卡顿问题的根治方案。
  * step=true 时按阶梯线绘制（检测点之间保持上次结果），否则直线相连（缺口跨过）。
  * 时间轴窗口以「全跨度的比例」（0–1）交给父组件持有，多个图传同一个值即可联动。
+ *
+ * 概览条与主图是两套独立坐标系：主图按窗口映射（xOf），概览条永远按全量映射（miniX），
+ * 量程也固定不随窗口变——拖动时概览条本体静止，只有遮罩和窗口框在动，否则它就不再是「概览」。
  */
 export function TimeSeriesChart({
   times,
@@ -52,7 +125,7 @@ export function TimeSeriesChart({
   window?: [number, number] | null;
   onWindowChange?: (value: [number, number] | null) => void;
 }) {
-  const { dark, axisColor, gridColor, palette, statusColors } = useChartTheme();
+  const { dark, axisColor, gridColor, palette, lineColor, statusColors } = useChartTheme();
   const wrapRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLCanvasElement>(null);
   const miniRef = useRef<HTMLCanvasElement>(null);
@@ -60,15 +133,19 @@ export function TimeSeriesChart({
   const [innerWindow, setInnerWindow] = useState<[number, number] | null>(null);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [hover, setHover] = useState<number | null>(null);
-  const drag = useRef<{ mode: "move" | "start" | "end" | "new"; anchor?: number; grab?: number; length?: number } | null>(null);
-  /** 入场揭示动画进度（0–1）：只在数据变化时播放一次，拖拽/悬停不参与。 */
-  const [reveal, setReveal] = useState(1);
+  /** 指针在概览条上的落点意图：两端缩放、窗口内平移、其余不响应。 */
+  const [miniHover, setMiniHover] = useState<"start" | "end" | "move" | null>(null);
+  const drag = useRef<{ mode: "move" | "start" | "end"; grab?: number; length?: number } | null>(null);
+  /** 入场揭示动画进度（0–1）：首屏与数据更新各播一次，拖拽/悬停不参与；reduced-motion 直接给完成态。 */
+  const [reveal, setReveal] = useState(() => (prefersReducedMotion() ? 1 : 0));
   const rafRef = useRef<number | null>(null);
-  const dataRef = useRef(times);
 
-  useEffect(() => {
-    if (dataRef.current === times) return;
-    dataRef.current = times;
+  // 用 layout effect 起动画：数据更新时能在绘制前把进度归零，避免闪一帧新数据
+  useIsomorphicLayoutEffect(() => {
+    if (prefersReducedMotion()) {
+      setReveal(1);
+      return;
+    }
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     setReveal(0);
     const start = performance.now();
@@ -105,6 +182,20 @@ export function TimeSeriesChart({
   const i0 = windowFrac ? Math.max(0, Math.min(Math.round(windowFrac[0] * (count - 1)), count - 2)) : 0;
   const i1 = windowFrac ? Math.min(count - 1, Math.max(Math.round(windowFrac[1] * (count - 1)), i0 + 2)) : count - 1;
   const span = Math.max(i1 - i0, 1);
+  const fullView = i0 === 0 && i1 === count - 1;
+
+  /** 概览条量程：固定在全量数据上，拖窗口时不重算，折线形状不会跟着跳。 */
+  const miniDomain = useMemo<[number, number]>(() => {
+    if (yDomain) return yDomain;
+    const values: number[] = [];
+    for (const s of visible) {
+      for (let i = 0; i < count; i += 1) {
+        const v = s.values[i];
+        if (v != null) values.push(v);
+      }
+    }
+    return quantileRange(values);
+  }, [yDomain, visible, count]);
 
   useIsomorphicLayoutEffect(() => {
     if (width < 60 || count < 2) return;
@@ -121,8 +212,7 @@ export function TimeSeriesChart({
     const yOf = (v: number) => PAD.top + (1 - (v - y0) / (y1 - y0)) * plotH;
     const clippedYOf = (v: number) => Math.min(Math.max(yOf(v), PAD.top), PAD.top + plotH);
 
-    // Y 轴范围：外部指定（可用率 0–100）或按可见数据分位数自适应（延迟）。
-    // 用 P2/P98 而不是极值：个别自报异常点（如 58 秒）不会把其余数据压成一条直线，
+    // 主图 Y 轴范围：外部指定（可用率 0–100）或按可见数据分位数自适应（延迟）。
     // 超出量程的尖峰由 clippedYOf 裁掉。
     let y0: number;
     let y1: number;
@@ -136,63 +226,23 @@ export function TimeSeriesChart({
           if (v != null) values.push(v);
         }
       }
-      values.sort((a, b) => a - b);
-      const quantile = (p: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(values.length * p)))] ?? 0;
-      const lo = values.length > 0 ? quantile(0.02) : 0;
-      const hi = values.length > 0 ? quantile(0.98) : 1;
-      const pad = (hi - lo) * 0.12 || Math.max(Math.abs(hi) * 0.1, 1);
-      y0 = lo >= 0 ? Math.max(lo - pad, 0) : lo - pad;
-      y1 = hi + pad;
+      [y0, y1] = quantileRange(values);
     }
 
-    /** 沿阶梯/直线走到 to（含），pen 规则与整段绘制一致；供分段着色复用。 */
-    const walkPath = (ctx: CanvasRenderingContext2D, s: TimeSeries, from: number, to: number) => {
-      ctx.beginPath();
-      let pen = false;
-      let prevY = 0;
-      for (let i = from; i <= to; i += 1) {
-        const v = s.values[i];
-        if (v == null) {
-          pen = false;
-          continue;
-        }
-        const x = xOf(i);
-        const y = clippedYOf(v);
-        if (!pen) {
-          ctx.moveTo(x, y);
-          pen = true;
-        } else if (step) {
-          ctx.lineTo(x, prevY);
-          ctx.lineTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-        prevY = y;
-      }
-      return { pen };
-    };
+    const project = (i: number, v: number): [number, number] => [xOf(i), clippedYOf(v)];
 
     const strokeSeries = (ctx: CanvasRenderingContext2D, s: TimeSeries, color: string, from: number, to: number, lineWidth: number) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
-      walkPath(ctx, s, from, to);
+      walkPath(ctx, s, from, to, project, step);
       ctx.stroke();
     };
 
     /** 分档配色：把可见范围切成连续同档位的段；低值段（警示色）最后画、压在正常段上面。 */
     const runs = levelOf
-      ? (() => {
-          const list: { from: number; to: number; level: RateLevel }[] = [];
-          for (let i = i0; i <= i1; i += 1) {
-            const level = levelOf(i);
-            const last = list[list.length - 1];
-            if (last && last.level === level) last.to = i;
-            else list.push({ from: i, to: i, level });
-          }
-          return [...list].sort((a, b) => (a.level === "ok" ? 0 : 1) - (b.level === "ok" ? 0 : 1));
-        })()
+      ? [...buildRuns(i0, i1, levelOf)].sort((a, b) => (a.level === "ok" ? 0 : 1) - (b.level === "ok" ? 0 : 1))
       : null;
 
     const gradients = new Map<RateLevel, CanvasGradient>();
@@ -250,7 +300,7 @@ export function TimeSeriesChart({
             for (const run of runs) {
               const to = Math.min(run.to + 1, i1);
               // 阶梯填充：沿段走一遍再落到横轴，低值段的填充才完整
-              walkPath(ctx, series0, run.from, to);
+              walkPath(ctx, series0, run.from, to, project, step);
               ctx.lineTo(xOf(to), PAD.top + plotH);
               ctx.lineTo(xOf(run.from), PAD.top + plotH);
               ctx.closePath();
@@ -259,7 +309,7 @@ export function TimeSeriesChart({
               ctx.strokeStyle = statusColors[run.level];
               ctx.lineWidth = 1.25;
               ctx.lineJoin = "round";
-              walkPath(ctx, series0, run.from, to);
+              walkPath(ctx, series0, run.from, to, project, step);
               ctx.stroke();
             }
           }
@@ -289,49 +339,82 @@ export function TimeSeriesChart({
         }
       }
     }
+  }, [width, height, dark, axisColor, gridColor, palette, statusColors, times, series, visible, colorOf, step, yDomain, yFormat, levelOf, windowFrac, hover, reveal, i0, i1, span, count]);
 
-    // 概览刷选条：与主图同一套数据与刻度，画全量范围的细线
+  // 概览刷选条：独立的全量坐标系与量程，只画一遍完整数据；窗口用遮罩 + 边框标出。
+  // 独立成 effect 后，主图悬停/动画不会再重画它，拖动时它本身也不随窗口变化。
+  useIsomorphicLayoutEffect(() => {
     const mini = miniRef.current;
-    if (mini) {
-      mini.width = Math.round(width * dpr);
-      mini.height = Math.round(MINI_HEIGHT * dpr);
-      const ctx = mini.getContext("2d");
-      if (ctx) {
-        ctx.scale(dpr, dpr);
-        ctx.clearRect(0, 0, width, MINI_HEIGHT);
-        // 概览条与主图同刻度：所见即所得
-        const miniY = (v: number) => Math.min(Math.max(4 + (1 - (v - y0) / (y1 - y0)) * (MINI_HEIGHT - 8), 2), MINI_HEIGHT - 2);
-        const miniX = (i: number) => PAD.left + (i / Math.max(count - 1, 1)) * plotW;
-        ctx.save();
-        if (runs && visible[0]) {
-          for (const run of [...runs].sort((a, b) => a.from - b.from)) {
-            ctx.strokeStyle = statusColors[run.level];
-            ctx.lineWidth = 1;
-            walkPath(ctx, visible[0], run.from, Math.min(run.to + 1, count - 1));
-            ctx.stroke();
-          }
-        } else {
-          visible.forEach((s) => {
-            strokeSeries(ctx, s, colorOf[series.indexOf(s)], 0, count - 1, 1);
-          });
+    if (!mini || width < 60 || count < 2) return;
+    const dpr = globalThis.devicePixelRatio || 1;
+    mini.width = Math.round(width * dpr);
+    mini.height = Math.round(MINI_HEIGHT * dpr);
+    const ctx = mini.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, MINI_HEIGHT);
+
+    const plotW = width - PAD.left - PAD.right;
+    const [my0, my1] = miniDomain;
+    const miniX = (i: number) => PAD.left + (i / Math.max(count - 1, 1)) * plotW;
+    const miniY = (v: number) =>
+      Math.min(
+        Math.max(MINI_INSET + (1 - (v - my0) / (my1 - my0)) * (MINI_HEIGHT - MINI_INSET * 2), 1),
+        MINI_HEIGHT - 1,
+      );
+    const project = (i: number, v: number): [number, number] => [miniX(i), miniY(v)];
+
+    const first = visible[0];
+    if (first) {
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      if (levelOf) {
+        // 分档着色按全量算，与主图当前窗口无关
+        for (const run of buildRuns(0, count - 1, levelOf)) {
+          ctx.strokeStyle = statusColors[run.level];
+          ctx.lineWidth = 1;
+          walkPath(ctx, first, run.from, run.to, project, step);
+          ctx.stroke();
         }
-        ctx.restore();
-        const xs = miniX(i0);
-        const xe = miniX(i1);
-        ctx.fillStyle = dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.18)";
-        ctx.fillRect(PAD.left, 0, Math.max(xs - PAD.left, 0), MINI_HEIGHT);
-        ctx.fillRect(xe, 0, Math.max(width - PAD.right - xe, 0), MINI_HEIGHT);
-        ctx.strokeStyle = dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.3)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(xs, 0);
-        ctx.lineTo(xs, MINI_HEIGHT);
-        ctx.moveTo(xe, 0);
-        ctx.lineTo(xe, MINI_HEIGHT);
-        ctx.stroke();
+      } else {
+        visible.forEach((s) => {
+          ctx.strokeStyle = colorOf[series.indexOf(s)] ?? lineColor;
+          ctx.lineWidth = 1;
+          walkPath(ctx, s, 0, count - 1, project, step);
+          ctx.stroke();
+        });
       }
     }
-  }, [width, height, dark, axisColor, gridColor, palette, statusColors, times, series, visible, colorOf, step, yDomain, yFormat, levelOf, windowFrac, hover, reveal, i0, i1, span, count]);
+
+    const xs = miniX(i0);
+    const xe = miniX(i1);
+    if (!fullView) {
+      ctx.fillStyle = dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.18)";
+      ctx.fillRect(PAD.left, 0, Math.max(xs - PAD.left, 0), MINI_HEIGHT);
+      ctx.fillRect(xe, 0, Math.max(width - PAD.right - xe, 0), MINI_HEIGHT);
+    }
+    // 控件外框：全量时框住整条，说明「整段都在窗口内、两端可拖」
+    ctx.strokeStyle = dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.14)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(PAD.left + 0.5, 0.5, Math.max(plotW - 1, 0), MINI_HEIGHT - 1);
+    // 窗口两边：细竖线标示当前范围
+    ctx.strokeStyle = dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.35)";
+    ctx.beginPath();
+    ctx.moveTo(xs + 0.5, 0);
+    ctx.lineTo(xs + 0.5, MINI_HEIGHT);
+    ctx.moveTo(xe + 0.5, 0);
+    ctx.lineTo(xe + 0.5, MINI_HEIGHT);
+    ctx.stroke();
+    // 两端拖柄：hover 时高亮加宽，让「这里可以拖」不用猜
+    const drawHandle = (x: number, active: boolean) => {
+      const w = active ? 5 : 3;
+      const left = Math.min(Math.max(x - w / 2, PAD.left - 1), width - PAD.right - w + 1);
+      ctx.fillStyle = active ? lineColor : dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.55)";
+      ctx.fillRect(left, 0, w, MINI_HEIGHT);
+    };
+    drawHandle(xs, miniHover === "start");
+    drawHandle(xe, miniHover === "end");
+  }, [width, dark, times, series, visible, colorOf, lineColor, statusColors, levelOf, step, count, i0, i1, fullView, miniDomain, miniHover]);
 
   if (count < 2) {
     return (
@@ -344,6 +427,20 @@ export function TimeSeriesChart({
     const plotW = Math.max(rect.width - PAD.left - PAD.right, 1);
     const t = (clientX - rect.left - PAD.left) / plotW;
     return Math.min(count - 1, Math.max(0, t * (count - 1)));
+  };
+
+  /** 指针落在概览条的哪个部位：只有命中两端或窗口内部才算有效，其余一概不响应。 */
+  const miniIntent = (clientX: number, el: HTMLElement): "start" | "end" | "move" | null => {
+    const rect = el.getBoundingClientRect();
+    const plotW = Math.max(rect.width - PAD.left - PAD.right, 1);
+    const x = clientX - rect.left;
+    const edge = (i: number) => PAD.left + (i / Math.max(count - 1, 1)) * plotW;
+    const xs = edge(i0);
+    const xe = edge(i1);
+    if (Math.abs(x - xs) <= EDGE_GRAB_PX) return "start";
+    if (Math.abs(x - xe) <= EDGE_GRAB_PX) return "end";
+    if (windowFrac && x > xs && x < xe) return "move";
+    return null;
   };
 
   const setWindowFromDrag = (f0: number, f1: number) => {
@@ -366,6 +463,8 @@ export function TimeSeriesChart({
     : [];
   const flipTooltip = hoverX > width * 0.62;
   const levelLegend = levelOf && levelLabels;
+  const miniCursor =
+    miniHover === "start" || miniHover === "end" ? "ew-resize" : miniHover === "move" ? "grab" : "default";
 
   return (
     <div ref={wrapRef} style={{ position: "relative", userSelect: "none" }} onDoubleClick={() => setWindowFrac(null)}>
@@ -390,9 +489,12 @@ export function TimeSeriesChart({
       )}
       <canvas
         ref={miniRef}
-        style={{ width: "100%", height: MINI_HEIGHT, display: "block", marginTop: 6, cursor: "pointer", touchAction: "none" }}
+        style={{ width: "100%", height: MINI_HEIGHT, display: "block", marginTop: 6, cursor: miniCursor, touchAction: "none" }}
         onPointerDown={(e) => {
           const el = e.currentTarget;
+          const intent = miniIntent(e.clientX, el);
+          // 单击不改变窗口：只有明确命中两端/窗口内部才进入拖拽，误触零成本
+          if (!intent) return;
           if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
           rafRef.current = null;
           setReveal(1);
@@ -402,35 +504,40 @@ export function TimeSeriesChart({
             // 合成事件等场景没有真实 pointer，捕获失败也继续拖拽
           }
           const f = indexFromPointer(e.clientX, el) / Math.max(count - 1, 1);
-          if (!windowFrac) {
-            drag.current = { mode: "new", anchor: f };
-            setWindowFromDrag(f, f);
-            return;
-          }
-          const [start, end] = windowFrac;
-          const grab = (EDGE_GRAB_PX * 2) / Math.max(el.getBoundingClientRect().width - PAD.left - PAD.right, 1);
-          if (Math.abs(f - start) <= grab) drag.current = { mode: "start" };
-          else if (Math.abs(f - end) <= grab) drag.current = { mode: "end" };
+          const [start, end] = windowFrac ?? [0, 1];
+          setMiniHover(intent);
+          if (intent === "start") drag.current = { mode: "start" };
+          else if (intent === "end") drag.current = { mode: "end" };
           else drag.current = { mode: "move", grab: f - start, length: end - start };
         }}
         onPointerMove={(e) => {
           const state = drag.current;
-          if (!state) return;
+          if (!state) {
+            setMiniHover(miniIntent(e.clientX, e.currentTarget));
+            return;
+          }
           const f = indexFromPointer(e.clientX, e.currentTarget) / Math.max(count - 1, 1);
-          if (state.mode === "new" && state.anchor != null) {
-            setWindowFromDrag(state.anchor, f);
-          } else if (state.mode === "start" && windowFrac) {
-            setWindowFromDrag(f, windowFrac[1]);
-          } else if (state.mode === "end" && windowFrac) {
-            setWindowFromDrag(windowFrac[0], f);
-          } else if (state.mode === "move" && windowFrac && state.grab != null && state.length != null) {
+          const [start, end] = windowFrac ?? [0, 1];
+          if (state.mode === "start") {
+            setWindowFromDrag(f, end);
+          } else if (state.mode === "end") {
+            setWindowFromDrag(start, f);
+          } else if (state.grab != null && state.length != null) {
             const length = Math.max(state.length, minSpan);
             const next = Math.min(Math.max(f - state.grab, 0), 1 - length);
             setWindowFrac([next, next + length]);
           }
         }}
-        onPointerUp={() => {
+        onPointerUp={(e) => {
           drag.current = null;
+          setMiniHover(miniIntent(e.clientX, e.currentTarget));
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setMiniHover(null);
+        }}
+        onPointerLeave={() => {
+          if (!drag.current) setMiniHover(null);
         }}
       />
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", paddingTop: 8 }}>

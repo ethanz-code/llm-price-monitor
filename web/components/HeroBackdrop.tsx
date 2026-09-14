@@ -1,6 +1,13 @@
+"use client";
+
 /** 首页顶部通栏斜向光束：内联 SVG，颜色走主题变量，明暗主题自动适配；纯装饰不参与交互。
- *  一宽一窄两束光从右上向左下斜洒：宽束做环境柔光，窄束做亮芯，模糊滤镜收掉硬边。 */
+ *  一宽一窄两束光从右上向左下斜洒：宽束做环境柔光，窄束做亮芯，模糊滤镜收掉硬边。
+ *  只在首页渲染：光晕是首屏氛围，内页铺开反而干扰内容。 */
+import { usePathname } from "next/navigation";
+
 export function HeroBackdrop() {
+  const pathname = usePathname();
+  if (pathname !== "/") return null;
   return (
     <div className="hero-backdrop" aria-hidden>
       <svg width="100%" height="100%" viewBox="0 0 1440 620" preserveAspectRatio="xMidYMid slice">

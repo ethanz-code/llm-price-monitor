@@ -159,19 +159,20 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
     models: form.models,
   };
   const statusUrl = form.statusUrl.trim();
-  if (statusUrl) {
+  // 分组白名单是站点级配置：价格采集与渠道状态共用，没有状态接口地址也要保留
+  const groups = form.statusGroupsText
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (statusUrl || groups.length > 0) {
     const existingStatus =
       typeof base.status === "object" && base.status !== null && !Array.isArray(base.status) ? base.status : {};
-    // 检测分组：逗号分隔的分组名列表，留空清掉该字段（采集全量渠道）
-    const groups = form.statusGroupsText
-      .split(/[,，\n]/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-    next.status = {
-      ...existingStatus,
-      url: statusUrl,
-      ...(groups.length > 0 ? { groups } : {}),
-    };
+    const status: Record<string, unknown> = { ...existingStatus };
+    if (statusUrl) status.url = statusUrl;
+    else delete status.url;
+    if (groups.length > 0) status.groups = groups;
+    else delete status.groups;
+    next.status = status;
   } else if ("status" in next) delete next.status;
   const noticeUrl = form.noticeUrl.trim();
   if (noticeUrl) {
@@ -461,11 +462,12 @@ type PriceFields = {
   ratioHeadersText: string;
 };
 
-/** 网页模式·无头浏览器子弹窗的表单数据（localStorage 用行数组方便增删） */
+/** 网页模式·无头浏览器子弹窗的表单数据（localStorage/headers 用行数组方便增删） */
 type HeadlessForm = {
   enabled: boolean;
   cookies: { name: string; value: string }[];
   localStorage: { key: string; value: string }[];
+  headers: { key: string; value: string }[];
   waitSeconds: string;
 };
 
@@ -478,6 +480,10 @@ function headlessFromConfig(config: SiteConfig): HeadlessForm {
       .filter((item): item is { name: string; value: string } => typeof item?.name === "string")
       .map((item) => ({ name: item.name, value: typeof item.value === "string" ? item.value : "" })),
     localStorage: Object.entries(headless?.localStorage ?? {}).map(([key, value]) => ({
+      key,
+      value: typeof value === "string" ? value : "",
+    })),
+    headers: Object.entries(headless?.headers ?? {}).map(([key, value]) => ({
       key,
       value: typeof value === "string" ? value : "",
     })),
@@ -601,20 +607,28 @@ function HeadersEditor({
   rows,
   onChange,
   warningKeys,
+  hint = "只发给这个地址，同名的会盖掉站点通用认证头",
 }: {
   rows: KvRow[];
   onChange: (next: KvRow[]) => void;
   warningKeys: string[];
+  /** 传 null 表示这条规则已在同一弹窗里说过一次，不再重复 */
+  hint?: string | null;
 }) {
+  const authKeys = warningKeys.filter((key) => !/cookie/i.test(key));
+  const cookieKeys = warningKeys.filter((key) => /cookie/i.test(key));
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <span style={{ fontSize: 13.5 }}>请求头</span>
-      <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-        这里的请求头只发给这个地址，同名会盖掉站点级认证头
-      </span>
-      {warningKeys.length > 0 && (
+      {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
+      {authKeys.length > 0 && (
         <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-          {warningKeys.join("、")} 里写死了认证头，它会优先于站点通用 Token 生效；续签拿到新 Token 后会自动把这里也换新，无需手动维护
+          {authKeys.join("、")} 里写死了认证头；续签拿到新 Token 后会自动换新，无需手动维护
+        </span>
+      )}
+      {cookieKeys.length > 0 && (
+        <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+          {cookieKeys.join("、")} 里写死了 Cookie；续签不会更新它，token 换了要手动改这里
         </span>
       )}
       <KeyValueRows
@@ -635,21 +649,18 @@ function HeadersEditor({
 
 function StatusSubModal({
   initialUrl,
-  initialGroups,
   initialHeadersText,
   warningKeys,
   onCommit,
   onClose,
 }: {
   initialUrl: string;
-  initialGroups: string;
   initialHeadersText: string;
   warningKeys: string[];
-  onCommit: (url: string, groupsText: string, headersText: string) => void;
+  onCommit: (url: string, headersText: string) => void;
   onClose: () => void;
 }) {
   const [url, setUrl] = useState(initialUrl);
-  const [groupsText, setGroupsText] = useState(initialGroups);
   const [headerRows, setHeaderRows] = useState<KvRow[]>(() => dictToRows(initialHeadersText));
   return (
     <Modal
@@ -660,7 +671,7 @@ function StatusSubModal({
       footer={
         <SubModalFooter
           onCancel={onClose}
-          onConfirm={() => onCommit(url, groupsText, rowsToText(headerRows))}
+          onConfirm={() => onCommit(url, rowsToText(headerRows))}
         />
       }
     >
@@ -672,22 +683,6 @@ function StatusSubModal({
             placeholder="https://example.com/api/status"
             style={{ width: "min(380px, 100%)" }}
           />
-        </SettingRow>
-        <SettingRow
-          label="检测分组"
-          hint="选填：只检测这些分组，从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就检测全部渠道"
-        >
-          <Input
-            value={groupsText}
-            onChange={setGroupsText}
-            placeholder="svip, vip"
-            style={{ width: "min(380px, 100%)" }}
-          />
-          {groupsText.trim() && (
-            <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-              保存后，这个站点没被选中的分组的历史检测记录会被清掉，且无法恢复
-            </span>
-          )}
         </SettingRow>
         <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
       </div>
@@ -723,7 +718,7 @@ function NoticeSubModal({
       <div style={{ display: "grid", gap: 14 }}>
         <SettingRow
           label="站点公告 URL"
-          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记录并通知。公告请求会自动带上价格接口的认证请求头，不用重复填"
+          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记成事件。公告请求会自动带上价格接口的认证请求头，不用重复填"
         >
           <Input
             value={url}
@@ -944,7 +939,6 @@ function KeyValueRows({
 }) {
   return (
     <div style={{ display: "grid", gap: 6 }}>
-      {rows.length === 0 && <span style={{ fontSize: 12, color: "var(--text-3)" }}>还没有添加，点下面加一条</span>}
       {rows.map((row, index) => (
         <div key={index} style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Input
@@ -992,9 +986,30 @@ function HeadlessSection({
   const cookieRows = value.cookies.map((item) => ({ key: item.name, value: item.value }));
   return (
     <div style={{ display: "grid", gap: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-      <SettingRow label="用无头浏览器打开网页（注入登录信息）" hint="普通的接口采集不带登录状态；开启后改用无头浏览器打开页面，把下面的登录信息注进去">
+      <SettingRow
+        label="用无头浏览器打开网页（注入登录信息）"
+        hint="开启后每次都用无头浏览器打开；关闭时先普通抓取，抓不到会自动换无头浏览器重试一次"
+      >
         <Switch checked={value.enabled} onChange={(next) => onChange({ ...value, enabled: next })} />
       </SettingRow>
+      {!value.enabled && (
+        <div style={{ display: "grid", gap: 6 }}>
+          <span style={{ fontSize: 13.5 }}>自定义请求头</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            自动回退无头浏览器时会带上这些请求头（Referer、X-Token 之类），平时普通抓取也会用
+          </span>
+          <KeyValueRows
+            rows={value.headers}
+            onChange={(rows) => onChange({ ...value, headers: rows })}
+            keyLabel="名字"
+            valueLabel="值"
+            keyPlaceholder="名字，如 X-Token"
+            valuePlaceholder="值"
+            addLabel="添加请求头"
+            ariaPrefix="自定义请求头"
+          />
+        </div>
+      )}
       {value.enabled && (
         <>
           <div style={{ display: "grid", gap: 6 }}>
@@ -1026,6 +1041,19 @@ function HeadlessSection({
               valuePlaceholder="值"
               addLabel="添加一项"
               ariaPrefix="localStorage"
+            />
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 13.5 }}>自定义请求头</span>
+            <KeyValueRows
+              rows={value.headers}
+              onChange={(rows) => onChange({ ...value, headers: rows })}
+              keyLabel="名字"
+              valueLabel="值"
+              keyPlaceholder="名字，如 X-Token"
+              valuePlaceholder="值"
+              addLabel="添加请求头"
+              ariaPrefix="自定义请求头"
             />
           </div>
           <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
@@ -1074,6 +1102,7 @@ function PriceSubModal({
         ...headless,
         cookies: headless.cookies.filter((item) => item.name.trim()),
         localStorage: headless.localStorage.filter((item) => item.key.trim()),
+        headers: headless.headers.filter((item) => item.key.trim()),
         waitSeconds: String(waitSeconds),
       },
       ratioUrl,
@@ -1120,7 +1149,7 @@ function PriceSubModal({
               style={{ width: "min(380px, 100%)" }}
             />
           </SettingRow>
-          <HeadersEditor rows={ratioHeaderRows} onChange={setRatioHeaderRows} warningKeys={[]} />
+          <HeadersEditor rows={ratioHeaderRows} onChange={setRatioHeaderRows} warningKeys={[]} hint={null} />
         </div>
       </div>
     </Modal>
@@ -1479,7 +1508,10 @@ function SiteModal({
         delete network.ratio_url;
       }
       // 无头浏览器：开关关且内容全空时移除该字段
-      const hasData = next.headless.cookies.length > 0 || next.headless.localStorage.length > 0;
+      const hasData =
+        next.headless.cookies.length > 0 ||
+        next.headless.localStorage.length > 0 ||
+        next.headless.headers.length > 0;
       if (next.headless.enabled || hasData) {
         network.headless = {
           enabled: next.headless.enabled,
@@ -1488,6 +1520,9 @@ function SiteModal({
             : {}),
           ...(next.headless.localStorage.length > 0
             ? { localStorage: Object.fromEntries(next.headless.localStorage.map((item) => [item.key.trim(), item.value])) }
+            : {}),
+          ...(next.headless.headers.length > 0
+            ? { headers: Object.fromEntries(next.headless.headers.map((item) => [item.key.trim(), item.value])) }
             : {}),
           wait_seconds: Number(next.headless.waitSeconds) || 0,
         };
@@ -1499,31 +1534,45 @@ function SiteModal({
     setActiveSub(null);
   }
 
-  // 渠道状态子弹窗确定：地址清空移除整个 status，有地址时合并分组与专用请求头
-  function commitStatus(nextUrl: string, nextGroupsText: string, nextHeadersText: string) {
+  // 渠道状态子弹窗确定：地址清空只移除地址与专用请求头，分组白名单是站点级配置、留在主表单
+  function commitStatus(nextUrl: string, nextHeadersText: string) {
     setStatusUrl(nextUrl);
-    setStatusGroupsText(nextGroupsText);
     setStatusHeadersText(nextHeadersText);
     syncAdvanced((base) => {
+      const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
       const trimmed = nextUrl.trim();
       if (!trimmed) {
+        if (existing.groups !== undefined) return { ...base, status: { groups: existing.groups } } as SiteConfig;
         const { status: _dropped, ...rest } = base;
         return rest as SiteConfig;
       }
-      const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
-      const groups = nextGroupsText
-        .split(/[,，\n]/)
-        .map((item) => item.trim())
-        .filter(Boolean);
       const status: Record<string, unknown> = { ...existing, url: trimmed };
-      if (groups.length > 0) status.groups = groups;
-      else delete status.groups;
       const headers = textToDict(nextHeadersText);
       if (Object.keys(headers).length > 0) status.headers = headers;
       else delete status.headers;
       return { ...base, status };
     });
     setActiveSub(null);
+  }
+
+  // 分组白名单输入：站点级过滤，价格采集与渠道状态共用，直接写进高级 JSON 的 status.groups
+  function commitGroupsText(nextText: string) {
+    setStatusGroupsText(nextText);
+    syncAdvanced((base) => {
+      const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
+      const groups = nextText
+        .split(/[,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const status: Record<string, unknown> = { ...existing };
+      if (groups.length > 0) status.groups = groups;
+      else delete status.groups;
+      if (Object.keys(status).length === 0) {
+        const { status: _dropped, ...rest } = base;
+        return rest as SiteConfig;
+      }
+      return { ...base, status };
+    });
   }
 
   // 站点公告子弹窗确定：地址清空移除整个 notice，有地址时合并专用请求头
@@ -1546,11 +1595,12 @@ function SiteModal({
     setActiveSub(null);
   }
 
-  const headlessConfigured = headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0;
+  const headlessConfigured =
+    headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0 || headless.headers.length > 0;
   // 地址输入框旁的提示随网页模式切换：开无头浏览器后页面可以要登录
   const urlHint = headless.enabled
     ? "将用无头浏览器打开页面并注入上面的 Cookie 和登录信息，可采集需要登录的页面"
-    : "站点提供价格数据的接口地址；要带参数就直接拼在地址后面，如 ?page=1&lang=zh。填网页地址（而不是接口）时，该页面必须无需登录就能打开——我们不会像浏览器那样带上你的登录状态";
+    : "填价格接口地址或网页地址都行，系统会自动顺着页面找到价格数据；抓不到时会自动换无头浏览器再试一次（带上下面配置的 Cookie 和请求头）";
 
   async function save() {
     if (refreshUrlError || refreshBodyError || refreshSampleError) {
@@ -1654,6 +1704,22 @@ function SiteModal({
               }}
             />
           </SettingRow>
+          <SettingRow
+            label="分组白名单"
+            hint="选填：只采这些分组的价格，渠道状态也只查这些分组；分组名从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就全部采集"
+          >
+            <Input
+              value={statusGroupsText}
+              onChange={commitGroupsText}
+              placeholder="svip, vip"
+              style={{ width: "min(360px, 100%)" }}
+            />
+            {statusGroupsText.trim() && (
+              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+                保存后，没被选中的分组的价格快照、历史、事件和检测记录会被清掉，且无法恢复
+              </span>
+            )}
+          </SettingRow>
 
           {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿 */}
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
@@ -1677,7 +1743,7 @@ function SiteModal({
             />
             <EntryCard
               title="站点公告"
-              desc="公告有变化时记录并通知"
+              desc="公告有变化时记为事件"
               configured={Boolean(noticeUrl.trim())}
               onClick={() => setActiveSub("notice")}
             />
@@ -1730,7 +1796,6 @@ function SiteModal({
       {activeSub === "status" && (
         <StatusSubModal
           initialUrl={statusUrl}
-          initialGroups={statusGroupsText}
           initialHeadersText={statusHeadersText}
           warningKeys={headerOverrideWarnings.status}
           onCommit={commitStatus}

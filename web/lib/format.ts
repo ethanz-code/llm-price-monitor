@@ -10,6 +10,7 @@ export const EVENT_META: Record<string, { label: string; tone: Tone }> = {
   restored: { label: "恢复", tone: "green" },
   status_changed: { label: "状态变化", tone: "yellow" },
   group_removed: { label: "分组下线", tone: "red" },
+  group_added: { label: "分组上线", tone: "green" },
   notice_init: { label: "公告建档", tone: "blue" },
   notice_changed: { label: "公告更新", tone: "yellow" },
 };
@@ -252,6 +253,20 @@ export function rowReason(row: {
 /** 归一化搜索文本：小写并去掉分隔符（- _ . 空格等），让 GLM5.3 能命中 GLM-5.3。 */
 export function looseSearchKey(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "");
+}
+
+const TASK_KIND_LABELS: Record<string, string> = {
+  collect: "全量采集",
+  "collect-test": "测试采集",
+  "collect-price": "价格采集",
+  "collect-status": "渠道状态采集",
+  "collect-notice": "站点公告采集",
+  "catalog-refresh": "厂商定价刷新",
+};
+
+/** 后台任务类型的展示名。 */
+export function taskKindLabel(kind: string): string {
+  return TASK_KIND_LABELS[kind] ?? kind;
 }
 
 /** 模糊包含匹配：去掉分隔符后再比对，空关键词恒命中。 */

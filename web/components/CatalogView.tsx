@@ -65,7 +65,7 @@ export function CatalogView({
         />
         {view === "all" && (
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-            覆盖 models.dev 收录的全部渠道，比价参考用；折扣对比仍以官方定价为准。
+            覆盖 models.dev 收录的全部渠道，比价参考用；折扣仍以官方定价为准。
           </span>
         )}
       </div>

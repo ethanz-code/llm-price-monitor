@@ -153,7 +153,7 @@ export function DataTable<T extends object>({
       isValidElement(empty) && empty.type === Empty ? (
         empty
       ) : (
-        <Empty icon={<IconNodes size={18} />}>{empty}</Empty>
+        <Empty icon={<IconNodes size={18} />} description={empty} />
       );
     return (
       <div className="dtable-wrap">

@@ -6,8 +6,8 @@ import { useState } from "react";
 import { toast, Btn, Modal } from "./ui";
 import { DataTable, type DColumn } from "./DataTable";
 import { ToneTag } from "./ToneTag";
-import { formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
-import type { SiteConfig, TaskInfo } from "@/lib/types";
+import { formatClock, formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
+import type { SiteConfig, TaskDetail } from "@/lib/types";
 
 type TestRecord = {
   model: string | null;
@@ -36,7 +36,7 @@ function priceCell(value: number | null, unit: string | null) {
 export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: () => void }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [task, setTask] = useState<TaskInfo | null>(null);
+  const [task, setTask] = useState<TaskDetail | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
   // 轮询兜底：任务卡死时最多等 5 分钟，超时后不再锁死弹窗
@@ -45,7 +45,7 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
   async function poll(taskId: string, startedAt: number) {
     for (;;) {
       const res = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
-      const info = (await res.json()) as TaskInfo;
+      const info = (await res.json()) as TaskDetail;
       setTask(info);
       if (info.status !== "running") {
         setElapsed(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
@@ -195,10 +195,41 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
                 </ToneTag>
               )}
               {errors.map((item) => (
-                <p key={item.site_id} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>
+                <p key={`${item.site_id}-${item.error}`} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>
                   {item.site_id}: {item.error}
                 </p>
               ))}
+              {task.logs && task.logs.length > 0 && (
+                <details
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: "8px 12px",
+                    background: "var(--bg)",
+                  }}
+                >
+                  <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-2)" }}>
+                    采集日志（{task.logs.length} 行）
+                  </summary>
+                  <div style={{ display: "grid", gap: 3, marginTop: 8, maxHeight: 260, overflowY: "auto" }}>
+                    {task.logs.map((log, index) => (
+                      <div key={index} style={{ display: "flex", gap: 10, fontSize: 12.5, lineHeight: 1.7 }}>
+                        <span className="mono" style={{ color: "var(--text-3)", flexShrink: 0 }}>
+                          {formatClock(log.time)}
+                        </span>
+                        <span
+                          style={{
+                            color: log.level === "error" ? "var(--tone-red-text)" : "var(--text)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {log.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
           {!running && task === null && (

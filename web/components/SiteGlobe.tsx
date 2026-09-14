@@ -304,7 +304,13 @@ export function SiteGlobe({
       {located.map((site) => {
         const anchor = `--cobe-${MARKER_ID(site.id)}`;
         const level = site.availability != null ? rateLevel(site.availability) : null;
-        const pulseColor = statusHex(site, dark);
+        // 波纹色用主题变量而不是字面色值：字面色会随 dark 在 SSR 与客户端各算一套，触发水合不一致告警
+        const pulseColorVar =
+          level === "warn"
+            ? "var(--chart-warn)"
+            : level === "down"
+              ? "var(--chart-down)"
+              : "var(--chart-ok)";
         return (
           <Fragment key={site.id}>
             {/* 波纹环：钉在节点位置向外扩散，状态色随分档；无数据/停用的灰色站点不扩散 */}
@@ -316,7 +322,7 @@ export function SiteGlobe({
                   {
                     positionAnchor: anchor,
                     opacity: `var(--cobe-visible-${MARKER_ID(site.id)}, 0)`,
-                    "--pulse-color": pulseColor,
+                    "--pulse-color": pulseColorVar,
                   } as React.CSSProperties
                 }
               >

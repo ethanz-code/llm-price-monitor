@@ -12,7 +12,7 @@ const TERMS = {
   output_price:
     "模型生成内容（completion）的单价，通常高于输入价。站点价统一折算成人民币展示（USD 价乘快照汇率），显示为区间（如 1–2）时表示阶梯计价，取最低–最高档。",
   official_cny: "厂商 USD 原价按目录刷新时锁定的汇率折算的人民币单价；各处折扣计算也用这个快照汇率，全站口径一致。",
-  list_price: "厂商定价页标称的列表价（list price），经 models.dev 收录，折扣对比以此为基准。",
+  list_price: "厂商定价页标称的列表价（list price），经 models.dev 收录，折扣以此为基准。",
   context_limit:
     "上下文窗口与最大输出 token 数（厂商标称，models.dev 收录）：上下文是单次请求能装下的总 token 上限，输出是其中模型生成部分的上限；显示 — 表示目录未收录该数值。",
   description: "开源模型目录 models.dev 收录的一句话模型简介，帮助快速了解模型定位与特点。",

@@ -5,8 +5,9 @@ import { eventMeta, formatDiscount, formatTime, isNoticeEvent } from "@/lib/form
 import { getSiteInfo } from "@/lib/sites";
 import type { FeedData, OverviewData } from "@/lib/types";
 import { SiteAlert } from "@/components/SiteAlert";
+import { CollectErrorsCard } from "@/components/CollectErrorsCard";
+import { TrafficPanel } from "@/components/TrafficPanel";
 import {
-  IconAim,
   IconAppstore,
   IconBook,
   IconBolt,
@@ -26,7 +27,7 @@ export const metadata = { title: "管理面板 · 概览" };
 // collect_status（需要关注的站点）仅管理员可见：与 overview 页同样带上会话 cookie
 const SESSION_COOKIE = "ppm_session";
 
-/** 概览：双栏仪表盘 —— 主栏 KPI + 最近事件面板，右栏快捷入口与公开页面；尚无站点时显示入门清单。 */
+/** 概览：双栏仪表盘 —— 主栏顶部一行轻量统计数字 + 访问统计面板 + 最近事件，右栏快捷入口与公开页面；尚无站点时显示入门清单。 */
 export default async function AdminOverviewPage() {
   const session = (await cookies()).get(SESSION_COOKIE)?.value;
   const headers = session ? { Cookie: `${SESSION_COOKIE}=${session}` } : undefined;
@@ -37,7 +38,7 @@ export default async function AdminOverviewPage() {
     [overview, events] = await Promise.all([
       apiGet<OverviewData>("/api/overview", headers),
       // 事件总数给 KPI 用，events 列表给「最近事件」面板用
-      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8"),
+      apiGet<FeedData>("/api/feed?events_limit=5&notice_limit=5"),
     ]);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -45,14 +46,14 @@ export default async function AdminOverviewPage() {
 
   const records = overview?.records ?? [];
   const siteIds = new Set(records.map((row) => row.site_id));
-  const latestEvents = events?.events.slice(0, 8) ?? [];
+  const latestEvents = events?.events.slice(0, 5) ?? [];
   const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
   const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
 
   const kpis: { label: string; value: string; hint: string; tip?: TermKey }[] = [
-    { label: "监控站点", value: String(siteIds.size), hint: "来自站点配置" },
-    { label: "价格记录", value: String(records.length), hint: "自首次采集累计" },
-      { label: "事件总数", value: String((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "新增与变化合计" },
+    { label: "监控站点", value: String(siteIds.size), hint: "个" },
+    { label: "价格记录", value: String(records.length), hint: "条" },
+    { label: "事件总数", value: String((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "条" },
     {
       label: "平均输入折扣",
       tip: "discount_input",
@@ -68,18 +69,24 @@ export default async function AdminOverviewPage() {
       {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="稍后再试，或检查服务是否已启动。" />}
       <div className="dash-grid">
         <div className="dash-main">
-          <div className="stat-grid">
+          <div className="dash-stats">
             {kpis.map((card) => (
-              <div key={card.label} className="stat-card">
-                <div className="stat-label">
+              <div key={card.label} className="dash-stat">
+                <div className="dash-stat-label">
                   {card.label}
                   {card.tip && <TermTip term={card.tip} />}
                 </div>
-                <div className="stat-value">{card.value}</div>
-                <div className="stat-hint">{card.hint}</div>
+                <div className="dash-stat-value">
+                  {card.value}
+                  <span className="dash-stat-hint">{card.hint}</span>
+                </div>
               </div>
             ))}
           </div>
+
+          <TrafficPanel />
+
+          <CollectErrorsCard />
 
           <div className="panel">
             <div className="dash-panel-head">
@@ -155,9 +162,6 @@ export default async function AdminOverviewPage() {
               <Link href="/catalog" className="dash-quick-item">
                 <IconFileSearch size={15} /> 厂商定价
               </Link>
-              <Link href="/discount" className="dash-quick-item">
-                <IconAim size={15} /> 折扣明细
-              </Link>
             </div>
           </div>
         </div>
@@ -180,7 +184,7 @@ export default async function AdminOverviewPage() {
               <span className="guide-icon"><IconKey size={15} /></span>
               <div>
                 <div className="guide-title">2 · 配好 AI 提取与厂商定价</div>
-                <p>标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；厂商价来自 models.dev 目录，折扣对比依赖它。</p>
+                <p>标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；厂商价来自 models.dev 目录，总览里的折扣列依赖它。</p>
               </div>
               <Link href="/admin/settings" className="guide-link">去设置 →</Link>
             </li>

@@ -17,9 +17,9 @@ export const nav = {
   items: [
     { key: "/", label: "首页" },
     { key: "/overview", label: "中转站定价" },
-    { key: "/history", label: "历史与事件" },
+    { key: "/calculator", label: "花费计算" },
     { key: "/catalog", label: "厂商定价" },
-    { key: "/discount", label: "折扣对比" },
+    { key: "/history", label: "事件追踪" },
   ],
   adminLabel: "工作台",
   theme: {
@@ -37,7 +37,7 @@ export const home = {
     "自己用的中转站，是不是时不时就不能用？想找个靠谱的，先来对照各家价格和渠道状态。平台不偏向任何中转站，使用需谨慎，Token 少充值。",
   heroButtons: {
     primary: "进入中转站定价 →",
-    secondary: "查看折扣对比",
+    secondary: "算一笔花费 →",
   },
   intro:
     "这是一个自动化的中转站监测面板：定时抓取各站点的模型价格、公告和渠道可用性，每条数据都附来源链接。不推荐、不评分，只做对照。",
@@ -91,8 +91,12 @@ export const home = {
       a: "不会。这里只提供价格、公告和可用性的对照数据，选哪家由你自己判断。",
     },
     {
+      q: "标价就是我要付的钱吗？",
+      a: "不一定。价格表里的单价是站点公开标价，实际账单还受缓存命中率和各家计费口径影响，可能和按标价算出来的数字有不小出入。建议先小额充值试跑，确认账单符合预期再加量。",
+    },
+    {
       q: "想把我的站点加进监控怎么办？",
-      a: "站点提报功能即将上线，届时填写站点地址即可申请，我们会逐个核验后接入。",
+      a: "点首页「提交监控站点」，填站点地址即可申请，我们会逐个核验后接入。",
     },
   ],
   ctaTitle: "选中转站，先看数据。",
@@ -102,14 +106,54 @@ export const home = {
 export const subtitles = {
   overview:
     "各中转站最新的模型单价，折扣为站点价相对厂商原价的比值——越低越便宜。",
-  discount:
-    "站点价折算 CNY 后与厂商原价相除：比值 19% 即“1.9 折”，越低越便宜。",
   catalog:
-    "数据来自开源模型目录 models.dev，价格统一为美元并按快照汇率换算成人民币，是折扣对比的基准；每条价格都能点开来源核对。切到「全量渠道」可看 OpenRouter 等全部渠道的价格。",
+    "数据来自开源模型目录 models.dev，价格统一为美元并按快照汇率换算成人民币，可与各中转站标价对照；每条价格都能点开来源核对。切到「全量渠道」可看 OpenRouter 等全部渠道的价格。",
   history:
     "价格变化、分组下线与站点公告都会留档在这里；趋势图每次采集记一个点，保留近 90 天。",
-  siteStatus:
-    "这个中转站最近 7 天的检测档案：可用渠道占比趋势、各渠道当前状态与站点公告；绿色为正常、灰色为异常或未知。",
+  calculator:
+    "填单价和用量，算一笔大概要花多少钱；结果会写进网址，刷新不丢、还能直接发给别人对照。",
+};
+
+/** 花费计算页 */
+export const calculator = {
+  source: {
+    official: "厂商官方价",
+    site: "中转站价",
+  },
+  siteLabel: "选站点",
+  sitePlaceholder: "先选一个中转站",
+  modelPlaceholder: "搜索或选一个模型",
+  buckets: {
+    input: "输入",
+    output: "输出",
+    cacheRead: "缓存命中",
+    cacheWrite: "缓存存储",
+  },
+  priceTitle: "单价 · 每百万 token",
+  usageTotal: "用量",
+  /** 总用量下拉框的字段标签 */
+  usageSelect: "总用量",
+  /** 总用量快捷档位标签，与 lib/calculator.ts 的 TOKEN_PRESET_VALUES 按序对应 */
+  tokenPresets: ["10M（一千万）", "100M（一亿）", "1B（十亿）"],
+  hitRate: "缓存命中率",
+  usageHint: "输入按 99.2% · 输出按 0.8% 拆分：命中部分按缓存命中价，未命中按输入价。",
+  resultTitle: "花费结果",
+  totalLabel: "合计",
+  emptyResult: "填好单价和用量，这里就会显示花费。",
+  missingCache: "没查到缓存命中单价，命中的 token 没计入总价；知道单价的话在上面补一格。",
+  detail: {
+    bucket: "计费项",
+    unitPrice: "单价",
+    tokens: "用量",
+    subtotal: "小计",
+    share: "占比",
+  },
+  copyLink: "复制分享链接",
+  copied: "链接已复制，发给别人看到的就是同一套算法。",
+  loadFailed: {
+    title: "暂时读不到价格数据",
+    fix: "计算器要先有厂商定价或最新价格快照：稍后刷新重试；管理员可在管理后台「采集任务」页点击「刷新厂商定价」。",
+  },
 };
 
 /** 页面加载失败的提示条（SiteAlert） */
@@ -122,10 +166,6 @@ export const alerts = {
     title: "无法读取厂商定价",
     fix: "请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。",
   },
-  discount: {
-    title: "无法计算折扣",
-    fix: "折扣对比需要先有厂商定价和最新价格快照：管理员可在管理后台「采集任务」页点击「刷新厂商定价」。",
-  },
 };
 
 /** 页脚 */
@@ -133,7 +173,6 @@ export const footer = {
   brandLine:
     "盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成对任何站点的使用推荐。",
   links: {
-    discount: "折扣对比",
     catalog: "厂商定价",
     feedback: "提建议",
     admin: "管理",

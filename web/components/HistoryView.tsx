@@ -7,46 +7,13 @@ import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { getSiteInfo } from "@/lib/sites";
 import type { EventRow } from "@/lib/types";
-import {
-  currencySymbol,
-  eventMeta,
-  formatPrice,
-  formatTime,
-  isNoticeEvent,
-  noticeExcerpt,
-  tieredPriceText,
-  toCnyPrice,
-} from "@/lib/format";
-import type { FeedEvent, HistoryListData, PriceRecord } from "@/lib/types";
+import { eventMeta, formatTime, isNoticeEvent, noticeExcerpt } from "@/lib/format";
+import type { FeedEvent, HistoryListData } from "@/lib/types";
+import { describeChange, EventDetailModal } from "./EventDetailModal";
 
 function KindTag({ kind }: { kind: string }) {
   const meta = eventMeta(kind);
   return <ToneTag tone={meta.tone}>{meta.label}</ToneTag>;
-}
-
-interface ChangeLike {
-  current?: { input_price: number | null; output_price: number | null; unit?: string; metadata?: PriceRecord["metadata"] } | null;
-  previous?: { input_price: number | null; output_price: number | null; unit?: string; metadata?: PriceRecord["metadata"] } | null;
-}
-
-function describeChange(event: ChangeLike, rate?: number | null): string {
-  const unit = event.current?.unit ?? event.previous?.unit ?? "";
-  // 事件摘要统一按 RMB 展示：USD 价乘汇率折算，无法折算回落原币
-  const converted = toCnyPrice(event.current?.input_price, unit, rate) !== null;
-  const symbol = converted ? "¥" : currencySymbol(unit);
-  const price = (record: ChangeLike["current"], field: "input_price" | "output_price") => {
-    const tierText = tieredPriceText(record, field, rate);
-    if (tierText) return tierText;
-    const value = converted ? toCnyPrice(record?.[field], unit, rate) : record?.[field];
-    return `${symbol}${formatPrice(value ?? null)}`;
-  };
-  const pair = (record: ChangeLike["current"]) =>
-    record ? `${price(record, "input_price")} / ${price(record, "output_price")}` : null;
-  const suffix = unit ? ` · ${converted ? "CNY/1M tokens（折算）" : unit}` : "";
-  const current = pair(event.current) ?? "无价格";
-  const previous = pair(event.previous);
-  if (!previous) return `新增 ${current}${suffix}`;
-  return `${previous} → ${current}${suffix}`;
 }
 
 // 同一轮扫描（检测时间相邻 120 秒内）同站点+模型+同类事件折成一组，多分组只显示一张卡；公告事件不折叠
@@ -73,8 +40,20 @@ function foldEvents(events: FeedEvent[]): FeedEvent[][] {
   return groups;
 }
 
+/** 卡片上的小圆角按钮："详情""N 个分组"共用。 */
+const pillStyle: React.CSSProperties = {
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  background: "transparent",
+  color: "var(--text-2)",
+  fontSize: 12,
+  padding: "1px 10px",
+  cursor: "pointer",
+};
+
 function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null }) {
   const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
+  const [detail, setDetail] = useState<FeedEvent | null>(null);
   if (events.length === 0) {
     return (
       <Empty
@@ -99,14 +78,21 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
         if (isNoticeEvent(event)) {
           const meta = eventMeta(event.kind);
           return (
-            <div key={`${event.site_id}:${event.kind}:${event.detected_at}`} className="event-card">
+            <div
+              key={`${event.site_id}:${event.kind}:${event.detected_at}`}
+              className="event-card"
+              style={{ cursor: "pointer" }}
+              onClick={() => setDetail(event)}
+            >
               <span aria-hidden className={`side-dot dot-${meta.tone}`} style={{ marginTop: 7 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <KindTag kind={event.kind} />
-                  <RiskLink href={getSiteInfo(event.site_id).homepage} variant="site">
-                    <span className="mono">{event.site_id}</span>
-                  </RiskLink>
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <RiskLink href={getSiteInfo(event.site_id).homepage} variant="site">
+                      <span className="mono">{event.site_id}</span>
+                    </RiskLink>
+                  </span>
                   <span className="mono" style={{ color: "var(--text-3)", fontSize: 12, marginLeft: "auto" }}>
                     {formatTime(event.detected_at)}
                   </span>
@@ -122,31 +108,28 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
         const key = `${event.site_id}:${event.model}:${event.kind}:${event.detected_at}`;
         const open = openKeys.has(key);
         return (
-          <div key={key} className="event-card">
+          <div key={key} className="event-card" style={{ cursor: "pointer" }} onClick={() => setDetail(event)}>
             <span aria-hidden className={`side-dot dot-${tone}`} style={{ marginTop: 7 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <KindTag kind={event.kind} />
-                <RiskLink
-                  href={getSiteInfo(event.site_id, event.current?.source_url ?? event.previous?.source_url).homepage}
-                  variant="site"
-                >
-                  <span className="mono">{event.site_id}</span>
-                </RiskLink>
+                <span onClick={(e) => e.stopPropagation()}>
+                  <RiskLink
+                    href={getSiteInfo(event.site_id, event.current?.source_url ?? event.previous?.source_url).homepage}
+                    variant="site"
+                  >
+                    <span className="mono">{event.site_id}</span>
+                  </RiskLink>
+                </span>
                 <span className="mono" style={{ color: "var(--text-2)" }}>{event.model}</span>
                 {group.length > 1 ? (
                   <button
                     type="button"
-                    onClick={() => toggle(key)}
-                    style={{
-                      border: "1px solid var(--border)",
-                      borderRadius: 999,
-                      background: "transparent",
-                      color: "var(--text-2)",
-                      fontSize: 12,
-                      padding: "1px 10px",
-                      cursor: "pointer",
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggle(key);
                     }}
+                    style={pillStyle}
                   >
                     {open ? "收起" : `${group.length} 个分组`}
                   </button>
@@ -186,6 +169,7 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
           </div>
         );
       })}
+      <EventDetailModal event={detail} rate={rate} onClose={() => setDetail(null)} />
     </div>
   );
 }

@@ -103,6 +103,10 @@ export interface CatalogEntry {
   list?: { input?: number; output?: number };
   /** 快照汇率换算的人民币价（刷新时锁定），仅供展示 */
   list_cny?: { input?: number | null; output?: number | null };
+  /** 缓存读/写价（USD/1M tokens）。models.dev 只覆盖部分模型，缺失为 null */
+  cache?: { read?: number | null; write?: number | null };
+  /** 缓存价的快照汇率人民币折算，口径与 list_cny 一致 */
+  cache_cny?: { read?: number | null; write?: number | null };
   source_url?: string;
   description?: string;
   /** 简介的中文翻译（AI 随目录同步翻译；AI 未配置或未轮到时为空，回落英文原文） */
@@ -127,28 +131,6 @@ export interface CatalogData {
   usd_cny_rate: number;
   rate_source: string;
   models: Record<string, CatalogEntry>;
-}
-
-export interface DiscountRow extends DiscountInfo {
-  site_id: string;
-  model: string;
-  group?: string | null;
-}
-
-export interface DiscountSummaryItem {
-  model: string;
-  input_discount: { min: number; max: number; avg: number };
-  output_discount: { min: number; max: number; avg: number };
-  sites_compared: number;
-}
-
-export interface DiscountData {
-  usd_cny_rate: number;
-  rate_source: string;
-  official_generated_at?: string;
-  discounts: DiscountRow[];
-  summary: Record<string, DiscountSummaryItem>;
-  skipped: { site_id?: string; model?: string; reason: string }[];
 }
 
 export interface SiteMeta {
@@ -190,9 +172,11 @@ export interface SiteConfig {
     ratio_url?: string | { url: string; headers?: Record<string, string> } | null;
     params?: Record<string, string>;
     headers?: Record<string, string>;
-    /** 网页模式·无头浏览器：开启后用无头浏览器打开网页并注入登录信息，可采集需要登录的页面 */
+    /** 网页模式·无头浏览器：开启后强制用无头浏览器打开网页；关闭时普通抓取失败也会自动用无头重试一次 */
     headless?: {
       enabled?: boolean;
+      /** 无头浏览器打开页面时额外携带的请求头（Referer、X-Token 之类），普通抓取失败自动回退无头时同样带上 */
+      headers?: Record<string, string>;
       /** 注入的 Cookie；每项只需 name/value，domain/path 由后端按站点 URL 域名自动补 */
       cookies?: { name: string; value: string }[];
       /** 注入的 localStorage 键值 */
@@ -202,8 +186,13 @@ export interface SiteConfig {
     } | null;
   } | null;
   networks?: NetworkEndpoint[];
-  /** 渠道状态数据地址：每次采集顺带 GET 并存档，变化写入状态事件 */
-  status?: { url?: string | null; params?: Record<string, string>; headers?: Record<string, string> } | null;
+  /** 渠道状态数据地址：每次采集顺带 GET 并存档，变化写入状态事件；groups 是站点级分组白名单，价格采集与状态检测共用 */
+  status?: {
+    url?: string | null;
+    params?: Record<string, string>;
+    headers?: Record<string, string>;
+    groups?: string[];
+  } | null;
   /** 站点公告地址：默认从 network.url 推导 /api/notice；也可指向纯文本/Markdown 公告页 */
   notice?: { url?: string | null; params?: Record<string, string>; headers?: Record<string, string> } | null;
   request_headers?: Record<string, string> | null;
@@ -265,6 +254,20 @@ export interface TaskLog {
 
 export interface TaskDetail extends TaskInfo {
   logs: TaskLog[];
+}
+
+/** 概览页「采集异常」卡片条目：跨任务汇总的警告/错误日志行。 */
+export interface TaskErrorEntry {
+  key: string;
+  task_id: string;
+  kind: string;
+  time: number | null;
+  level: "warn" | "error";
+  message: string;
+}
+
+export interface TaskErrorsData {
+  entries: TaskErrorEntry[];
 }
 
 /** 渠道状态快照（后端 fetch_site_status 输出；data 为站点自有结构的自由 JSON）。 */

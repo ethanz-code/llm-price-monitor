@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { apiAuthPost, fetchMeta } from "@/lib/api";
+import { apiAuthPost, fetchAuthState } from "@/lib/api";
 import { Btn, Input } from "@/components/ui";
 import { LogoMark } from "@/components/LogoMark";
 
@@ -17,9 +17,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetchMeta().then((meta) => {
-      if (meta?.needs_setup) router.replace("/setup");
-      else if (meta?.is_admin) router.replace("/admin");
+    fetchAuthState().then((state) => {
+      if (state?.needs_setup) router.replace("/setup");
+      else if (state?.is_admin) router.replace("/admin");
       else setChecking(false);
     });
   }, [router]);

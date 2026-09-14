@@ -7,17 +7,8 @@ import { DataTable, type DColumn } from "./DataTable";
 import { Btn, Empty, Modal } from "./ui";
 import { IconBolt } from "./icons";
 import { apiSend } from "@/lib/api";
-import { formatClock, formatTime } from "@/lib/format";
+import { formatClock, formatTime, taskKindLabel } from "@/lib/format";
 import type { TaskDetail, TaskInfo, TasksData } from "@/lib/types";
-
-const TASK_KIND_LABELS: Record<string, string> = {
-  collect: "全量采集",
-  "collect-test": "测试采集",
-  "collect-price": "价格采集",
-  "collect-status": "渠道状态采集",
-  "collect-notice": "站点公告采集",
-  "catalog-refresh": "厂商定价刷新",
-};
 
 function StatusTag({ status }: { status: string }) {
   if (status === "done") return <span className="tag tone-green">完成</span>;
@@ -64,7 +55,7 @@ function TaskLogModal({ taskId, onClose }: { taskId: string; onClose: () => void
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "var(--text-2)" }}>
             <StatusTag status={detail.status} />
-            <span>{TASK_KIND_LABELS[detail.kind] ?? detail.kind}</span>
+            <span>{taskKindLabel(detail.kind)}</span>
             <span style={{ color: "var(--text-3)" }}>
               开始 {formatTime(detail.started_at)}
               {detail.finished_at ? ` · 耗时 ${Math.max(1, Math.round(detail.finished_at - detail.started_at))}s` : ""}
@@ -126,7 +117,7 @@ export function AdminTasks() {
   }, []);
 
   const taskColumns: DColumn<TaskInfo>[] = [
-    { key: "kind", title: "任务", width: 150, render: (_v, row) => TASK_KIND_LABELS[row.kind] ?? row.kind },
+    { key: "kind", title: "任务", width: 150, render: (_v, row) => taskKindLabel(row.kind) },
     { key: "status", title: "状态", width: 90, render: (_v, row) => <StatusTag status={row.status} /> },
     { key: "started_at", dataIndex: "started_at", title: "开始时间", width: 160, render: (v: number) => <span className="mono" style={{ color: "var(--text-2)", fontSize: 13, whiteSpace: "nowrap" }}>{formatTime(v)}</span> },
     {

@@ -1,30 +1,31 @@
 :root {
-  /* 亮色对齐 Artificial Analysis：浅灰页底 #FAFAFA，白卡无边框轻投影分层；荧光绿只做点缀 */
-  --bg: #fafafa;
+  /* 亮色对齐控制台式信息密度：浅蓝页底 #F7FAFF，白卡无边框轻投影分层；品牌绿只做点缀。
+     中性色全部带蓝调（hairline/边框/次级底色），与页底的蓝保持同一色温 */
+  --bg: #f7faff;
   --panel: #ffffff;
-  --panel-2: #f4f6f8;
-  --border: rgba(13, 22, 31, 0.08);
-  --border-strong: rgba(13, 22, 31, 0.16);
+  --panel-2: #eef3f9;
+  --border: rgba(20, 45, 80, 0.08);
+  --border-strong: rgba(20, 45, 80, 0.17);
   --text: #212a33;
   --text-2: #5d6a77;
   --text-3: #6b7480;
-  /* 荧光绿品牌色：--accent 是填充色（按钮/品牌块底），--accent-text 是可读文本色 */
+  /* 品牌绿：--accent 是填充色（按钮/品牌块底），--accent-text 是可读文本色 */
   --accent: #c8ff00;
   --accent-text: #3f5600;
   --accent-contrast: #101418;
   --header-bg: rgba(255, 255, 255, 0.8);
-  /* 首页通栏光效（HeroBackdrop 内联 SVG 取色）：亮色底更浅，浓度要比暗色高一档才压得住 */
+  /* 卡片：无边框无投影，白卡在浅灰页底上靠底色分层 */
+  --shadow-panel: none;
+  --card-border: none;
+  /* 光晕与镀铬马赛克用色：首页顶部光束、页脚右下角马赛克共用 */
   --glow-green: rgba(200, 255, 0, 0.3);
-  /* 右上镀铬马赛克方块：亮色底上金属带压暗一点、整体更收敛 */
   --chrome-hi: #e3e9ee;
   --chrome-md: #b3bdc7;
   --chrome-lo: #89939d;
   --chrome-glint: rgba(120, 170, 0, 0.5);
   --chrome-opacity: 0.42;
-  /* 亮暗统一无边框卡片：白卡在浅灰页底上自带分层，再叠极轻投影增加悬浮感 */
-  --shadow-panel:
-    0 1px 2px rgba(15, 26, 38, 0.05), 0 2px 10px rgba(15, 26, 38, 0.06);
-  --card-border: none;
+  /* 亮色输入类控件（.sel/.input）：极轻内投影给纯白底一点厚度；聚焦时光晕会整体替换 */
+  --field-inset: inset 0 1px 2px rgba(20, 45, 80, 0.04);
   /* 激活 tab / 分段控件的轻投影（卡片不用，仅导航与 seg 的激活态） */
   --shadow-pop: 0 1px 6px rgba(15, 26, 38, 0.12);
   /* 亮色彩色 tone：饱和度优先（徽标文字/折扣条/渠道点共用），对比度 ≥4.5:1 */
@@ -36,7 +37,7 @@
   --tone-yellow-text: #92400e;
   --tone-red-bg: #fde3e3;
   --tone-red-text: #b91c1c;
-  --tone-gray-bg: #edf1f5;
+  --tone-gray-bg: #ebf0f7;
   --tone-gray-text: #5d6a77;
   /* 图表三档状态色：与 components/chartTheme 的 statusColors 同值（可用率 80/60 与延迟 1000/3000ms 共用），
      供服务端组件（首页站点卡片）在不便用 hook 时复用同一套色 */
@@ -51,10 +52,6 @@
   --mono:
     var(--font-geist-mono, "SF Mono"), "SF Mono", "Geist Mono",
     "JetBrains Mono", ui-monospace, monospace;
-  /* 衬线 display：AA 式编辑感标题（中文落宋体，西文落 Georgia） */
-  --font-serif:
-    Georgia, "Times New Roman", "Songti SC", "STSong", "Noto Serif SC",
-    "SimSun", serif;
   /* 正文：Geist 几何无衬线（next/font 注入），中文落苹方/雅黑 */
   --font-sans:
     var(--font-geist-sans, "Geist Sans"), "SF Pro Text", -apple-system,
@@ -86,16 +83,15 @@
   --accent-text: #c8ff00;
   --accent-contrast: #0b0d0f;
   --header-bg: rgba(10, 12, 14, 0.72);
+  /* 暗色卡片同样无边框无投影，靠底色分层 */
+  --shadow-panel: none;
+  --card-border: none;
   --glow-green: rgba(200, 255, 0, 0.1);
-  /* 右上镀铬马赛克方块：暗色底上银带亮一点才压得住黑 */
   --chrome-hi: #cbd5df;
   --chrome-md: #828c96;
   --chrome-lo: #4a545e;
   --chrome-glint: rgba(200, 255, 0, 0.4);
   --chrome-opacity: 0.5;
-  /* 暗色无边框卡片靠微弱投影与底色分层；亮色同为无边框，投影更轻 */
-  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
-  --card-border: none;
   /* 暗色下激活态阴影整体加深 */
   --shadow-pop: 0 1px 10px rgba(0, 0, 0, 0.55);
   --tone-green-bg: rgba(86, 168, 92, 0.16);
@@ -142,7 +138,6 @@ body {
 
 body > main {
   flex: 1;
-  /* 全站内容抬到 HeroBackdrop 光束（z-index: 0）之上 */
   position: relative;
   z-index: 1;
 }
@@ -228,45 +223,12 @@ body > main {
   border-bottom: 1px solid var(--border);
 }
 
-/* 页脚右下角镀铬马赛克：亮斑贴 footer 顶边、向下和向左双遮罩溶解，小屏隐藏避免挤文字 */
-.chrome-mosaic {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 560px;
-  height: 300px;
-  pointer-events: none;
-  -webkit-mask-image:
-    linear-gradient(to left, #000 58%, transparent 96%),
-    linear-gradient(to bottom, #000 60%, transparent 94%);
-  mask-image:
-    linear-gradient(to left, #000 58%, transparent 96%),
-    linear-gradient(to bottom, #000 60%, transparent 94%);
-  -webkit-mask-composite: source-in;
-  mask-composite: intersect;
-}
-
-@media (max-width: 860px) {
-  .chrome-mosaic {
-    display: none;
-  }
-}
-
-.page-eyebrow {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  margin-bottom: 10px;
-}
-
+/* 页头标题：无衬线粗黑体紧凑排布，对齐控制台的标题层级（不做展示型大字） */
 .page-title {
-  font-family: var(--font-serif);
-  font-size: clamp(34px, 3.6vw, 44px);
-  font-weight: 500;
-  letter-spacing: 0;
-  line-height: 1.15;
+  font-size: clamp(22px, 2.2vw, 28px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
   margin: 0;
   text-wrap: balance;
 }
@@ -278,12 +240,11 @@ body > main {
   text-wrap: pretty;
 }
 
-/* 小节标题：只靠衬线与字号字重分层，不加装饰件（避免模板感） */
+/* 小节标题：只靠字号字重分层，不加装饰件（避免模板感） */
 .section-title {
   margin: 0;
-  font-family: var(--font-serif);
-  font-size: 17px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.4;
   color: var(--text);
 }
@@ -298,11 +259,11 @@ body > main {
   margin-top: 32px;
 }
 
-/* 白卡基座：无边框，亮暗都靠轻投影分层；结构分隔靠内部发丝线 */
+/* 白卡基座：发丝描边加大圆角，亮暗都靠描边+轻投影分层；结构分隔靠内部发丝线 */
 .panel {
   background: var(--panel);
   border: var(--card-border);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow-panel);
 }
 
@@ -453,9 +414,7 @@ body > main {
   box-shadow: inset 0 -1px 0 var(--border);
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text-2);
 }
 
@@ -485,7 +444,7 @@ body > main {
 }
 
 .dtable td {
-  padding: 13px 12px;
+  padding: 15px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -697,22 +656,27 @@ body > main {
   line-height: 1;
 }
 
-/* 历史事件卡：发丝描边盒，hover 描边加深 + 显底色；管理面板内转为发丝分行 */
+/* 历史事件卡：无边框，靠底色与页底分层（亮色白卡、暗色轻抬升），hover 底色加深。
+   亮色必须垫白底：透明卡会把页面顶部的品牌绿光晕透进来，看着像染了一层主色 */
 .event-card {
   display: flex;
   gap: 14px;
   padding: 13px 18px;
-  border: 1px solid var(--border);
   border-radius: 8px;
-  background: transparent;
-  transition:
-    background-color var(--dur),
-    border-color var(--dur);
+  background: var(--panel);
+  transition: background-color var(--dur);
+}
+
+[data-theme="dark"] .event-card {
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
 }
 
 .event-card:hover {
-  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--panel-2) 60%, var(--panel));
+}
+
+[data-theme="dark"] .event-card:hover {
+  background: var(--panel-2);
 }
 
 /* 分页页码 */
@@ -849,6 +813,15 @@ body > main {
   background: var(--panel-2);
 }
 
+/* 亮色下白按钮与卡片同材质：半透白让页底蓝微微透出，hover 才补足不透明度 */
+html:not([data-theme="dark"]) .btn-ghost {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.95);
+}
+
 .btn-text {
   background: transparent;
   color: var(--text-2);
@@ -981,9 +954,8 @@ body > main {
 
 .modal-title {
   margin: 0;
-  font-family: var(--font-serif);
-  font-size: 18px;
-  font-weight: 550;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .modal-x {
@@ -1141,6 +1113,7 @@ body > main {
   font-size: 13.5px;
   font-family: inherit;
   cursor: pointer;
+  box-shadow: var(--field-inset, none);
   transition:
     border-color var(--dur),
     box-shadow var(--dur);
@@ -1290,6 +1263,7 @@ body > main {
   font-size: 13.5px;
   font-family: inherit;
   width: 100%;
+  box-shadow: var(--field-inset, none);
   transition:
     border-color var(--dur),
     box-shadow var(--dur);
@@ -1428,36 +1402,62 @@ body > main {
   box-shadow: none;
 }
 
+/* 提示条：控制台式低调留白——浅底无边框，靠底色加前置小图标区分语气，不用彩色左竖线 */
 .alert {
   display: flex;
+  align-items: flex-start;
   gap: 10px;
-  border: 1px solid var(--border);
-  border-left-width: 3px;
+  border: none;
   border-radius: 8px;
-  padding: 12px 16px;
-  font-size: 13px;
-  background: var(--panel);
-}
-
-.alert-warn {
-  border-left-color: var(--tone-yellow-text);
+  padding: 13px 16px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  background: var(--panel-2);
+  color: var(--text-2);
+  /* 与后续内容拉开一档，提示信息不贴着表格/表单 */
+  margin-bottom: 20px;
 }
 
 .alert-info {
-  border-left-color: var(--tone-blue-text);
+  background: var(--panel-2);
+  color: var(--text-2);
+}
+
+.alert-warn {
+  background: var(--tone-yellow-bg);
+  color: var(--tone-yellow-text);
+}
+
+.alert-icon {
+  flex-shrink: 0;
+  margin-top: 4px;
+  color: var(--text-3);
+}
+
+.alert-warn .alert-icon {
+  color: var(--tone-yellow-text);
 }
 
 .alert-title {
-  font-weight: 600;
-  margin-bottom: 2px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.alert-warn .alert-title {
+  color: var(--tone-yellow-text);
 }
 
 .alert-desc {
-  color: var(--text-2);
-  line-height: 1.7;
+  color: inherit;
+  line-height: 1.65;
 }
 
-/* 全宽告警色带：去边框圆角，用 tone 底色在内容区通栏铺开（对齐海外竞品的分区色带） */
+/* 只有正文、没有标题时（如页面顶部的说明行）不额外留间距 */
+.alert-desc:not(:first-child) {
+  margin-top: 2px;
+}
+
+/* 全宽告警色带：去边框圆角，用 tone 底色在内容区通栏铺开（对齐控制台的分区通栏提示） */
 .alert-band {
   margin-inline: -32px;
   border: none;
@@ -1605,6 +1605,17 @@ body > main {
   justify-content: flex-start;
 }
 
+/* 亮色弹层（自绘下拉/导航弹出/主题切换）：毛玻璃白 + 蓝调投影，与半透卡片的材质一致 */
+html:not([data-theme="dark"]) .pick-menu,
+html:not([data-theme="dark"]) .nav-pop {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow:
+    0 16px 40px rgba(20, 45, 80, 0.14),
+    0 2px 8px rgba(20, 45, 80, 0.06);
+}
+
 /* 统计条：拆成独立 KPI 白卡，无边框纯投影（对齐导航 active tab 的材质） */
 .stat-grid {
   display: grid;
@@ -1613,11 +1624,11 @@ body > main {
 }
 
 .stat-card {
-  padding: 16px 18px 15px;
+  padding: 20px 22px 19px;
   min-width: 0;
   background: var(--panel);
   border: var(--card-border);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow-panel);
 }
 
@@ -1631,8 +1642,6 @@ html:not([data-theme="dark"]) .panel {
 
 .stat-label {
   font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-3);
 }
 
@@ -1756,87 +1765,6 @@ html:not([data-theme="dark"]) .panel {
   padding-top: 8px;
 }
 
-/* 首页顶部通栏抽象光效：锚定文档顶端，向下渐隐融入页底色 */
-.hero-backdrop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: clamp(520px, 72vh, 800px);
-  pointer-events: none;
-  z-index: 0;
-  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
-  mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
-}
-
-/* 光束入场：刷新页面时从上方淡入落下，像光打下来；
-   只动 transform/opacity，落下后不干扰页面其他常驻动效。--hb-o 保留光束自身的基础透明度 */
-.hb-beam {
-  animation: hb-drop 1s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.hb-beam-late {
-  --hb-o: 0.7;
-  animation-delay: 0.12s;
-}
-
-@keyframes hb-drop {
-  from {
-    transform: translateY(-110px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: var(--hb-o, 1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hb-beam {
-    animation: none;
-  }
-}
-
-/* 右上镀铬马赛克动效：每颗方块的光泽按各自相位缓慢呼吸（--o 为该方块的基础不透明度），
-   时长 3.5~7.5s、延迟 0~7s 由固定种子生成，SSR 与客户端一致；
-   叠加一层蔓延波纹：所有方块共用 9s 周期，波前在开头约 1.2s 内扫过，
-   --rd 是按离中心距离递增的延迟，于是亮波从核心向外涌一次，其余时间安静呼吸 */
-.chr-tile {
-  animation:
-    chr-shimmer ease-in-out infinite alternate,
-    chr-ripple 9s linear infinite;
-  animation-delay: var(--sd, 0s), var(--rd, 0s);
-  animation-duration: var(--sdur, 5s), 9s;
-}
-
-@keyframes chr-shimmer {
-  from {
-    opacity: calc(var(--o, 0.8) * 0.45);
-  }
-  to {
-    opacity: var(--o, 0.8);
-  }
-}
-
-@keyframes chr-ripple {
-  0% {
-    filter: brightness(1.6);
-  }
-  13% {
-    filter: brightness(1);
-  }
-  100% {
-    filter: brightness(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chr-tile {
-    animation: none;
-    opacity: var(--o, 0.8);
-  }
-}
-
 .hero {
   display: grid;
   /* 球在左、文字在右：窄列给球，宽列给文字；节点轮播独占第二行跨两列 */
@@ -1853,11 +1781,10 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero-title {
-  font-family: var(--font-serif);
-  font-size: clamp(44px, 5.6vw, 76px);
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.08;
+  font-size: clamp(30px, 3.6vw, 44px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
   margin: 0;
   text-wrap: balance;
 }
@@ -1890,10 +1817,7 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero-side-title {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -2000,20 +1924,11 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .landing-section-head h2 {
-  font-family: var(--font-serif);
-  font-size: 30px;
-  font-weight: 500;
-  letter-spacing: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   margin: 0;
   line-height: 1.15;
-}
-
-/* 分区编号眉题：小号等宽字，压在标题上方 */
-.section-num {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--accent-text);
-  letter-spacing: 0.2em;
 }
 
 .landing-more {
@@ -2458,12 +2373,15 @@ html:not([data-theme="dark"]) .panel {
 
 .site-card {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   align-content: start;
-  padding: 18px;
+  padding: 20px;
   background: var(--panel);
-  border-radius: 10px;
+  border: var(--card-border);
+  border-radius: 12px;
   box-shadow: var(--shadow-panel);
+  color: inherit;
+  text-decoration: none;
   transition:
     background 160ms linear,
     transform 220ms var(--ease);
@@ -2472,6 +2390,10 @@ html:not([data-theme="dark"]) .panel {
 .site-card:hover {
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
   transform: translateY(-2px);
+}
+
+.site-card:hover .site-name {
+  color: var(--accent-text);
 }
 
 .site-card-head {
@@ -2542,117 +2464,16 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero-main > :nth-child(2) {
-  /* 打字机约 1.2s 打完，副标题与按钮随后错峰浮现 */
-  animation-delay: 1.3s;
+  animation-delay: 0.15s;
 }
 
 .hero-main > :nth-child(3) {
-  animation-delay: 1.5s;
+  animation-delay: 0.25s;
 }
 
-/* Hero 标题打字机：ghost 撑位 + live 逐字显示，光标为品牌色方块 */
-.type-wrap {
-  display: inline-grid;
-  position: relative;
-}
-
-/* 标题挂饰：打字完成后浮现，吊牌 + 漂浮铬块，配色走镀铬主题变量 */
-.type-orn {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-8px);
-  transition:
-    opacity 0.7s var(--ease),
-    transform 0.7s var(--ease);
-}
-
-.type-orn.is-on {
-  opacity: 1;
-  transform: none;
-}
-
-.type-orn-pendant {
-  position: absolute;
-  top: 0px;
-  /* 吊在首行「中转站」第三字上方（首行 3 字 / 最宽行 7 字），吊牌垂到文字上 */
-  left: 34%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  transform-origin: top center;
-  animation: orn-sway 4.2s ease-in-out infinite;
-}
-
-.type-orn-thread {
-  width: 1px;
-  height: clamp(24px, 3.4vw, 38px);
-  background: linear-gradient(to bottom, transparent, var(--chrome-md));
-}
-
-.type-orn-tile {
-  border-radius: 2px;
-  background: linear-gradient(
-    135deg,
-    var(--chrome-hi),
-    var(--chrome-lo) 55%,
-    var(--chrome-hi)
-  );
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 4px 12px rgba(0, 0, 0, 0.16);
-  width: 13px;
-  height: 13px;
-}
-
-@keyframes orn-sway {
-  0%,
-  100% {
-    transform: rotate(5deg);
-  }
-  50% {
-    transform: rotate(-5deg);
-  }
-}
-.type-ghost,
-.type-live {
-  grid-area: 1 / 1;
-  white-space: pre-wrap;
-}
-
-.type-ghost {
-  visibility: hidden;
-}
-
-.type-caret {
-  display: inline-block;
-  width: 0.5em;
-  height: 0.9em;
-  margin-left: 0.08em;
-  vertical-align: -0.08em;
-  background: var(--accent);
-  animation: term-blink 0.9s steps(1) infinite;
-}
-
-.type-caret.is-done {
-  animation: caret-out 0.4s var(--ease) forwards;
-}
-
-/* 标题强调词「集成式」：等宽字体 + 品牌色 + 手绘感波浪划线 */
+/* 标题强调词「集成式」：只用品牌色区分，不加等宽/波浪划线等装饰 */
 .type-key {
-  font-family: var(--font-mono);
-  color: var(--accent);
-  text-decoration: underline wavy var(--accent);
-  text-decoration-thickness: 0.05em;
-  text-underline-offset: 0.16em;
-  text-decoration-opacity: 0.55;
-}
-
-@keyframes caret-out {
-  to {
-    opacity: 0;
-  }
+  color: var(--accent-text);
 }
 
 .hero-side {
@@ -2662,15 +2483,6 @@ html:not([data-theme="dark"]) .panel {
 @media (prefers-reduced-motion: reduce) {
   .hero-main > *,
   .hero-side {
-    animation: none;
-  }
-
-  .type-caret {
-    animation: none;
-    opacity: 0;
-  }
-
-  .type-orn-pendant {
     animation: none;
   }
 
@@ -2861,7 +2673,7 @@ button.footer-icon {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: var(--card-border);
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 10px;
   display: grid;
   gap: 2px;
@@ -2869,10 +2681,7 @@ button.footer-icon {
 }
 
 .admin-rail-title {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-size: 12px;
   color: var(--text-3);
   padding: 6px 12px 8px;
 }
@@ -2916,6 +2725,11 @@ button.footer-icon {
   background: var(--accent);
 }
 
+/* 亮色模式下不显示激活竖条，只靠浅底和加粗文字区分当前项 */
+html:not([data-theme="dark"]) .admin-rail a.active::before {
+  content: none;
+}
+
 .admin-content {
   min-width: 0;
 }
@@ -2954,20 +2768,58 @@ button.footer-icon {
   font-size: 14.5px;
 }
 
-/* 事件流：面板内滚动，高度与右栏两张小卡大致齐平 */
+/* 概览 / AI 日志顶部统计条：一行轻量数字，不再堆整排卡片 */
+.dash-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 40px;
+  padding: 14px 20px 12px;
+  background: var(--panel);
+  border-radius: 12px;
+}
+
+.dash-stat {
+  min-width: 0;
+}
+
+.dash-stat-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.dash-stat-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  margin-top: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.dash-stat-hint {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-3);
+}
+
+/* 事件流：紧凑单行列表，不再占满一屏 */
 .dash-events {
-  padding: 6px 16px;
+  padding: 4px 16px;
   display: grid;
   gap: 0;
-  max-height: 540px;
-  overflow-y: auto;
 }
 
 /* 面板里的事件行用发丝线分隔，替代一排描边小盒 */
 /* 面板里的事件行不带描边盒（避免盒套盒），改用发丝线分行 */
 .dash-events .event-card {
-  border: none;
   border-radius: 0;
+  padding: 9px 18px;
+  background: transparent;
 }
 
 .dash-events .event-card + .event-card {
@@ -3033,7 +2885,7 @@ a.event-card {
 /* 概览入门清单 */
 .guide {
   border: var(--card-border);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--panel);
   box-shadow: var(--shadow-panel);
   padding: 28px 32px;
@@ -3041,9 +2893,8 @@ a.event-card {
 }
 
 .guide h2 {
-  font-family: var(--font-serif);
-  font-size: 21px;
-  font-weight: 500;
+  font-size: 17px;
+  font-weight: 600;
   margin: 0;
 }
 
@@ -3137,9 +2988,8 @@ a.event-card {
 }
 
 .auth-title {
-  font-family: var(--font-serif);
-  font-size: 30px;
-  font-weight: 500;
+  font-size: 22px;
+  font-weight: 600;
   margin: 14px 0 0;
 }
 
@@ -3548,7 +3398,6 @@ a.event-card {
 .markdown-doc h2,
 .markdown-doc h3,
 .markdown-doc h4 {
-  font-family: var(--font-serif);
   color: var(--text);
   line-height: 1.3;
   margin: 1.8em 0 0.6em;
@@ -3892,10 +3741,166 @@ a.event-card {
   }
 }
 
+/* 公告正文排版：站点的 HTML 公告经 sanitize 后只剩语义标签（内联样式被剥掉），
+   这里按 .markdown-doc 的体系兜底字号层级，尺寸相对 13.5px 正文缩一档 */
+.notice-body > :first-child {
+  margin-top: 0;
+}
+
+.notice-body > :last-child {
+  margin-bottom: 0;
+}
+
+.notice-body h1,
+.notice-body h2,
+.notice-body h3,
+.notice-body h4,
+.notice-body h5,
+.notice-body h6 {
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 1.5em 0 0.5em;
+}
+
+.notice-body h1 {
+  font-size: 17px;
+}
+
+.notice-body h2 {
+  font-size: 16px;
+}
+
+.notice-body h3 {
+  font-size: 15px;
+}
+
+.notice-body h4,
+.notice-body h5,
+.notice-body h6 {
+  font-size: 14px;
+}
+
+.notice-body p,
+.notice-body ul,
+.notice-body ol {
+  margin: 0.9em 0;
+}
+
+.notice-body ul,
+.notice-body ol {
+  padding-left: 1.4em;
+}
+
+.notice-body li {
+  margin: 0.45em 0;
+}
+
+.notice-body li::marker {
+  color: var(--text-3);
+}
+
+.notice-body a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.notice-body a:hover {
+  opacity: 0.8;
+}
+
+.notice-body strong {
+  color: var(--text);
+}
+
+.notice-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
+.notice-body :not(pre) > code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.notice-body pre {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
+.notice-body pre code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.notice-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 0.8em 0;
+  display: block;
+  overflow-x: auto;
+}
+
+.notice-body th,
+.notice-body td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.notice-body thead th {
+  background: var(--panel-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.notice-body blockquote {
+  margin: 0.8em 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--panel-2);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-2);
+}
+
+.notice-body blockquote p {
+  margin: 0.3em 0;
+}
+
 /* 公告里的图片：限制在正文的 60%，避免大图撑爆限宽后的容器 */
 .notice-body img {
   max-width: 60%;
   height: auto;
+  border-radius: 6px;
+}
+
+/* 来源链接：平时与时间戳同色弱化，悬停点亮成品牌色；完整地址放 href 和 title */
+.notice-src {
+  color: var(--text-3);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.notice-src:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* 渠道状态详情页：表头 + 渠道名(含厂商/模型小字) | 当前状态 | 延迟·7日可用率 | 可用记录条 | 正常次数 */
@@ -3994,15 +3999,14 @@ a.event-card {
 }
 
 .landing-intro p {
-  font-family: var(--font-serif);
-  font-size: 19px;
+  font-size: 15px;
   line-height: 1.9;
   color: var(--text-2);
   margin: 0;
   text-wrap: balance;
 }
 
-/* 04 数据从哪来：左要点列表 + 右终端模拟窗口 */
+/* 04 数据从哪来：左要点列表 + 右采集数据面板 */
 .landing-truth {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
@@ -4037,7 +4041,8 @@ a.event-card {
   background: var(--accent);
 }
 
-/* 终端模拟窗口 */
+/* 采集数据面板：终端窗拟物（红黄绿窗口点 + monitor.sh 标题 + 闪烁光标），
+ * 内容全部是真实采集数据；命令行首用虚构脚本与日志名，不暴露本站接口路径 */
 .term {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -4169,9 +4174,9 @@ a.event-card {
 }
 
 .landing-cta h2 {
-  font-family: var(--font-serif);
-  font-size: clamp(30px, 4vw, 42px);
-  font-weight: 500;
+  font-size: clamp(20px, 2.4vw, 26px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   margin: 0 0 30px;
 }
 
@@ -4297,9 +4302,9 @@ a.event-card {
   border-radius: 50%;
   background: radial-gradient(
     circle at 32% 28%,
-    #eaffa0,
-    var(--accent) 55%,
-    #93b400
+    color-mix(in srgb, var(--accent) 45%, #ffffff),
+    var(--accent) 58%,
+    color-mix(in srgb, var(--accent) 70%, #000000)
   );
 }
 
@@ -4632,5 +4637,351 @@ a.event-card {
     left: 10px;
     bottom: 72px;
     width: auto;
+  }
+}
+
+/* ---- 花费计算页 ---- */
+
+.calculator {
+  display: grid;
+  gap: 16px;
+  margin-top: 32px;
+  max-width: 880px;
+}
+
+.calc-block {
+  padding: 18px 20px;
+}
+
+/* 一行：标签固定宽度，控件与提示跟在后面；窄屏换行 */
+.calc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.calc-row + .calc-row {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.calc-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.calc-label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.calc-tip {
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.calc-empty {
+  margin: 0;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.calc-site {
+  min-width: 200px;
+}
+
+/* 模型候选：限高滚动，选项多时不吃满整屏 */
+.calc-options {
+  display: grid;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0 -8px;
+  padding: 0 8px;
+  min-width: 0;
+}
+
+/* grid 项的自动最小尺寸会顶着长模型名把窄屏撑出横向裁切，显式放开 */
+.calc-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+
+.calc-option:hover {
+  background: var(--panel-2);
+}
+
+.calc-option.on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.calc-option-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.calc-option-name {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calc-option-sub {
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.calc-option-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.calc-option.on .calc-option-price {
+  color: var(--text);
+}
+
+/* 四档单价的输入网格：宽屏四列，窄屏两列/一列 */
+.calc-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.calc-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.calc-field-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+/* 输入框里的币种前缀 */
+.calc-affix {
+  position: absolute;
+  left: 10px;
+  color: var(--text-3);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+/* 右置词缀（如命中率末尾的 %） */
+.calc-affix.is-right {
+  left: auto;
+  right: 10px;
+}
+
+.calc-field .input-wrap:has(> .calc-affix) .input {
+  padding-left: 24px;
+}
+
+.calc-field .input-wrap:has(> .calc-affix.is-right) .input {
+  padding-left: 12px;
+  padding-right: 24px;
+}
+
+.calc-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.calc-repeats {
+  max-width: 160px;
+}
+
+/* 结果：总价醒目，明细表跟在下面 */
+.calc-total {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.calc-total-label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.calc-total-value {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.calc-total-cny {
+  font-size: 14px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+@media (max-width: 720px) {
+  .calc-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .calc-total-value {
+    font-size: 28px;
+  }
+
+  .calc-option {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 420px) {
+  .calc-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 页脚右下角镀铬马赛克：亮斑贴 footer 顶边、向下和向左双遮罩溶解，小屏隐藏避免挤文字 */
+.chrome-mosaic {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 560px;
+  height: 300px;
+  pointer-events: none;
+  -webkit-mask-image:
+    linear-gradient(to left, #000 58%, transparent 96%),
+    linear-gradient(to bottom, #000 60%, transparent 94%);
+  mask-image:
+    linear-gradient(to left, #000 58%, transparent 96%),
+    linear-gradient(to bottom, #000 60%, transparent 94%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+@media (max-width: 860px) {
+  .chrome-mosaic {
+    display: none;
+  }
+}
+
+/* 首页顶部通栏抽象光效：锚定文档顶端，向下渐隐融入页底色 */
+.hero-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: clamp(520px, 72vh, 800px);
+  pointer-events: none;
+  z-index: 0;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
+}
+
+/* 光束入场：刷新页面时从上方淡入落下，像光打下来；
+   只动 transform/opacity，落下后不干扰页面其他常驻动效。--hb-o 保留光束自身的基础透明度 */
+.hb-beam {
+  animation: hb-drop 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.hb-beam-late {
+  --hb-o: 0.7;
+  animation-delay: 0.12s;
+}
+
+@keyframes hb-drop {
+  from {
+    transform: translateY(-110px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: var(--hb-o, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-beam {
+    animation: none;
+  }
+}
+
+/* 镀铬方块动效：每颗方块的光泽按各自相位缓慢呼吸（--o 为该方块的基础不透明度），
+   时长 3.5~7.5s、延迟 0~7s 由固定种子生成，SSR 与客户端一致；
+   叠加一层蔓延波纹：所有方块共用 9s 周期，波前在开头约 1.2s 内扫过 */
+.chr-tile {
+  animation:
+    chr-shimmer ease-in-out infinite alternate,
+    chr-ripple 9s linear infinite;
+  animation-delay: var(--sd, 0s), var(--rd, 0s);
+  animation-duration: var(--sdur, 5s), 9s;
+}
+
+@keyframes chr-shimmer {
+  from {
+    opacity: calc(var(--o, 0.8) * 0.45);
+  }
+  to {
+    opacity: var(--o, 0.8);
+  }
+}
+
+@keyframes chr-ripple {
+  0% {
+    filter: brightness(1.6);
+  }
+  13% {
+    filter: brightness(1);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chr-tile {
+    animation: none;
+    opacity: var(--o, 0.8);
   }
 }

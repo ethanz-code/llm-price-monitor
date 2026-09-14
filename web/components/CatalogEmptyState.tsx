@@ -37,7 +37,7 @@ export function CatalogEmptyState() {
       <p style={{ color: "var(--text-2)", fontSize: 13.5, lineHeight: 1.8, margin: "0 auto" }}>
         后台正在从开源模型目录{" "}
         <a href="https://models.dev" target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>models.dev</a>
-        {" "}同步各厂商定价（几秒完成），就绪后本页自动刷新；生成后，总览与折扣对比才会显示厂商价折扣。
+        {" "}同步各厂商定价（几秒完成），就绪后本页自动刷新；生成后，总览才会显示厂商价折扣。
       </p>
     </div>
   );
