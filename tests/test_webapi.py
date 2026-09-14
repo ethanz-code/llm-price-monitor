@@ -467,6 +467,21 @@ def test_sites_crud_requires_admin_and_validates(workspace: Path):
     assert client.delete("/api/sites/x").status_code == 200
     assert client.delete("/api/sites/x").status_code == 404
 
+
+def test_sites_endpoint_lists_targets_that_never_got_a_price(workspace: Path):
+    """配了却始终没采到价的目标模型要在站点列表里点出来（站点用别的模型名时才会出现）。"""
+    client = _admin_client(workspace)
+    assert client.get("/api/sites").json()["unpriced_models"] == {}
+
+    demo = client.get("/api/sites").json()["sites"][0]
+    client.put("/api/sites/demo", json={"config": {**demo, "models": ["demo-model", "deepseek-flash"]}})
+    assert client.get("/api/sites").json()["unpriced_models"] == {"demo": ["deepseek-flash"]}
+
+    # 停用的站点不参与采集，不作为"漏采"提示
+    client.put("/api/sites/demo", json={"config": {**demo, "models": ["deepseek-flash"], "enabled": False}})
+    assert client.get("/api/sites").json()["unpriced_models"] == {}
+
+
 def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
     """编辑站点设置分组过滤时，库里未选中分组的历史状态与价格数据一并清理；口径不变或清空则不动。"""
     from llm_price_monitor.store import Store

@@ -218,6 +218,8 @@ export interface SiteConfig {
 export interface SitesData {
   sites: SiteConfig[];
   collect_status?: Record<string, SiteStatus>;
+  /** 站点 id → 配了却始终没采到价的目标模型名 */
+  unpriced_models?: Record<string, string[]>;
 }
 
 /** 系统设置文档：settings/ai 两段，键名与配置文件一致。 */

@@ -10,6 +10,7 @@ import httpx
 
 from llm_price_monitor.ai import infer_token_fields
 from llm_price_monitor.config import DEPRECATED_SITE_FIELDS, SiteSpec, config_from_store, sites_from_raw
+from llm_price_monitor.report import summary_row
 from llm_price_monitor.store import Store
 from llm_price_monitor.token_refresh import refresh_site_token
 
@@ -51,12 +52,46 @@ def _apply_token_sample(store: Store, config: dict[str, Any]) -> str | None:
     return None
 
 
+def unpriced_targets(store: Store, sites: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """采集启用的站点里，配了却始终没采到价的目标模型 → {站点 id: [模型名]}。
+
+    站点把模型写成另一个名字（如接口里叫 deepseek-v4.1-flash、配置里是省略版本号的
+    deepseek-flash）时，这类模型在快照里连占位行都不会有，只能靠这里显式列出来。
+    """
+    latest = store.latest_all()
+    result: dict[str, list[str]] = {}
+    for config in sites:
+        if config.get("enabled") is False:
+            continue
+        site_id = str(config.get("id") or "")
+        configured = [name for name in config.get("models") or [] if isinstance(name, str) and name.strip()]
+        if not site_id or not configured:
+            continue
+        prefix = f"{site_id}:"
+        priced: dict[str, bool] = {}
+        for key, record in latest.items():
+            if not key.startswith(prefix) or not isinstance(record, dict):
+                continue
+            model = key[len(prefix):].rsplit(":", 1)[0]
+            row = summary_row(record)
+            priced[model] = priced.get(model, False) or row["input_price"] is not None or row["output_price"] is not None
+        missing = [name for name in configured if not priced.get(name, False)]
+        if missing:
+            result[site_id] = missing
+    return result
+
+
 def build_router(store: Store) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/sites")
     def list_sites() -> dict[str, Any]:
-        return {"sites": store.list_site_configs(), "collect_status": store.get_document("collect_status") or {}}
+        sites = store.list_site_configs()
+        return {
+            "sites": sites,
+            "collect_status": store.get_document("collect_status") or {},
+            "unpriced_models": unpriced_targets(store, sites),
+        }
 
     @router.post("/api/sites")
     def create_site(body: SiteBody) -> dict[str, Any]:

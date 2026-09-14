@@ -1221,11 +1221,14 @@ type SubKey = "price" | "auth" | "status" | "notice" | "json";
 function SiteModal({
   initial,
   isNew,
+  unpriced,
   onClose,
   onSaved,
 }: {
   initial: SiteConfig;
   isNew: boolean;
+  /** 已保存配置里配了、但快照里始终没有价格的目标模型 */
+  unpriced: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1703,6 +1706,11 @@ function SiteModal({
                 syncAdvanced((base) => ({ ...base, models: next }));
               }}
             />
+            {unpriced.length > 0 && (
+              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+                {unpriced.join("、")} 在站点上没采到价，多半是名字写法不一致：按站点实际用的模型名改一下
+              </span>
+            )}
           </SettingRow>
           <SettingRow
             label="分组白名单"
@@ -1861,6 +1869,7 @@ function DeleteSitesModal({
 export function AdminSites() {
   const [sites, setSites] = useState<SiteConfig[] | null>(null);
   const [collectStatus, setCollectStatus] = useState<Record<string, SiteStatus>>({});
+  const [unpriced, setUnpriced] = useState<Record<string, string[]>>({});
   const [editing, setEditing] = useState<{ config: SiteConfig; isNew: boolean } | null>(null);
   const [deleting, setDeleting] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -1871,6 +1880,7 @@ export function AdminSites() {
       .then((data) => {
         setSites(data.sites);
         setCollectStatus(data.collect_status ?? {});
+        setUnpriced(data.unpriced_models ?? {});
         // 刷新后剔除已删除的站点；停用站点保留勾选（批量删除需要覆盖它们）
         setSelected((previous) => {
           const next = new Set<string>();
@@ -1974,7 +1984,26 @@ export function AdminSites() {
         );
       },
     },
-    { key: "models", title: "模型数", align: "right", width: 90, render: (_v, row) => row.models?.length ?? 0 },
+    {
+      key: "models",
+      title: "模型数",
+      align: "right",
+      width: 132,
+      render: (_v, row) => {
+        const count = row.models?.length ?? 0;
+        const missing = unpriced[row.id] ?? [];
+        if (missing.length === 0) return count;
+        return (
+          <span
+            title={`${missing.join("、")}：站点上找不到这个名字，去「目标模型」核对写法`}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}
+          >
+            {count}
+            <ToneTag tone="yellow">{missing.length} 个没采到</ToneTag>
+          </span>
+        );
+      },
+    },
     {
       key: "collect",
       title: "最近采集",
@@ -2104,6 +2133,7 @@ export function AdminSites() {
         <SiteModal
           initial={editing.config}
           isNew={editing.isNew}
+          unpriced={unpriced[editing.config.id] ?? []}
           onClose={() => setEditing(null)}
           onSaved={reloadSites}
         />
