@@ -50,6 +50,9 @@ class MonitorReport:
     notice_records: list[dict[str, Any]] = field(default_factory=list)
     notice_events: list[dict[str, Any]] = field(default_factory=list)
     notice_results: list[dict[str, Any]] = field(default_factory=list)
+    # 逐站价格采集状态（ok/inferred/no_data/auth_required/error + 原因）：
+    # 401 这类"整站没价但不算错误"的情况只在这里，测试采集要靠它把真实原因报给用户
+    site_status: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def record_dict(site_id: str, record: PriceRecord) -> dict[str, Any]:
@@ -354,8 +357,9 @@ def _scan_prices(
     return records, history_rows, events, errors, site_status, removed_keys
 
 
-# 分组连续缺失这么多次才判定"下线"：容忍单轮抓取抖动，避免误报刷屏
-GROUP_REMOVED_MISSES = 2
+# 分组连续缺失这么多次才判定"下线"：站点换分组清单、临时调整常态发生，
+# 短阈值会把改版刷成下线事件；采集间隔 1 小时，6 轮即容忍半天的窗口期
+GROUP_REMOVED_MISSES = 6
 
 
 def _detect_removed_groups(
@@ -545,7 +549,7 @@ def scan_prices(
             store.append_events(changed_events)
             _persist_latest(store, latest, removed_keys=removed_keys)
             _merge_collect_status(store, config, site_status)
-        return MonitorReport(started, time.time(), records, changed_events, errors)
+        return MonitorReport(started, time.time(), records, changed_events, errors, site_status=site_status)
     finally:
         if own:
             client.close()
@@ -637,6 +641,7 @@ def run_once(
             notice_scan.records,
             notice_scan.events,
             notice_scan.site_results,
+            site_status,
         )
     finally:
         if own:

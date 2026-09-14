@@ -31,6 +31,11 @@ def price_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[str
             "events": [event["kind"] for event in report.events],
             "errors": report.errors,
             "persisted": True,
+            # 逐站价格采集状态：需认证/无数据这类"没价但不算错误"的情况在这里
+            "site_price_status": [
+                {"site_id": site_id, "status": value.get("status"), "error": value.get("error")}
+                for site_id, value in report.site_status.items()
+            ],
         }
 
     return _run

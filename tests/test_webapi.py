@@ -107,6 +107,26 @@ def test_latest_history_events_official_endpoints(workspace: Path):
     assert catalog["models"]["demomodel"]["vendor"] == "Demo"
 
 
+def test_feed_hides_group_removed_events(workspace: Path):
+    """分组下线事件只在库里留档：/api/feed 为访客页与管理台共用的事件出口，在此一并隐藏。"""
+    from llm_price_monitor.store import Store
+
+    client = TestClient(create_app(_config(workspace)))
+    store = Store(workspace / "var" / "monitor.db")
+    store.append_events([
+        {"site_id": "demo", "model": "demo-model", "kind": "changed", "detected_at": 1.0,
+         "previous": {"input_price": 1.0}, "current": {"input_price": 2.0}},
+        {"site_id": "demo", "model": "demo-model", "kind": "group_removed", "detected_at": 2.0,
+         "previous": {"metadata": {"group": "vip"}}, "current": None},
+    ])
+
+    feed = client.get("/api/feed").json()
+    assert all(event["kind"] != "group_removed" for event in feed["events"])
+    removed_total = store.read_events(limit=1, kind="group_removed")[1]
+    assert feed["price_total"] == store.read_events(limit=1)[1] - removed_total  # 总数与可见列表同口径
+    assert "group_removed" in [event["kind"] for event in store.read_events(limit=50)[0]]  # 库里仍留档
+
+
 def test_overview_attaches_discount_and_catalog_context(workspace: Path):
     client = TestClient(create_app(_config(workspace)))
     data = client.get("/api/overview").json()
@@ -208,6 +228,7 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
             [],
             status_events=[{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}],
             notice_records=[{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}],
+            site_status={"demo": {"status": "auth_required", "error": "HTTP 401", "checked_at": 1.0}},
         )
 
     monkeypatch.setattr(collect_routes, "run_once", fake_run_once)
@@ -226,6 +247,10 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
     # 公告与渠道状态结果随任务带回：公告含正文，状态只回传有变化的事件
     assert task["result"]["notices"] == [{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}]
     assert task["result"]["statuses"] == [{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}]
+    # 逐站价格采集状态随任务带回：测试弹窗靠它把 401 这类原因报给用户
+    assert task["result"]["site_price_status"] == [
+        {"site_id": "demo", "status": "auth_required", "error": "HTTP 401"}
+    ]
 
 
 def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeypatch):
@@ -793,9 +818,10 @@ def test_store_purge_visits_keeps_recent(workspace: Path):
 def test_collect_section_endpoints_submit_split_tasks(workspace: Path, monkeypatch):
     """价格/渠道状态/公告拆分端点各自提交独立任务，摘要与对应扫描结果一致。"""
     import llm_price_monitor.webapi.jobs as jobs
-    from llm_price_monitor.report import SectionScan
+    from llm_price_monitor.report import MonitorReport, SectionScan
 
-    monkeypatch.setattr(jobs, "scan_prices", lambda _config, **_kw: SectionScan(records=[{"model": "demo-model"}]))
+    # scan_prices 真实返回 MonitorReport（带逐站采集状态），这里按真实类型替换
+    monkeypatch.setattr(jobs, "scan_prices", lambda _config, **_kw: MonitorReport(0.0, 1.0, records=[{"model": "demo-model"}]))
     monkeypatch.setattr(jobs, "scan_statuses", lambda _config, **_kw: SectionScan(records=[{"site_id": "demo"}], events=[{"kind": "status_init"}]))
     monkeypatch.setattr(jobs, "scan_notices", lambda _config, **_kw: SectionScan(records=[]))
 

@@ -23,6 +23,8 @@ type TestRecord = {
 type TestNotice = { site_id: string; kind: string | null; content: string };
 type TestNoticeResult = { site_id: string; outcome: string; content: string; latest?: string };
 type TestStatus = { site_id: string; kind: string | null; changes: { op: string }[] };
+/** 逐站价格采集状态：需认证/无数据这类"没价但不算错误"的情况只有这里带原因 */
+type TestSitePriceStatus = { site_id: string; status: string | null; error: string | null };
 
 function priceCell(value: number | null, unit: string | null) {
   return (
@@ -97,6 +99,10 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
   const notices = (task?.result?.notices as TestNotice[] | undefined) ?? [];
   const noticeResults = (task?.result?.notice_results as TestNoticeResult[] | undefined) ?? [];
   const statuses = (task?.result?.statuses as TestStatus[] | undefined) ?? [];
+  const sitePriceStatus = (task?.result?.site_price_status as TestSitePriceStatus[] | undefined)?.find(
+    (row) => row.site_id === site.id,
+  );
+  const needsAuth = sitePriceStatus?.status === "auth_required";
   // 无有效价格的记录：占位（unavailable，如 token 过期需认证）或两类单价都缺失
   const invalid = records.filter(
     (row) => row.price_status === "unavailable" || (row.input_price === null && row.output_price === null),
@@ -149,8 +155,18 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
             <div style={{ display: "grid", gap: 8 }}>
               {running && <ToneTag tone="blue">测试中…</ToneTag>}
               {task.status === "done" && allInvalid && <ToneTag tone="red">失败：{failReason}</ToneTag>}
-              {task.status === "done" && !allInvalid && (
-                <ToneTag tone="green">
+              {task.status === "done" && !allInvalid && needsAuth && (
+                <>
+                  <span title={sitePriceStatus?.error ?? undefined}>
+                    <ToneTag tone="red">没采到价格：站点要求登录</ToneTag>
+                  </span>
+                  <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13 }}>
+                    {sitePriceStatus?.error ?? "价格接口返回 401/403"}。更新站点设置里的认证信息（token 或 cookie）后再测一次。
+                  </p>
+                </>
+              )}
+              {task.status === "done" && !allInvalid && !needsAuth && (
+                <ToneTag tone={records.length > 0 ? "green" : "yellow"}>
                   完成：{records.length} 条记录{elapsed !== null ? ` · 耗时 ${elapsed} 秒` : ""}
                 </ToneTag>
               )}
@@ -169,9 +185,11 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
                   mobileScrollX={430}
                 />
               )}
-              {task.status === "done" && records.length === 0 && errors.length === 0 && (
+              {task.status === "done" && records.length === 0 && errors.length === 0 && !needsAuth && (
                 <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13 }}>
-                  没有解析到价格：请确认目标模型名与站点返回的数据一致后重试；本地解析失败时会自动交给 AI 兜底。
+                  {sitePriceStatus?.error
+                    ? `没有解析到价格：${sitePriceStatus.error}。请确认目标模型名与站点返回的数据一致后重试。`
+                    : "没有解析到价格：请确认目标模型名与站点返回的数据一致后重试；本地解析失败时会自动交给 AI 兜底。"}
                 </p>
               )}
               {task.status === "done" && notices.length > 0 && (
