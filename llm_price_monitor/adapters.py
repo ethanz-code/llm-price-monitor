@@ -20,6 +20,7 @@ import httpx
 from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import is_preferred_response_url, payload_hash, redact_url
+from llm_price_monitor.matching import resolve_site_names
 from llm_price_monitor.tracker import (
     GroupRatioUnavailableError,
     PriceRecord,
@@ -165,6 +166,17 @@ def auth_required_records(spec: SiteSpec, message: str, source_url: str | None =
     ]
 
 
+def _newapi_item(data: list[dict[str, Any]], model_name: str | None) -> dict[str, Any] | None:
+    """data[] 里按 model_name 取条目（大小写不敏感）；model_name 为空表示没匹配到。"""
+    if not model_name:
+        return None
+    folded = model_name.casefold()
+    return next(
+        (value for value in data if str(value.get("model_name", "")).casefold() == folded),
+        None,
+    )
+
+
 def network_pricing_records(
     spec: SiteSpec,
     captured: list[dict[str, Any]],
@@ -185,22 +197,25 @@ def network_pricing_records(
         payload = response.get("payload")
         if not isinstance(payload, dict):
             continue
+        data = [value for value in payload.get("data", []) if isinstance(value, dict)]
+        # 目标名 → 该目标可接受的名字（标准名 + AI 别名）；站点侧名字按精确优先、
+        # 版本号省略兜底分配到目标，歧义时不给匹配，避免把别的版本的价格挂上来
+        accepted = {
+            target.name: (target.name, *(resolved_aliases or {}).get(target.name, ()))
+            for target in spec.models
+        }
+        matched = resolve_site_names(
+            [str(value.get("model_name", "")) for value in data if str(value.get("model_name", ""))],
+            accepted,
+        )
         for target in spec.models:
-            names = {
-                name.casefold()
-                for name in (target.name, *(resolved_aliases or {}).get(target.name, ()))
-            }
-            item = next(
-                (
-                    value for value in payload.get("data", [])
-                    if isinstance(value, dict) and str(value.get("model_name", "")).casefold() in names
-                ),
-                None,
-            )
-            if not isinstance(item, dict):
+            site_name = matched.get(target.name)
+            item = _newapi_item(data, site_name)
+            if item is None:
                 continue
             enabled = [name for name in item.get("enable_groups", []) if isinstance(name, str) and name]
             groups = enabled or ["default"]
+            aliases = tuple(dict.fromkeys((*accepted[target.name], *([site_name] if site_name else []))))
             for selected_group in dict.fromkeys(groups):
                 record_key = f"{target.name}:{selected_group or ''}"
                 if record_key in records:
@@ -211,7 +226,7 @@ def network_pricing_records(
                         target.name,
                         str(response.get("url") or ""),
                         group=selected_group,
-                        aliases=tuple(dict.fromkeys((resolved_aliases or {}).get(target.name, ()))),
+                        aliases=aliases,
                     )
                 except GroupRatioUnavailableError:
                     # 站点未公开该分组倍率，无法计价，直接不输出该分组。
@@ -233,6 +248,8 @@ def network_pricing_records(
                     }],
                     "page_evidence": [],
                 })
+                if site_name and site_name.casefold() != target.name.casefold():
+                    metadata["matched_model_name"] = site_name
                 record.metadata = metadata
                 records[record_key] = record
     for target in spec.models:
@@ -778,8 +795,11 @@ def _parse_base_price_entries(text: str) -> list[dict[str, Any]]:
 
 
 def _entry_matches_targets(entry: dict[str, Any], spec: SiteSpec) -> bool:
-    names = {target.name.casefold() for target in spec.models}
-    return any(str(model).casefold() in names for model in entry.get("models") or [])
+    """基准价表条目是否命中配置的目标模型；站点省略版本号的写法也算命中。"""
+    return bool(resolve_site_names(
+        [str(model) for model in entry.get("models") or []],
+        {target.name: (target.name,) for target in spec.models},
+    ))
 
 
 def _base_entry_unavailable(
@@ -904,12 +924,17 @@ def _records_from_base_entries(
     ai_assisted 表示基准价或倍率来自 AI 归一化：记录降级为 candidate 并在 metadata 标注来源。
     """
     records: list[PriceRecord] = []
+    entry_by_name: dict[str, dict[str, Any]] = {}
+    for item in entries:
+        for model in item["models"]:
+            entry_by_name.setdefault(str(model), item)
+    matched = resolve_site_names(
+        list(entry_by_name),
+        {target.name: (target.name,) for target in spec.models},
+    )
     for target in spec.models:
-        names = {target.name.casefold()}
-        entry = next(
-            (item for item in entries if any(str(m).casefold() in names for m in item["models"])),
-            None,
-        )
+        site_name = matched.get(target.name, "")
+        entry = entry_by_name.get(site_name)
         if entry is None:
             records.append(_base_entry_unavailable(spec, target.name, source_url, evidence, f"基准价表中未找到模型 {target.name}", adapter_label))
             continue
@@ -936,6 +961,8 @@ def _records_from_base_entries(
             "network_evidence": evidence,
             "page_evidence": [],
         }
+        if site_name.casefold() != target.name.casefold():
+            metadata["matched_model_name"] = site_name
         if resolve_rate is not None:
             metadata.update({
                 "rate": rate,

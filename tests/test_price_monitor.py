@@ -259,6 +259,85 @@ def test_network_pricing_accepts_ai_resolved_alias_for_newapi_model_name():
     assert records[0].input_price == 1
 
 
+def test_network_pricing_matches_site_model_name_that_omits_version():
+    """站点把模型写作 deepseek-v4.1-flash，配置里是没有版本号的目录 id，仍要采到价格。"""
+    spec = SiteSpec(
+        id="demo",
+        network={"url": "https://demo.test/pricing"},
+        models=(ModelTarget("deepseek-flash"), ModelTarget("glm-5.3-flash")),
+    )
+    records = _network_pricing_records(spec, [{
+        "url": "https://demo.test/api/pricing",
+        "status": 200,
+        "resource_type": "fetch",
+        "payload": {
+            "group_ratio": {"default": 1},
+            "data": [
+                {"model_name": "deepseek-v4.1-flash", "enable_groups": ["default"], "model_ratio": 0.125, "completion_ratio": 4},
+                {"model_name": "glm-5.3-flash", "enable_groups": ["default"], "model_ratio": 0.5, "completion_ratio": 3},
+            ],
+        },
+    }])
+    by_model = {record.model: record for record in records}
+
+    assert by_model["deepseek-flash"].price_status == "confirmed"
+    assert by_model["deepseek-flash"].input_price == 0.25
+    assert by_model["deepseek-flash"].output_price == 1
+    assert by_model["deepseek-flash"].metadata["matched_model_name"] == "deepseek-v4.1-flash"
+    assert by_model["glm-5.3-flash"].input_price == 1
+    assert "matched_model_name" not in by_model["glm-5.3-flash"].metadata
+
+
+def test_network_pricing_refuses_ambiguous_versionless_target():
+    """站点同时挂着 v4 与 v4.1 两版时，没版本号的目标不猜，宁可标 unavailable。"""
+    spec = SiteSpec(
+        id="demo",
+        network={"url": "https://demo.test/pricing"},
+        models=(ModelTarget("deepseek-flash"),),
+    )
+    records = _network_pricing_records(spec, [{
+        "url": "https://demo.test/api/pricing",
+        "status": 200,
+        "resource_type": "fetch",
+        "payload": {
+            "group_ratio": {"default": 1},
+            "data": [
+                {"model_name": "deepseek-v4-flash", "enable_groups": ["default"], "model_ratio": 0.125, "completion_ratio": 4},
+                {"model_name": "deepseek-v4.1-flash", "enable_groups": ["default"], "model_ratio": 0.125, "completion_ratio": 4},
+            ],
+        },
+    }])
+
+    assert records[0].price_status == "unavailable"
+    assert records[0].input_price is None
+
+
+def test_network_pricing_prefers_exact_model_name_over_versionless_target():
+    """精确命中优先：带版本号的目标拿到自己的条目，没版本号的目标不能抢同一个条目。"""
+    spec = SiteSpec(
+        id="demo",
+        network={"url": "https://demo.test/pricing"},
+        models=(ModelTarget("deepseek-flash"), ModelTarget("deepseek-v4-flash")),
+    )
+    records = _network_pricing_records(spec, [{
+        "url": "https://demo.test/api/pricing",
+        "status": 200,
+        "resource_type": "fetch",
+        "payload": {
+            "group_ratio": {"default": 1},
+            "data": [
+                {"model_name": "deepseek-v4-flash", "enable_groups": ["default"], "model_ratio": 0.125, "completion_ratio": 4},
+            ],
+        },
+    }])
+    by_model = {record.model: record for record in records}
+
+    assert by_model["deepseek-v4-flash"].price_status == "confirmed"
+    assert by_model["deepseek-v4-flash"].input_price == 0.25
+    assert by_model["deepseek-flash"].price_status == "unavailable"
+    assert by_model["deepseek-flash"].input_price is None
+
+
 def test_network_adapter_uses_ai_alias_before_newapi_calculation(monkeypatch):
     def fake_extract(self, spec, page_text, responses, **kwargs):
         return [PriceRecord(
