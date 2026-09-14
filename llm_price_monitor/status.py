@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+from llm_price_monitor.adapters import build_request_kwargs, http_error_message, resolve_endpoint
 from llm_price_monitor.timeline import TIMELINE_KEYS
 from llm_price_monitor.ai import (
     AIExtractionError,
@@ -143,8 +143,8 @@ def fetch_site_status(
     """采集单个站点的渠道状态，返回含来源与解析方式的记录；data 为自由结构。"""
     entry = resolve_endpoint(spec.status, spec=spec, label="status")
     response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
-    if response.status_code in {401, 403}:
-        raise PriceMonitorError(f"渠道状态地址返回 HTTP {response.status_code}，可能需要认证")
+    if response.is_error:
+        raise PriceMonitorError(http_error_message("渠道状态地址", response, auth_hint=True))
     response.raise_for_status()
     data: dict[str, Any] | None = None
     parse_kind = "json"

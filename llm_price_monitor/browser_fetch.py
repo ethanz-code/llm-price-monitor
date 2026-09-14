@@ -8,8 +8,16 @@ from urllib.parse import urlsplit
 from .config import PriceMonitorError
 
 
-def fetch_page_html(url: str, headless_config: dict, user_agent: str | None = None) -> str:
-    """用 headless Chromium 打开 url，注入登录态后返回渲染后的 HTML。失败抛 PriceMonitorError。"""
+def fetch_page_html(
+    url: str,
+    headless_config: dict,
+    user_agent: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> str:
+    """用 headless Chromium 打开 url，注入登录态和自定义请求头后返回渲染后的 HTML。
+
+    失败抛 PriceMonitorError。
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -36,6 +44,13 @@ def fetch_page_html(url: str, headless_config: dict, user_agent: str | None = No
         browser = playwright.chromium.launch(headless=True)
         # UA 与 HTTP 采集路径保持一致，避免同一站点两条链路指纹不一致触发风控
         context = browser.new_context(user_agent=user_agent) if user_agent else browser.new_context()
+        if extra_headers:
+            # 浏览器自管的头不透传，避免与 context 自身设置冲突
+            context.set_extra_http_headers({
+                name: value
+                for name, value in extra_headers.items()
+                if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
+            })
         if cookies:
             context.add_cookies(cookies)
         if local_storage:

@@ -119,7 +119,9 @@ def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_fetch_page_html(url: str, headless_config: dict, user_agent: str | None = None) -> str:
+    def fake_fetch_page_html(
+        url: str, headless_config: dict, user_agent: str | None = None, extra_headers: dict[str, str] | None = None
+    ) -> str:
         calls.append(url)
         assert user_agent == "test-ua"  # UA 应与 HTTP 采集路径保持一致传入浏览器
         return _PAGE_HTML

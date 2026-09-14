@@ -133,7 +133,8 @@ def _gated_client(workspace: Path, monkeypatch, actions: list[str], captured: di
     gate_actions = list(actions)
 
     def fake_post(url: str, *, headers: dict, json: dict, timeout: float) -> _GateResponse:
-        captured.setdefault("calls", []).append(json["messages"][0]["content"])
+        # 记录最后一条消息（用户消息）：门控判定看系统提示词，数据 JSON 与当前时间都在用户消息里
+        captured.setdefault("calls", []).append(json["messages"][-1]["content"])
         is_gate = "问题分类器" in json["messages"][0]["content"]
         action = gate_actions.pop(0) if gate_actions else "data"
         return _GateResponse(f'{{"action": "{action}"}}' if is_gate else "demo-model 输入 5.0 USD/1M tokens。")
@@ -150,7 +151,7 @@ def test_ask_gate_refuses_without_consuming_quota(workspace: Path, monkeypatch):
     client = _gated_client(workspace, monkeypatch, ["refuse", "data"], captured)
     res = client.post("/api/assistant/ask", json={"question": "帮我写个快排"})
     assert res.status_code == 200
-    assert "只能回答" in res.json()["answer"]
+    assert res.json()["answer"] == assistant._REFUSAL
     assert len(captured["calls"]) == 1  # 只有分类调用，没有正式回答
     # 拒答不占每日次数：再问数据问题仍可正常回答
     res2 = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
@@ -164,6 +165,7 @@ def test_ask_gate_general_skips_data_json(workspace: Path, monkeypatch):
     assert res.status_code == 200
     answer_call = captured["calls"][-1]
     assert "平台当前数据 JSON" not in answer_call  # general 路径不带数据
+    assert "当前时间：" in captured["calls"][-1]  # 带当前时间，才能回答“现在几点”
     # general 计入每日次数：已用 1 次，再问即超限
     limited = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
     assert limited.status_code == 429
@@ -241,6 +243,8 @@ def test_ask_falls_back_to_next_model_on_model_error(workspace: Path, monkeypatc
         return _FakeResponse()
 
     monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    # 生产逻辑会随机打乱模型池起点；这里固定不洗牌，保证 bad-model 先被尝试、fallback 必然触发
+    monkeypatch.setattr("llm_price_monitor.ai.random.shuffle", lambda _: None)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
     store = client.app.state.store

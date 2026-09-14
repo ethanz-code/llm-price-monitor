@@ -9,8 +9,8 @@
 | 架构 | 双容器：`api`（FastAPI + 内置定时采集，容器内 8000）+ `web`（Next.js，容器内 3000），`docker compose` 编排 |
 | 对外端口 | 仅宿主 3000（前端）。8000 永不发布、永不放行公网 |
 | 数据 | `./var/monitor.db`（SQLite，bind mount）。备份它 = 备份一切 |
-| 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；不使用 `.env` 文件 |
-| 健康检查 | `GET /api/meta`（api 容器内返回 200）；compose 已自带 healthcheck |
+| 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；`.env` 只放可选的读接口封锁令牌 |
+| 健康检查 | `GET /api/health`（api 容器内返回 200）；compose 已自带 healthcheck。读接口封锁开启后 `/api/meta` 对匿名请求返回 401，不能再用来探活 |
 | 首次启动 | 库中无账号时访问管理页跳 `/setup` 创建管理员，**没有默认账号密码** |
 | 忘记密码 | `docker compose exec api price-admin` 重置 |
 | 反代烘焙 | 前端 `/api` 反代目标在 `next build` 时固定为 `http://api:8000`；改服务名需同步改 Dockerfile 的 ARG 与 compose 的 environment |
@@ -78,7 +78,7 @@ test -d /www/server/panel && echo HAS_BT      # 宝塔
 cd /opt/llm-price-monitor
 docker compose ps                                                   # 两容器 Up (healthy)
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/     # 200
-docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/meta').status)"  # 200
+docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/health').status)"  # 200
 curl -sI https://域名 | head -1                                      # 200/2xx，证书有效
 ```
 

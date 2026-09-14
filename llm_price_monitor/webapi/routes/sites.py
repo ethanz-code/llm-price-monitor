@@ -87,11 +87,14 @@ def build_router(store: Store) -> APIRouter:
             store.rename_site(site_id, new_id)
         warning = _apply_token_sample(store, config)
         store.upsert_site(new_id, config)
-        # 分组过滤从无到有或口径变化时，把库里未选中分组的历史状态数据一并清掉（不可逆）
+        # 分组过滤从无到有或口径变化时，把库里未选中分组的历史状态与价格数据一并清掉（不可逆）
         cleaned: dict[str, int] | None = None
         new_groups = _status_groups(config)
         if new_groups and new_groups != _status_groups(old_config):
-            cleaned = store.prune_status_history(new_id, new_groups)
+            status_cleaned = store.prune_status_history(new_id, new_groups)
+            price_cleaned = store.prune_price_groups(new_id, new_groups)
+            # 两侧统计都有 events 键，价格侧加前缀避免合并时互相覆盖
+            cleaned = {**status_cleaned, **{f"price_{key}": value for key, value in price_cleaned.items()}}
         response: dict[str, Any] = {"site": config}
         if warning:
             response["warning"] = warning

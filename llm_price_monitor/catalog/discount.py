@@ -1,4 +1,4 @@
-"""折扣计算：站点价格 vs 官方价的对比、折扣率与跨站点汇总。
+"""折扣计算：站点价格 vs 官方价的对比与折扣率。
 
 计算为纯函数，输入输出都是 dict/list；文件 IO 由 CLI 层完成。
 站点价按记录 unit 折算 CNY，官方价按条目 currency 折算 CNY 后相除，
@@ -80,44 +80,6 @@ def build_discount(
         source_url=official_entry.get("source_url") or "",
     )
     return entry, None
-
-
-def compute_discounts(
-    rows: list[dict[str, Any]],
-    official_models: dict[str, Any],
-    rate: float,
-) -> tuple[list[DiscountEntry], list[dict[str, Any]]]:
-    """逐条对比站点价格与官方价，返回 (折扣明细, 跳过原因列表)。"""
-    discounts: list[DiscountEntry] = []
-    skipped: list[dict[str, Any]] = []
-    for row in rows:
-        entry, reason = build_discount(row, official_models, rate)
-        if entry is not None:
-            discounts.append(entry)
-        else:
-            skipped.append({"model": row.get("model"), "group": row.get("group"), "reason": reason})
-    return discounts, skipped
-
-
-def summarize(discounts: list[DiscountEntry]) -> dict[str, Any]:
-    """按模型汇总跨站点折扣区间（min / avg / max）与参与站点数。"""
-    buckets: dict[str, dict[str, Any]] = {}
-    for entry in discounts:
-        key = model_key(str(entry.model))
-        bucket = buckets.setdefault(key, {"model": entry.model, "input": [], "output": []})
-        if entry.input_discount is not None:
-            bucket["input"].append(entry.input_discount)
-        if entry.output_discount is not None:
-            bucket["output"].append(entry.output_discount)
-    summary: dict[str, Any] = {}
-    for key, bucket in buckets.items():
-        stats: dict[str, Any] = {"model": bucket["model"]}
-        for kind, values in (("input_discount", bucket["input"]), ("output_discount", bucket["output"])):
-            if values:
-                stats[kind] = {"min": round2(min(values)), "max": round2(max(values)), "avg": round2(sum(values) / len(values))}
-        stats["sites_compared"] = len({entry.site_id for entry in discounts if model_key(str(entry.model)) == key})
-        summary[key] = stats
-    return summary
 
 
 def _site_prices(row: dict[str, Any]) -> tuple[Any, Any]:

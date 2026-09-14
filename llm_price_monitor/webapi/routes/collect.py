@@ -105,6 +105,20 @@ def build_router(store: Store) -> APIRouter:
     def list_tasks() -> dict[str, Any]:
         return {"tasks": tasks.recent()}
 
+    # 概览页“采集异常”卡片：跨任务汇总警告/错误日志，支持逐条移除与一键清空；
+    # 需声明在 /api/tasks/{task_id} 之前，否则 "errors" 会被当成 task_id 吞掉
+    @router.get("/api/tasks/errors")
+    def task_error_stream() -> dict[str, Any]:
+        return {"entries": tasks.error_stream()}
+
+    @router.delete("/api/tasks/errors")
+    def clear_task_errors() -> dict[str, int]:
+        return {"remaining": tasks.clear_errors()}
+
+    @router.delete("/api/tasks/errors/{key}")
+    def dismiss_task_error(key: str) -> dict[str, bool]:
+        return {"ok": tasks.dismiss_error(key)}
+
     @router.get("/api/tasks/{task_id}")
     def task_status(task_id: str) -> dict[str, Any]:
         task = tasks.get(task_id)

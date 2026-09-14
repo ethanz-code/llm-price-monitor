@@ -1,5 +1,6 @@
 """SQLite 存储层与首次种子导入的行为测试。"""
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -214,3 +215,67 @@ def test_purge_history_and_events(tmp_path: Path):
     assert store.read_events(limit=10)[0][0]["detected_at"] == 1.0
     assert store.count_history() == 1
     assert store.read_history(limit=10)[0][0]["captured_at"] == 2.0
+
+
+def test_prune_price_groups_keeps_only_selected_groups(tmp_path: Path):
+    """分组白名单保存时：快照/历史/事件里未选中分组的行被删（分组名忽略大小写），
+    group_miss 计数同步清理；未选中分组的判定只影响目标站点，别站数据不动；留空是幂等空操作。"""
+    store = Store(tmp_path / "monitor.db")
+    store.replace_latest({
+        "demo:m1:svip": {"site_id": "demo", "model": "m1", "input_price": 1.0, "metadata": {"group": "svip"}},
+        "demo:m1:default": {"site_id": "demo", "model": "m1", "input_price": 2.0, "metadata": {"group": "default"}},
+        "other:m1:default": {"site_id": "other", "model": "m1", "input_price": 3.0, "metadata": {"group": "default"}},
+    })
+    store.append_history([
+        {"site_id": "demo", "model": "m1", "input_price": 1.0, "unit": "USD/1M tokens", "captured_at": 1.0, "metadata": {"group": "svip"}},
+        {"site_id": "demo", "model": "m1", "input_price": 2.0, "unit": "USD/1M tokens", "captured_at": 1.0, "metadata": {"group": "default"}},
+        {"site_id": "other", "model": "m1", "input_price": 3.0, "unit": "USD/1M tokens", "captured_at": 1.0, "metadata": {"group": "default"}},
+    ])
+    store.append_events([
+        {"site_id": "demo", "model": "m1", "kind": "changed", "detected_at": 1.0,
+         "previous": {"metadata": {"group": "default"}}, "current": {"metadata": {"group": "default"}}},
+        {"site_id": "demo", "model": "m1", "kind": "changed", "detected_at": 1.0,
+         "previous": {"metadata": {"group": "SVIP"}}, "current": None},
+    ])
+    store.set_document("group_miss", {"demo:m1:default": 1, "demo:m1:svip": 2, "other:m1:default": 1})
+
+    stats = store.prune_price_groups("demo", ["svip"])
+    assert stats == {"latest": 1, "trend": 1, "events": 1}
+    assert set(store.latest_all()) == {"demo:m1:svip", "other:m1:default"}
+    rows, total = store.read_history(site_id="demo", limit=10)
+    assert total == 1 and rows[0]["group"] == "svip"
+    events, _ = store.read_events(site_id="demo", limit=10)
+    assert [event["previous"]["metadata"]["group"] for event in events] == ["SVIP"]
+    assert store.get_document("group_miss") == {"demo:m1:svip": 2, "other:m1:default": 1}
+
+    assert store.prune_price_groups("demo", []) == {"latest": 0, "trend": 0, "events": 0}
+
+
+def test_ai_logs_summary(tmp_path: Path):
+    """AI 调用汇总：KPI 合计、按天补零（本地时区）与场景/模型分布；fallback 是失败尝试不算成功。"""
+    store = Store(tmp_path / "monitor.db")
+    store.add_ai_log(scene="助手问答", model="m1", status="ok", duration_ms=1000, prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    store.add_ai_log(scene="助手问答", model="m2", status="fallback", duration_ms=2000, error="限流")
+    store.add_ai_log(scene="价格抽取", model="m1", status="ok", duration_ms=3000, prompt_tokens=200, completion_tokens=100, total_tokens=300)
+    store.add_ai_log(scene="价格抽取", model="m1", status="error", duration_ms=4000, error="超时")
+    # 把前两条挪到昨天，验证按天聚合与补零
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE ai_logs SET ts = ts - 86400 WHERE id <= 2")
+
+    summary = store.ai_logs_summary()
+    assert summary["total"] == 4
+    assert (summary["ok"], summary["fallback"], summary["error"]) == (2, 1, 1)
+    assert (summary["prompt_tokens"], summary["completion_tokens"], summary["total_tokens"]) == (300, 150, 450)
+    assert summary["avg_duration_ms"] == 2500
+
+    today = time.strftime("%m-%d")
+    yesterday = time.strftime("%m-%d", time.localtime(time.time() - 86400))
+    assert [d["day"] for d in summary["daily"]] == [
+        time.strftime("%m-%d", time.localtime(time.time() - offset * 86400)) for offset in range(6, -1, -1)
+    ]
+    assert summary["daily"][-2]["day"] == yesterday and summary["daily"][-1]["day"] == today
+    assert summary["daily"][-2]["ok"] == 1 and summary["daily"][-2]["fallback"] == 1
+    assert summary["daily"][-1]["ok"] == 1 and summary["daily"][-1]["error"] == 1
+
+    assert {s["name"]: s["calls"] for s in summary["scenes"]} == {"助手问答": 2, "价格抽取": 2}
+    assert {m["name"]: m["calls"] for m in summary["models"]} == {"m1": 3, "m2": 1}

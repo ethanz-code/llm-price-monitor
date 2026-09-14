@@ -66,6 +66,36 @@ def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkey
     assert len(store.latest_all()) == 1
 
 
+def test_group_whitelist_filters_collected_prices(tmp_path: Path, monkeypatch):
+    """站点分组白名单：采集层只保留选中分组的价格记录（分组名忽略大小写，缺分组视为 default）；
+    白名单一个分组都匹配不上时防呆保留全量，不把站点采空。"""
+
+    def collect_two_groups(*_args):
+        return [
+            PriceRecord("demo-model", 1.0, 2.0, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "svip"}),
+            PriceRecord("demo-model", 3.0, 4.0, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+        ]
+
+    config_raw = _config(tmp_path)
+    config_raw["sites"][0]["status"] = {"groups": ["svip"]}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config_raw), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect_two_groups)
+    report = run_once(config, store=store, client=httpx.Client())
+    assert [row["metadata"]["group"] for row in report.records] == ["svip"]
+    assert set(store.latest_all()) == {"demo:demo-model:svip"}
+
+    config_raw["sites"][0]["status"] = {"groups": ["nope"]}
+    config_path.write_text(json.dumps(config_raw), encoding="utf-8")
+    config = load_config(config_path)
+    store2 = Store(tmp_path / "monitor2.db")
+    report2 = run_once(config, store=store2, client=httpx.Client())
+    assert len(report2.records) == 2
+    assert set(store2.latest_all()) == {"demo:demo-model:svip", "demo:demo-model:default"}
+
+
 def test_failed_collect_keeps_last_known_price_in_snapshot(tmp_path: Path, monkeypatch):
     """本次采集只产出无价占位（需认证/无数据）时，快照沿用上次价格字段：定价页不因一次失败显示 "-"，状态如实标注。"""
     prices = {"input": 1, "output": 2}
@@ -861,6 +891,44 @@ def test_page_evidence_preserves_raw_quote_without_inventing_price_mapping():
     }
 
 
+def test_annotate_positional_price_row_prefers_site_base_price_times_group_ratio():
+    from llm_price_monitor.evidence import annotate_positional_price_arrays
+
+    page_text = (
+        'models:[["gpt-5.6-terra",14,84,1.4,2,12,.2],["gpt-5.6-luna",1.4,8.4,.14,.2,1.2,.02]],'
+        'groups:[["lite",txt.gptLite,"","",.15,txt.gptLiteIntro,["gpt-5.6-terra","gpt-5.6-luna"]],'
+        '["plus",txt.gptPlus,"","",.18,txt.gptPlusIntro,["gpt-5.6-terra"]]],'
+        'const gptPlusGroup = chatgptGroups.find(g => g[0] === "plus");'
+        'if (gptPlusGroup) gptPlusGroup[4] = .2;'
+    )
+
+    annotated = annotate_positional_price_arrays(page_text, ["gpt-5.6-terra"])
+
+    assert "官方参考价 输入=14 / 输出=84 / 缓存读取=1.4" in annotated
+    assert "站内实付基础价 输入=2 / 输出=12 / 缓存读取=.2" in annotated
+    # 分组倍率按 JS 覆写后的值折算：lite .15x、plus .2x
+    assert "@ lite（倍率 0.15x）：输入=0.3 / 输出=1.8 / 缓存读取=0.03" in annotated
+    assert "@ plus（倍率 0.2x）：输入=0.4 / 输出=2.4 / 缓存读取=0.04" in annotated
+    assert "gpt-5.6-luna" not in annotated.split("[位置型价格数组解读]")[-1]
+
+
+def test_annotate_positional_price_row_skips_other_models_and_plain_text():
+    from llm_price_monitor.evidence import annotate_positional_price_arrays
+
+    assert annotate_positional_price_arrays("没有价格数组", ["gpt-5.6-terra"]) == "没有价格数组"
+    other = 'models:[["claude-opus-5",35,175,0,3.5,5,25,.5]]'
+    assert annotate_positional_price_arrays(other, ["gpt-5.6-terra"]) == other
+
+
+def test_positional_price_array_missing_group_ratio_marks_rule_only():
+    from llm_price_monitor.evidence import annotate_positional_price_arrays
+
+    annotated = annotate_positional_price_arrays('["gpt-5.6-terra",14,84,1.4,2,12,.2]', ["gpt-5.6-terra"])
+
+    assert "未识别到分组倍率" in annotated
+    assert "rule_only" in annotated
+
+
 def test_ai_request_uses_model_list_only():
     spec = SiteSpec(
         id="hao",
@@ -1505,6 +1573,31 @@ def test_group_removed_event_after_two_misses(tmp_path: Path, monkeypatch):
     assert removed["previous"]["metadata"]["group"] == "vip"
 
 
+def test_group_added_event_for_known_model(tmp_path: Path, monkeypatch):
+    """已监控模型冒出新分组记 group_added；全新模型首次出现仍记 new。"""
+    groups = {"default"}
+
+    def collect(*_args):
+        return [
+            PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": group})
+            for group in sorted(groups)
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+    run_once(config, store=store, client=httpx.Client())  # 第二轮无变化，事件被过滤
+
+    groups.add("vip")
+    added = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in added.events] == ["group_added"]
+    assert added.events[0]["current"]["metadata"]["group"] == "vip"
+    assert added.events[0]["previous"] is None
+
+
 def test_persist_false_scan_does_not_pollute_group_miss(tmp_path: Path, monkeypatch):
     """测试采集（persist=False）不计入分组缺失：不完整的测试轮次不得加速"分组下线"判定。"""
     groups = {"default", "vip"}
@@ -1531,6 +1624,162 @@ def test_persist_false_scan_does_not_pollute_group_miss(tmp_path: Path, monkeypa
     assert [event["kind"] for event in first.events] == []  # 真实缺失第一轮只计数
     second = run_once(config, store=store, client=httpx.Client())
     assert [event["kind"] for event in second.events] == ["group_removed"]
+
+def _refresh_site_config(tmp_path: Path, **site: object) -> Path:
+    """带 token 续签配置的单站点 config：续签端点与价格接口都由 MockTransport 模拟。"""
+    path = tmp_path / "refresh-config.json"
+    path.write_text(json.dumps({
+        "settings": {
+            "history_file": str(tmp_path / "history.jsonl"),
+            "latest_file": str(tmp_path / "latest.json"),
+            "event_file": str(tmp_path / "events.jsonl"),
+        },
+        "sites": [{
+            "id": "totokens",
+            "adapter": "standard",
+            "network": {"url": "https://totokens.test/api/pricing"},
+            "models": ["demo-model"],
+            "token_refresh": {"url": "https://totokens.test/api/v1/auth/refresh", "refresh_token": "rt_old"},
+            **site,
+        }],
+    }), encoding="utf-8")
+    return path
+
+
+def _refresh_client() -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/auth/refresh":
+            return httpx.Response(200, json={"data": {"access_token": "at_new", "refresh_token": "rt_new"}})
+        # run_once 还会顺带拉公告接口（由 network.url 推导），这里只需给出可解析的空公告
+        return httpx.Response(200, json={"data": {"content": ""}})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _auth_placeholder() -> PriceRecord:
+    return PriceRecord("demo-model", None, None, "USD/1M tokens", "https://totokens.test/api/pricing", 0, {"error": "HTTP 401"}, "unavailable", True)
+
+
+def _priced(group: str = "default") -> PriceRecord:
+    return PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://totokens.test/api/pricing", 0, {"group": group})
+
+
+def test_refresh_and_recollect_keeps_records_and_address_errors(monkeypatch):
+    """重采结果按 (记录, 地址错误) 契约返回：曾把 collect 回调返回的元组整个当成记录列表。"""
+    from llm_price_monitor import token_refresh
+
+    monkeypatch.setattr(token_refresh, "refresh_site_token", lambda *args, **kwargs: ("at_new", "rt_new"))
+    (spec,) = sites_from_raw([{
+        "id": "rt",
+        "models": ["m"],
+        "network": {"url": "https://rt.test/api/pricing"},
+        "token_refresh": {"url": "https://rt.test/auth/refresh", "refresh_token": "rt_old"},
+    }])
+    record = PriceRecord("m", 1, 2, "USD/1M tokens", "https://rt.test/pricing", 0, {})
+
+    def collect(_spec):  # 与 report.collect_all 同契约
+        return [record], ["附加地址1: 超时"]
+
+    collected, errors = token_refresh.refresh_and_recollect(
+        spec, [], collect=collect, client=httpx.Client(), timeout=5, user_agent="ua", store=None
+    )
+    assert isinstance(collected, list) and collected == [record]
+    assert errors == ["附加地址1: 超时"]  # 重采阶段的地址失败不再被静默吞掉
+
+
+def test_refresh_and_recollect_falls_back_to_placeholder_when_recollect_empty(monkeypatch):
+    """续签成功但一条都没采到时退回占位记录：空列表会被下游当成"分组真的下线"。"""
+    from llm_price_monitor import token_refresh
+
+    monkeypatch.setattr(token_refresh, "refresh_site_token", lambda *args, **kwargs: ("at_new", "rt_new"))
+    (spec,) = sites_from_raw([{
+        "id": "rt",
+        "models": ["m"],
+        "network": {"url": "https://rt.test/api/pricing"},
+        "token_refresh": {"url": "https://rt.test/auth/refresh", "refresh_token": "rt_old"},
+    }])
+    placeholder = PriceRecord("m", None, None, "CNY/1M tokens", "https://rt.test/pricing", 0, {"error": "HTTP 401"}, "unavailable", True)
+
+    def collect(_spec):
+        return [], ["附加地址1: 超时"]
+
+    collected, errors = token_refresh.refresh_and_recollect(
+        spec, [placeholder], collect=collect, client=httpx.Client(), timeout=5, user_agent="ua", store=None
+    )
+    assert collected == [placeholder]
+    assert "附加地址1: 超时" in errors
+    assert any("未取到任何价格" in message for message in errors)
+
+
+def test_token_refresh_recollect_replaces_records_without_crashing(tmp_path: Path, monkeypatch):
+    """回归：续签成功后重采。老代码在此抛 'list' object has no attribute 'requires_auth'，整轮采集白跑。"""
+    seen_auth_tokens: list[str | None] = []
+
+    def collect(self, spec, *_args):  # 适配器契约：只返回记录列表，(记录, 错误) 由 collect_all 组装
+        seen_auth_tokens.append(spec.auth_token)
+        return [_priced()] if spec.auth_token == "at_new" else [_auth_placeholder()]
+
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    config = load_config(_refresh_site_config(tmp_path))
+    store = Store(tmp_path / "monitor.db")
+    report = run_once(config, store=store, client=_refresh_client())
+
+    assert seen_auth_tokens == [None, "at_new"]  # 先用旧凭证，续签后带新 token 重采
+    assert report.errors == []
+    assert store.latest_all()["totokens:demo-model:default"]["input_price"] == 1
+    assert store.get_document("collect_status")["totokens"]["status"] == "ok"
+
+
+def test_token_refresh_with_empty_recollect_keeps_status_and_skips_group_removal(tmp_path: Path, monkeypatch):
+    """续签成功但重采无数据：保住"需认证"状态、沿用上次价格，且不得把分组误判成下线。"""
+    calls = {"n": 0}
+
+    def collect(self, spec, *_args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [_priced()]
+        if spec.auth_token == "at_new":
+            return []  # 续签成功，但重采依然取不到任何价格
+        return [_auth_placeholder()]
+
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    config = load_config(_refresh_site_config(tmp_path))
+    store = Store(tmp_path / "monitor.db")
+    run_once(config, store=store, client=_refresh_client())
+    assert store.latest_all()["totokens:demo-model:default"]["input_price"] == 1
+
+    for _ in range(2):  # 连续两轮"续签成功但无数据"，正好踩到 group_removed 的判定阈值
+        report = run_once(config, store=store, client=_refresh_client())
+        assert [event["kind"] for event in report.events] == []
+
+    latest = store.latest_all()["totokens:demo-model:default"]
+    assert latest["input_price"] == 1 and latest["requires_auth"] is True
+    assert store.get_document("collect_status")["totokens"]["status"] == "auth_required"
+    assert not any(event["kind"] == "group_removed" for event in store.read_events(limit=20)[0])
+
+
+def test_partial_address_failure_skips_group_removal(tmp_path: Path, monkeypatch):
+    """附加地址采集失败时本轮记录不完整，没采到的分组不得计入缺失（两轮就会误报下线）。"""
+    failing = {"on": False}
+
+    def collect(self, spec, *_args):
+        if spec.network["url"].endswith("/alt"):
+            if failing["on"]:
+                raise PriceMonitorError("附加地址超时")
+            return [PriceRecord("demo-model", 3, 4, "USD/1M tokens", "https://totokens.test/api/alt", 0, {"group": "vip"})]
+        return [_priced()]
+
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    config = load_config(_refresh_site_config(tmp_path, networks=[{"url": "https://totokens.test/api/alt"}]))
+    store = Store(tmp_path / "monitor.db")
+    run_once(config, store=store, client=_refresh_client())
+    assert set(store.latest_all()) == {"totokens:demo-model:default", "totokens:demo-model:vip"}
+
+    failing["on"] = True
+    for _ in range(2):  # 两轮都缺 vip：没有防护时第二轮就记 group_removed 并把 vip 摘掉
+        run_once(config, store=store, client=_refresh_client())
+    assert "totokens:demo-model:vip" in store.latest_all()
+    assert not any(event["kind"] == "group_removed" for event in store.read_events(limit=20)[0])
 
 
 def test_platform_pricing_records_parses_final_prices():

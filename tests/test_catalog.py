@@ -6,7 +6,7 @@ import pytest
 
 from llm_price_monitor.catalog import modelsdev
 from llm_price_monitor.catalog.classify import BATCH_SIZE, attach_ai_tiers
-from llm_price_monitor.catalog.discount import build_discount, compute_discounts, summarize
+from llm_price_monitor.catalog.discount import build_discount
 from llm_price_monitor.catalog.modelsdev import fetch_catalog
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, description_fingerprint
 from llm_price_monitor.config import AIConfig
@@ -83,16 +83,6 @@ def test_build_discount_skips_rows_without_official_or_price():
     assert entry is None and "站点未拿到可用价格" in reason
 
 
-def test_compute_discounts_and_summarize():
-    rows = [_row(), _row(site_id="demo2")]
-    discounts, skipped = compute_discounts(rows, OFFICIAL_MODELS, 6.74)
-    assert len(discounts) == 2 and skipped == []
-    summary = summarize(discounts)
-    assert summary["gpt5.6sol"]["model"] == "gpt-5.6-sol"
-    assert summary["gpt5.6sol"]["sites_compared"] == 2
-    assert summary["gpt5.6sol"]["input_discount"]["min"] == summary["gpt5.6sol"]["input_discount"]["max"]
-
-
 # ---------- modelsdev.fetch_catalog ----------
 
 def _provider(pid: str, name: str, doc: str, models: dict) -> dict:
@@ -103,9 +93,10 @@ def _snapshot() -> dict:
     return {
         "openai": _provider("openai", "OpenAI", "https://platform.openai.com/docs/models", {
             "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "description": "flagship model",
-                            "release_date": "2026-08-01", "cost": {"input": 5.0, "output": 30.0}},
+                            "release_date": "2026-08-01",
+                            "cost": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 6.0}},
             "gpt-5.5": {"id": "gpt-5.5", "name": "GPT-5.5", "release_date": "2026-01-01",
-                        "cost": {"input": 2.5, "output": 10.0}},
+                        "cost": {"input": 2.5, "output": 10.0}},  # 无缓存价：应为 null
             "gpt-5.6-mini": {"id": "gpt-5.6-mini", "name": "GPT-5.6 Mini", "cost": {}},  # 无定价，跳过
         }),
         "moonshotai": _provider("moonshotai", "Moonshot AI", "https://platform.moonshot.ai/docs/api/chat", {
@@ -142,12 +133,23 @@ def test_fetch_catalog_maps_whitelist_and_skips_priceless(catalog_fetch):
     assert entry["currency"] == "USD"
     assert entry["list"] == {"input": 5.0, "output": 30.0}
     assert entry["list_cny"] == {"input": 33.7, "output": 202.2}
+    # 缓存价：原币与折算两份，供花费计算器自动带出
+    assert entry["cache"] == {"read": 0.5, "write": 6.0}
+    assert entry["cache_cny"] == {"read": 3.37, "write": 40.44}
     assert entry["description"] == "flagship model"
     assert entry["source_url"] == "https://platform.openai.com/docs/models"
     # meta：来源与汇率
     assert doc["source"] == "models.dev"
     assert doc["source_url"] == "https://models.dev"
     assert doc["usd_cny_rate"] == 6.74 and doc["rate_source"] == "test"
+
+
+def test_fetch_catalog_missing_cache_cost_falls_back_to_null(catalog_fetch):
+    """上游没有 cache_read/cache_write 时（占三到四成模型）应为 null，而不是 0 或 KeyError。"""
+    doc = catalog_fetch()
+    entry = doc["models"]["gpt5.5"]
+    assert entry["cache"] == {"read": None, "write": None}
+    assert entry["cache_cny"] == {"read": None, "write": None}
 
 
 def test_fetch_catalog_orders_vendors_and_newest_models_first(catalog_fetch):

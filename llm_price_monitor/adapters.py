@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 from urllib.parse import urljoin, urlsplit
@@ -67,6 +68,41 @@ def expand_header_value(value: str) -> str:
         return resolved
 
     return _ENV_VALUE_PATTERN.sub(_expand, value)
+
+
+def response_error_detail(response: httpx.Response, limit: int = 120) -> str:
+    """HTTP 失败时从响应体提取可读原因：优先 new-api 系 JSON 的 message/error 字段，否则截取正文开头。"""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    text = ""
+    if isinstance(payload, dict):
+        for key in ("message", "error", "detail", "msg"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                break
+    if not text:
+        text = (response.text or "").strip()
+    text = " ".join(text.split())
+    if text.startswith("<"):
+        # HTML 响应（常见为 Cloudflare 拦截页）：正文片段只是标签噪音，取标题即可看出是谁在拦
+        title = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+        return f"HTML 页面：{title.group(1).strip()[:80]}" if title else "HTML 页面（可能是防护拦截或错误页）"
+    return text[:limit]
+
+
+def http_error_message(label: str, response: httpx.Response, *, auth_hint: bool = False) -> str:
+    """HTTP 失败的可读报错：状态码 + 响应体真实原因 + 脱敏请求地址，替代笼统的"可能需要认证"。"""
+    detail = response_error_detail(response)
+    msg = f"{label}返回 HTTP {response.status_code}"
+    if detail:
+        msg += f"：{detail}"
+    if auth_hint and response.status_code in {401, 403}:
+        msg += "，可能需要认证"
+    msg += f"（请求 {redact_url(str(response.url))}）"
+    return msg
 
 
 @dataclass(frozen=True)
@@ -363,12 +399,33 @@ class NetworkAdapter:
         if isinstance(headless_config, dict) and headless_config.get("enabled"):
             from llm_price_monitor.browser_fetch import fetch_page_html
 
-            response: Any = _BrowserPageResponse(entry.url, fetch_page_html(entry.url, headless_config, user_agent))
+            # 无头请求带上与 HTTP 链路相同的自定义请求头，两条链路指纹一致
+            headers = {
+                name: value
+                for name, value in build_request_kwargs(entry, spec, user_agent, timeout)["headers"].items()
+                if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
+            }
+            response: Any = _BrowserPageResponse(
+                entry.url, fetch_page_html(entry.url, headless_config, user_agent, extra_headers=headers),
+            )
         else:
             response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         if response.status_code in {401, 403}:
-            return auth_required_records(spec, f"网络价格接口返回 HTTP {response.status_code}", str(response.url))
-        response.raise_for_status()
+            reason = (
+                http_error_message("网络价格接口", response, auth_hint=True)
+                if isinstance(response, httpx.Response)
+                else f"网络价格接口返回 HTTP {response.status_code}，可能需要认证"
+            )
+            return auth_required_records(spec, reason, str(response.url))
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            reason = (
+                http_error_message("网络价格接口", response)
+                if isinstance(response, httpx.Response)
+                else str(exc)
+            )
+            raise PriceMonitorError(reason) from exc
         payload: Any = None
         response_is_json = True
         try:
@@ -384,65 +441,32 @@ class NetworkAdapter:
             "payload": payload,
             "content_type": response.headers.get("content-type", ""),
         }
+        ai_page_text = response.text
+        ai_captured = [captured]
         if not response_is_json:
-            captured["text"] = response.text
-            # 页面自带结构化价格表时优先确定性解析；页面里没有目标模型时，
-            # 自动发现页面引用的 JS chunk 逐个查找（chunk 文件名常带内容哈希，
-            # 每次采集重新发现，站点改版也能跟上），仍未命中再交给 AI
-            entries = _parse_base_price_entries(response.text)
-            evidence_url = str(response.url)
-            evidence_status = response.status_code
-            evidence_text = response.text
-            evidence_source = "model_list"
-            if not (entries and any(_entry_matches_targets(item, spec) for item in entries)) and _looks_like_html(response.text):
-                chunk_headers = build_request_kwargs(entry, spec, user_agent, timeout)["headers"]
-                for src in _CHUNK_SRC_PATTERN.findall(response.text)[:15]:
-                    chunk_url = urljoin(entry.url, src)
-                    try:
-                        chunk_response = client.get(chunk_url, headers=chunk_headers, timeout=timeout)
-                    except httpx.HTTPError:
-                        continue
-                    if chunk_response.status_code != 200:
-                        continue
-                    parsed = _parse_base_price_entries(chunk_response.text)
-                    if parsed and any(_entry_matches_targets(item, spec) for item in parsed):
-                        entries = parsed
-                        evidence_url = chunk_url
-                        evidence_status = chunk_response.status_code
-                        evidence_text = chunk_response.text
-                        evidence_source = "model_list_chunk"
-                        break
-            if entries and any(_entry_matches_targets(item, spec) for item in entries):
-                entry_evidence = [{
-                    "source": evidence_source,
-                    "url": redact_url(evidence_url),
-                    "resource_type": "fetch",
-                    "status": evidence_status,
-                    "payload_sha256": payload_hash(evidence_text),
-                }]
-                # 配置了倍率接口时，基准价 × 端点倍率折算实售价（人民币）；
-                # 记录的 source_url 指向倍率接口，倍率证据排在基准价证据前面
-                resolve_rate = None
-                source_url = str(response.url)
-                ratio = _ratio_endpoint(network)
-                if ratio is not None:
-                    resolve_rate, rate_evidence = _rate_resolver(
-                        spec, client, entry, user_agent, timeout, ratio[0], extra_headers=ratio[1],
-                    )
-                    entry_evidence = [rate_evidence[0], *entry_evidence]
-                    source_url = ratio[0]
-                records = _records_from_base_entries(
-                    spec, entries, entry_evidence, source_url, adapter_label="browser_network",
-                    resolve_rate=resolve_rate,
-                )
-                if any(record.price_status == "confirmed" for record in records):
-                    return records
-            if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
-                return AIPriceExtractor(ai).extract(
-                    spec, response.text, [captured], client=client,
-                    expected_models=[target.name for target in spec.models],
-                )
-            raise PriceMonitorError(f"站点 {spec.id} 返回 HTML/文本响应，且未配置可用 AI")
+            try:
+                return self._collect_from_html(spec, network, entry, client, timeout, user_agent, ai, response, captured)
+            except PriceMonitorError:
+                # 纯 HTTP 抓到的多半是壳页面或风控质询页：自动改用无头浏览器重试一次。
+                # 站点配置里已启用无头时请求本身就走无头，不会进这条 HTTP 分支；
+                # 未装 playwright 或无头仍失败时返回 None，维持原报错。
+                if isinstance(response, httpx.Response):
+                    browser_response = self._headless_page_response(network, entry, spec, user_agent, timeout)
+                    if browser_response is not None:
+                        return self._collect_from_html(
+                            spec, network, entry, client, timeout, user_agent, ai, browser_response,
+                            {
+                                "url": str(browser_response.url),
+                                "status": browser_response.status_code,
+                                "resource_type": "fetch",
+                                "source": "model_list",
+                                "preferred_response": True,
+                                "payload": None,
+                                "content_type": "text/html",
+                                "text": browser_response.text,
+                            },
+                        )
+                raise
         if looks_like_newapi_pricing(payload):
             direct_records = network_pricing_records(spec, [captured])
             # Always let AI inspect New API/One API model names when enabled.
@@ -495,11 +519,187 @@ class NetworkAdapter:
             )
         raise PriceMonitorError(f"站点 {spec.id} 不是可识别的 New API/One API 响应，且未配置可用 AI")
 
+    def _collect_from_html(
+        self,
+        spec: SiteSpec,
+        network: dict[str, Any],
+        entry: EndpointRequest,
+        client: httpx.Client,
+        timeout: float,
+        user_agent: str,
+        ai: AIConfig | None,
+        response: Any,
+        captured: dict[str, Any],
+    ) -> list[PriceRecord]:
+        """HTML/文本响应的价格提取：页面内嵌表 → 引用链 chunk → AI 兜底。"""
+        captured["text"] = response.text
+        # 页面自带结构化价格表时优先确定性解析；页面里没有目标模型时，
+        # 自动发现页面引用的 JS chunk 逐个查找（chunk 文件名常带内容哈希，
+        # 每次采集重新发现，站点改版也能跟上），仍未命中再交给 AI
+        entries = _parse_base_price_entries(response.text)
+        evidence_url = str(response.url)
+        evidence_status = response.status_code
+        evidence_text = response.text
+        evidence_source = "model_list"
+        ai_page_text = response.text
+        ai_captured = [captured]
+        if not (entries and any(_entry_matches_targets(item, spec) for item in entries)) and _looks_like_html(response.text):
+            chunk_headers = build_request_kwargs(entry, spec, user_agent, timeout)["headers"]
+            hit = _search_price_chunk(spec, client, entry.url, chunk_headers, timeout, response.text)
+            if hit is not None and hit.entries is not None:
+                entries = hit.entries
+                evidence_url = hit.url
+                evidence_status = hit.status
+                evidence_text = hit.text
+                evidence_source = "model_list_chunk"
+            elif hit is not None:
+                # chunk 里能看到目标模型名但格式认不出：AI 兜底改用该 chunk 文本，
+                # 否则 AI 只能看到空壳 HTML，等于白跑
+                ai_page_text = hit.text
+                ai_captured = [
+                    captured,
+                    {
+                        "url": hit.url,
+                        "status": hit.status,
+                        "resource_type": "fetch",
+                        "source": "model_list",
+                        "payload": None,
+                        "text": hit.text,
+                        "content_type": "application/javascript",
+                    },
+                ]
+        if entries and any(_entry_matches_targets(item, spec) for item in entries):
+            entry_evidence = [{
+                "source": evidence_source,
+                "url": redact_url(evidence_url),
+                "resource_type": "fetch",
+                "status": evidence_status,
+                "payload_sha256": payload_hash(evidence_text),
+            }]
+            # 配置了倍率接口时，基准价 × 端点倍率折算实售价（人民币）；
+            # 记录的 source_url 指向倍率接口，倍率证据排在基准价证据前面
+            resolve_rate = None
+            source_url = str(response.url)
+            ratio = _ratio_endpoint(network)
+            if ratio is not None:
+                resolve_rate, rate_evidence = _rate_resolver(
+                    spec, client, entry, user_agent, timeout, ratio[0], extra_headers=ratio[1],
+                )
+                entry_evidence = [rate_evidence[0], *entry_evidence]
+                source_url = ratio[0]
+            records = _records_from_base_entries(
+                spec, entries, entry_evidence, source_url, adapter_label="browser_network",
+                resolve_rate=resolve_rate,
+            )
+            if any(record.price_status == "confirmed" for record in records):
+                return records
+        if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
+            return AIPriceExtractor(ai).extract(
+                spec, ai_page_text, ai_captured, client=client,
+                expected_models=[target.name for target in spec.models],
+            )
+        raise PriceMonitorError(f"站点 {spec.id} 返回 HTML/文本响应，且未配置可用 AI")
+
+    def _headless_page_response(
+        self,
+        network: dict[str, Any],
+        entry: EndpointRequest,
+        spec: SiteSpec,
+        user_agent: str,
+        timeout: float,
+    ) -> Any | None:
+        """纯 HTTP 抓取失败时的无头浏览器重试；未装 playwright 或仍失败时返回 None。
+
+        无头请求带上与 HTTP 链路相同的自定义请求头（指纹一致，避免风控放行
+        HTTP 却拦浏览器），cookies/localStorage/等待秒数照常按站点配置注入。
+        """
+        from llm_price_monitor.browser_fetch import fetch_page_html
+
+        headless_config = network.get("headless") if isinstance(network.get("headless"), dict) else {}
+        headers = {
+            name: value
+            for name, value in build_request_kwargs(entry, spec, user_agent, timeout)["headers"].items()
+            if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
+        }
+        try:
+            html = fetch_page_html(entry.url, headless_config or {}, user_agent, extra_headers=headers)
+        except PriceMonitorError:
+            return None
+        return _BrowserPageResponse(entry.url, html)
+
 
 
 _BASE_ENTRY_PATTERN = re.compile(r'\{category:"[^"]+"[^{}]*\}')
 _ENTRY_FIELD_PATTERN = re.compile(r'(\w+):("([^"]*)"|\[[^\]]*\]|-?(?:\d+\.?\d*|\.\d+)|null|true|false)')
-_CHUNK_SRC_PATTERN = re.compile(r'src="([^"]+\.js[^"]*)"')
+# HTML 里是 src="/href="/，JS 里是 import("./x.js")、from"./x.js"；
+# 统一按「带引号、以 .js 结尾（可带 query）」的字符串提取引用地址
+_JS_REF_PATTERN = re.compile(r'["\']([^"\']+\.js(?:\?[^"\']*)?)["\']')
+
+@dataclass(frozen=True)
+class _ChunkHit:
+    """引用链搜索结果：entries 命中即确定性计价；未命中但 chunk 文本含
+    目标模型名时带出该 chunk（url/status/text），供 AI 兜底使用。"""
+
+    url: str
+    status: int
+    text: str
+    entries: list[dict[str, Any]] | None = None
+
+
+_MAX_CHUNK_FETCHES = 60
+_MAX_CHUNK_DEPTH = 3
+# 同层引用按文件名关键词排序，优先抓价格/渠道相关的业务 chunk，
+# 避免 admin/支付等无关视图把抓取次数上限耗光
+_CHUNK_URL_PRIORITY = ("pricing", "price", "channel", "model", "home", "billing", "rate", "plaza")
+
+
+def _search_price_chunk(
+    spec: SiteSpec,
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    timeout: float,
+    root_text: str,
+) -> _ChunkHit | None:
+    """从入口文本（HTML 或 JS）出发，按引用链逐层发现 JS chunk 并找价格表。
+
+    chunk 文件名带内容哈希且常逐层嵌套（页面 → 入口 JS → 业务 chunk），
+    每次采集从入口重新发现，站点改版也能跟上；命中目标模型即返回，
+    超过次数/层数上限则放弃（宁可交给 AI 兜底也不无限爬）。
+    """
+    target_names = [target.name.casefold() for target in spec.models if target.name.strip()]
+    seen: set[str] = set()
+    queue: deque[tuple[str, str, int]] = deque()
+    queue.append((base_url, root_text, 0))
+    fallback: _ChunkHit | None = None
+    while queue:
+        url, text, depth = queue.popleft()
+        if depth >= _MAX_CHUNK_DEPTH:
+            continue
+        for ref in sorted(
+            _JS_REF_PATTERN.findall(text),
+            key=lambda ref: sum(keyword in ref.casefold() for keyword in _CHUNK_URL_PRIORITY),
+            reverse=True,
+        ):
+            chunk_url = urljoin(url, ref)
+            if not chunk_url.startswith(("http://", "https://")) or chunk_url in seen:
+                continue
+            seen.add(chunk_url)
+            if len(seen) > _MAX_CHUNK_FETCHES:
+                return fallback
+            try:
+                chunk_response = client.get(chunk_url, headers=headers, timeout=timeout)
+            except httpx.HTTPError:
+                continue
+            if chunk_response.status_code != 200:
+                continue
+            parsed = _parse_base_price_entries(chunk_response.text)
+            if parsed and any(_entry_matches_targets(item, spec) for item in parsed):
+                return _ChunkHit(chunk_url, chunk_response.status_code, chunk_response.text, parsed)
+            if fallback is None and any(name in chunk_response.text.casefold() for name in target_names):
+                fallback = _ChunkHit(chunk_url, chunk_response.status_code, chunk_response.text)
+            queue.append((chunk_url, chunk_response.text, depth + 1))
+    return fallback
 
 
 def _looks_like_html(text: str) -> bool:
@@ -643,7 +843,10 @@ def _rate_resolver(
     """
     request_headers = {**build_request_kwargs(entry, spec, user_agent, timeout)["headers"], **(extra_headers or {})}
     response = client.get(ratio_url, headers=request_headers, timeout=timeout)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise PriceMonitorError(http_error_message("倍率接口", response)) from exc
     try:
         payload = response.json()
     except ValueError as exc:

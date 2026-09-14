@@ -18,8 +18,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+from llm_price_monitor.adapters import build_request_kwargs, http_error_message, resolve_endpoint
 from llm_price_monitor.ai import AIConfig, extract_notice_content
+from llm_price_monitor.tasklog import emit as tasklog_emit
 from llm_price_monitor.config import PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import redact_url
 
@@ -68,7 +69,8 @@ def _fetch_announcements(
         response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, ValueError, PriceMonitorError):
+    except (httpx.HTTPError, ValueError, PriceMonitorError) as exc:
+        tasklog_emit(f"[{spec.id}] 多条公告接口不可用，已跳过：{exc}")
         return []
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
         return []
@@ -79,15 +81,21 @@ def _fetch_announcements(
 
 
 def _announcement_markdown(items: list[dict[str, Any]]) -> str:
-    """公告数组渲染成 Markdown 分节：标题（extra）+ 日期（publishDate）+ 正文，最新在前。"""
+    """公告数组渲染成 Markdown 分节：标题（extra/title）+ 日期（publishDate/created_at）+ 正文，最新在前。"""
 
-    def order(item: dict[str, Any]) -> tuple[str, str]:
-        return (str(item.get("publishDate") or ""), str(item.get("id") or ""))
+    def order(item: dict[str, Any]) -> tuple[str, tuple[int, float] | tuple[int, str]]:
+        published = str(item.get("publishDate") or item.get("created_at") or "")
+        raw_id = item.get("id")
+        try:
+            id_key: tuple[int, float] | tuple[int, str] = (0, float(raw_id))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            id_key = (1, str(raw_id or ""))
+        return (published, id_key)
 
     sections: list[str] = []
     for item in sorted(items, key=order, reverse=True):
-        title = str(item.get("extra") or "").strip() or "公告"
-        date = str(item.get("publishDate") or "").strip()[:10]
+        title = str(item.get("extra") or item.get("title") or "").strip() or "公告"
+        date = str(item.get("publishDate") or item.get("created_at") or "").strip()[:10]
         heading = f"## {title}" + (f"（{date}）" if date else "")
         sections.append(f"{heading}\n\n{str(item.get('content') or '').strip()}")
     return "\n\n".join(sections)
@@ -103,8 +111,9 @@ def fetch_site_notice(
     """采集单个站点的通知公告，返回含来源与解析方式的记录；content 为公告正文文本。
 
     未配置 notice.url 且自动推导地址返回 404 时返回 None（站点没有公告接口，静默跳过）。
-    公告请求继承 network.headers 的认证/Cookie 头；固定解析拿不到正文（或正文是 HTML）时
-    交给 AI 从原始响应中提取，AI 未启用或失败则保留固定解析结果。
+    公告请求继承 network.headers 的认证/Cookie 头。正文原样保留（可能是 HTML 片段），
+    不做改写；只有固定解析完全拿不到内容时才交给 AI 从原始响应中提取，
+    AI 未启用或失败则保持为空。
     """
     url = resolve_notice_url(spec)
     if url is None:
@@ -121,7 +130,7 @@ def fetch_site_notice(
             return None  # 自动推导地址 404 = 站点没有公告接口，属常态，静默跳过
         raise PriceMonitorError("公告地址返回 HTTP 404，请检查 notice.url 是否正确")
     if response.status_code in {401, 403}:
-        raise PriceMonitorError(f"公告地址返回 HTTP {response.status_code}，可能需要认证")
+        raise PriceMonitorError(http_error_message("公告地址", response, auth_hint=True))
     response.raise_for_status()
     content = ""
     parse = "json"
@@ -133,22 +142,33 @@ def fetch_site_notice(
         if payload.get("success") is False:
             raise PriceMonitorError(f"公告接口返回失败: {payload.get('message') or '未知错误'}")
         data = payload.get("data")
+        items: list[Any] | None = None
         if isinstance(data, str):
             content = data.strip()
+        elif isinstance(data, list):
+            # totokens 型：data 直接是公告数组
+            items = data
         elif isinstance(data, dict) and isinstance(data.get("announcements"), list):
-            # /api/status 型响应（data 携带 announcements）：直接结构化解析成公告正文，
-            # 不再交给 AI，也不再向 /api/status 重复发起第二次请求。
+            # /api/status 型响应（data 携带 announcements）
+            items = data["announcements"]
+        elif isinstance(payload.get("announcements"), list):
+            # icodeeasy 型：announcements 数组直接挂在顶层
+            items = payload["announcements"]
+        if items is not None:
+            # 结构化公告数组：直接渲染成分节 Markdown，不交给 AI，
+            # 也不再向 /api/status 重复发起第二次请求。
             content = _announcement_markdown(
-                [item for item in data["announcements"] if isinstance(item, dict) and str(item.get("content") or "").strip()]
+                [item for item in items if isinstance(item, dict) and str(item.get("content") or "").strip()]
             )
             parse = "status"
     elif payload is None or isinstance(payload, list):
         # 非 JSON、或顶层是 JSON 数组：没有可结构化解析的公告对象，按原文处理
         parse = "text"
         content = response.text.strip()
-    # 固定解析拿不到正文，或正文是 HTML 片段时交给 AI 提取——AI 认得出任意响应结构里
-    # 真正要拿的公告数据；未启用或失败时保留固定解析结果。
-    if ai is not None and parse != "status" and (not content or content.lstrip().startswith("<")):
+    # 只有固定解析完全拿不到正文时才交给 AI 提取（AI 认得出任意响应结构里真正要拿的
+    # 公告数据）；HTML 片段等拿到的内容一律原样保留，不经 AI——AI 逐次提取的措辞/空白
+    # 差异会触发假"公告变化"事件。未启用或失败时保持为空。
+    if ai is not None and parse != "status" and not content:
         extracted = extract_notice_content(ai, response.text)
         if extracted is not None:
             content = extracted

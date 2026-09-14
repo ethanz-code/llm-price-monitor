@@ -16,7 +16,7 @@ from llm_price_monitor.store import Store
 from llm_price_monitor.useragent import DEFAULT_BROWSER_USER_AGENT
 
 PriceStatus = Literal["confirmed", "candidate", "rule_only", "unavailable"]
-ChangeKind = Literal["new", "changed", "unchanged", "recovered", "status_changed", "group_removed"]
+ChangeKind = Literal["new", "changed", "unchanged", "recovered", "status_changed", "group_removed", "group_added"]
 
 
 
@@ -108,7 +108,7 @@ class AIConfig:
     models: tuple[str, ...] = ()
     api_key: str | None = None
     api_format: str = "chat_completions"
-    timeout: float = 60.0
+    timeout: float = 180.0
     max_input_chars: int = 60000
     max_tokens: int = 4000
     enable_thinking: bool = False
@@ -163,7 +163,7 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
         parsed_base = urlsplit(base_url)
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
             raise ValueError("配置文件 ai.base_url 必须是完整的 http(s) URL")
-    timeout = float(raw.get("timeout", 60))
+    timeout = float(raw.get("timeout", 180))
     max_input_chars = int(raw.get("max_input_chars", 60000))
     max_tokens = int(raw.get("max_tokens", 4000))
     if not timeout > 0:
@@ -186,7 +186,10 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
 
 
 def _endpoint_section(raw: Any, site_id: str, name: str) -> dict[str, Any]:
-    """status/notice 段归一：URL 字符串简写 → {url}；校验 url 与 params/headers 类型。"""
+    """status/notice 段归一：URL 字符串简写 → {url}；校验 url 与 params/headers 类型。
+
+    status.groups 是站点级分组白名单，只作用于价格采集时允许没有 url，
+    所以仅当段里出现 url 之外的字段时才强制要求 url。"""
     if isinstance(raw, str):
         raw = {"url": raw}
     if raw is None:
@@ -195,11 +198,13 @@ def _endpoint_section(raw: Any, site_id: str, name: str) -> dict[str, Any]:
         raise ValueError(f"站点 {site_id} 的 {name} 必须是 URL 字符串或对象")
     if raw:
         url = raw.get("url")
-        if not isinstance(url, str) or not url.strip():
-            raise ValueError(f"站点 {site_id} 的 {name}.url 必须是非空 URL")
-        parsed_url = urlsplit(url)
-        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-            raise ValueError(f"站点 {site_id} 的 {name}.url 必须是完整的 http(s) URL")
+        # status 只配分组白名单（groups 是站点级过滤，可只作用于价格采集）时允许没有 url
+        if not (url is None and name == "status" and set(raw) == {"groups"}):
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError(f"站点 {site_id} 的 {name}.url 必须是非空 URL")
+            parsed_url = urlsplit(url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                raise ValueError(f"站点 {site_id} 的 {name}.url 必须是完整的 http(s) URL")
         for section_field in ("params", "headers"):
             if section_field in raw and not isinstance(raw[section_field], dict):
                 raise ValueError(f"站点 {site_id} 的 {name}.{section_field} 必须是对象")
