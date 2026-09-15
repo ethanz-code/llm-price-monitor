@@ -237,6 +237,9 @@ def _validate_token_refresh(raw: dict[str, Any], site_id: str) -> None:
         field_value = raw.get(field_name)
         if field_value is not None and (not isinstance(field_value, str) or not field_value.strip()):
             raise ValueError(f"站点 {site_id} 的 token_refresh.{field_name} 必须是非空字符串（如 data.access_token）")
+    cookie_name = raw.get("refresh_cookie_name")
+    if cookie_name is not None and (not isinstance(cookie_name, str) or not cookie_name.strip()):
+        raise ValueError(f"站点 {site_id} 的 token_refresh.refresh_cookie_name 必须是非空字符串（如 new_api_refresh）")
     if not str(raw.get("refresh_token") or "").strip():
         raise ValueError(f"站点 {site_id} 的 token_refresh.refresh_token 不能为空")
 
