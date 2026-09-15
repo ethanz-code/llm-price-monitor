@@ -437,6 +437,8 @@ type RefreshOverride = Partial<{
   response_sample: string;
   access_token_field: string;
   refresh_token_field: string;
+  headers_text: string;
+  refresh_cookie_name: string;
 }>;
 
 /** 测试续签接口的成功返回：新 access_token 用于回填各处认证头，refresh_token 可能已被服务端换新 */
@@ -451,6 +453,8 @@ type AuthFields = {
   sample: string;
   accessTokenField: string;
   refreshTokenField: string;
+  headersText: string;
+  cookieName: string;
 };
 
 /** 价格采集子弹窗提交回主弹窗的字段集合 */
@@ -752,6 +756,8 @@ function AuthSubModal({
   const [token, setToken] = useState(initial.token);
   const [body, setBody] = useState(initial.body);
   const [sample, setSample] = useState(initial.sample);
+  const [headersRows, setHeadersRows] = useState<KvRow[]>(dictToRows(initial.headersText));
+  const [cookieName, setCookieName] = useState(initial.cookieName);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
@@ -760,6 +766,7 @@ function AuthSubModal({
   // AI 分析出的字段路径没有表单入口，展示出来让用户知道分析到了什么
   const accessTokenField = initial.accessTokenField;
   const refreshTokenField = initial.refreshTokenField;
+  const headersText = rowsToText(headersRows);
 
   // 续签即时校验：地址格式、请求体占位符、响应案例 JSON，填错当场提示不用等保存
   const urlError = url.trim() && !/^https?:\/\/\S+\.\S+/.test(url.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
@@ -784,6 +791,8 @@ function AuthSubModal({
     refresh_token: token,
     body,
     response_sample: sample,
+    headers_text: headersText,
+    refresh_cookie_name: cookieName,
   });
   const fields = (): AuthFields => ({
     method,
@@ -793,6 +802,8 @@ function AuthSubModal({
     sample,
     accessTokenField,
     refreshTokenField,
+    headersText,
+    cookieName,
   });
 
   // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
@@ -864,7 +875,7 @@ function AuthSubModal({
                 setToken(value);
                 setTestResult(null);
               }}
-              placeholder="Refresh Token，续签成功后会自动更新"
+              placeholder="Refresh Token（或 Cookie 值），续签成功后会自动更新"
               style={{ flex: 1, minWidth: 220 }}
             />
             <Input
@@ -878,6 +889,30 @@ function AuthSubModal({
             />
           </div>
           {bodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{bodyError}</span>}
+          <HeadersEditor
+            rows={headersRows}
+            onChange={(next) => {
+              setHeadersRows(next);
+              setTestResult(null);
+            }}
+            warningKeys={[]}
+            hint="只发给续签接口；凭据放在 Cookie 里的站点（如 new-api）填 cookie: new_api_refresh=${refresh_token}，续签后自动代入最新值"
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Input
+              value={cookieName}
+              onChange={(value) => {
+                setCookieName(value);
+                setTestResult(null);
+              }}
+              placeholder="轮换 Cookie 名，选填，如 new_api_refresh"
+              style={{ flex: 1, minWidth: 220 }}
+            />
+          </div>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            有的站点（new-api 系）Refresh Token 用一次就换新、新值只在响应 Set-Cookie 里：填了轮换
+            Cookie 名，续签后会自动接住新值接力续签，不用回浏览器重新抓
+          </span>
           <textarea
             className="input mono textarea"
             value={sample}
@@ -1218,6 +1253,40 @@ function JsonSubModal({
 /** 子弹窗标识：主弹窗同一时间最多打开一个 */
 type SubKey = "price" | "auth" | "status" | "notice" | "json";
 
+/** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面） */
+type CollectMode = "api" | "browser";
+
+/** 认证方式：无需认证 / 固定令牌 / 登录会话自动续签 */
+type AuthMode = "none" | "token" | "session";
+
+/** 已有配置 → 场景反推：配了续签是登录会话，配了认证凭证或手写认证头是固定令牌，开了无头是网页模式 */
+function sceneFromConfig(config: SiteConfig): { collect: CollectMode; auth: AuthMode } {
+  const headersWithAuth = (headers: unknown) =>
+    headers !== null && typeof headers === "object" &&
+    Object.keys(headers as Record<string, unknown>).some((key) => /^(authorization|cookie)$/i.test(key));
+  const ratio = config.network?.ratio_url;
+  const hasManualAuth =
+    headersWithAuth(config.network?.headers) ||
+    (ratio !== null && typeof ratio === "object" && headersWithAuth((ratio as { headers?: unknown }).headers)) ||
+    headersWithAuth(config.status?.headers) ||
+    headersWithAuth(config.notice?.headers);
+  const auth: AuthMode = config.token_refresh?.url
+    ? "session"
+    : config.auth_token || hasManualAuth
+      ? "token"
+      : "none";
+  return { collect: config.network?.headless?.enabled === true ? "browser" : "api", auth };
+}
+
+/** 从采集地址取站点域名（new-api 型续签地址按它推导）；不是合法 URL 返回空串 */
+function originOf(text: string): string {
+  try {
+    return new URL(text.trim()).origin;
+  } catch {
+    return "";
+  }
+}
+
 function SiteModal({
   initial,
   isNew,
@@ -1280,8 +1349,18 @@ function SiteModal({
   const [refreshTokenField, setRefreshTokenField] = useState(
     typeof initial.token_refresh?.refresh_token_field === "string" ? initial.token_refresh.refresh_token_field : "",
   );
+  // 续签专属请求头（cookie 型站点在这里放 new_api_refresh=${refresh_token}）与轮换 Cookie 名
+  const [refreshHeadersText, setRefreshHeadersText] = useState(() => dictToText(initial.token_refresh?.headers));
+  const [refreshCookieName, setRefreshCookieName] = useState(
+    typeof initial.token_refresh?.refresh_cookie_name === "string" ? initial.token_refresh.refresh_cookie_name : "",
+  );
   // 网页模式·无头浏览器表单草稿
   const [headless, setHeadless] = useState<HeadlessForm>(() => headlessFromConfig(initial));
+  // 采集场景：从已有配置反推，切换时只做预填与显隐，不删任何已填内容
+  const [scene, setScene] = useState(() => sceneFromConfig(initial));
+  const [authToken, setAuthToken] = useState(
+    typeof initial.auth_token === "string" ? initial.auth_token : "",
+  );
   const [activeSub, setActiveSub] = useState<SubKey | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
@@ -1342,6 +1421,8 @@ function SiteModal({
     const atField = (overrides.access_token_field ?? accessTokenField).trim();
     const rtField = (overrides.refresh_token_field ?? refreshTokenField).trim();
     const sample = (overrides.response_sample ?? refreshSample).trim();
+    const cookieName = (overrides.refresh_cookie_name ?? refreshCookieName).trim();
+    const headers = textToDict(overrides.headers_text ?? refreshHeadersText);
     return {
       url: targetUrl,
       method: overrides.method ?? refreshMethod,
@@ -1350,18 +1431,22 @@ function SiteModal({
       ...(sample ? { response_sample: sample } : {}),
       ...(atField ? { access_token_field: atField } : {}),
       ...(rtField ? { refresh_token_field: rtField } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(cookieName ? { refresh_cookie_name: cookieName } : {}),
     };
   }
 
   function syncTokenRefresh(overrides: RefreshOverride = {}) {
     syncAdvanced((base) => {
       const next = tokenRefreshConfig(overrides);
-      if (next === null) {
+      if (!next) {
         // 清空地址多半是在改地址，此刻删整个 token_refresh 会连带丢掉 refresh_token/请求体；
         // 先不动 JSON，"地址为空 = 移除续签"留到保存时统一处理
         return base;
       }
-      const merged = base.token_refresh ? { ...base.token_refresh, ...next } : next;
+      const merged = { ...(base.token_refresh ?? {}), ...next } as SiteConfig["token_refresh"];
+      // 表单里清空了续签请求头 = 移除；merge 语义覆盖不掉旧键，这里显式删
+      if (merged && !("headers" in next) && "headers" in merged) delete merged.headers;
       return { ...base, token_refresh: merged };
     });
   }
@@ -1413,6 +1498,8 @@ function SiteModal({
     setRefreshSample(typeof refresh?.response_sample === "string" ? refresh.response_sample : "");
     setAccessTokenField(typeof refresh?.access_token_field === "string" ? refresh.access_token_field : "");
     setRefreshTokenField(typeof refresh?.refresh_token_field === "string" ? refresh.refresh_token_field : "");
+    setRefreshHeadersText(dictToText(refresh?.headers));
+    setRefreshCookieName(typeof refresh?.refresh_cookie_name === "string" ? refresh.refresh_cookie_name : "");
     setHeadless(headlessFromConfig(config));
   }
 
@@ -1477,6 +1564,8 @@ function SiteModal({
     setRefreshSample(fields.sample);
     setAccessTokenField(fields.accessTokenField);
     setRefreshTokenField(fields.refreshTokenField);
+    setRefreshHeadersText(fields.headersText);
+    setRefreshCookieName(fields.cookieName);
     syncTokenRefresh({
       method: fields.method,
       url: fields.url,
@@ -1485,6 +1574,8 @@ function SiteModal({
       response_sample: fields.sample,
       access_token_field: fields.accessTokenField,
       refresh_token_field: fields.refreshTokenField,
+      headers_text: fields.headersText,
+      refresh_cookie_name: fields.cookieName,
     });
     if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
     setActiveSub(null);
@@ -1605,6 +1696,45 @@ function SiteModal({
     ? "将用无头浏览器打开页面并注入上面的 Cookie 和登录信息，可采集需要登录的页面"
     : "填价格接口地址或网页地址都行，系统会自动顺着页面找到价格数据；抓不到时会自动换无头浏览器再试一次（带上下面配置的 Cookie 和请求头）";
 
+  // 场景切换：只做预填与显隐，不删已填内容；真实配置始终以 JSON 字段为准
+  function applyCollectMode(next: CollectMode) {
+    setScene((prev) => ({ ...prev, collect: next }));
+    if (next !== "browser" || headless.enabled) return;
+    const waitSeconds = headless.waitSeconds.trim() || "3";
+    setHeadless({ ...headless, enabled: true, waitSeconds });
+    syncAdvanced((base) => {
+      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+      const existing = network.headless !== null && typeof network.headless === "object" ? network.headless : {};
+      network.headless = { ...existing, enabled: true, wait_seconds: Number(waitSeconds) || 3 };
+      return { ...base, network: network as SiteConfig["network"] };
+    });
+  }
+
+  function applyAuthMode(next: AuthMode) {
+    setScene((prev) => ({ ...prev, auth: next }));
+    // 首次切到登录会话：带出 new-api 型续签模板（域名从采集地址推导）；已配置或已填过的字段一律不动
+    if (next !== "session" || refreshUrl.trim()) return;
+    const origin = originOf(url);
+    if (origin) setRefreshUrl(`${origin}/api/user/auth/refresh`);
+    if (!refreshHeadersText.trim()) setRefreshHeadersText("cookie: new_api_refresh=${refresh_token}");
+    if (!refreshCookieName.trim()) setRefreshCookieName("new_api_refresh");
+    if (!accessTokenField.trim()) setAccessTokenField("data.access_token");
+    syncAdvanced((base) => {
+      if (base.token_refresh?.url) return base;
+      return {
+        ...base,
+        token_refresh: {
+          method: "POST",
+          url: origin ? `${origin}/api/user/auth/refresh` : "",
+          refresh_token: refreshToken,
+          headers: { cookie: "new_api_refresh=${refresh_token}" },
+          refresh_cookie_name: "new_api_refresh",
+          access_token_field: "data.access_token",
+        },
+      };
+    });
+  }
+
   async function save() {
     if (refreshUrlError || refreshBodyError || refreshSampleError) {
       toast("续签配置里还有标红的填写问题，改好再保存");
@@ -1687,6 +1817,60 @@ function SiteModal({
               style={{ width: "min(280px, 100%)" }}
             />
           </SettingRow>
+          <SettingRow
+            label="采集方式"
+            hint={
+              scene.collect === "browser"
+                ? "用无头浏览器直接打开页面采集，可注入 Cookie 和登录信息，适合要登录才能看的页面；配置在「价格采集」里"
+                : "先当接口请求，抓到的是网页壳时自动换无头浏览器再试一次；一般站点选这个就够"
+            }
+          >
+            <div style={{ display: "flex", gap: 8 }}>
+              <Sel
+                value={scene.collect}
+                onChange={(value) => applyCollectMode(value === "browser" ? "browser" : "api")}
+                options={[
+                  { value: "api", label: "接口直采" },
+                  { value: "browser", label: "网页模式（无头浏览器）" },
+                ]}
+                style={{ width: "min(240px, 100%)" }}
+              />
+            </div>
+          </SettingRow>
+          <SettingRow
+            label="认证方式"
+            hint={
+              scene.auth === "session"
+                ? "已带出 new-api 型续签模板：打开「认证与续签」贴上自己的 Refresh Token（Cookie 值）就能自动接力换新"
+                : scene.auth === "token"
+                  ? "令牌会自动加到所有采集请求；需要别的头名或前缀时去高级 JSON 调 auth_header / auth_prefix"
+                  : "公开接口不用认证；之后要认证了再回来切"
+            }
+          >
+            <Sel
+              value={scene.auth}
+              onChange={(value) => applyAuthMode(value === "session" ? "session" : value === "token" ? "token" : "none")}
+              options={[
+                { value: "none", label: "无需认证" },
+                { value: "token", label: "固定令牌（API Key）" },
+                { value: "session", label: "登录会话·自动续签" },
+              ]}
+              style={{ width: "min(240px, 100%)" }}
+            />
+          </SettingRow>
+          {scene.auth === "token" && (
+            <SettingRow label="站点令牌" hint="等效于高级 JSON 里的 auth_token；价格、渠道状态、公告采集都会自动带上">
+              <Input
+                value={authToken}
+                onChange={(value) => {
+                  setAuthToken(value);
+                  syncAdvanced((base) => ({ ...base, auth_token: value.trim() || null }));
+                }}
+                placeholder="sk-… 或 Bearer 后面那段"
+                style={{ width: "min(360px, 100%)" }}
+              />
+            </SettingRow>
+          )}
           <SettingRow label="采集地址" hint={urlHint}>
             <Input
               value={url}
@@ -1795,6 +1979,8 @@ function SiteModal({
             sample: refreshSample,
             accessTokenField,
             refreshTokenField,
+            headersText: refreshHeadersText,
+            cookieName: refreshCookieName,
           }}
           runTest={runRefreshTest}
           onCommit={commitAuth}

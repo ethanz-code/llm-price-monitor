@@ -209,6 +209,8 @@ export interface SiteConfig {
     /** 响应里 token 的字段路径（如 data.access_token）；留空自动探测 data.access_token / access_token */
     access_token_field?: string;
     refresh_token_field?: string;
+    /** 轮换 Cookie 名（如 new_api_refresh）：这类站点旧凭据一次有效、新值只在响应 Set-Cookie 里，续签后自动接力 */
+    refresh_cookie_name?: string;
     refresh_token: string;
   } | null;
   enabled?: boolean;
