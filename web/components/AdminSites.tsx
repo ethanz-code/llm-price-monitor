@@ -446,6 +446,7 @@ type RefreshTestResult = { access_token: string; refresh_token: string; refresh_
 
 /** 认证与续签子弹窗提交回主弹窗的字段集合 */
 type AuthFields = {
+  authToken: string;
   method: string;
   url: string;
   token: string;
@@ -751,6 +752,7 @@ function AuthSubModal({
   onCommit: (fields: AuthFields, rotation?: RefreshTestResult) => void;
   onClose: () => void;
 }) {
+  const [authToken, setAuthToken] = useState(initial.authToken);
   const [method, setMethod] = useState(initial.method);
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
@@ -795,6 +797,7 @@ function AuthSubModal({
     refresh_cookie_name: cookieName,
   });
   const fields = (): AuthFields => ({
+    authToken,
     method,
     url,
     token,
@@ -848,6 +851,19 @@ function AuthSubModal({
   return (
     <Modal open onClose={onClose} title="认证与续签" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
       <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "grid", gap: 8 }}>
+          <span style={{ fontSize: 13.5 }}>站点令牌</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            站点级的 API Key，会自动加到价格、渠道状态、公告所有采集请求的认证头（默认 Authorization: Bearer …）；
+            公开接口留空。要换头名或前缀，去高级 JSON 调 auth_header / auth_prefix
+          </span>
+          <Input
+            value={authToken}
+            onChange={setAuthToken}
+            placeholder="sk-… 或令牌原文"
+            style={{ width: "100%" }}
+          />
+        </div>
         <div style={{ display: "grid", gap: 8 }}>
           <span style={{ fontSize: 13.5 }}>Token 续签</span>
           <span style={{ fontSize: 12, color: "var(--text-3)" }}>
@@ -945,6 +961,67 @@ function AuthSubModal({
             </span>
           )}
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 子弹窗：采集场景 ---------- */
+
+/** 场景选择：按站点情况选两个维度，确定时把该场景的常用填法预填进对应模块；只预填，不清掉已填内容 */
+function ScenarioSubModal({
+  initial,
+  onCommit,
+  onClose,
+}: {
+  initial: { collect: CollectMode; auth: AuthMode };
+  onCommit: (next: { collect: CollectMode; auth: AuthMode }) => void;
+  onClose: () => void;
+}) {
+  const [collect, setCollect] = useState(initial.collect);
+  const [auth, setAuth] = useState(initial.auth);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="采集场景"
+      width={560}
+      footer={<SubModalFooter onCancel={onClose} onConfirm={() => onCommit({ collect, auth })} />}
+    >
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ display: "grid", gap: 8 }}>
+          <span style={{ fontSize: 13.5 }}>采集方式</span>
+          <Sel
+            value={collect}
+            onChange={(value) => setCollect(value === "browser" ? "browser" : "api")}
+            options={(Object.keys(COLLECT_LABELS) as CollectMode[]).map((value) => ({ value, label: COLLECT_LABELS[value] }))}
+            style={{ width: "min(280px, 100%)" }}
+          />
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            {collect === "browser"
+              ? "用无头浏览器直接打开页面采集，可注入 Cookie 和登录信息，适合要登录才能看的页面；相关配置在「价格采集」里"
+              : "先当接口请求，抓到的是网页壳时自动换无头浏览器再试一次；一般站点选这个就够"}
+          </span>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <span style={{ fontSize: 13.5 }}>认证方式</span>
+          <Sel
+            value={auth}
+            onChange={(value) => setAuth(value === "session" ? "session" : value === "token" ? "token" : "none")}
+            options={(Object.keys(AUTH_LABELS) as AuthMode[]).map((value) => ({ value, label: AUTH_LABELS[value] }))}
+            style={{ width: "min(280px, 100%)" }}
+          />
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            {auth === "session"
+              ? "会按采集地址带出 new-api 型续签模板；到「认证与续签」贴上自己的 Refresh Token（Cookie 值）即可自动接力换新"
+              : auth === "token"
+                ? "到「认证与续签」填站点令牌，所有采集请求会自动带上"
+                : "公开接口不用认证；之后要认证了再回来切"}
+          </span>
+        </div>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+          场景只帮你把常用填法带出来，已填过的内容不会被清掉；细节仍在各模块弹窗里改
+        </span>
       </div>
     </Modal>
   );
@@ -1251,13 +1328,16 @@ function JsonSubModal({
 /* ---------- 主弹窗 ---------- */
 
 /** 子弹窗标识：主弹窗同一时间最多打开一个 */
-type SubKey = "price" | "auth" | "status" | "notice" | "json";
+type SubKey = "scene" | "price" | "auth" | "status" | "notice" | "json";
 
 /** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面） */
 type CollectMode = "api" | "browser";
 
 /** 认证方式：无需认证 / 固定令牌 / 登录会话自动续签 */
 type AuthMode = "none" | "token" | "session";
+
+const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（无头浏览器）" };
+const AUTH_LABELS: Record<AuthMode, string> = { none: "无需认证", token: "固定令牌", session: "登录会话自动续签" };
 
 /** 已有配置 → 场景反推：配了续签是登录会话，配了认证凭证或手写认证头是固定令牌，开了无头是网页模式 */
 function sceneFromConfig(config: SiteConfig): { collect: CollectMode; auth: AuthMode } {
@@ -1356,15 +1436,18 @@ function SiteModal({
   );
   // 网页模式·无头浏览器表单草稿
   const [headless, setHeadless] = useState<HeadlessForm>(() => headlessFromConfig(initial));
-  // 采集场景：从已有配置反推，切换时只做预填与显隐，不删任何已填内容
-  const [scene, setScene] = useState(() => sceneFromConfig(initial));
-  const [authToken, setAuthToken] = useState(
-    typeof initial.auth_token === "string" ? initial.auth_token : "",
-  );
   const [activeSub, setActiveSub] = useState<SubKey | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
+  // 当前场景从高级 JSON 实时派生：预填落进 JSON 后，场景卡片的描述立即跟着变
+  const sceneNow = useMemo(() => {
+    try {
+      return sceneFromConfig(JSON.parse(advanced) as SiteConfig);
+    } catch {
+      return sceneFromConfig(initial);
+    }
+  }, [advanced, initial]);
 
   // 续签即时校验：地址格式、请求体 JSON、响应案例 JSON，填错当场提示不用等保存
   const refreshUrlError = refreshUrl.trim() && !/^https?:\/\/\S+\.\S+/.test(refreshUrl.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
@@ -1566,6 +1649,7 @@ function SiteModal({
     setRefreshTokenField(fields.refreshTokenField);
     setRefreshHeadersText(fields.headersText);
     setRefreshCookieName(fields.cookieName);
+    syncAdvanced((base) => ({ ...base, auth_token: fields.authToken.trim() || null }));
     syncTokenRefresh({
       method: fields.method,
       url: fields.url,
@@ -1696,9 +1780,9 @@ function SiteModal({
     ? "将用无头浏览器打开页面并注入上面的 Cookie 和登录信息，可采集需要登录的页面"
     : "填价格接口地址或网页地址都行，系统会自动顺着页面找到价格数据；抓不到时会自动换无头浏览器再试一次（带上下面配置的 Cookie 和请求头）";
 
-  // 场景切换：只做预填与显隐，不删已填内容；真实配置始终以 JSON 字段为准
+  // 场景应用：只做预填，不删已填内容；真实配置始终以 JSON 字段为准。
+  // sceneNow 从高级 JSON 派生（含刚写入的预填），场景卡片描述据此实时更新
   function applyCollectMode(next: CollectMode) {
-    setScene((prev) => ({ ...prev, collect: next }));
     if (next !== "browser" || headless.enabled) return;
     const waitSeconds = headless.waitSeconds.trim() || "3";
     setHeadless({ ...headless, enabled: true, waitSeconds });
@@ -1711,7 +1795,6 @@ function SiteModal({
   }
 
   function applyAuthMode(next: AuthMode) {
-    setScene((prev) => ({ ...prev, auth: next }));
     // 首次切到登录会话：带出 new-api 型续签模板（域名从采集地址推导）；已配置或已填过的字段一律不动
     if (next !== "session" || refreshUrl.trim()) return;
     const origin = originOf(url);
@@ -1733,6 +1816,13 @@ function SiteModal({
         },
       };
     });
+  }
+
+  // 场景子弹窗确定：与当前不同的维度才应用预填，避免每次确定都重复写 JSON
+  function commitScene(next: { collect: CollectMode; auth: AuthMode }) {
+    if (next.collect !== sceneNow.collect) applyCollectMode(next.collect);
+    if (next.auth !== sceneNow.auth) applyAuthMode(next.auth);
+    setActiveSub(null);
   }
 
   async function save() {
@@ -1817,60 +1907,6 @@ function SiteModal({
               style={{ width: "min(280px, 100%)" }}
             />
           </SettingRow>
-          <SettingRow
-            label="采集方式"
-            hint={
-              scene.collect === "browser"
-                ? "用无头浏览器直接打开页面采集，可注入 Cookie 和登录信息，适合要登录才能看的页面；配置在「价格采集」里"
-                : "先当接口请求，抓到的是网页壳时自动换无头浏览器再试一次；一般站点选这个就够"
-            }
-          >
-            <div style={{ display: "flex", gap: 8 }}>
-              <Sel
-                value={scene.collect}
-                onChange={(value) => applyCollectMode(value === "browser" ? "browser" : "api")}
-                options={[
-                  { value: "api", label: "接口直采" },
-                  { value: "browser", label: "网页模式（无头浏览器）" },
-                ]}
-                style={{ width: "min(240px, 100%)" }}
-              />
-            </div>
-          </SettingRow>
-          <SettingRow
-            label="认证方式"
-            hint={
-              scene.auth === "session"
-                ? "已带出 new-api 型续签模板：打开「认证与续签」贴上自己的 Refresh Token（Cookie 值）就能自动接力换新"
-                : scene.auth === "token"
-                  ? "令牌会自动加到所有采集请求；需要别的头名或前缀时去高级 JSON 调 auth_header / auth_prefix"
-                  : "公开接口不用认证；之后要认证了再回来切"
-            }
-          >
-            <Sel
-              value={scene.auth}
-              onChange={(value) => applyAuthMode(value === "session" ? "session" : value === "token" ? "token" : "none")}
-              options={[
-                { value: "none", label: "无需认证" },
-                { value: "token", label: "固定令牌（API Key）" },
-                { value: "session", label: "登录会话·自动续签" },
-              ]}
-              style={{ width: "min(240px, 100%)" }}
-            />
-          </SettingRow>
-          {scene.auth === "token" && (
-            <SettingRow label="站点令牌" hint="等效于高级 JSON 里的 auth_token；价格、渠道状态、公告采集都会自动带上">
-              <Input
-                value={authToken}
-                onChange={(value) => {
-                  setAuthToken(value);
-                  syncAdvanced((base) => ({ ...base, auth_token: value.trim() || null }));
-                }}
-                placeholder="sk-… 或 Bearer 后面那段"
-                style={{ width: "min(360px, 100%)" }}
-              />
-            </SettingRow>
-          )}
           <SettingRow label="采集地址" hint={urlHint}>
             <Input
               value={url}
@@ -1913,8 +1949,14 @@ function SiteModal({
             )}
           </SettingRow>
 
-          {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿 */}
+          {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿；场景卡片描述实时显示当前场景 */}
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
+            <EntryCard
+              title="采集场景"
+              desc={`${COLLECT_LABELS[sceneNow.collect]} · ${AUTH_LABELS[sceneNow.auth]}`}
+              configured={false}
+              onClick={() => setActiveSub("scene")}
+            />
             <EntryCard
               title="价格采集"
               desc="价格接口、请求头、无头浏览器与倍率"
@@ -1955,6 +1997,9 @@ function SiteModal({
       </Modal>
 
       {/* 子弹窗：进入时以当前草稿为初值，确定才写回，取消直接丢弃 */}
+      {activeSub === "scene" && (
+        <ScenarioSubModal initial={sceneNow} onCommit={commitScene} onClose={() => setActiveSub(null)} />
+      )}
       {activeSub === "price" && (
         <PriceSubModal
           initial={{
@@ -1972,6 +2017,7 @@ function SiteModal({
       {activeSub === "auth" && (
         <AuthSubModal
           initial={{
+            authToken: typeof initial.auth_token === "string" ? initial.auth_token : "",
             method: refreshMethod,
             url: refreshUrl,
             token: refreshToken,
