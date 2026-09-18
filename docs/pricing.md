@@ -28,6 +28,7 @@ llm_price_monitor/
 ├── ai.py                 # AI 价格抽取与结果校验
 ├── config.py             # 强类型配置（JSON/数据库 → MonitorConfig）
 ├── evidence.py / matching.py / units.py / useragent.py
+├── page_price.py         # 通用定价页拉取：URL → 结构化模型价格（确定性解析优先、AI 兜底）
 ├── webapi/
 │   ├── app.py            # 应用组装：种子导入、鉴权中间件、按域挂载 APIRouter、CLI 入口
 │   ├── deps.py           # 路由共享小工具（配置加载、登录态、目录读取、汇率取值）
@@ -44,11 +45,13 @@ llm_price_monitor/
 
 ## 命令行入口
 
-已注册到 pyproject `[project.scripts]` 的唯一命令：
+已注册到 pyproject `[project.scripts]` 的命令：
 
 | 命令 | 用途 |
 | --- | --- |
 | `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
+| `price-admin` | 管理员工具：重置管理员账号、整理存量站点配置 |
+| `price-page` | 通用定价页拉取：输入厂商定价页 URL，输出该页全部模型的结构化价格 |
 
 监控、官方价搜索、折扣计算等能力全部通过 HTTP API 使用
 （写接口需要管理员 session，见 README「鉴权」说明）：
@@ -100,6 +103,20 @@ curl http://127.0.0.1:8000/api/discount
 
 - 常规：读数据库中的最新快照与官方价目录，零站点请求；汇率统一用目录快照自带值（与页面展示口径一致），快照缺失时才实时拉取。
 - 官方价目录不存在时返回 404，所以**必须先触发目录同步**。
+
+### 4. 拉取厂商定价页（price-page）
+
+输入一个厂商官方定价页 URL，输出该页全部模型的结构化价格（模型名/输入/输出/缓存价/币种/单位/原文引用），用于核对厂商官方价，与站点采集链路相互独立：
+
+```bash
+uv run price-page https://docs.bigmodel.cn/cn/guide/start/pricing.md
+uv run price-page <url> --out prices.json        # 写文件；省略 --out 打到 stdout
+```
+
+- 解析顺序：Markdown 表格（Mintlify 系文档站的 `.md` 页）→ HTML 表格 → JSON/压缩 JS 价格表，任一命中即停；JS 空壳页自动回退无头浏览器渲染，仍拿不到才走 AI 兜底
+- AI 兜底结果一律标 `candidate`，且模型名与价格数字必须在页面文本中字面出现（防幻觉）；`--no-ai` 关闭，AI 配置省略时读数据库设置，也可用 `--ai-base-url/--ai-api-key/--ai-model` 显式给
+- 币种按页面如实标注（元 → CNY、$ → USD），单位统一 `/1M tokens`，不做汇率折算；同一模型多上下文档第一行做基准、全部档位进 `tiers`
+- 一条价都没拿到时退出码 1，warnings 走 stderr
 
 ## 监控输出结构
 

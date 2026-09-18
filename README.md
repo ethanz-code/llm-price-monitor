@@ -31,6 +31,7 @@ uv run price-web --with-frontend
 - 想首次启动就带上站点：编辑 [`config/default-seed.json`](config/default-seed.json)；不加也能跑，之后在管理面板里添加。
 - 云服务器部署：Docker Compose 见 [docs/deploy/docker-compose.md](docs/deploy/docker-compose.md)；交给 AI 助手部署时让它先读 [docs/deploy/ai-runbook.md](docs/deploy/ai-runbook.md)。
 - 忘记密码：仓库根目录运行 `uv run price-admin` 重置。
+- 要核对某个厂商官方定价页的价格：仓库根目录运行 `uv run price-page <定价页URL>`，输出该页全部模型的结构化价格（静态解析优先、AI 兜底防幻觉），用法见 [docs/pricing.md](docs/pricing.md)「拉取厂商定价页」。
 
 ## ⚙️ 配置
 
