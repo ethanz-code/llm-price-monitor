@@ -60,6 +60,18 @@ def test_build_discount_native_cny_official():
     assert data["input"] == 0.5
 
 
+def test_build_discount_carries_region():
+    entry, _ = build_discount(_row(), OFFICIAL_MODELS, 6.74)
+    assert entry.as_dict()["region"] is None  # 手工目录条目没写 region
+    official = {**OFFICIAL_MODELS, "glm5.3flash": {
+        "found": True, "currency": "USD", "region": "cn",
+        "list": {"input": 0.119, "output": 0.417},
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md",
+    }}
+    entry, _ = build_discount(_row(model="glm-5.3-flash", input_price=0.035294, output_price=0.123529), official, 6.74)
+    assert entry.as_dict()["region"] == "cn"
+
+
 def test_build_discount_uses_first_tier_when_top_level_missing():
     row = _row(input_price=None, output_price=None, tiers=[
         {"name": "standard", "input_price": 4.36, "output_price": 26.13, "unit": "CNY/1M tokens"},
@@ -159,14 +171,24 @@ def test_fetch_catalog_orders_vendors_and_newest_models_first(catalog_fetch):
     assert keys == ["gpt-5.6-sol", "gpt-5.5", "kimi-k2.7", "kimi-k2.5"]
 
 
-def test_fetch_catalog_main_entry_wins_over_cn(catalog_fetch):
+def test_fetch_catalog_cn_entry_wins_and_keeps_global_reference(catalog_fetch):
     doc = catalog_fetch()
-    # 主条目优先：kimi-k2.7 取国际站价，vendor 不分渠道；kimi-k2.5 由 -cn 补缺
-    assert doc["models"]["kimik2.7"]["list"] == {"input": 1.9, "output": 8.0}
-    assert doc["models"]["kimik2.7"]["source_url"] == "https://platform.moonshot.ai/docs/api/chat"
-    assert doc["models"]["kimik2.7"]["vendor"] == "Moonshot AI"
-    assert doc["models"]["kimik2.5"]["list"] == {"input": 0.6, "output": 3.0}
-    assert doc["models"]["kimik2.5"]["source_url"] == "https://platform.moonshot.cn/docs/api/chat"
+    # 国内站条目优先做折扣基准；被顶掉的同厂商国际站条目退居 list_global 参考价
+    kimi = doc["models"]["kimik2.7"]
+    assert kimi["region"] == "cn"
+    assert kimi["list"] == {"input": 1.2, "output": 6.0}
+    assert kimi["source_url"] == "https://platform.moonshot.cn/docs/api/chat"
+    assert kimi["vendor"] == "Moonshot AI"
+    assert kimi["list_global"] == {"input": 1.9, "output": 8.0}
+    assert kimi["list_global_cny"] == {"input": 12.81, "output": 53.92}
+    # 只有国内站有的模型：cn 口径、无国际参考价
+    kimi25 = doc["models"]["kimik2.5"]
+    assert kimi25["region"] == "cn"
+    assert kimi25["list"] == {"input": 0.6, "output": 3.0}
+    assert kimi25["source_url"] == "https://platform.moonshot.cn/docs/api/chat"
+    assert "list_global" not in kimi25
+    # 海外厂商条目标 global
+    assert doc["models"]["gpt5.6sol"]["region"] == "global"
 
 
 def test_fetch_catalog_rejects_empty_payload(monkeypatch):
@@ -199,6 +221,11 @@ def test_fetch_catalogs_shared_snapshot_covers_all_providers(monkeypatch):
     # 全量目录与官方目录同构（同一套 meta 字段）
     assert full["source"] == "models.dev" and full["usd_cny_rate"] == 6.74
     assert full["rate_source"] == "test" and full["generated_at_iso"] == official["generated_at_iso"]
+    # meta 附带厂商清单（含未带价厂商），供厂商定价源覆盖检测
+    inventory = {item["id"]: item for item in official["providers"]}
+    assert inventory["openai"]["models_total"] == 3 and inventory["openai"]["models_priced"] == 2
+    assert inventory["openrouter"]["doc"] == "https://openrouter.ai/docs"
+    assert full["providers"] == official["providers"]
 
 
 def test_fetch_catalog_propagates_http_errors(monkeypatch):

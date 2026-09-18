@@ -2,11 +2,13 @@
 
 models.dev（https://models.dev）是开源的 AI 模型规格与定价数据库，api.json 由
 Cloudflare CDN 分发；价格统一为 USD / 1M tokens。同一模型会在多个渠道条目
-（官方 lab、-cn 国内站、vertex 等平台）重复出现，这里只保留白名单内的官方 lab
-条目并以 `-cn` 补缺，折扣基准始终是一条：主条目优先，没有主条目的模型才用 `-cn`。
+（官方 lab、-cn 国内站、vertex 等平台）重复出现，官方价目录只保留白名单内的
+官方 lab 条目：国内厂商以国内站（-cn）条目为折扣基准，同厂商的国际站条目
+退居 `list_global` 参考价（同行双价），不参与基准。
 
 `fetch_catalogs` 同时产出第二份「全量渠道价」目录：不限白名单，models.dev 所有
-厂商的带价模型都进表，按 `provider:model` 键保留各渠道自己的条目，仅供展示。
+厂商的带价模型都进表，按 `provider:model` 键保留各渠道自己的条目，仅供展示；
+meta 里的 `providers` 是快照厂商清单（含未带价厂商），供「厂商定价源」做覆盖检测。
 """
 from __future__ import annotations
 
@@ -19,24 +21,52 @@ from . import fx, normalize
 
 MODELSDEV_API_URL = "https://models.dev/api.json"
 
-# 官方 lab 条目优先、-cn 渠道兜底；顺序同时决定展示顺序（与前端厂商清单一致）
-# 和同模型多渠道冲突时的取舍。厂商显示名与前端 vendor-logos 的 VENDOR_KEY 对齐。
-DEFAULT_PROVIDERS: tuple[tuple[str, str], ...] = (
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
-    ("google", "Google"),
-    ("xai", "xAI"),
-    ("zhipuai", "Zhipu AI"),
-    ("deepseek", "DeepSeek"),
-    ("moonshotai", "Moonshot AI"),
-    ("moonshotai-cn", "Moonshot AI"),
-    ("alibaba", "Alibaba Cloud"),
-    ("alibaba-cn", "Alibaba Cloud"),
+# 厂商显示顺序（与前端厂商清单一致）由元组顺序决定；region 标注条目口径：
+# cn=国内站官方价（作为折扣基准），global=国际站官方价。处理时厂商块内国内站
+# 条目优先，被顶掉的同厂商国际站条目退居 list_global 参考价（同行双价）。
+# deepseek 单条目即国内口径（已核与官方中文价页空闲时段一致）；
+# zhipuai/zai 在 models.dev 里都指向 z.ai 国际站，智谱国内价由「厂商定价源」补。
+DEFAULT_PROVIDERS: tuple[tuple[str, str, str], ...] = (
+    ("openai", "OpenAI", "global"),
+    ("anthropic", "Anthropic", "global"),
+    ("google", "Google", "global"),
+    ("xai", "xAI", "global"),
+    ("zhipuai", "Zhipu AI", "global"),
+    ("deepseek", "DeepSeek", "cn"),
+    ("moonshotai", "Moonshot AI", "global"),
+    ("moonshotai-cn", "Moonshot AI", "cn"),
+    ("alibaba", "Alibaba Cloud", "global"),
+    ("alibaba-cn", "Alibaba Cloud", "cn"),
 )
 
 
 def _release_date(model: dict[str, Any]) -> str:
     return str(model.get("release_date") or model.get("last_updated") or "")
+
+
+def _provider_inventory(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """models.dev 快照 → 厂商清单（含未带价厂商），供厂商定价源做覆盖检测。"""
+    inventory: list[dict[str, Any]] = []
+    for provider_id, provider in snapshot.items():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        model_items = models.items() if isinstance(models, dict) else ()
+        priced = sum(
+            1
+            for _, model in model_items
+            if isinstance(model, dict)
+            and isinstance(model.get("cost"), dict)
+            and (model["cost"].get("input") is not None or model["cost"].get("output") is not None)
+        )
+        inventory.append({
+            "id": str(provider_id),
+            "name": str(provider.get("name") or provider_id),
+            "doc": provider.get("doc"),
+            "models_total": len(model_items),
+            "models_priced": priced,
+        })
+    return inventory
 
 
 def _fetch_snapshot(
@@ -58,6 +88,7 @@ def _entry(
     model_id: str,
     model: dict[str, Any],
     vendor: str,
+    region: str,
     rate: float,
     source_url: str,
     logo: str | None = None,
@@ -72,6 +103,7 @@ def _entry(
         "model": model_id,
         "name": model.get("name"),
         "vendor": vendor,
+        "region": region,
         "logo": logo,
         "currency": "USD",
         "list": {"input": input_price, "output": output_price},
@@ -107,34 +139,54 @@ def fetch_catalogs(
     now = time.time()
 
     official: dict[str, dict[str, Any]] = {}
-    for provider_id, vendor in DEFAULT_PROVIDERS:
-        provider = snapshot.get(provider_id)
-        provider_models = provider.get("models") if isinstance(provider, dict) else None
-        if not isinstance(provider_models, dict):
-            continue
-        source_url = provider.get("doc") or "https://models.dev"
-        # 厂商内按发布时间倒序（最新在前）；同键冲突时先到先得，即主条目优先于 -cn
-        ordered = sorted(provider_models.items(), key=lambda item: _release_date(item[1]), reverse=True)
-        for model_id, model in ordered:
-            cost = model.get("cost") if isinstance(model, dict) else None
-            if not isinstance(cost, dict):
+    # 厂商块按元组顺序（决定前端厂商清单顺序）；块内国内站条目优先处理，
+    # 先到先得使 -cn 成为折扣基准，同厂商被顶掉的国际站条目退居 list_global 参考价。
+    # 跨厂商同名模型仍按厂商块顺序先到先得（如 kimi-k3 取月之暗面而非阿里转售价）。
+    blocks: dict[str, list[tuple[str, str]]] = {}
+    for provider_id, vendor, region in DEFAULT_PROVIDERS:
+        blocks.setdefault(vendor, []).append((provider_id, region))
+    for vendor, providers in blocks.items():
+        for provider_id, region in sorted(providers, key=lambda item: item[1] != "cn"):
+            provider = snapshot.get(provider_id)
+            provider_models = provider.get("models") if isinstance(provider, dict) else None
+            if not isinstance(provider_models, dict):
                 continue
-            if cost.get("input") is None and cost.get("output") is None:
-                continue  # 没有官方定价（已下线/未公布），无法作为折扣基准
-            key = normalize.model_key(str(model_id))
-            if not key or key in official:
-                continue
-            official[key] = _entry(str(model_id), model, vendor, rate, source_url)
+            source_url = provider.get("doc") or "https://models.dev"
+            # 厂商内按发布时间倒序（最新在前）
+            ordered = sorted(provider_models.items(), key=lambda item: _release_date(item[1]), reverse=True)
+            for model_id, model in ordered:
+                cost = model.get("cost") if isinstance(model, dict) else None
+                if not isinstance(cost, dict):
+                    continue
+                if cost.get("input") is None and cost.get("output") is None:
+                    continue  # 没有官方定价（已下线/未公布），无法作为折扣基准
+                input_price, output_price = cost.get("input"), cost.get("output")
+                key = normalize.model_key(str(model_id))
+                if not key:
+                    continue
+                existing = official.get(key)
+                if existing is not None:
+                    # 同厂商国内站条目已占位：国际站条目保留为参考价，同行双价
+                    if existing["vendor"] == vendor and existing.get("region") == "cn" and region == "global":
+                        existing["list_global"] = {"input": input_price, "output": output_price}
+                        existing["list_global_cny"] = {
+                            "input": normalize.round2(input_price * rate) if input_price is not None else None,
+                            "output": normalize.round2(output_price * rate) if output_price is not None else None,
+                        }
+                    continue
+                official[key] = _entry(str(model_id), model, vendor, region, rate, source_url)
 
     everything: dict[str, dict[str, Any]] = {}
-    for provider_id, vendor in snapshot.items():
-        if not isinstance(vendor, dict):
+    for provider_id, provider in snapshot.items():
+        if not isinstance(provider, dict):
             continue
-        provider_models = vendor.get("models")
+        provider_models = provider.get("models")
         if not isinstance(provider_models, dict):
             continue
-        label = str(vendor.get("name") or provider_id)
-        source_url = vendor.get("doc") or "https://models.dev"
+        label = str(provider.get("name") or provider_id)
+        source_url = provider.get("doc") or "https://models.dev"
+        # 全量渠道仅展示用途：region 按 -cn 后缀启发式标注
+        region = "cn" if str(provider_id).endswith("-cn") else "global"
         ordered = sorted(provider_models.items(), key=lambda item: _release_date(item[1]), reverse=True)
         for model_id, model in ordered:
             cost = model.get("cost") if isinstance(model, dict) else None
@@ -146,7 +198,7 @@ def fetch_catalogs(
             if key in everything:
                 continue
             logo = f"https://models.dev/logos/{provider_id}.svg"
-            everything[key] = _entry(str(model_id), model, label, rate, source_url, logo)
+            everything[key] = _entry(str(model_id), model, label, region, rate, source_url, logo)
 
     meta = {
         "generated_at": now,
@@ -155,6 +207,8 @@ def fetch_catalogs(
         "source_url": "https://models.dev",
         "usd_cny_rate": normalize.round2(rate),
         "rate_source": rate_source,
+        # 厂商清单：厂商定价源的覆盖检测用（provider id / 名称 / 文档 / 模型数 / 带价模型数）
+        "providers": _provider_inventory(snapshot),
     }
     return {**meta, "models": official}, {**meta, "models": everything}
 

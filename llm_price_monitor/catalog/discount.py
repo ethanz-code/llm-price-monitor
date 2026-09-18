@@ -26,6 +26,7 @@ class DiscountEntry:
     official_input_cny: Any
     official_output_cny: Any
     source_url: str
+    region: str | None = None  # 折扣基准口径：cn=国内站官方价 / global=国际站官方价
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +37,7 @@ class DiscountEntry:
             "official_input_cny": self.official_input_cny,
             "official_output_cny": self.official_output_cny,
             "source_url": self.source_url,
+            "region": self.region,
         }
 
 
@@ -78,6 +80,7 @@ def build_discount(
         official_input_cny=official_input_cny,
         official_output_cny=official_output_cny,
         source_url=official_entry.get("source_url") or "",
+        region=official_entry.get("region"),
     )
     return entry, None
 
