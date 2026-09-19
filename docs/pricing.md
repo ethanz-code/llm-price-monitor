@@ -14,7 +14,8 @@
 - **AI 兜底**：非 New API 格式交给 AI 做证据抽取，结果过模型名、URL、价格数值三重校验，无法闭环时降级，不猜测。
 - **分组展开**：多分组（`enable_groups`）逐分组输出；分组倍率未公开时直接跳过，不伪造价格。
 - **站点公告存档**：随价格采集顺带抓取各站点公告（new-api 系默认 `/api/notice`，可配 `notice.url` 覆盖），并顺带读 `/api/status` 的 `announcements` 列表把多条公告分节拼入正文（拿不到则回落单条）；正文变化才存新版本并发事件；历史版本在站点检测页回看。
-- **官方原价对比**：官方列表价来自开源模型目录 [models.dev](https://models.dev)（Cloudflare CDN 直连，免搜索、免 AI、免密钥），折扣率以列表价为基准。
+- **官方原价对比**：官方列表价来自开源模型目录 [models.dev](https://models.dev)（Cloudflare CDN 直连，免搜索、免 AI、免密钥）；国内厂商以国内站（-cn 渠道 / 管理台定价源）官方价为折扣基准，同行保留国际站参考价。
+- **厂商定价源**：models.dev 缺国内官方价的厂商（如智谱只有 z.ai 口径、百度千帆未收录），在管理台「厂商定价源」配置其国内定价页 URL，抓取该页全部模型价格合并进官方目录（确定性解析优先、AI 兜底防幻觉），覆盖检测自动给出推荐添加清单。
 - **证据脱敏**：Authorization、Cookie、各类 token 自动脱敏；配置敏感值支持 `${ENV_VAR}` 引用。
 
 ## 模块结构
@@ -29,6 +30,7 @@ llm_price_monitor/
 ├── config.py             # 强类型配置（JSON/数据库 → MonitorConfig）
 ├── evidence.py / matching.py / units.py / useragent.py
 ├── page_price.py         # 通用定价页拉取：URL → 结构化模型价格（确定性解析优先、AI 兜底）
+│   ├── vendor_sources.py # 厂商定价源：国内价覆盖检测、定价源存取与目录合并
 ├── webapi/
 │   ├── app.py            # 应用组装：种子导入、鉴权中间件、按域挂载 APIRouter、CLI 入口
 │   ├── deps.py           # 路由共享小工具（配置加载、登录态、目录读取、汇率取值）
@@ -91,7 +93,8 @@ curl -X POST http://127.0.0.1:8000/api/catalog/refresh
 
 - 数据来自 [models.dev](https://models.dev) 的 `api.json` 全量快照（Cloudflare CDN 分发，国内外服务器均可直连），无需任何密钥，通常几秒完成。
 - 定时拉取：空库启动或目录已过期（超过 24 小时未更新）时立即同步一次，之后每 24 小时定时重新拉取，无需手动维护。
-- 内置八家厂商白名单（OpenAI、Anthropic、Google、xAI、Zhipu AI、DeepSeek、Moonshot AI、Alibaba Cloud）：官方 lab 条目优先，`-cn` 国内渠道条目只为补缺（如 `moonshotai-cn` 独有的模型）。
+- 内置八家厂商白名单（OpenAI、Anthropic、Google、xAI、Zhipu AI、DeepSeek、Moonshot AI、Alibaba Cloud）：国内厂商以国内站（`-cn` 渠道）条目为折扣基准，被顶掉的国际站条目保留在 `list_global` 参考字段（同行双价）。
+- 管理台「厂商定价源」配置的国内定价页会在每次同步前抓取并合并：命中条目的基准换成国内价，models.dev 没有的模型作为新条目进表（`region: cn`）。
 - 白名单外的平台条目（openrouter、vertex、coding-plan 等转售/托管渠道）不进官方价目录，坚持一手来源；但同一次同步会另存一份**全量渠道价目录**（`GET /api/catalog/all`），models.dev 所有厂商的带价模型都收录，在厂商定价页的「全量渠道」页签展示（`/catalog?view=all` 可直达），仅供比价，不参与折扣计算。
 - 无请求体；数据源不可达时任务失败，旧目录原样保留。
 
@@ -117,6 +120,14 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 - AI 兜底结果一律标 `candidate`，且模型名与价格数字必须在页面文本中字面出现（防幻觉）；`--no-ai` 关闭，AI 配置省略时读数据库设置，也可用 `--ai-base-url/--ai-api-key/--ai-model` 显式给
 - 币种按页面如实标注（元 → CNY、$ → USD），单位统一 `/1M tokens`，不做汇率折算；同一模型多上下文档第一行做基准、全部档位进 `tiers`
 - 一条价都没拿到时退出码 1，warnings 走 stderr
+
+### 5. 厂商定价源（管理台）
+
+models.dev 对部分国内厂商只有国际站口径（如智谱的 `zhipuai` 指向 z.ai），甚至完全未收录（百度千帆、讯飞星火等）。管理台「厂商定价源」页提供覆盖检测与自定义抓取：
+
+- **覆盖检测**：按内置品牌表对照 models.dev 厂商清单，给出「已覆盖 / 仅国际口径 / 未收录」三档结论；推荐添加的厂商可一键带出厂商名与已核验的建议 URL。
+- **添加定价源**：填厂商名与公开定价页 URL（无需鉴权），「立即抓取」用 price-page 同款解析取回该页全部模型价格。
+- **合并进目录**：命中 models.dev 条目的换国内基准（原国际价退居 `list_global` 参考），没有的模型新增条目；每次目录定时同步（默认 24h）都会先抓一遍定价源；停用/删除后自动触发目录刷新恢复 models.dev 基准。
 
 ## 监控输出结构
 

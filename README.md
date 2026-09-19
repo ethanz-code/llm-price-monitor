@@ -88,6 +88,7 @@ cookies 和 localStorage 的归属域自动取 `network.url`，不用填；`wait
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
 | `POST /api/collect` | 管理员 | 触发采集（AI 兜底始终启用），结果附带官方价折扣 |
 | `POST /api/catalog/refresh` | 管理员 | 从 models.dev 同步官方价目录（免密钥，秒级） |
+| `GET /api/vendor-sources`（含 `/detection`）、`POST /api/vendor-sources`、`PUT/DELETE /api/vendor-sources/{vendor}`、`POST /api/vendor-sources/{vendor}/refresh` | 管理员 | 厂商定价源：国内价覆盖检测、配置厂商国内定价页并抓取合并进官方目录 |
 | `GET /api/settings` / `PUT /api/settings` | 管理员 | 系统设置（AI、WxPusher 通知） |
 | `GET /api/sites`、`POST /api/sites`、`PUT/DELETE /api/sites/{id}` | 管理员 | 站点配置增删改 |
 
@@ -101,10 +102,10 @@ Next.js 16（App Router）+ React 19 服务端渲染，自研轻量 UI kit，支
 | 右下角 AI 助手 | 全站悬浮球：用自然语言问价格、比价、折扣与渠道状态（需在管理面板配置 AI，流式输出） |
 | `/overview` | 中转站检测：全部站点 × 模型的最新单价；`/overview/status/{siteId}` 看单站渠道状态、公告与访问统计 |
 | `/history` | 历史与事件：价格趋势图 + 变化事件列表 |
-| `/catalog` | 官方价库：各厂商模型官方原价，可切「全量渠道」页签 |
+| `/catalog` | 官方价库：各厂商模型官方原价（国内厂商以国内站价为基准，同行附国际参考价），可切「全量渠道」页签 |
 | `/discount` | 折扣对比：站点价相对官方价的折扣率 |
 | `/setup` / `/login` | 首次设置向导 / 管理员登录 |
-| `/admin` | 管理面板：访问统计 / 站点管理 / 采集任务 / 使用文档 / 系统设置 |
+| `/admin` | 管理面板：访问统计 / 站点管理 / 厂商定价源 / 采集任务 / 使用文档 / 系统设置 |
 
 `price-web` 支持 `--host`、`--port`、`--config` 参数；也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start`（或 `npm run dev`）起前端。前端反代目标默认 `http://127.0.0.1:8000`，用 `PRICE_WEB_API_URL` 修改。
 
