@@ -95,10 +95,11 @@ export function CatalogTable({ data }: { data: CatalogData }) {
       title: "厂商",
       dataIndex: "vendor",
       width: 170,
-      render: (v: string) => (
+      render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
           <VendorBadge vendor={v} />
           {v}
+          {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
         </span>
       ),
     },
@@ -134,8 +135,19 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         isFreePrice(row.list) ? (
           <ToneTag tone="green">免费</ToneTag>
         ) : (
-          <span className="mono num" style={{ fontWeight: 550 }}>
-            ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
+          <span style={{ display: "inline-grid", gap: 2, justifyItems: "end" }}>
+            <span className="mono num" style={{ fontWeight: 550 }}>
+              ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
+            </span>
+            {row.list_global && (
+              <span
+                className="mono num"
+                title="同厂商国际站列表价（参考）"
+                style={{ fontSize: 11.5, color: "var(--text-3)" }}
+              >
+                国际 ${formatPrice(row.list_global?.input)} / ${formatPrice(row.list_global?.output)}
+              </span>
+            )}
           </span>
         ),
     },

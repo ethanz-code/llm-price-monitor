@@ -8,6 +8,8 @@ export interface DiscountInfo {
   official_input_cny: number | null;
   official_output_cny: number | null;
   source_url: string;
+  /** 折扣基准口径：cn=国内站官方价 / global=国际站官方价；旧快照无此字段 */
+  region?: "cn" | "global" | null;
 }
 
 export interface PriceRecord {
@@ -121,6 +123,12 @@ export interface CatalogEntry {
   release_date?: string | null;
   /** AI 档位判定：flagship 顶级（整行高亮）/ mainstream 主流（名称旁 Tag）/ null 其他；AI 不可用时缺省 */
   tier?: "flagship" | "mainstream" | null;
+  /** 官方价基准口径：cn=国内站官方价（厂商定价源或 -cn 渠道），global=国际站官方价 */
+  region?: "cn" | "global";
+  /** 同厂商国际站的列表价参考（国内基准确立后保留），口径同 list */
+  list_global?: { input?: number; output?: number };
+  /** 国际参考价的快照汇率人民币折算，口径同 list_cny */
+  list_global_cny?: { input?: number | null; output?: number | null };
 }
 
 export interface CatalogData {
@@ -228,6 +236,52 @@ export interface SitesData {
 export interface SettingsData {
   settings: Record<string, unknown>;
   ai: Record<string, unknown>;
+}
+
+/** 厂商定价页抓到的单个模型价格（page-price 输出，价格按页面标价币种）。 */
+export interface VendorSourceModel {
+  model: string;
+  model_key: string;
+  input_price?: number | null;
+  output_price?: number | null;
+  cache_read_price?: number | null;
+  currency?: string | null;
+  unit?: string;
+  /** 同模型多上下文档：第一行是基准，其余为更高档位 */
+  tiers?: { context?: string | null; input_price?: number; output_price?: number }[];
+  source_url?: string;
+  quote?: string;
+  /** ai 来源的价格为 candidate（待复核），静态解析无此字段 */
+  price_status?: string;
+}
+
+/** 管理台「厂商定价源」：一个国内厂商的公开定价页配置与最近抓取状态。 */
+export interface VendorPricingSource {
+  vendor: string;
+  url: string;
+  enabled: boolean;
+  last_fetched_at?: number | null;
+  last_status?: "ok" | "empty" | "failed" | null;
+  last_error?: string | null;
+  /** 抓取方式：static-md / static-html / static-json / headless-* / ai */
+  last_method?: string | null;
+  model_count?: number | null;
+  /** 仅详情接口返回；列表接口不带 */
+  models?: VendorSourceModel[] | null;
+}
+
+/** models.dev 对国内厂商国内价的覆盖检测记录。 */
+export interface VendorSourceDetection {
+  vendor: string;
+  /** has_cn=已覆盖 / missing_cn=仅国际口径（推荐添加）/ not_listed=未收录（推荐添加） */
+  verdict: "has_cn" | "missing_cn" | "not_listed";
+  providers: string[];
+  models_total: number;
+  models_priced: number;
+  suggested_url?: string;
+  note?: string;
+  source_added: boolean;
+  source_enabled?: boolean | null;
 }
 
 export interface TasksData {
