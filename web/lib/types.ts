@@ -221,16 +221,30 @@ export interface SiteConfig {
     refresh_cookie_name?: string;
     refresh_token: string;
   } | null;
-  enabled?: boolean;
+  /** 凭证注入：把认证与续签里的 token 塞进价格/渠道状态/公告三处请求，一条规则 = 头名 + 值模板。
+   *  值里可用 ${access_token} / ${refresh_token}，续签换新后自动展开成新值；
+   *  头名填 cookie 就是塞进 Cookie（如值 new_api_refresh=${refresh_token}）。没配的处不注入。 */
+  auth_inject?: Record<string, { header?: string; value?: string } | null> | null;
+  /** 后端保存时始终落库（slim_site_config 保留该字段），可放心用于行内启用判断 */
+  enabled: boolean;
   [key: string]: unknown;
 }
 
 export interface SitesData {
   sites: SiteConfig[];
-  collect_status?: Record<string, SiteStatus>;
-  /** 站点 id → 配了却始终没采到价的目标模型名 */
-  unpriced_models?: Record<string, string[]>;
+  /** 站点 id → 三类采集各自的最近一次异常（正常时对应节不存在） */
+  site_health?: Record<string, SiteCollectHealth>;
 }
+
+/** 一类采集最近一次的异常：报错红、需认证/无数据黄；下一轮采集正常即清除。 */
+export interface SiteCollectIssue {
+  level: "error" | "warn";
+  message: string;
+  time: number;
+}
+
+/** 站点采集健康档案：price/status/notice 三个可缺省的异常节。 */
+export type SiteCollectHealth = Partial<Record<"price" | "status" | "notice", SiteCollectIssue>>;
 
 /** 系统设置文档：settings/ai 两段，键名与配置文件一致。 */
 export interface SettingsData {
@@ -247,8 +261,8 @@ export interface VendorSourceModel {
   cache_read_price?: number | null;
   currency?: string | null;
   unit?: string;
-  /** 同模型多上下文档：第一行是基准，其余为更高档位 */
-  tiers?: { context?: string | null; input_price?: number; output_price?: number }[];
+  /** 同模型多档价格：AI 抽取带 name（如 高峰时段/空闲时段，含时段定义），静态解析带 context（上下文档位）；第一项为基准档 */
+  tiers?: { name?: string | null; context?: string | null; input_price?: number; output_price?: number }[];
   source_url?: string;
   quote?: string;
   /** ai 来源的价格为 candidate（待复核），静态解析无此字段 */

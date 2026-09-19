@@ -5,8 +5,10 @@ new-api 接口并按配置的模型清单过滤；本模块面向厂商官方定
 全部模型价格"，不预设模型清单。
 
 流水线：抓取 → 确定性解析（Markdown 表格 / HTML 表格 / JSON 价格表，任一命中即停）
-→ 无头浏览器渲染兜底（JS 空壳页）→ AI 兜底（模型名与价格数字必须在页面文本中
-字面出现，防幻觉，结果一律标记 candidate）。
+→ 无头浏览器渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
+字面出现，防幻觉，结果一律标记 candidate）。同一模型的多档价格（高峰/空闲时段、
+不同上下文档）逐档保留：AI 档位带 name（含页面里的时段定义），静态解析把时段/档位
+列收进 context；AI 兜底的基准档取标准档（如高峰时段），静态解析按页面行序取第一档。
 
 币种按页面如实标注（「元」→ CNY、`$`/美元 → USD），单位统一折算成 /1M tokens，
 不做汇率折算。
@@ -102,7 +104,7 @@ def _match_column(header: str) -> str | None:
         return None  # 存储费按小时计，不是缓存读/写单价
     if "模型名称" in h or h in {"模型", "名称", "model", "modelname"}:
         return "model"
-    if "上下文" in h or "context" in h:
+    if "上下文" in h or "context" in h or "时段" in h or "档位" in h:
         return "context"
     if "缓存命中" in h or "缓存读" in h or "cacheread" in h:
         return "cache_read"
@@ -330,12 +332,58 @@ def _number_in_text(value: float, text: str) -> bool:
 _AI_SYSTEM_PROMPT = (
     "你是定价页数据抽取助手。从给定的网页文本中提取全部模型的 API 价格，"
     "只输出 JSON 对象，不要输出其他内容："
-    '{"models":[{"model":"模型名","input":输入单价,"output":输出单价,'
-    '"cache_read":缓存命中单价或null,"currency":"CNY或USD",'
-    '"quote":"价格所在的原文片段"}]}。'
+    '{"models":[{"model":"模型名","tiers":[{"name":"档位名","standard":true,'
+    '"input":输入单价,"output":输出单价,"cache_read":缓存命中单价或null}],'
+    '"currency":"CNY或USD","quote":"价格所在的原文片段"}]}。'
+    "同一模型在页面里有多档价格（如高峰/空闲时段、不同上下文长度、不同并发规格）时，"
+    "每档一个元素，name 照页面原文抄写；页面有时间定义说明"
+    "（如“高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00，其余为空闲时段”）"
+    "要把定义并进对应档位的 name。适用的标准档位（页面标明空闲时段是折扣价、高峰时段是标准价时，"
+    "标准档指高峰时段）把 standard 标为 true，页面没有说明就都不标。"
+    "只有一个价的模型 tiers 只放一个元素、name 填 null。"
     "价格数值统一换算成每百万 tokens；页面标注免费的填 0；页面里没有的价格填 null。"
     "不要编造页面里不存在的模型或价格；模型名照页面原文抄写。"
 )
+
+# 标准/默认档位的名称特征：页面把折扣档（如空闲时段）标出来时，基准应取标准档
+_STANDARD_TIER_PATTERN = re.compile(r"高峰|标准|默认|正常|peak|standard|default", re.IGNORECASE)
+
+
+def _parse_ai_tiers(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """AI 返回的模型条目 → 档位列表；兼容旧版模型级平铺价格形态。"""
+    raw_tiers = item.get("tiers")
+    tiers: list[dict[str, Any]] = []
+    if isinstance(raw_tiers, list):
+        for raw in raw_tiers:
+            if not isinstance(raw, dict):
+                continue
+            tiers.append({
+                "name": str(raw.get("name") or "").strip() or None,
+                "standard": raw.get("standard") is True,
+                "input": number_or_none(raw.get("input")),
+                "output": number_or_none(raw.get("output")),
+                "cache_read": number_or_none(raw.get("cache_read")),
+            })
+    if not tiers:
+        tiers.append({
+            "name": None,
+            "standard": True,
+            "input": number_or_none(item.get("input")),
+            "output": number_or_none(item.get("output")),
+            "cache_read": number_or_none(item.get("cache_read")),
+        })
+    return tiers
+
+
+def _pick_baseline_tier(tiers: list[dict[str, Any]]) -> dict[str, Any]:
+    """基准档：AI 标记的标准档优先，其次档位名带高峰/标准等特征，否则第一档。"""
+    for tier in tiers:
+        if tier["standard"]:
+            return tier
+    for tier in tiers:
+        if tier["name"] and _STANDARD_TIER_PATTERN.search(tier["name"]):
+            return tier
+    return tiers[0]
 
 
 def _ai_extract(
@@ -344,7 +392,12 @@ def _ai_extract(
     ai_config: AIConfig,
     client: httpx.Client,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """AI 兜底抽取；返回 (通过证据校验的记录, 丢弃原因)。"""
+    """AI 兜底抽取；返回 (通过证据校验的记录, 丢弃原因)。
+
+    每个模型带档位数组（空闲/高峰时段、不同上下文档等），逐档做证据校验——
+    档位价格数字必须在页面文本中字面出现，幻觉档剔除、其余保留；基准档取
+    标准档（如高峰时段），保证折扣比较不受折扣档干扰。
+    """
     warnings: list[str] = []
     _model, response = request_with_model_fallback(
         ai_config,
@@ -369,31 +422,40 @@ def _ai_extract(
         if model_key(name) not in normalized_page:
             warnings.append(f"AI 返回的模型 {name} 不在页面文本中，已丢弃")
             continue
-        input_value = number_or_none(item.get("input"))
-        output_value = number_or_none(item.get("output"))
-        if input_value is None and output_value is None:
+        tiers: list[dict[str, Any]] = []
+        for tier in _parse_ai_tiers(item):
+            missing = [
+                label
+                for label, value in (("输入价", tier["input"]), ("输出价", tier["output"]))
+                if value is not None and value != 0 and not _number_in_text(value, text)
+            ]
+            if missing:
+                warnings.append(f"模型 {name} 的{tier['name'] or '默认'}档{'、'.join(missing)}在页面文本中找不到，疑似幻觉，该档已丢弃")
+                continue
+            tiers.append(tier)
+        if not tiers or all(tier["input"] is None and tier["output"] is None for tier in tiers):
             warnings.append(f"模型 {name} 的 AI 结果没有可用价格，已丢弃")
             continue
-        missing = [
-            label
-            for label, value in (("输入价", input_value), ("输出价", output_value))
-            if value is not None and value != 0 and not _number_in_text(value, text)
-        ]
-        if missing:
-            warnings.append(f"模型 {name} 的{'、'.join(missing)}在页面文本中找不到，疑似幻觉，已丢弃")
-            continue
-        cache_value = number_or_none(item.get("cache_read"))
+        baseline = _pick_baseline_tier(tiers)
         currency = str(item.get("currency") or "").upper()
         currency = currency if currency in {"CNY", "USD"} else detect_currency(str(item.get("quote") or ""))
         records.append({
             "model": name,
             "model_key": model_key(name),
-            "input_price": input_value,
-            "output_price": output_value,
-            "cache_read_price": cache_value,
+            "input_price": baseline["input"],
+            "output_price": baseline["output"],
+            "cache_read_price": baseline["cache_read"],
             "currency": currency,
             "unit": f"{currency or '未知'}/1M tokens",
-            "tiers": [],
+            "tiers": [
+                {
+                    "name": tier["name"],
+                    "input_price": tier["input"],
+                    "output_price": tier["output"],
+                    "cache_read_price": tier["cache_read"],
+                }
+                for tier in tiers
+            ],
             "source_url": source_url,
             "quote": redact_text(str(item.get("quote") or "")),
             "price_status": "candidate",

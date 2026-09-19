@@ -287,3 +287,87 @@ def test_cli_writes_out_file(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: 
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["method"] == "static-md" and len(payload["models"]) == 1
     assert "已写入" in capsys.readouterr().out
+
+
+# ---------- 多档价格（高峰/空闲时段等） ----------
+
+
+def test_fetch_ai_fallback_extracts_time_tiers():
+    """高峰/空闲两档都进 tiers 且带时段定义；基准取 AI 标记的标准档（高峰）。"""
+    page = (
+        "DeepSeek 价格表（2026年9月）\n"
+        "deepseek-flash：输入（缓存未命中）空闲时段 1 元/百万 tokens、高峰时段 2 元；"
+        "输出空闲时段 4 元、高峰时段 8 元；缓存命中空闲时段 0.02 元、高峰时段 0.04 元。\n"
+        "高峰时段为北京时间周一至周五 9:00 - 12:00、14:00 - 18:00（其余为空闲时段）。"
+    )
+    transport = _transport_with_ai(page, [{
+        "model": "deepseek-flash",
+        "tiers": [
+            {"name": "高峰时段（北京时间周一至周五 9:00-12:00、14:00-18:00）", "standard": True,
+             "input": 2, "output": 8, "cache_read": 0.04},
+            {"name": "空闲时段", "input": 1, "output": 4, "cache_read": 0.02},
+        ],
+        "currency": "CNY", "quote": "deepseek-flash",
+    }])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    assert result["method"] == "ai" and result["warnings"] == []
+    record = result["models"][0]
+    # 基准取标准档（高峰时段），空闲档不丢
+    assert (record["input_price"], record["output_price"]) == (2.0, 8.0)
+    assert record["cache_read_price"] == 0.04
+    assert [tier["name"] for tier in record["tiers"]] == [
+        "高峰时段（北京时间周一至周五 9:00-12:00、14:00-18:00）", "空闲时段",
+    ]
+    assert record["tiers"][1] == {"name": "空闲时段", "input_price": 1.0, "output_price": 4.0, "cache_read_price": 0.02}
+
+
+def test_fetch_ai_standard_tier_by_name_when_unmarked():
+    """AI 没标 standard 时，按档位名特征（高峰/标准）挑基准。"""
+    page = "demo 模型价格：demo-model 高峰时段 输入 6 元、输出 12 元；空闲时段 输入 3 元、输出 6 元（每百万 tokens）。"
+    transport = _transport_with_ai(page, [{
+        "model": "demo-model",
+        "tiers": [
+            {"name": "空闲时段", "input": 3, "output": 6},
+            {"name": "高峰时段", "input": 6, "output": 12},
+        ],
+        "currency": "CNY", "quote": "demo-model",
+    }])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    record = result["models"][0]
+    assert (record["input_price"], record["output_price"]) == (6.0, 12.0)
+    assert len(record["tiers"]) == 2
+
+
+def test_fetch_ai_drops_only_hallucinated_tier():
+    """单个档位幻觉只丢该档，其余档保留并改取基准。"""
+    transport = _transport_with_ai(PLAIN_PAGE, [{
+        "model": "deepseek-v4-pro",
+        "tiers": [
+            {"name": "高峰时段", "input": 99, "output": 27, "cache_read": None},
+            {"name": "空闲时段", "input": 4.5, "output": 13.5, "cache_read": None},
+        ],
+        "currency": "CNY", "quote": "deepseek-v4-pro",
+    }])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    assert len(result["models"]) == 1
+    record = result["models"][0]
+    assert (record["input_price"], record["output_price"]) == (4.5, 13.5)
+    assert [tier["name"] for tier in record["tiers"]] == ["空闲时段"]
+    assert any("幻觉" in warning and "高峰时段" in warning for warning in result["warnings"])
+
+
+def test_parse_html_time_tier_column():
+    """静态表格里的「时段」列收进阶梯标签；按页面行序取第一档为基准。"""
+    html = """<html><body><table>
+      <tr><th>模型名称</th><th>时段</th><th>输入单价（元/百万 Tokens）</th><th>输出单价（元/百万 Tokens）</th></tr>
+      <tr><td>demo-model</td><td>空闲时段</td><td>1</td><td>4</td></tr>
+      <tr><td>demo-model</td><td>高峰时段</td><td>2</td><td>8</td></tr>
+    </table></body></html>"""
+    records = parse_html_tables(html, "https://example.com/pricing")
+    assert records is not None
+    record = records[0]
+    assert (record["input_price"], record["output_price"]) == (1.0, 4.0)
+    assert record["tiers"] == [
+        {"context": "空闲时段", "input_price": 1.0, "output_price": 4.0},
+        {"context": "高峰时段", "input_price": 2.0, "output_price": 8.0},
+    ]

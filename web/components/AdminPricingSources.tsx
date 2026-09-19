@@ -483,12 +483,27 @@ function SourceDetailModal({ vendor, onClose }: { vendor: string; onClose: () =>
       render: (v: number | null, row) => <PriceCell value={v} currency={row.currency} />,
     },
     {
-      title: "档位",
+      title: "分档",
       key: "tiers",
-      width: 70,
-      align: "right",
+      width: 250,
       mobileHide: true,
-      render: (_, row) => <span>{row.tiers?.length ? row.tiers.length : 1}</span>,
+      render: (_, row) => {
+        const tiers = row.tiers ?? [];
+        const labeled = tiers.some((tier) => tier.name || tier.context);
+        if (tiers.length <= 1 && !labeled) return <span>单档</span>;
+        const symbol = (row.currency ?? "").toUpperCase() === "USD" ? "$" : "¥";
+        return (
+          <span style={{ display: "inline-grid", gap: 2, fontSize: 12 }}>
+            {tiers.map((tier, index) => (
+              <span key={index} className="mono" title={tier.name || tier.context || undefined}>
+                {tier.name || tier.context || "基准"}：{symbol}
+                {formatPrice(tier.input_price)} / {symbol}
+                {formatPrice(tier.output_price)}
+              </span>
+            ))}
+          </span>
+        );
+      },
     },
     {
       title: "原文",
