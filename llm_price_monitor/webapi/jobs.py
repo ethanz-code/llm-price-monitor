@@ -5,11 +5,13 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from llm_price_monitor.catalog import vendor_sources
 from llm_price_monitor.catalog.classify import attach_ai_tiers
 from llm_price_monitor.catalog.modelsdev import fetch_catalogs
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, fingerprint_translations
 from llm_price_monitor.config import MonitorConfig, config_from_store
 from llm_price_monitor import tasklog
+from llm_price_monitor.page_price import DEFAULT_TIMEOUT as PAGE_FETCH_TIMEOUT
 from llm_price_monitor.report import scan_notices, scan_prices, scan_statuses, summary_row
 from llm_price_monitor.store import Store
 
@@ -75,18 +77,38 @@ def notice_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
 
 
 def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
-    """厂商定价同步任务体：一次拉取 models.dev 快照，落官方价与全量渠道价两份目录。"""
+    """厂商定价同步任务体：一次拉取 models.dev 快照，合并厂商定价源，落两份目录。"""
     def _run() -> dict[str, Any]:
+        try:
+            monitor_config = config_from_store(store)
+            ai_config = monitor_config.ai
+            fetch_timeout = float(monitor_config.settings.timeout)
+        except ValueError:
+            ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有 AI 档位与中文简介
+            fetch_timeout = PAGE_FETCH_TIMEOUT
         tasklog.emit("开始刷新厂商定价：抓取 models.dev 快照")
         output, full = fetch_catalogs()
         providers = len({entry["vendor"] for entry in full["models"].values()})
         tasklog.emit(f"快照抓取完成：{providers} 个厂商，{len(full['models'])} 个模型")
+        # 厂商定价源：先逐源抓取国内定价页（单源失败不中断，沿用上次缓存结果），
+        # 再把国内价合并进官方目录——在 AI 档位/翻译之前合并，新增条目也能拿到档位
+        source_summary = vendor_sources.refresh_all_sources(store, timeout=fetch_timeout, ai_config=ai_config)
+        sources_matched = sources_added = 0
+        if source_summary["sources"]:
+            tasklog.emit(
+                f"厂商定价源抓取：{source_summary['ok']} 成功 / {source_summary['empty']} 空 / "
+                f"{source_summary['failed']} 失败，共 {source_summary['models']} 个模型"
+            )
+            rate = float(output.get("usd_cny_rate") or 0)
+            if rate > 0:
+                output, merge_summary = vendor_sources.merge_sources_into_catalog(
+                    output, vendor_sources.load_sources(store), rate
+                )
+                sources_matched, sources_added = merge_summary["matched"], merge_summary["added"]
+                if merge_summary["skipped"]:
+                    tasklog.emit("定价源合并跳过：" + "；".join(merge_summary["skipped"]))
         previous = store.get_document("catalog")
         previous_all = store.get_document("catalog_all")
-        try:
-            ai_config = config_from_store(store).ai
-        except ValueError:
-            ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有 AI 档位与中文简介
         # 两份目录的译文按简介指纹互济：官方目录翻过的全量渠道直接复用，反之亦然
         seed_official = {**fingerprint_translations(previous_all), **fingerprint_translations(previous)}
         classified = attach_ai_tiers(output, previous, ai_config) if ai_config is not None else 0
@@ -115,6 +137,31 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             "all_providers": providers,
             "all_models_total": len(full["models"]),
             "all_zh_translated": translated_all,
+            "source_models": source_summary["models"] if source_summary["sources"] else 0,
+            "source_failed": source_summary["failed"],
+            "source_matched": sources_matched,
+            "source_added": sources_added,
         }
+
+    return _run
+
+
+def vendor_source_refresh_job(store: Store, vendor: str) -> Callable[[], dict[str, Any]]:
+    """单厂商定价源抓取任务体：抓页、更新源文档、就地合并目录并补 AI 档位。"""
+    def _run() -> dict[str, Any]:
+        tasklog.emit(f"抓取厂商定价源：{vendor}")
+        try:
+            monitor_config = config_from_store(store)
+            ai_config = monitor_config.ai
+            fetch_timeout = float(monitor_config.settings.timeout)
+        except ValueError:
+            ai_config = None
+            fetch_timeout = PAGE_FETCH_TIMEOUT
+        summary = vendor_sources.refresh_and_merge(store, vendor, timeout=fetch_timeout, ai_config=ai_config)
+        tasklog.emit(
+            f"厂商定价源 {vendor}：{summary.get('status')}，{summary.get('model_count')} 个模型"
+            + (f"（{summary.get('error')}）" if summary.get("error") else "")
+        )
+        return summary
 
     return _run

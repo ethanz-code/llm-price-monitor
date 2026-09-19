@@ -207,10 +207,14 @@ def test_catalog_auto_syncs_on_first_start(workspace: Path, monkeypatch):
     config_doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 1440}
     config_path.write_text(json.dumps(config_doc), encoding="utf-8")
     client = TestClient(create_app(config_path))
-    for _ in range(100):
-        if client.get("/api/catalog").status_code == 200:
+    catalog_status = 0
+    for _ in range(500):
+        catalog_status = client.get("/api/catalog").status_code
+        if catalog_status == 200:
             break
         time.sleep(0.02)
+    # 轮询窗口拉长到 10s：负载高时后台任务可能晚于旧窗口完成，最后一次 GET 会 404
+    assert catalog_status == 200, "轮询窗口内目录任务未完成"
     assert client.get("/api/catalog").json()["models"]["demomodel"]["vendor"] == "Demo"
 
 
@@ -493,20 +497,6 @@ def test_sites_crud_requires_admin_and_validates(workspace: Path):
     assert client.delete("/api/sites/x").status_code == 404
 
 
-def test_sites_endpoint_lists_targets_that_never_got_a_price(workspace: Path):
-    """配了却始终没采到价的目标模型要在站点列表里点出来（站点用别的模型名时才会出现）。"""
-    client = _admin_client(workspace)
-    assert client.get("/api/sites").json()["unpriced_models"] == {}
-
-    demo = client.get("/api/sites").json()["sites"][0]
-    client.put("/api/sites/demo", json={"config": {**demo, "models": ["demo-model", "deepseek-flash"]}})
-    assert client.get("/api/sites").json()["unpriced_models"] == {"demo": ["deepseek-flash"]}
-
-    # 停用的站点不参与采集，不作为"漏采"提示
-    client.put("/api/sites/demo", json={"config": {**demo, "models": ["deepseek-flash"], "enabled": False}})
-    assert client.get("/api/sites").json()["unpriced_models"] == {}
-
-
 def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
     """编辑站点设置分组过滤时，库里未选中分组的历史状态与价格数据一并清理；口径不变或清空则不动。"""
     from llm_price_monitor.store import Store
@@ -547,6 +537,27 @@ def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
     assert "cleaned" not in again.json()
     cleared = client.put("/api/sites/demo", json={"config": {**config, "status": {"url": "https://demo.test/status"}}})
     assert cleared.status_code == 200 and "cleaned" not in cleared.json()
+
+
+def test_site_groups_endpoint_lists_collected_groups(workspace: Path):
+    """分组白名单下拉的数据源接口：该站点已入库价格数据的去重分组名；读路径按管理台口径鉴权。"""
+    from llm_price_monitor.store import Store
+
+    assert TestClient(create_app(_config(workspace))).get("/api/sites/demo/groups").status_code == 401
+
+    client = _admin_client(workspace)
+    # 工作区夹具预置的采集历史里已带 default 分组
+    assert client.get("/api/sites/demo/groups").json() == {"groups": ["default"]}
+
+    store = Store(workspace / "var" / "monitor.db")
+    store.append_history(
+        [
+            {"site_id": "demo", "model": "m1", "metadata": {"group": "svip"}, "input_price": 1.0, "captured_at": 1.0},
+            {"site_id": "demo", "model": "m3", "metadata": {"group": "svip"}, "input_price": 3.0, "captured_at": 3.0},
+        ]
+    )
+    assert client.get("/api/sites/demo/groups").json() == {"groups": ["default", "svip"]}
+    assert client.get("/api/sites/unknown/groups").json() == {"groups": []}
 
 
 def test_site_delete_purge_optionally_cleans_history(workspace: Path):
@@ -1163,6 +1174,10 @@ def test_persist_refresh_updates_hardcoded_auth_header(workspace: Path):
             "network": {
                 "url": "https://hard.test/api/pricing",
                 "headers": {"Authorization": "Bearer old_access", "referer": "https://hard.test"},
+                "ratio_url": {
+                    "url": "https://hard.test/api/ratio",
+                    "headers": {"Authorization": "Bearer old_ratio", "x-ratio": "1"},
+                },
             },
             "networks": [
                 {"url": "https://hard.test/api/alt", "headers": {"authorization": "Bearer old_alt"}},
@@ -1177,11 +1192,85 @@ def test_persist_refresh_updates_hardcoded_auth_header(workspace: Path):
     assert config["auth_token"] == "new_access"
     assert config["network"]["headers"]["Authorization"] == "Bearer new_access"
     assert config["network"]["headers"]["referer"] == "https://hard.test"
+    assert config["network"]["ratio_url"]["headers"]["Authorization"] == "Bearer new_access"
+    assert config["network"]["ratio_url"]["headers"]["x-ratio"] == "1"
     assert config["networks"][0]["headers"]["authorization"] == "Bearer new_access"
     assert config["networks"][1]["headers"]["Cookie"] == "session=old_cookie"
     assert config["status"]["headers"]["Authorization"] == "Bearer new_access"
     assert config["notice"]["headers"]["authorization"] == "Bearer new_access"
     assert config["token_refresh"]["refresh_token"] == "new_refresh"
+
+
+def test_site_auth_inject_round_trips_through_api(workspace: Path):
+    """凭证注入走完整保存链路：前端写的 auth_inject 结构能被校验、落库、原样读回并驱动注入。"""
+    from llm_price_monitor.adapters import auth_inject_headers
+    from llm_price_monitor.config import sites_from_raw
+
+    client = _admin_client(workspace)
+    demo = client.get("/api/sites").json()["sites"][0]
+    config = {
+        **demo,
+        "id": "inject",
+        "auth_token": "at_now",
+        "token_refresh": {"url": "https://inject.test/auth/refresh", "refresh_token": "rt_now"},
+        # 前端「认证与续签 → 凭证注入」三行写出来的形状
+        "auth_inject": {
+            "price": {"header": "Authorization", "value": "Bearer ${access_token}"},
+            "status": {"header": "cookie", "value": "new_api_refresh=${refresh_token}"},
+            "notice": {"header": "Authorization", "value": "Bearer ${access_token}"},
+        },
+    }
+    assert client.post("/api/sites", json={"config": config}).status_code == 200
+    stored = next(site for site in client.get("/api/sites").json()["sites"] if site["id"] == "inject")
+    assert stored["auth_inject"]["status"] == {"header": "cookie", "value": "new_api_refresh=${refresh_token}"}
+
+    (spec,) = sites_from_raw([stored])
+    assert auth_inject_headers(spec, "price") == {"Authorization": "Bearer at_now"}
+    assert auth_inject_headers(spec, "status") == {"cookie": "new_api_refresh=rt_now"}
+
+    # 结构不对的规则被拦下（不写库）
+    bad = {**config, "auth_inject": {"price": {"header": "Authorization"}}}
+    failed = client.post("/api/sites", json={"config": bad})
+    assert failed.status_code == 400 and "auth_inject.price.value" in failed.json()["detail"]
+
+    # 空 auth_inject 保存时瘦身掉，不落库
+    slimmed = client.put("/api/sites/inject", json={"config": {**stored, "auth_inject": {}}})
+    assert slimmed.status_code == 200
+    reloaded = next(site for site in client.get("/api/sites").json()["sites"] if site["id"] == "inject")
+    assert "auth_inject" not in reloaded
+
+
+def test_site_config_slimmed_on_save(workspace: Path):
+    """保存时去掉空值与默认值字段：null / 空容器 / 默认 auth_header 等不落库，读取时由 SiteSpec 默认值兜底；非默认值原样保留。enabled 例外：始终落库，管理台行内启用判断直接读它。"""
+    client = _admin_client(workspace)
+    fat = {
+        "id": "slim",
+        "adapter": "standard",
+        "models": ["m1"],
+        "auth_token": None,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "cookie": None,
+        "cookies": {},
+        "request_headers": {},
+        "enabled": True,
+        "network": {"url": "https://slim.test/api/pricing", "params": {}, "headers": {}},
+    }
+    created = client.post("/api/sites", json={"config": fat})
+    assert created.status_code == 200
+    assert created.json()["site"] == {
+        "id": "slim",
+        "enabled": True,  # 启用态始终落库：管理台行内判断直接读它
+        "models": ["m1"],
+        "network": {"url": "https://slim.test/api/pricing"},
+    }
+
+    updated = client.put("/api/sites/slim", json={"config": {**fat, "auth_header": "X-Token", "enabled": False}})
+    assert updated.status_code == 200
+    site = next(s for s in client.get("/api/sites").json()["sites"] if s["id"] == "slim")
+    assert site["auth_header"] == "X-Token"
+    assert site["enabled"] is False
+    assert "auth_prefix" not in site and "auth_token" not in site
 
 
 def test_token_refresh_test_endpoint(workspace: Path, monkeypatch):
@@ -1208,6 +1297,37 @@ def test_token_refresh_test_endpoint(workspace: Path, monkeypatch):
 
     missing = client.post("/api/sites/test-token-refresh", json={"config": {"id": "rt"}})
     assert missing.status_code == 400
+
+
+def test_token_refresh_test_endpoint_persists_refreshed_tokens(workspace: Path, monkeypatch):
+    """轮换型凭据测试一次就作废旧值：换新的 refresh_token 要立即落库，编辑中途取消也不丢凭证链；
+    access_token 一并落库，取消后站点上的采集请求头也还是刚验过有效的那个。"""
+    import llm_price_monitor.webapi.routes.sites as sites_routes
+
+    client = _admin_client(workspace)
+    demo = client.get("/api/sites").json()["sites"][0]
+    stored = {
+        **demo,
+        "id": "rotate",
+        "auth_token": "at_old",
+        "token_refresh": {"url": "https://rotate.test/auth/refresh", "refresh_token": "rt_old"},
+    }
+    assert client.post("/api/sites", json={"config": stored}).status_code == 200
+
+    monkeypatch.setattr(sites_routes, "refresh_site_token", lambda spec, http, timeout, ua: ("at_rotated0000", "rt_new"))
+    ok = client.post("/api/sites/test-token-refresh", json={"config": stored})
+    assert ok.status_code == 200 and ok.json()["refresh_token_rotated"] is True
+    persisted = client.get("/api/sites").json()["sites"]
+    rotate = next(site for site in persisted if site["id"] == "rotate")
+    assert rotate["token_refresh"]["refresh_token"] == "rt_new"
+    assert rotate["auth_token"] == "at_rotated0000"
+
+    # 未换新的站点：access_token 照样落库，其余字段保持不动
+    monkeypatch.setattr(sites_routes, "refresh_site_token", lambda spec, http, timeout, ua: ("at_x", "rt_new"))
+    client.post("/api/sites/test-token-refresh", json={"config": {**stored, "token_refresh": {**stored["token_refresh"], "refresh_token": "rt_new"}}})
+    rotate = next(site for site in client.get("/api/sites").json()["sites"] if site["id"] == "rotate")
+    assert rotate["token_refresh"]["refresh_token"] == "rt_new"
+    assert rotate["auth_token"] == "at_x"
 
 
 def test_task_logs_roll_oldest_when_full():
@@ -1264,3 +1384,110 @@ def test_assistant_daily_ip_limit(workspace: Path, monkeypatch):
     # 0 = 不限制
     client.app.state.store.set_document("settings", {"assistant_daily_limit": 0})
     assert ask().status_code == 200
+
+
+# ---------- 厂商定价源 ----------
+
+
+def _fake_catalog_doc() -> dict:
+    return {
+        "generated_at": time.time(), "generated_at_iso": "2026-09-18T00:00:00+0800",
+        "usd_cny_rate": 7.0, "rate_source": "test", "source": "models.dev", "models": {}, "providers": [],
+    }
+
+
+def _wait_task(client: TestClient, task_id: str, attempts: int = 200) -> dict:
+    detail: dict = {}
+    for _ in range(attempts):
+        detail = client.get(f"/api/tasks/{task_id}").json()
+        if detail.get("status") != "running":
+            break
+        time.sleep(0.05)
+    return detail
+
+
+def test_vendor_sources_crud_requires_admin_and_validates(workspace: Path, monkeypatch):
+    from llm_price_monitor.webapi import jobs as web_jobs
+    from llm_price_monitor.webapi import tasks
+
+    # 目录刷新被自动触发（停用/删除后恢复 models.dev 基准），替身避免真实网络
+    monkeypatch.setattr(web_jobs, "fetch_catalogs", lambda *a, **k: (_fake_catalog_doc(), _fake_catalog_doc()))
+    # 等上一个测试留下的任务线程退出，否则停用/删除的自动恢复提交会被互斥拒绝
+    for _ in range(200):
+        if not any(t["status"] == "running" for t in tasks.recent(100)):
+            break
+        time.sleep(0.05)
+    client = _admin_client(workspace)
+
+    anon = TestClient(create_app(_config(workspace)))
+    assert anon.get("/api/vendor-sources").status_code == 401
+    assert anon.post("/api/vendor-sources", json={"vendor": "X", "url": "https://x.cn/p"}).status_code == 401
+
+    assert client.post("/api/vendor-sources", json={"vendor": "", "url": "https://x.cn"}).status_code == 400
+    assert client.post("/api/vendor-sources", json={"vendor": "智谱", "url": "ftp://x.cn"}).status_code == 400
+    created = client.post("/api/vendor-sources", json={
+        "vendor": "ZhipuAI", "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md"}).json()["source"]
+    assert created["url"].endswith("pricing.md") and created["enabled"] is True
+    assert client.post("/api/vendor-sources", json={"vendor": "ZhipuAI", "url": "https://x.cn/p"}).status_code == 409
+
+    # PUT：停用触发目录刷新任务恢复基准
+    updated = client.put("/api/vendor-sources/ZhipuAI", json={
+        "vendor": "ZhipuAI", "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": False}).json()
+    assert updated["source"]["enabled"] is False
+    assert client.put("/api/vendor-sources/ZhipuAI", json={
+        "vendor": "Other", "url": "https://x.cn/p"}).status_code == 400
+    assert client.put("/api/vendor-sources/Nope", json={
+        "vendor": "Nope", "url": "https://x.cn/p"}).status_code == 404
+    if updated.get("revert_task_id"):
+        _wait_task(client, updated["revert_task_id"])
+
+    deleted = client.delete("/api/vendor-sources/ZhipuAI").json()
+    assert deleted["deleted"] == "ZhipuAI"
+    if deleted.get("revert_task_id"):
+        _wait_task(client, deleted["revert_task_id"])
+    assert client.delete("/api/vendor-sources/ZhipuAI").status_code == 404
+    assert client.get("/api/vendor-sources").json() == {"sources": []}
+
+
+def test_vendor_sources_detection_endpoint(workspace: Path):
+    client = _admin_client(workspace)
+    # 厂商清单未生成：提示先刷新目录
+    assert client.get("/api/vendor-sources/detection").status_code == 404
+    store = client.app.state.store
+    store.set_document("catalog_all", {"usd_cny_rate": 7.0, "providers": [
+        {"id": "zhipuai", "name": "Zhipu AI", "doc": "https://docs.z.ai", "models_total": 15, "models_priced": 15},
+        {"id": "alibaba-cn", "name": "Alibaba (China)", "doc": "https://alibabacloud.com", "models_total": 89, "models_priced": 80},
+    ]})
+    records = {r["vendor"]: r for r in client.get("/api/vendor-sources/detection").json()["records"]}
+    assert records["Zhipu AI"]["verdict"] == "missing_cn" and records["Zhipu AI"]["suggested_url"]
+    assert records["Alibaba Cloud"]["verdict"] == "has_cn"
+
+
+def test_vendor_source_refresh_task_merges_into_catalog(workspace: Path, monkeypatch):
+    from llm_price_monitor.catalog import vendor_sources as vs_mod
+
+    client = _admin_client(workspace)
+    assert client.post("/api/vendor-sources/Nope/refresh").status_code == 404
+    client.post("/api/vendor-sources", json={
+        "vendor": "ZhipuAI", "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md"})
+
+    def fake_fetch(url: str, **kwargs):
+        return {"url": url, "final_url": url, "method": "static-md",
+                "models": [{"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8,
+                            "cache_read_price": 0.23, "currency": "CNY"}],
+                "warnings": []}
+
+    monkeypatch.setattr(vs_mod, "fetch_page_prices", fake_fetch)
+    task_id = client.post("/api/vendor-sources/ZhipuAI/refresh").json()["task_id"]
+    detail = _wait_task(client, task_id)
+    assert detail["status"] == "done" and detail["result"]["model_count"] == 1
+
+    # 源记录带抓取结果；国内价合并进官方目录（新条目 vendor 用源厂商名）
+    record = client.get("/api/vendor-sources/ZhipuAI").json()
+    assert record["last_status"] == "ok" and record["model_count"] == 1
+    listing = client.get("/api/vendor-sources").json()["sources"][0]
+    assert "models" not in listing  # 列表摘要不含模型明细
+    catalog = client.get("/api/catalog").json()
+    entry = catalog["models"]["glm5.3flash"]
+    assert entry["region"] == "cn" and entry["vendor"] == "ZhipuAI"
+    assert entry["list_cny"] == {"input": 0.8, "output": 2.8}

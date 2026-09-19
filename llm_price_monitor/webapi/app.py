@@ -141,9 +141,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     )
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
-    # /api/tasks/{task_id} 为动态路径，另行按前缀匹配
-    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions"}
-    admin_get_prefixes = ("/api/tasks/",)
+    # /api/tasks/{task_id}、/api/sites/{site_id}/groups 为动态路径，另行按前缀匹配
+    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions", "/api/vendor-sources", "/api/vendor-sources/detection"}
+    admin_get_prefixes = ("/api/tasks/", "/api/sites/", "/api/vendor-sources/")
     # 公开读接口封锁：部署时设置 PRICE_WEB_INTERNAL_TOKEN 后，数据读接口只对
     # 携带令牌的服务端渲染请求（Next 直连）或管理员会话开放，匿名浏览器请求
     # 一律 401——访客照常看页面，但拿不到可直接抓取的 JSON API。
@@ -198,6 +198,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.submissions.build_router(store))
     app.include_router(routes.assistant.build_router(store))
     app.include_router(routes.ai_logs.build_router(store))
+    app.include_router(routes.vendor_sources.build_router(store))
     ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志
     ensure_browser_ready(store)
     scheduler.start_scheduler(store)
@@ -208,7 +209,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 def main() -> None:
     parser = argparse.ArgumentParser(description="启动 llm-price-monitor Web 服务（API + 前端）")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8437)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--frontend-port", type=int, default=3000)
     parser.add_argument("--with-frontend", action="store_true", help="同时以生产模式拉起 web/ 下的 Next.js 服务（需先 npm run build）")
