@@ -3,16 +3,16 @@
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { toast, Btn, Check, Empty, Input, Modal, Sel, Switch } from "./ui";
+import { toast, Btn, Check, Empty, Input, Modal, Seg, Sel, Switch, Tip } from "./ui";
 import { IconAppstore, IconCheck } from "./icons";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
 import { getSiteInfo } from "@/lib/sites";
 import { RiskLink } from "./RiskLink";
-import { formatTime, looseIncludes, statusMeta } from "@/lib/format";
+import { formatTime, looseIncludes } from "@/lib/format";
 import { ToneTag } from "./ToneTag";
 import { SiteTestButton } from "./SiteTestButton";
-import type { CatalogData, SiteConfig, SitesData, SiteStatus } from "@/lib/types";
+import type { CatalogData, SiteCollectHealth, SiteCollectIssue, SiteConfig, SitesData } from "@/lib/types";
 
 /** 新建站点用的默认字段模板；认证等高级字段留空，需要时在高级配置 JSON 里补充。 */
 function siteSkeleton(id = ""): SiteConfig {
@@ -114,6 +114,14 @@ function textToDict(text: string): Record<string, string> {
   return result;
 }
 
+/** 分组白名单文本 → 分组数组：中英文逗号、换行都算分隔，空项跳过。 */
+function groupsFromText(text: string): string[] {
+  return text
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 /** 入口 URL（network.url）：表单留空时保留 JSON 里的对象形态；表单有值且 JSON 是对象时合并进对象的 url 字段。 */
 function applyEntryUrl(network: Record<string, unknown>, key: string, text: string) {
   const trimmed = text.trim();
@@ -184,62 +192,60 @@ function applyForm(base: SiteConfig, form: SiteFormState): SiteConfig {
   return next;
 }
 
-/** models.dev 目录条目 → 多选下拉的选项。 */
-interface ModelOption {
+/** 多选下拉的候选项：id 是勾选与标签用的值，note 是右侧的补充说明（模型名/厂商等）。 */
+interface MultiOption {
   id: string;
-  name: string;
-  vendor: string;
+  note?: string;
 }
 
-/** 一次最多渲染的匹配项：目录数百条，全部渲染没必要。 */
+/** 一次最多渲染的匹配项：候选数百条时全部渲染没必要。 */
 const MODEL_MATCH_LIMIT = 60;
 
 const MODEL_HINT_STYLE: React.CSSProperties = { fontSize: 12.5, color: "var(--text-3)", padding: "6px 8px" };
 
-/** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加；已选项以标签展示、点 × 移除。 */
-function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
-  const [options, setOptions] = useState<ModelOption[] | null>(null);
-  const [failed, setFailed] = useState(false);
+/** 标签式多选通用壳：已选项以标签展示、点 × 移除；下拉里输入过滤、勾选候选、回车把输入加为自定义项。
+ *  options 为 null 表示候选还在加载，空数组表示没有候选只能手动输入。文案由调用方给，模型目录与分组白名单共用。 */
+function TagMultiSelect({
+  value,
+  onChange,
+  options,
+  failed,
+  ariaLabel,
+  inputLabel,
+  fieldPlaceholder,
+  inputPlaceholder,
+  loadingText,
+  emptyText,
+  failedText,
+  noMatchText,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  options: MultiOption[] | null;
+  /** 候选拉取失败：空态文案换成"没拉到"口径 */
+  failed?: boolean;
+  ariaLabel: string;
+  inputLabel: string;
+  fieldPlaceholder: string;
+  inputPlaceholder: string;
+  loadingText: string;
+  emptyText: string;
+  failedText: string;
+  noMatchText: string;
+}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    apiSend<CatalogData>("/api/catalog", "GET")
-      .then((data) => {
-        if (cancelled) return;
-        setOptions(
-          Object.values(data.models ?? {})
-            .filter((entry) => typeof entry.model === "string" && entry.model)
-            .map((entry) => ({ id: entry.model, name: entry.name ?? "", vendor: entry.vendor ?? "" }))
-            .sort((a, b) => a.id.localeCompare(b.id)),
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setOptions([]);
-        setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const selected = useMemo(() => new Set(value), [value]);
   const keyword = query.trim().toLowerCase();
   const matches = useMemo(() => {
     const source = options ?? [];
     if (!keyword) return source.slice(0, MODEL_MATCH_LIMIT);
-    const hit = source.filter(
-      (item) =>
-        looseIncludes(item.id, keyword) ||
-        looseIncludes(item.name, keyword) ||
-        looseIncludes(item.vendor, keyword),
-    );
-    // 手动添加的名字不在目录里：把命中的已选项补进来，保证始终可见可移除
+    const hit = source.filter((item) => looseIncludes(item.id, keyword) || looseIncludes(item.note ?? "", keyword));
+    // 手动添加的名字不在候选里：把命中的已选项补进来，保证始终可见可移除
     for (const id of value) {
       if (looseIncludes(id, keyword) && !hit.some((item) => item.id === id)) {
-        hit.unshift({ id, name: "", vendor: "" });
+        hit.unshift({ id });
       }
     }
     return hit.slice(0, MODEL_MATCH_LIMIT);
@@ -260,7 +266,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     <span style={{ position: "relative", display: "inline-flex", width: "min(420px, 100%)" }}>
       <div
         role="button"
-        aria-label="选择目标模型"
+        aria-label={ariaLabel}
         onClick={() => setOpen(true)}
         style={{
           display: "flex",
@@ -277,9 +283,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
           boxSizing: "border-box",
         }}
       >
-        {value.length === 0 && (
-          <span style={{ color: "var(--text-3)", fontSize: 13 }}>点开搜索勾选模型，自定义的也能加</span>
-        )}
+        {value.length === 0 && <span style={{ color: "var(--text-3)", fontSize: 13 }}>{fieldPlaceholder}</span>}
         {value.map((id) => (
           <span
             key={id}
@@ -334,25 +338,21 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
                 className="input"
                 autoFocus
                 value={query}
-                aria-label="搜索或添加模型"
+                aria-label={inputLabel}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") commitInput();
                 }}
-                placeholder="搜模型名或厂商；回车把输入添加为自定义模型"
+                placeholder={inputPlaceholder}
                 style={{ height: 30, fontSize: 12.5 }}
               />
             </div>
             <div style={{ maxHeight: 240, overflowY: "auto", padding: 6, display: "grid", gap: 2 }}>
-              {options === null && <span style={MODEL_HINT_STYLE}>模型目录加载中…</span>}
+              {options === null && <span style={MODEL_HINT_STYLE}>{loadingText}</span>}
               {options !== null && options.length === 0 && (
-                <span style={MODEL_HINT_STYLE}>
-                  {failed ? "模型目录还没同步好，直接输入模型名回车添加" : "目录是空的，直接输入模型名回车添加"}
-                </span>
+                <span style={MODEL_HINT_STYLE}>{failed ? failedText : emptyText}</span>
               )}
-              {options !== null && matches.length === 0 && (
-                <span style={MODEL_HINT_STYLE}>没有匹配的模型；回车把当前输入添加为自定义模型</span>
-              )}
+              {options !== null && matches.length === 0 && <span style={MODEL_HINT_STYLE}>{noMatchText}</span>}
               {matches.map((item) => {
                 const picked = selected.has(item.id);
                 return (
@@ -388,7 +388,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
                     <span className="mono" style={{ fontSize: 12.5, overflowWrap: "anywhere" }}>
                       {item.id}
                     </span>
-                    {(item.name || item.vendor) && (
+                    {item.note && (
                       <span
                         style={{
                           marginLeft: "auto",
@@ -399,7 +399,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
                           textOverflow: "ellipsis",
                         }}
                       >
-                        {[item.name, item.vendor].filter(Boolean).join(" · ")}
+                        {item.note}
                       </span>
                     )}
                   </div>
@@ -410,6 +410,100 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
         </>
       )}
     </span>
+  );
+}
+
+/** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加。 */
+function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
+  const [options, setOptions] = useState<MultiOption[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiSend<CatalogData>("/api/catalog", "GET")
+      .then((data) => {
+        if (cancelled) return;
+        setOptions(
+          Object.values(data.models ?? {})
+            .filter((entry) => typeof entry.model === "string" && entry.model)
+            .map((entry) => ({
+              id: entry.model,
+              note: [entry.name ?? "", entry.vendor ?? ""].filter(Boolean).join(" · ") || undefined,
+            }))
+            .sort((a, b) => a.id.localeCompare(b.id)),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOptions([]);
+        setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <TagMultiSelect
+      value={value}
+      onChange={onChange}
+      options={options}
+      failed={failed}
+      ariaLabel="选择目标模型"
+      inputLabel="搜索或添加模型"
+      fieldPlaceholder="点开搜索勾选模型，自定义的也能加"
+      inputPlaceholder="搜模型名或厂商；回车把输入添加为自定义模型"
+      loadingText="模型目录加载中…"
+      emptyText="目录是空的，直接输入模型名回车添加"
+      failedText="模型目录还没同步好，直接输入模型名回车添加"
+      noMatchText="没有匹配的模型；回车把当前输入添加为自定义模型"
+    />
+  );
+}
+
+/** 分组白名单多选：候选是站点已采集价格数据里出现过的分组名（后端去重）；
+ *  新站点还没采过数据时没有候选，直接输入分组名回车添加。 */
+function GroupMultiSelect({ siteId, value, onChange }: { siteId: string; value: string[]; onChange: (next: string[]) => void }) {
+  const [options, setOptions] = useState<MultiOption[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    // 新站点没有已保存的 id，不请求；编辑时按保存时的站点 id 取已采集分组
+    if (!siteId) {
+      setOptions([]);
+      return;
+    }
+    let cancelled = false;
+    apiSend<{ groups: string[] }>(`/api/sites/${encodeURIComponent(siteId)}/groups`, "GET")
+      .then((data) => {
+        if (cancelled) return;
+        setOptions((data.groups ?? []).filter((item) => typeof item === "string" && item).map((id) => ({ id })));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOptions([]);
+        setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [siteId]);
+
+  return (
+    <TagMultiSelect
+      value={value}
+      onChange={onChange}
+      options={options}
+      failed={failed}
+      ariaLabel="选择分组白名单"
+      inputLabel="搜索或添加分组"
+      fieldPlaceholder="点开勾选已采集的分组，直接输入回车也能加"
+      inputPlaceholder="输入过滤分组；回车把输入添加为白名单"
+      loadingText="已采集分组加载中…"
+      emptyText="还没有采集到分组，直接输入分组名回车添加"
+      failedText="分组列表没拉到，直接输入分组名回车添加"
+      noMatchText="没有匹配的分组；回车把当前输入添加为白名单"
+    />
   );
 }
 
@@ -444,8 +538,27 @@ type RefreshOverride = Partial<{
 /** 测试续签接口的成功返回：新 access_token 用于回填各处认证头，refresh_token 可能已被服务端换新 */
 type RefreshTestResult = { access_token: string; refresh_token: string; refresh_token_rotated: boolean };
 
+/** 凭证注入的三个目标：与后端 AUTH_INJECT_TARGETS 一致 */
+type InjectTarget = "price" | "status" | "notice";
+
+const INJECT_TARGETS: InjectTarget[] = ["price", "status", "notice"];
+
+const INJECT_LABELS: Record<InjectTarget, string> = {
+  price: "价格采集",
+  status: "渠道状态",
+  notice: "站点公告",
+};
+
+/** 注入值里可引用的凭证变量（与后端 config.ACCESS_TOKEN_VAR / REFRESH_TOKEN_VAR 一致） */
+const ACCESS_VAR = "${access_token}";
+const REFRESH_VAR = "${refresh_token}";
+
+/** 一条凭证注入规则：头名（Authorization / cookie / 任意）+ 值模板（可用 ${access_token}、${refresh_token}） */
+type InjectRule = { header: string; value: string };
+
 /** 认证与续签子弹窗提交回主弹窗的字段集合 */
 type AuthFields = {
+  mode: AuthMode;
   authToken: string;
   method: string;
   url: string;
@@ -456,6 +569,7 @@ type AuthFields = {
   refreshTokenField: string;
   headersText: string;
   cookieName: string;
+  inject: Record<InjectTarget, InjectRule>;
 };
 
 /** 价格采集子弹窗提交回主弹窗的字段集合 */
@@ -475,6 +589,37 @@ type HeadlessForm = {
   headers: { key: string; value: string }[];
   waitSeconds: string;
 };
+
+/** 站点配置 → 凭证注入规则初值。
+ *  没配过 auth_inject 的老站点按当前生效的老行为回显（Authorization: Bearer <access token>），
+ *  用户看到的规则就是实际发出去的头，改完保存即收编进 auth_inject。 */
+function injectFromConfig(
+  config: Pick<SiteConfig, "auth_header" | "auth_prefix" | "auth_inject">,
+): Record<InjectTarget, InjectRule> {
+  const legacyHeader =
+    typeof config.auth_header === "string" && config.auth_header.trim() ? config.auth_header.trim() : "Authorization";
+  const legacyPrefix = typeof config.auth_prefix === "string" ? config.auth_prefix : "Bearer ";
+  const legacy: InjectRule = { header: legacyHeader, value: `${legacyPrefix}\${access_token}` };
+  return Object.fromEntries(
+    INJECT_TARGETS.map((target) => {
+      const rule = config.auth_inject?.[target];
+      const header = typeof rule?.header === "string" ? rule.header : "";
+      const value = typeof rule?.value === "string" ? rule.value : "";
+      return [target, header.trim() && value.trim() ? { header, value } : { ...legacy }];
+    }),
+  ) as Record<InjectTarget, InjectRule>;
+}
+
+/** 表单里的注入规则 → 站点配置：头名或值为空的整条丢掉（那处不注入） */
+function injectRules(inject: Record<InjectTarget, InjectRule>): Record<string, { header: string; value: string }> | null {
+  const rules = Object.fromEntries(
+    INJECT_TARGETS.filter((target) => inject[target].header.trim() && inject[target].value.trim()).map((target) => [
+      target,
+      { header: inject[target].header.trim(), value: inject[target].value.trim() },
+    ]),
+  );
+  return Object.keys(rules).length > 0 ? rules : null;
+}
 
 /** 站点配置 → 无头浏览器表单初值 */
 function headlessFromConfig(config: SiteConfig): HeadlessForm {
@@ -532,8 +677,37 @@ function applyRefreshResult(base: SiteConfig, result: RefreshTestResult): SiteCo
   };
 }
 
-/** 主弹窗中部的入口卡片：点击打开对应子弹窗；configured 时标注"已配置" */
-function EntryCard({
+/** 认证统一收口后，各接口 headers 里写死的 Authorization 全部移除：
+ *  认证只走站点级 auth_token 一处（价格/状态/公告自动带上），避免哪个接口残留旧 token 把请求头盖回旧值。 */
+function stripHardcodedAuth(base: SiteConfig): { config: SiteConfig; removed: boolean } {
+  let removed = false;
+  const cleanEntry = (entry: Record<string, unknown>): Record<string, unknown> => {
+    const headers = entry.headers;
+    if (!headers || typeof headers !== "object") return entry;
+    const all = headers as Record<string, unknown>;
+    const kept = Object.entries(all).filter(([key]) => key.toLowerCase() !== "authorization");
+    if (kept.length === Object.keys(all).length) return entry;
+    removed = true;
+    const next = { ...entry };
+    if (kept.length > 0) next.headers = Object.fromEntries(kept);
+    else delete next.headers;
+    return next;
+  };
+  const network = base.network ? cleanEntry({ ...base.network }) : base.network;
+  if (network && typeof network.ratio_url === "object" && network.ratio_url !== null) {
+    network.ratio_url = cleanEntry({ ...(network.ratio_url as Record<string, unknown>) });
+  }
+  const config: SiteConfig = {
+    ...base,
+    network: network as SiteConfig["network"],
+    networks: (base.networks ?? []).map((entry) => cleanEntry({ ...entry }) as typeof entry),
+    status: base.status ? (cleanEntry({ ...base.status }) as SiteConfig["status"]) : base.status,
+    notice: base.notice ? (cleanEntry({ ...base.notice }) as SiteConfig["notice"]) : base.notice,
+  };
+  return { config, removed };
+}
+
+/** 主弹窗中部的入口卡片：点击打开对应子弹窗；configured 时标注"已配置" */function EntryCard({
   title,
   desc,
   configured,
@@ -614,13 +788,17 @@ function HeadersEditor({
   rows,
   onChange,
   warningKeys,
-  hint = "只发给这个地址，同名的会盖掉站点通用认证头",
+  hint = "只发给这个地址；认证头在「认证与续签 → 凭证注入」里配，这里写的同名头会被它盖掉",
+  keyPlaceholder = "名字，如 X-API-Key",
+  valuePlaceholder = "值",
 }: {
   rows: KvRow[];
   onChange: (next: KvRow[]) => void;
   warningKeys: string[];
   /** 传 null 表示这条规则已在同一弹窗里说过一次，不再重复 */
   hint?: string | null;
+  keyPlaceholder?: string;
+  valuePlaceholder?: string;
 }) {
   const authKeys = warningKeys.filter((key) => !/cookie/i.test(key));
   const cookieKeys = warningKeys.filter((key) => /cookie/i.test(key));
@@ -630,24 +808,16 @@ function HeadersEditor({
       {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
       {authKeys.length > 0 && (
         <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-          {authKeys.join("、")} 里写死了认证头；续签拿到新 Token 后会自动换新，无需手动维护
+          {authKeys.join("、")} 里写死了认证头；认证统一在「认证与续签 → 凭证注入」里配，
+          这里写的同名头请求时会被它盖掉（保存时也会移除）
         </span>
       )}
       {cookieKeys.length > 0 && (
         <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-          {cookieKeys.join("、")} 里写死了 Cookie；续签不会更新它，token 换了要手动改这里
+          {cookieKeys.join("、")} 里写死了 Cookie；凭证注入没往这处塞 Cookie 时照常发送，塞了则以注入的为准
         </span>
       )}
-      <KeyValueRows
-        rows={rows}
-        onChange={onChange}
-        keyLabel="名字"
-        valueLabel="值"
-        keyPlaceholder="名字，如 X-API-Key"
-        valuePlaceholder="值"
-        addLabel="添加请求头"
-        ariaPrefix="请求头"
-      />
+      <KeyValueRows rows={rows} onChange={onChange} keyPlaceholder={keyPlaceholder} valuePlaceholder={valuePlaceholder} ariaPrefix="请求头" />
     </div>
   );
 }
@@ -725,7 +895,7 @@ function NoticeSubModal({
       <div style={{ display: "grid", gap: 14 }}>
         <SettingRow
           label="站点公告 URL"
-          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记成事件。公告请求会自动带上价格接口的认证请求头，不用重复填"
+          hint="留空会自动抓站点的 /api/notice（new-api/one-api 都是这个地址）；公告内容有变化时会记成事件。公告请求会自动带上站点认证，不用重复填"
         >
           <Input
             value={url}
@@ -742,18 +912,46 @@ function NoticeSubModal({
 
 /* ---------- 子弹窗：认证与续签 ---------- */
 
+/** 用户常把浏览器里整段 Cookie 原样贴进来：去掉 cookie: 头前缀和 new_api_refresh= 名字前缀，只留纯凭据 */
+function cleanRefreshToken(text: string, cookieName: string): string {
+  let value = text.trim();
+  const headerPrefix = value.match(/^cookie\s*:\s*/i);
+  if (headerPrefix) value = value.slice(headerPrefix[0].length).trim();
+  const name = (cookieName.trim() || "new_api_refresh").toLowerCase();
+  if (value.includes(";")) {
+    // 整条 Cookie 串（session=…; new_api_refresh=…）：挑出轮换 Cookie 那一段
+    for (const pair of value.split(";")) {
+      const [key, ...rest] = pair.trim().split("=");
+      if (key.trim().toLowerCase() === name && rest.length > 0) return rest.join("=");
+    }
+    return value;
+  }
+  const eq = value.indexOf("=");
+  if (eq > 0 && value.slice(0, eq).trim().toLowerCase() === name) return value.slice(eq + 1).trim();
+  return value;
+}
+
 function AuthSubModal({
   initial,
+  priceUrl,
   runTest,
   onCommit,
   onClose,
 }: {
-  initial: AuthFields;
+  /** 打开时的草稿初值；认证方式不传，由字段反推 */
+  initial: Omit<AuthFields, "mode">;
+  /** 价格采集地址：登录会话模板的续签域名从它推导 */
+  priceUrl: string;
   /** 真实调用续签接口；由主弹窗基于当前草稿组装完整配置发请求 */
   runTest: (overrides: RefreshOverride) => Promise<{ ok: boolean; text: string; result?: RefreshTestResult }>;
   onCommit: (fields: AuthFields, rotation?: RefreshTestResult) => void;
-  onClose: () => void;
+  /** 关闭时带回未落草稿的换新凭证（轮换型凭据取消也不能丢）；主弹窗只接凭证、其他改动照旧丢弃 */
+  onClose: (rotation?: RefreshTestResult) => void;
 }) {
+  // 认证方式由当前配置反推：配了续签是登录会话，配了站点令牌是固定令牌
+  const [mode, setModeState] = useState<AuthMode>(() =>
+    initial.url.trim() || initial.cookieName.trim() ? "session" : initial.authToken.trim() ? "token" : "none",
+  );
   const [authToken, setAuthToken] = useState(initial.authToken);
   const [method, setMethod] = useState(initial.method);
   const [url, setUrl] = useState(initial.url);
@@ -762,15 +960,42 @@ function AuthSubModal({
   const [sample, setSample] = useState(initial.sample);
   const [headersRows, setHeadersRows] = useState<KvRow[]>(dictToRows(initial.headersText));
   const [cookieName, setCookieName] = useState(initial.cookieName);
+  // AI 分析出的字段路径没有表单入口，展示出来让用户知道分析到了什么；模板预填时本地补默认值，确定才回写
+  const [accessTokenField, setAccessTokenField] = useState(initial.accessTokenField);
+  const [refreshTokenField, setRefreshTokenField] = useState(initial.refreshTokenField);
+  // 凭证注入规则：把上面的 token 塞进价格/渠道状态/公告三处请求，头名与值都可改
+  const [inject, setInject] = useState<Record<InjectTarget, InjectRule>>(initial.inject);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
   const [rotation, setRotation] = useState<RefreshTestResult | null>(null);
-
-  // AI 分析出的字段路径没有表单入口，展示出来让用户知道分析到了什么
-  const accessTokenField = initial.accessTokenField;
-  const refreshTokenField = initial.refreshTokenField;
+  // 标准 new-api 模板（GET + Cookie 凭据、无请求体）配好时高级选项整体收起：贴凭据 → 测试 就完了；
+  // 模板可能在弹窗里切换方式时才带出，所以动态判定，用户手动展开/收起后以手动为准
+  const [advancedOverride, setAdvancedOverride] = useState<boolean | null>(null);
+  // 凭据获取步骤默认折叠，主界面只留一句"凭据是什么"
+  const [showHowTo, setShowHowTo] = useState(false);
+  const standardTemplate =
+    url.trim() !== "" &&
+    body.trim() === "" &&
+    cookieName.trim().toLowerCase() === "new_api_refresh" &&
+    headersRows.some((row) => row.key.trim().toLowerCase() === "cookie" && row.value.includes("new_api_refresh="));
+  const showAdvanced = advancedOverride ?? !standardTemplate;
   const headersText = rowsToText(headersRows);
+
+  // 切到登录会话且续签还空白时，带出 new-api 型模板（域名从价格采集地址推导）；已填过的一律不动
+  function setMode(next: string) {
+    const nextMode: AuthMode = next === "session" ? "session" : next === "token" ? "token" : "none";
+    setModeState(nextMode);
+    setTestResult(null);
+    if (nextMode !== "session") return;
+    if (url.trim() || cookieName.trim()) return;
+    const origin = originOf(priceUrl);
+    if (origin) setUrl(`${origin}/api/user/auth/refresh`);
+    if (headersRows.every((row) => !row.key.trim() && !row.value.trim())) {
+      setHeadersRows([{ key: "cookie", value: "new_api_refresh=${refresh_token}" }]);
+    }
+    if (!cookieName.trim()) setCookieName("new_api_refresh");
+  }
 
   // 续签即时校验：地址格式、请求体占位符、响应案例 JSON，填错当场提示不用等保存
   const urlError = url.trim() && !/^https?:\/\/\S+\.\S+/.test(url.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
@@ -789,46 +1014,54 @@ function AuthSubModal({
     }
   })();
 
+  // 凭证注入即时校验：头名和值成对填；引用 ${refresh_token} 需要「登录会话」模式才有值
+  const injectError = (() => {
+    const half = INJECT_TARGETS.find((target) => Boolean(inject[target].header.trim()) !== Boolean(inject[target].value.trim()));
+    return half ? `${INJECT_LABELS[half]}的头名和值要成对填；那处不想注入就两个都清空` : "";
+  })();
+  const injectWarning =
+    mode === "token" && INJECT_TARGETS.some((target) => inject[target].value.includes(REFRESH_VAR))
+      ? `「固定令牌」没有 Refresh Token，值里引用 ${REFRESH_VAR} 的规则采集时会报错；要用它就把认证方式换成「登录会话自动续签」`
+      : "";
+
   const overrides = (): RefreshOverride => ({
     method,
     url,
-    refresh_token: token,
+    refresh_token: cleanRefreshToken(token, cookieName),
     body,
     response_sample: sample,
     headers_text: headersText,
     refresh_cookie_name: cookieName,
   });
   const fields = (): AuthFields => ({
+    mode,
     authToken,
     method,
     url,
-    token,
+    token: cleanRefreshToken(token, cookieName),
     body,
     sample,
     accessTokenField,
     refreshTokenField,
     headersText,
     cookieName,
+    inject,
   });
 
-  // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
   function onMethodChange(next: string) {
     setMethod(next);
-    if (next !== "GET" && !body.trim()) setBody('{"refresh_token": "${refresh_token}"}');
     setTestResult(null);
   }
 
   function onUrlChange(next: string) {
     setUrl(next);
-    // 首次填地址时自动补上标准请求体，手填过的不覆盖
-    if (next.trim() && !body.trim()) setBody('{"refresh_token": "${refresh_token}"}');
     setTestResult(null);
   }
 
   // 真实调用一次续签接口：验证地址、凭证、响应结构是否都能对上
   async function test() {
     if (!url.trim()) {
-      setTestResult({ ok: false, text: "先填续签接口地址再测试" });
+      setTestResult({ ok: false, text: "先点开「续签接口」填上地址再测试" });
       return;
     }
     setTesting(true);
@@ -837,8 +1070,10 @@ function AuthSubModal({
       const outcome = await runTest(overrides());
       setTestResult({ ok: outcome.ok, text: outcome.text });
       if (outcome.ok && outcome.result) {
-        // 新 refresh token 先回填到本弹窗输入框，点确定才落草稿
+        // 新 token 先回填到本弹窗输入框，点确定才落草稿：Refresh Token 供下次续签，
+        // Access Token 就是采集请求头里带的那份，测试换新的直接填上让用户看得见
         setToken(outcome.result.refresh_token);
+        setAuthToken(outcome.result.access_token);
         setRotation(outcome.result);
       }
     } finally {
@@ -847,122 +1082,244 @@ function AuthSubModal({
   }
 
   function commit() {
+    // 登录会话必须有续签地址，否则配置落不下去；不打算配就切回其他方式
+    if (mode === "session" && !url.trim()) {
+      setTestResult({ ok: false, text: "先点开「续签接口」填上地址；不配认证就把方式切回「无需认证」" });
+      return;
+    }
+    if (injectError) {
+      setTestResult({ ok: false, text: injectError });
+      return;
+    }
     onCommit(fields(), rotation ?? undefined);
   }
 
+  // 取消也把换新凭证带回主弹窗：测试这一下就可能把旧 Refresh Token 作废，丢掉只能回浏览器重新抓。
+  // 测试后又手改过任一 token 输入框的，以手改为准，全部丢弃
+  function discard() {
+    const untouched =
+      rotation !== null &&
+      token.trim() === rotation.refresh_token &&
+      authToken.trim() === rotation.access_token;
+    onClose(untouched && rotation ? rotation : undefined);
+  }
+
   return (
-    <Modal open onClose={onClose} title="认证与续签" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
+    <Modal open onClose={discard} title="认证与续签" width={640} footer={<SubModalFooter onCancel={discard} onConfirm={commit} />}>
       <div style={{ display: "grid", gap: 14 }}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <span style={{ fontSize: 13.5 }}>站点令牌</span>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            站点级的 API Key，会自动加到价格、渠道状态、公告所有采集请求的认证头（默认 Authorization: Bearer …）；
-            公开接口留空。要换头名或前缀，去高级 JSON 调 auth_header / auth_prefix
-          </span>
-          <Input
-            value={authToken}
-            onChange={setAuthToken}
-            placeholder="sk-… 或令牌原文"
-            style={{ width: "100%" }}
+        {/* 三种方式互斥，选中才显示对应输入区；被切走方式的配置在点确定时清掉 */}
+        <SettingRow
+          label="认证方式"
+          hint={
+            mode === "session"
+              ? "站点登录 token 短效时，配一个续签接口：价格、渠道状态、公告被拒时自动换新 token 重试"
+              : mode === "token"
+                ? "填站点级的 API Key，价格、渠道状态、公告采集自动带上认证头"
+                : "公开接口不用认证；之后要认证了随时回来切"
+          }
+        >
+          <Seg
+            value={mode}
+            onChange={setMode}
+            options={(Object.keys(AUTH_LABELS) as AuthMode[]).map((value) => ({ value, label: AUTH_LABELS[value] }))}
           />
-        </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          <span style={{ fontSize: 13.5 }}>Token 续签</span>
+        </SettingRow>
+        {mode === "none" && (
           <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            站点认证 token 短效时，配一个续签接口：采集遇到"需认证"就自动调它换新 token 并重试
+            采集请求不带任何认证；如果某个接口的请求头里手写过凭证，仍按原样发送，不受这里影响
           </span>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Sel
-              value={method}
-              onChange={onMethodChange}
-              options={["GET", "POST", "PUT", "PATCH"].map((item) => ({ value: item, label: item }))}
-              style={{ width: 92 }}
-            />
-            <Input
-              value={url}
-              onChange={onUrlChange}
-              placeholder="续签接口地址，如 https://example.com/api/v1/auth/refresh"
-              style={{ flex: 1, minWidth: 220 }}
-            />
-          </div>
-          {urlError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{urlError}</span>}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Input
-              value={token}
-              onChange={(value) => {
-                setToken(value);
-                setTestResult(null);
-              }}
-              placeholder="Refresh Token（或 Cookie 值），续签成功后会自动更新"
-              style={{ flex: 1, minWidth: 220 }}
-            />
-            <Input
-              value={body}
-              onChange={(value) => {
-                setBody(value);
-                setTestResult(null);
-              }}
-              placeholder={'请求体，如 {"refresh_token": "${refresh_token}"}'}
-              style={{ flex: 1, minWidth: 220 }}
-            />
-          </div>
-          {bodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{bodyError}</span>}
-          <HeadersEditor
-            rows={headersRows}
-            onChange={(next) => {
-              setHeadersRows(next);
-              setTestResult(null);
-            }}
-            warningKeys={[]}
-            hint="只发给续签接口；凭据放在 Cookie 里的站点（如 new-api）填 cookie: new_api_refresh=${refresh_token}，续签后自动代入最新值"
-          />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Input
-              value={cookieName}
-              onChange={(value) => {
-                setCookieName(value);
-                setTestResult(null);
-              }}
-              placeholder="轮换 Cookie 名，选填，如 new_api_refresh"
-              style={{ flex: 1, minWidth: 220 }}
-            />
-          </div>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            有的站点（new-api 系）Refresh Token 用一次就换新、新值只在响应 Set-Cookie 里：填了轮换
-            Cookie 名，续签后会自动接住新值接力续签，不用回浏览器重新抓
-          </span>
-          <textarea
-            className="input mono textarea"
-            value={sample}
-            onChange={(event) => setSample(event.target.value)}
-            rows={3}
-            spellCheck={false}
-            placeholder="响应数据结构案例（选填）：贴一段续签接口实际返回的 JSON，保存时会自动分析出新 token 在哪"
-            style={{ fontSize: 12 }}
-          />
-          {sampleError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{sampleError}</span>}
-          {(accessTokenField.trim() || refreshTokenField.trim()) && (
+        )}
+        {mode === "token" && (
+          <div style={{ display: "grid", gap: 8 }}>
+            <span style={{ fontSize: 13.5 }}>站点令牌</span>
             <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              已识别 token 位置：
-              {[accessTokenField.trim() && `access_token = ${accessTokenField.trim()}`, refreshTokenField.trim() && `refresh_token = ${refreshTokenField.trim()}`]
-                .filter(Boolean)
-                .join(" · ")}
+              会自动加到价格、渠道状态、公告所有采集请求的认证头（默认 Authorization: Bearer …）；
+              保存后各接口请求头里手写的 Authorization 会自动移除，认证只走这一处
             </span>
-          )}
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            续签请求会自动带上上面的站点请求头；不贴案例时按常见返回结构自动找 token，贴了更准
-          </span>
-          <div>
-            <Btn variant="text" size="sm" loading={testing} onClick={test}>
-              测试续签
-            </Btn>
+            <Input value={authToken} onChange={setAuthToken} placeholder="sk-… 或令牌原文" style={{ width: "100%" }} />
           </div>
-          {testResult && (
-            <span style={{ fontSize: 12.5, color: testResult.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
-              {testResult.text}
+        )}
+        {mode === "session" && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <span style={{ fontSize: 13.5, flex: 1 }}>Refresh Token</span>
+                <Btn variant="text" size="sm" onClick={() => setShowHowTo(!showHowTo)}>
+                  {showHowTo ? "收起" : "怎么获取？"}
+                </Btn>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Input
+                  value={token}
+                  onChange={(value) => {
+                    setToken(value);
+                    setTestResult(null);
+                  }}
+                  placeholder="粘贴 Cookie 里的 new_api_refresh 值，即续签请求里的 ${refresh_token}"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <Btn loading={testing} onClick={test}>
+                  测试续签
+                </Btn>
+              </div>
+              {testResult && (
+                <span style={{ fontSize: 12.5, color: testResult.ok ? "var(--tone-green-text)" : "var(--tone-red-text)" }}>
+                  {testResult.text}
+                </span>
+              )}
+              {showHowTo && (
+                <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                  登录站点网页版 → 按 F12 打开开发者工具 → 应用（Application）→ Cookies → 找到 new_api_refresh，复制它的值贴到上面，
+                  整段带着 cookie: 前缀直接贴也认得。贴完回浏览器重新登录一次站点，两边各用各的会话；凭据最长 30 天，到期重抓一次更新
+                </span>
+              )}
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 13.5 }}>Access Token</span>
+              <Input
+                value={authToken}
+                onChange={(value) => {
+                  setAuthToken(value);
+                  setTestResult(null);
+                }}
+                placeholder="选填：F12 → 网络 → 任一接口请求头里 Authorization 的 Bearer 后面那段"
+                style={{ width: "100%" }}
+              />
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                采集价格、渠道状态、公告时带的登录凭证就是它（Authorization: Bearer …）；填了立刻能用，留空也行——
+                第一次采集被拒时会自动续签补上，之后每次续签也会自动换成新的
+              </span>
+            </div>
+            <button type="button" className="disclosure-row" aria-expanded={showAdvanced} onClick={() => setAdvancedOverride(!showAdvanced)}>
+              <span className="caret" aria-hidden>
+                ▸
+              </span>
+              <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>续签接口</span>
+              {url.trim() ? (
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-3)" }}>
+                  {method} {url.trim()}
+                </span>
+              ) : (
+                <span style={{ flex: 1, minWidth: 0, color: "var(--tone-red-text)" }}>未配置，点这行填上</span>
+              )}
+              {standardTemplate && (
+                <span style={{ fontSize: 11, lineHeight: 1.6, padding: "0 7px", borderRadius: 999, background: "var(--tone-blue-bg)", color: "var(--tone-blue-text)", whiteSpace: "nowrap" }}>
+                  new-api 模板
+                </span>
+              )}
+            </button>
+            {showAdvanced && (
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "color-mix(in srgb, var(--panel-2) 45%, var(--panel))", padding: "10px 12px", display: "grid", gap: 14 }}>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Sel
+                      value={method}
+                      onChange={onMethodChange}
+                      options={["GET", "POST", "PUT", "PATCH"].map((item) => ({ value: item, label: item }))}
+                      style={{ width: 92 }}
+                    />
+                    <Input
+                      value={url}
+                      onChange={onUrlChange}
+                      placeholder="续签接口地址，如 https://example.com/api/v1/auth/refresh"
+                      style={{ flex: 1, minWidth: 220 }}
+                    />
+                  </div>
+                  {urlError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{urlError}</span>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, height: 1, background: "var(--border-strong)" }} />
+                  <span style={{ fontSize: 12, color: "var(--text-3)", whiteSpace: "nowrap" }}>请求细节（一般不用改）</span>
+                  <span style={{ flex: 1, height: 1, background: "var(--border-strong)" }} />
+                </div>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 13.5 }}>请求体</span>
+                  <Input
+                    value={body}
+                    onChange={(value) => {
+                      setBody(value);
+                      setTestResult(null);
+                    }}
+                    placeholder={'选填：接口要 JSON 参数才填，如 {"refresh_token": "${refresh_token}"}；凭据走 Cookie 的留空'}
+                    style={{ width: "100%" }}
+                  />
+                  {bodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{bodyError}</span>}
+                </div>
+                <HeadersEditor
+                  rows={headersRows}
+                  onChange={(next) => {
+                    setHeadersRows(next);
+                    setTestResult(null);
+                  }}
+                  warningKeys={[]}
+                  hint={null}
+                  keyPlaceholder="名字，如 cookie"
+                  valuePlaceholder="值，如 new_api_refresh=${refresh_token}，续签自动代入最新值"
+                />
+                <div style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 13.5 }}>轮换 Cookie 名</span>
+                  <Input
+                    value={cookieName}
+                    onChange={(value) => {
+                      setCookieName(value);
+                      setTestResult(null);
+                    }}
+                    placeholder="如 new_api_refresh；填了能自动接住换新后的凭据，不用回浏览器重抓"
+                    style={{ width: "100%" }}
+                  />
+                </div>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <span style={{ fontSize: 13.5 }}>响应案例</span>
+                  <textarea
+                    className="input mono textarea"
+                    value={sample}
+                    onChange={(event) => setSample(event.target.value)}
+                    rows={3}
+                    spellCheck={false}
+                    placeholder="选填：贴一段续签接口实际返回的 JSON，保存时自动分析新 token 在哪；不贴按常见结构找"
+                    style={{ fontSize: 12 }}
+                  />
+                  {sampleError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{sampleError}</span>}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* 凭证注入：把上面的 token 送到三处采集请求，固定令牌与登录会话都适用 */}
+        {mode !== "none" && (
+          <div style={{ display: "grid", gap: 8 }}>
+            <span style={{ fontSize: 13.5 }}>凭证注入</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+              决定上面的 token 怎么带进采集请求：头名填 Authorization 就是认证头，填 cookie 就塞进 Cookie；
+              值里可以用 {ACCESS_VAR} 和 {REFRESH_VAR}，续签换新后自动跟着变。头名清空 = 那处不带
             </span>
-          )}
-        </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {INJECT_TARGETS.map((target) => (
+                <div key={target} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ width: 64, fontSize: 12.5, color: "var(--text-2)", flexShrink: 0 }}>
+                    {INJECT_LABELS[target]}
+                  </span>
+                  <Input
+                    value={inject[target].header}
+                    ariaLabel={`${INJECT_LABELS[target]}注入的头名`}
+                    onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], header: value } })}
+                    placeholder="头名，如 Authorization 或 cookie"
+                    style={{ flex: 1, minWidth: 0 }}
+                  />
+                  <Input
+                    value={inject[target].value}
+                    ariaLabel={`${INJECT_LABELS[target]}注入的值`}
+                    onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], value } })}
+                    placeholder={`值，如 Bearer ${ACCESS_VAR}`}
+                    style={{ flex: 1.6, minWidth: 0 }}
+                  />
+                </div>
+              ))}
+            </div>
+            {injectError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{injectError}</span>}
+            {injectWarning && <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>{injectWarning}</span>}
+          </div>
+        )}
       </div>
     </Modal>
   );
@@ -974,60 +1331,60 @@ function AuthSubModal({
 function KeyValueRows({
   rows,
   onChange,
-  keyLabel,
-  valueLabel,
   keyPlaceholder,
   valuePlaceholder,
-  addLabel,
   ariaPrefix,
 }: {
   rows: { key: string; value: string }[];
   onChange: (next: { key: string; value: string }[]) => void;
-  keyLabel: string;
-  valueLabel: string;
   keyPlaceholder: string;
   valuePlaceholder: string;
-  addLabel: string;
   ariaPrefix: string;
 }) {
+  // 底部永远留一行空行当"添加"入口（只在显示层补，不进数据）；保存时空行自动忽略
+  const last = rows[rows.length - 1];
+  const display = !last || last.key.trim() || last.value.trim() ? [...rows, { key: "", value: "" }] : rows;
   return (
     <div style={{ display: "grid", gap: 6 }}>
-      {rows.map((row, index) => (
-        <div key={index} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Input
-            value={row.key}
-            ariaLabel={`${ariaPrefix} ${keyLabel} ${index + 1}`}
-            onChange={(next) => onChange(rows.map((item, i) => (i === index ? { ...item, key: next } : item)))}
-            placeholder={keyPlaceholder}
-            style={{ flex: 1, minWidth: 120 }}
-          />
-          <Input
-            value={row.value}
-            ariaLabel={`${ariaPrefix} ${valueLabel} ${index + 1}`}
-            onChange={(next) => onChange(rows.map((item, i) => (i === index ? { ...item, value: next } : item)))}
-            placeholder={valuePlaceholder}
-            style={{ flex: 2, minWidth: 160 }}
-          />
-          <Btn
-            variant="text"
-            size="sm"
-            ariaLabel={`删除第 ${index + 1} 条`}
-            onClick={() => onChange(rows.filter((_, i) => i !== index))}
-          >
-            删除
-          </Btn>
-        </div>
-      ))}
-      <div>
-        <Btn variant="text" size="sm" onClick={() => onChange([...rows, { key: "", value: "" }])}>
-          {addLabel}
-        </Btn>
-      </div>
+      {display.map((row, index) => {
+        const ghost = index === display.length - 1 && !row.key.trim() && !row.value.trim();
+        return (
+          <div key={index} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Input
+              value={row.key}
+              ariaLabel={`${ariaPrefix} 名字 ${index + 1}`}
+              onChange={(next) => onChange(display.map((item, i) => (i === index ? { ...item, key: next } : item)))}
+              placeholder={keyPlaceholder}
+              style={{ flex: 1, minWidth: 120 }}
+            />
+            <Input
+              value={row.value}
+              ariaLabel={`${ariaPrefix} 值 ${index + 1}`}
+              onChange={(next) => onChange(display.map((item, i) => (i === index ? { ...item, value: next } : item)))}
+              placeholder={valuePlaceholder}
+              style={{ flex: 2, minWidth: 160 }}
+            />
+            {ghost ? (
+              <span style={{ width: 28 }} aria-hidden />
+            ) : (
+              <Btn
+                variant="text"
+                size="sm"
+                ariaLabel={`删除第 ${index + 1} 条`}
+                title="删除"
+                onClick={() => onChange(display.filter((_, i) => i !== index))}
+              >
+                <span style={{ fontSize: 15, lineHeight: 1 }}>×</span>
+              </Btn>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-/** 无头浏览器配置区（受控）：价格采集子弹窗内使用，开关开启后展开 Cookie/localStorage/等待时间 */
+/** 无头浏览器配置区（受控）：价格采集子弹窗内使用；开关在「采集方式」分段控件上，这里按形态展开内容 */
 function HeadlessSection({
   value,
   onChange,
@@ -1038,13 +1395,7 @@ function HeadlessSection({
   // Cookie 与 localStorage 统一用 key/value 行编辑，写回时再映射回 name/value
   const cookieRows = value.cookies.map((item) => ({ key: item.name, value: item.value }));
   return (
-    <div style={{ display: "grid", gap: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-      <SettingRow
-        label="用无头浏览器打开网页（注入登录信息）"
-        hint="开启后每次都用无头浏览器打开；关闭时先普通抓取，抓不到会自动换无头浏览器重试一次"
-      >
-        <Switch checked={value.enabled} onChange={(next) => onChange({ ...value, enabled: next })} />
-      </SettingRow>
+    <div style={{ display: "grid", gap: 14 }}>
       {!value.enabled && (
         <div style={{ display: "grid", gap: 6 }}>
           <span style={{ fontSize: 13.5 }}>自定义请求头</span>
@@ -1054,11 +1405,8 @@ function HeadlessSection({
           <KeyValueRows
             rows={value.headers}
             onChange={(rows) => onChange({ ...value, headers: rows })}
-            keyLabel="名字"
-            valueLabel="值"
             keyPlaceholder="名字，如 X-Token"
             valuePlaceholder="值"
-            addLabel="添加请求头"
             ariaPrefix="自定义请求头"
           />
         </div>
@@ -1068,31 +1416,28 @@ function HeadlessSection({
           <div style={{ display: "grid", gap: 6 }}>
             <span style={{ fontSize: 13.5 }}>Cookie</span>
             <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              只填名字和值就行，域名、路径会按采集地址自动带上
+              登录站点后按 F12 → 应用（Application）→ Cookies，把需要的键值抄进来；只填名字和值，域名、路径会按采集地址自动带上
             </span>
             <KeyValueRows
               rows={cookieRows}
               onChange={(rows) =>
                 onChange({ ...value, cookies: rows.map((row) => ({ name: row.key, value: row.value })) })
               }
-              keyLabel="名字"
-              valueLabel="值"
               keyPlaceholder="名字，如 session"
               valuePlaceholder="值，如 abc123"
-              addLabel="添加 Cookie"
               ariaPrefix="Cookie"
             />
           </div>
           <div style={{ display: "grid", gap: 6 }}>
             <span style={{ fontSize: 13.5 }}>localStorage</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+              浏览器不会把 localStorage 发给服务器，它只在页面内部被脚本读取；页面的 JS 靠它取登录信息时才需要填
+            </span>
             <KeyValueRows
               rows={value.localStorage}
               onChange={(rows) => onChange({ ...value, localStorage: rows })}
-              keyLabel="键"
-              valueLabel="值"
               keyPlaceholder="键，如 token"
               valuePlaceholder="值"
-              addLabel="添加一项"
               ariaPrefix="localStorage"
             />
           </div>
@@ -1101,11 +1446,8 @@ function HeadlessSection({
             <KeyValueRows
               rows={value.headers}
               onChange={(rows) => onChange({ ...value, headers: rows })}
-              keyLabel="名字"
-              valueLabel="值"
               keyPlaceholder="名字，如 X-Token"
               valuePlaceholder="值"
-              addLabel="添加请求头"
               ariaPrefix="自定义请求头"
             />
           </div>
@@ -1124,7 +1466,12 @@ function HeadlessSection({
   );
 }
 
-/* ---------- 子弹窗：价格采集（价格接口 + 无头浏览器 + 倍率接口） ---------- */
+/* ---------- 子弹窗：价格采集（采集方式 + 价格接口 + 无头浏览器 + 倍率接口） ---------- */
+
+/** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面）。只作用于价格采集 */
+type CollectMode = "api" | "browser";
+
+const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（无头浏览器）" };
 
 function PriceSubModal({
   initial,
@@ -1143,6 +1490,14 @@ function PriceSubModal({
   const [headless, setHeadless] = useState(initial.headless);
   const [ratioUrl, setRatioUrl] = useState(initial.ratioUrl);
   const [ratioHeaderRows, setRatioHeaderRows] = useState<KvRow[]>(() => dictToRows(initial.ratioHeadersText));
+
+  // 采集方式只影响价格这一路（渠道状态、公告始终走接口），所以收在本弹窗里
+  function setCollectMode(next: CollectMode) {
+    const enabled = next === "browser";
+    if (enabled === headless.enabled) return;
+    const waitSeconds = enabled && !headless.waitSeconds.trim() ? "3" : headless.waitSeconds;
+    setHeadless({ ...headless, enabled, waitSeconds });
+  }
 
   function commit() {
     // 等待时间收敛到 0~60；填空或非法回落默认 3
@@ -1172,6 +1527,24 @@ function PriceSubModal({
       footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}
     >
       <div style={{ display: "grid", gap: 14 }}>
+        {/* 采集方式只作用于价格采集，模式定了才知道下面该展示接口请求头还是浏览器登录态 */}
+        <SettingRow
+          label="采集方式"
+          hint={
+            headless.enabled
+              ? "页面要在浏览器里跑 JS 才能显示价格（直接抓是空壳，常见于单页应用）时选它：每次都用真浏览器打开并渲染，Cookie、localStorage 登录态一并注入"
+              : "先当接口请求（Cookie 等登录态照常随请求头带上）；抓到的 HTML 里没有价格时自动换无头浏览器重试，一般站点选这个就够"
+          }
+        >
+          <Seg
+            value={headless.enabled ? "browser" : "api"}
+            onChange={(value) => setCollectMode(value === "browser" ? "browser" : "api")}
+            options={(Object.keys(COLLECT_LABELS) as CollectMode[]).map((value) => ({
+              value,
+              label: COLLECT_LABELS[value],
+            }))}
+          />
+        </SettingRow>
         {/* 上块：价格接口 */}
         <div style={{ display: "grid", gap: 14 }}>
           <SettingRow
@@ -1271,34 +1644,25 @@ function JsonSubModal({
 /** 子弹窗标识：主弹窗同一时间最多打开一个 */
 type SubKey = "price" | "auth" | "status" | "notice" | "json";
 
-/** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面） */
-type CollectMode = "api" | "browser";
-
 /** 认证方式：无需认证 / 固定令牌 / 登录会话自动续签 */
 type AuthMode = "none" | "token" | "session";
 
-const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（无头浏览器）" };
 const AUTH_LABELS: Record<AuthMode, string> = { none: "无需认证", token: "固定令牌", session: "登录会话自动续签" };
-
-/**
- * 已有配置 → 场景反推：配了续签是登录会话，配了站点令牌是固定令牌，开了无头是网页模式。
- * 各接口请求头里手写的认证头不算——那是接口自己的配置，不是站点级认证，反推成"固定令牌"
- * 会和「认证与续签」卡片的未配置状态自相矛盾。
- */
-function sceneFromConfig(config: SiteConfig): { collect: CollectMode; auth: AuthMode } {
-  const auth: AuthMode =
-    config.token_refresh?.url || config.token_refresh?.refresh_cookie_name
-      ? "session"
-      : typeof config.auth_token === "string" && config.auth_token.trim() !== ""
-        ? "token"
-        : "none";
-  return { collect: config.network?.headless?.enabled === true ? "browser" : "api", auth };
-}
 
 /** 从采集地址取站点域名（new-api 型续签地址按它推导）；不是合法 URL 返回空串 */
 function originOf(text: string): string {
   try {
     return new URL(text.trim()).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** 采集地址域名 → 站点 ID：小写、非字母数字转连字符（aihub365.cn → aihub365-cn）；解析失败返回空串 */
+function siteIdFromUrl(text: string): string {
+  try {
+    const host = new URL(text.trim()).hostname.replace(/^www\./, "").toLowerCase();
+    return host.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   } catch {
     return "";
   }
@@ -1313,14 +1677,11 @@ function shortenUrlText(text: string, max = 46): string {
 function SiteModal({
   initial,
   isNew,
-  unpriced,
   onClose,
   onSaved,
 }: {
   initial: SiteConfig;
   isNew: boolean;
-  /** 已保存配置里配了、但快照里始终没有价格的目标模型 */
-  unpriced: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1353,6 +1714,8 @@ function SiteModal({
     (initial.models ?? []).filter((item): item is string => typeof item === "string"),
   );
   const [endpointHeadersText, setEndpointHeadersText] = useState(dictToText(initial.network?.headers));
+  // 站点令牌（固定令牌方式的输入值）：提为状态，认证弹窗每次打开都以最新草稿为初值
+  const [authToken, setAuthToken] = useState(typeof initial.auth_token === "string" ? initial.auth_token : "");
   // Token 续签：站点认证 token 短效时，配置一个续签接口，采集遇到"需认证"就自动换新 token 并重试
   const [refreshMethod, setRefreshMethod] = useState(
     typeof initial.token_refresh?.method === "string" ? initial.token_refresh.method.toUpperCase() : "POST",
@@ -1383,14 +1746,6 @@ function SiteModal({
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
-  // 当前场景从高级 JSON 实时派生：预填落进 JSON 后，场景下拉的选中值立即跟着变
-  const sceneNow = useMemo(() => {
-    try {
-      return sceneFromConfig(JSON.parse(advanced) as SiteConfig);
-    } catch {
-      return sceneFromConfig(initial);
-    }
-  }, [advanced, initial]);
   // 「认证与续签」卡片的已配置状态：续签地址或站点令牌任一存在
   const authTokenConfigured = useMemo(() => {
     try {
@@ -1398,6 +1753,15 @@ function SiteModal({
       return typeof parsed.auth_token === "string" && parsed.auth_token.trim() !== "";
     } catch {
       return false;
+    }
+  }, [advanced]);
+  // 凭证注入初值：以当前草稿为准；高级 JSON 非法时退回默认规则，不打断正在编辑的 JSON
+  const injectInitial = useMemo(() => {
+    try {
+      const parsed = JSON.parse(advanced) as SiteConfig;
+      return injectFromConfig(parsed !== null && typeof parsed === "object" ? parsed : {});
+    } catch {
+      return injectFromConfig({});
     }
   }, [advanced]);
 
@@ -1418,8 +1782,8 @@ function SiteModal({
     }
   })();
 
-  // 认证凭证（auth_token/Cookie）是站点级通用的，价格、渠道状态、公告采集都会自动带上；
-  // 哪个接口的 headers 里手写了 Authorization/Cookie 就会盖掉通用凭证（续签换新后旧的会失效），
+  // 认证凭证（auth_token/Cookie）由「认证与续签 → 凭证注入」按目标下发到价格/状态/公告；
+  // 哪个接口的 headers 里手写了认证头，请求时就会被注入的头盖掉（保存时也会移除），
   // 这里按地址分组检测，提醒展示在各自子弹窗的请求头编辑区
   const headerOverrideWarnings = (() => {
     let base: SiteConfig;
@@ -1582,7 +1946,7 @@ function SiteModal({
       });
       return {
         ok: true,
-        text: `通了，新 token 已填入，点保存生效${result.refresh_token_rotated ? "（Refresh Token 已换新）" : ""}`,
+        text: `通了，新 token 已填入，点保存生效${result.refresh_token_rotated ? "；Refresh Token 已换新并自动接住" : ""}`,
         result,
       };
     } catch (error) {
@@ -1590,30 +1954,27 @@ function SiteModal({
     }
   }
 
-  // 认证子弹窗确定：表单字段 + 测试续签拿到的新 token 一并写回草稿
-  function commitAuth(fields: AuthFields, rotation?: RefreshTestResult) {
-    setRefreshMethod(fields.method);
-    setRefreshUrl(fields.url);
-    setRefreshToken(fields.token);
-    setRefreshBody(fields.body);
-    setRefreshSample(fields.sample);
-    setAccessTokenField(fields.accessTokenField);
-    setRefreshTokenField(fields.refreshTokenField);
-    setRefreshHeadersText(fields.headersText);
-    setRefreshCookieName(fields.cookieName);
-    syncAdvanced((base) => ({ ...base, auth_token: fields.authToken.trim() || null }));
-    syncTokenRefresh({
-      method: fields.method,
-      url: fields.url,
-      refresh_token: fields.token,
-      body: fields.body,
-      response_sample: fields.sample,
-      access_token_field: fields.accessTokenField,
-      refresh_token_field: fields.refreshTokenField,
-      headers_text: fields.headersText,
-      refresh_cookie_name: fields.cookieName,
-    });
-    if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
+  // 认证子弹窗取消：其他改动照旧丢弃，但测试已换新的 Refresh Token 要接住——
+  // 轮换型凭据旧值用一次就作废，丢了只能回浏览器重新抓
+  function closeAuth(rotation?: RefreshTestResult) {
+    if (rotation) {
+      const rotatedRefresh = rotation.refresh_token && rotation.refresh_token !== refreshToken.trim();
+      const rotatedAccess = rotation.access_token && rotation.access_token !== authToken.trim();
+      if (rotatedRefresh) {
+        setRefreshToken(rotation.refresh_token);
+        syncAdvanced((base) =>
+          base.token_refresh
+            ? { ...base, token_refresh: { ...base.token_refresh, refresh_token: rotation.refresh_token } }
+            : base,
+        );
+      }
+      if (rotatedAccess) {
+        setAuthToken(rotation.access_token);
+        syncAdvanced((base) => ({ ...base, auth_token: rotation.access_token }));
+      }
+      // 服务端已按新 token 落库，草稿跟着同步，下次保存才不会又写回旧值
+      if (rotatedRefresh || rotatedAccess) toast("测试换新的 token 已接住，保存站点后生效");
+    }
     setActiveSub(null);
   }
 
@@ -1624,13 +1985,17 @@ function SiteModal({
     setHeadless(next.headless);
     setRatioUrl(next.ratioUrl);
     setRatioHeadersText(next.ratioHeadersText);
+    // 站点 ID 留空时按采集地址域名自动生成（如 aihub365.cn → aihub365-cn），少一个必填项
+    const derivedId = id.trim() ? "" : siteIdFromUrl(next.url);
+    if (derivedId) setId(derivedId);
     // 先选了"登录会话"后填地址：续签地址为空时按站点域名自动补全（表单状态与 JSON 同步）
     if (!refreshUrl.trim() && refreshCookieName.trim()) {
       const origin = originOf(next.url);
       if (origin) setRefreshUrl(`${origin}/api/user/auth/refresh`);
     }
     syncAdvanced((base) => {
-      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+      const baseWithId = derivedId && !String(base.id ?? "").trim() ? { ...base, id: derivedId } : base;
+      const network = { ...(baseWithId.network ?? {}) } as Record<string, unknown>;
       applyEntryUrl(network, "url", next.url);
       setOptionalDict(network, "headers", next.headersText);
       // 倍率接口：有专用请求头时存成对象，否则存纯地址（兼容旧配置的简单形态）
@@ -1664,7 +2029,7 @@ function SiteModal({
       } else {
         delete network.headless;
       }
-      const nextConfig = { ...base, network: network as SiteConfig["network"] };
+      const nextConfig = { ...baseWithId, network: network as SiteConfig["network"] };
       const refresh = nextConfig.token_refresh;
       if (refresh && !String(refresh.url ?? "").trim() && refresh.refresh_cookie_name) {
         const origin = originOf(next.url);
@@ -1701,10 +2066,7 @@ function SiteModal({
     setStatusGroupsText(nextText);
     syncAdvanced((base) => {
       const existing = typeof base.status === "object" && base.status !== null ? base.status : {};
-      const groups = nextText
-        .split(/[,，\n]/)
-        .map((item) => item.trim())
-        .filter(Boolean);
+      const groups = groupsFromText(nextText);
       const status: Record<string, unknown> = { ...existing };
       if (groups.length > 0) status.groups = groups;
       else delete status.groups;
@@ -1739,55 +2101,86 @@ function SiteModal({
   const headlessConfigured =
     headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0 || headless.headers.length > 0;
 
-  // 场景应用：只做预填，不删已填内容；真实配置始终以 JSON 字段为准。
-  // sceneNow 从高级 JSON 派生（含刚写入的预填），场景下拉的选中值据此实时更新
-  function applyCollectMode(next: CollectMode) {
-    if (next === "api") {
-      // 接口直采没有模板可预填，也不反向关掉已开的无头浏览器；解释一下为什么下拉没跟着变
-      if (headless.enabled) toast("场景跟着实际配置走：到「价格采集」里关掉无头浏览器，这里就会切回接口直采");
-      return;
-    }
-    if (headless.enabled) return;
-    const waitSeconds = headless.waitSeconds.trim() || "3";
-    setHeadless({ ...headless, enabled: true, waitSeconds });
-    syncAdvanced((base) => {
-      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
-      const existing = network.headless !== null && typeof network.headless === "object" ? network.headless : {};
-      network.headless = { ...existing, enabled: true, wait_seconds: Number(waitSeconds) || 3 };
-      return { ...base, network: network as SiteConfig["network"] };
-    });
-  }
-
-  function applyAuthMode(next: AuthMode) {
-    // 首次切到登录会话：带出 new-api 型续签模板（域名从采集地址推导）；已配置或已填过的字段一律不动
-    if (next !== "session") {
-      // 固定令牌/无需认证没有模板可预填，也不反向清掉已配的认证；解释一下为什么下拉没跟着变
-      if (sceneNow.auth !== next) {
-        toast("场景跟着实际配置走：到「认证与续签」里填站点令牌或清空认证，这里会自动跟着变");
+  // 认证子弹窗确定：按所选认证方式写回草稿。三种方式互斥，被切走方式的配置一并清掉，
+  // 否则配置里残留半套认证，重开弹窗时方式又会反推回旧的
+  function commitAuth(fields: AuthFields, rotation?: RefreshTestResult) {
+    setAuthToken(fields.mode === "none" ? "" : fields.authToken);
+    if (fields.mode !== "session") {
+      // 无需认证/固定令牌不带续签：续签字段全部清空
+      const hadRenewal = Boolean(refreshUrl.trim() || refreshCookieName.trim());
+      setRefreshMethod("POST");
+      setRefreshUrl("");
+      setRefreshToken("");
+      setRefreshBody("");
+      setRefreshSample("");
+      setAccessTokenField("");
+      setRefreshTokenField("");
+      setRefreshHeadersText("");
+      setRefreshCookieName("");
+      syncAdvanced((base) => {
+        const { token_refresh: _dropped, ...rest } = base;
+        return {
+          ...rest,
+          auth_token: fields.mode === "token" && fields.authToken.trim() ? fields.authToken.trim() : null,
+          // 无需认证时不注入；固定令牌模式照常按规则注入
+          auth_inject: fields.mode === "token" ? injectRules(fields.inject) : null,
+        } as SiteConfig;
+      });
+      if (hadRenewal) {
+        toast(fields.mode === "token" ? "已切换为固定令牌，原续签配置已移除" : "已清除认证，原续签配置已移除");
+      } else if (fields.mode === "none" && authTokenConfigured) {
+        toast("已清除站点令牌");
       }
+      // 站点令牌在管认证了，接口 headers 里写死的 Authorization 一并移除
+      if (fields.mode === "token" && fields.authToken.trim()) {
+        let removed = false;
+        syncAdvanced((base) => {
+          const result = stripHardcodedAuth(base);
+          removed = removed || result.removed;
+          return result.config;
+        });
+        if (removed) toast("已改为站点统一认证，各接口里写死的 Authorization 已移除");
+      }
+      setActiveSub(null);
       return;
     }
-    if (refreshUrl.trim() || refreshCookieName.trim()) return;
-    const origin = originOf(url);
-    if (origin) setRefreshUrl(`${origin}/api/user/auth/refresh`);
-    else toast("采集地址还没填，续签地址会在填好后自动带出；现在可以直接进「认证与续签」贴凭据");
-    if (!refreshHeadersText.trim()) setRefreshHeadersText("cookie: new_api_refresh=${refresh_token}");
-    if (!refreshCookieName.trim()) setRefreshCookieName("new_api_refresh");
-    if (!accessTokenField.trim()) setAccessTokenField("data.access_token");
-    syncAdvanced((base) => {
-      if (base.token_refresh?.url) return base;
-      return {
-        ...base,
-        token_refresh: {
-          method: "POST",
-          url: origin ? `${origin}/api/user/auth/refresh` : "",
-          refresh_token: refreshToken,
-          headers: { cookie: "new_api_refresh=${refresh_token}" },
-          refresh_cookie_name: "new_api_refresh",
-          access_token_field: "data.access_token",
-        },
-      };
+    // 登录会话：Refresh Token 交给续签换新维护；Access Token 是采集请求头里真正带的那份，
+    // 以表单值为准（测试换新的已回填到输入框），用户清空就是不要它、等下次采集续签补上
+    setRefreshMethod(fields.method);
+    setRefreshUrl(fields.url);
+    setRefreshToken(fields.token);
+    setRefreshBody(fields.body);
+    setRefreshSample(fields.sample);
+    setAccessTokenField(fields.accessTokenField);
+    setRefreshTokenField(fields.refreshTokenField);
+    setRefreshHeadersText(fields.headersText);
+    setRefreshCookieName(fields.cookieName);
+    syncTokenRefresh({
+      method: fields.method,
+      url: fields.url,
+      refresh_token: fields.token,
+      body: fields.body,
+      response_sample: fields.sample,
+      access_token_field: fields.accessTokenField,
+      refresh_token_field: fields.refreshTokenField,
+      headers_text: fields.headersText,
+      refresh_cookie_name: fields.cookieName,
     });
+    if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
+    // Access Token 落在站点级 auth_token 上，凭证注入规则决定它怎么带进三处采集请求
+    syncAdvanced((base) => ({ ...base, auth_token: fields.authToken.trim() || null, auth_inject: injectRules(fields.inject) }));
+    // 认证统一收口：刚换新过 token，各接口里手写的 Authorization 就没有存在意义了，
+    // 移除后认证只走站点级一处；留着的话旧值会覆盖站点令牌，换新也追不上
+    if (rotation) {
+      let removed = false;
+      syncAdvanced((base) => {
+        const result = stripHardcodedAuth(base);
+        removed = removed || result.removed;
+        return result.config;
+      });
+      if (removed) toast("已改为站点统一认证，各接口里写死的 Authorization 已移除");
+    }
+    setActiveSub(null);
   }
 
   async function save() {
@@ -1799,13 +2192,21 @@ function SiteModal({
       toast("配了续签接口就要填 Refresh Token，续签全靠它换新凭证");
       return;
     }
-    const config = buildConfig();
+    let config = buildConfig();
     if (!config) return;
     // 地址清空 = 移除续签配置（同步时不动 JSON，统一在保存时落地）
     if (!refreshUrl.trim() && config.token_refresh) delete config.token_refresh;
-    // 打开编辑期间续签可能已自动跑过、服务端换了新的 refresh_token；
-    // 用户没改过这个输入框时以服务端最新值为准，避免旧值覆盖回去
     let note = "";
+    // 老配置自动迁移：站点令牌在管认证时，接口 headers 里写死的 Authorization 一律移除，
+    // 认证只走站点级一处；留着的话旧值会覆盖站点令牌，续签换新也追不上
+    if (typeof config.auth_token === "string" && config.auth_token.trim()) {
+      const result = stripHardcodedAuth(config);
+      if (result.removed) {
+        config = result.config;
+        note = "已改为站点统一认证，各接口里写死的 Authorization 已移除";
+      }
+    }
+    // 打开编辑期间后台续签可能已自动跑过、服务端换了新的 refresh_token：用户没动过输入框时以服务端最新值为准
     if (!isNew) {
       try {
         const { sites } = await apiSend<{ sites: SiteConfig[] }>("/api/sites", "GET");
@@ -1868,51 +2269,11 @@ function SiteModal({
                 setId(value);
                 syncAdvanced((base) => ({ ...base, id: value.trim() }));
               }}
-              placeholder="例如 example-newapi"
+              placeholder="留空则按采集地址自动生成，如 example-newapi"
               style={{ width: "min(280px, 100%)" }}
             />
           </SettingRow>
-          {/* 采集场景直接外显：改选即时预填对应模块（只预填不清已填），选中值从高级 JSON 实时派生 */}
-          <SettingRow
-            label="采集方式"
-            hint={
-              sceneNow.collect === "browser"
-                ? "用无头浏览器直接打开页面采集，可注入 Cookie 和登录信息，适合要登录才能看的页面；Cookie 等细节在「价格采集」里"
-                : "先当接口请求，抓到的是网页壳时自动换无头浏览器再试一次；一般站点选这个就够"
-            }
-          >
-            <Sel
-              value={sceneNow.collect}
-              onChange={(value) => applyCollectMode(value === "browser" ? "browser" : "api")}
-              options={(Object.keys(COLLECT_LABELS) as CollectMode[]).map((value) => ({
-                value,
-                label: COLLECT_LABELS[value],
-              }))}
-              style={{ width: "min(240px, 100%)" }}
-            />
-          </SettingRow>
-          <SettingRow
-            label="认证方式"
-            hint={
-              sceneNow.auth === "session"
-                ? "已按采集地址带出 new-api 型续签模板；到「认证与续签」贴上自己的 Refresh Token（Cookie 值）即可自动接力换新"
-                : sceneNow.auth === "token"
-                  ? "到「认证与续签」填站点令牌，所有采集请求会自动带上"
-                  : "公开接口不用认证；各接口请求头里手写过的凭证不受影响，之后要认证了再回来切"
-            }
-          >
-            <Sel
-              value={sceneNow.auth}
-              onChange={(value) =>
-                applyAuthMode(value === "session" ? "session" : value === "token" ? "token" : "none")
-              }
-              options={(Object.keys(AUTH_LABELS) as AuthMode[]).map((value) => ({ value, label: AUTH_LABELS[value] }))}
-              style={{ width: "min(240px, 100%)" }}
-            />
-          </SettingRow>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            切场景只把常用填法带出来，已填过的内容不会被清掉；细节仍在下面各模块卡片里改
-          </span>
+          {/* 认证方式收在「认证与续签」弹窗里，和它控制的输入区在一起；入口卡片标注已配置状态 */}
           <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
             <ModelMultiSelect
               value={models}
@@ -1921,21 +2282,15 @@ function SiteModal({
                 syncAdvanced((base) => ({ ...base, models: next }));
               }}
             />
-            {unpriced.length > 0 && (
-              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
-                {unpriced.join("、")} 在站点上没采到价，多半是名字写法不一致：按站点实际用的模型名改一下
-              </span>
-            )}
           </SettingRow>
           <SettingRow
             label="分组白名单"
-            hint="选填：只采这些分组的价格，渠道状态也只查这些分组；分组名从目标模型所在的分组里选，逗号分隔（中英文逗号都行），如 svip, vip；留空就全部采集"
+            hint="选填：只采这些分组的价格，渠道状态也只查这些分组；从已采集的分组里勾选，也可以直接输入回车添加；留空就全部采集"
           >
-            <Input
-              value={statusGroupsText}
-              onChange={commitGroupsText}
-              placeholder="svip, vip"
-              style={{ width: "min(360px, 100%)" }}
+            <GroupMultiSelect
+              siteId={originalId}
+              value={groupsFromText(statusGroupsText)}
+              onChange={(next) => commitGroupsText(next.join(", "))}
             />
             {statusGroupsText.trim() && (
               <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
@@ -1948,13 +2303,13 @@ function SiteModal({
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
             <EntryCard
               title="价格采集"
-              desc={url.trim() ? shortenUrlText(url) : "填价格接口或网页地址"}
+              desc={`${headless.enabled ? "网页模式·" : ""}${url.trim() ? shortenUrlText(url) : "填价格接口或网页地址"}`}
               configured={Boolean(url.trim() || endpointHeadersText.trim() || headlessConfigured || ratioUrl.trim())}
               onClick={() => setActiveSub("price")}
             />
             <EntryCard
               title="认证与续签"
-              desc="填站点令牌或续签接口，token 失效自动换新"
+              desc="站点的认证凭据在这里配，token 失效自动换新"
               configured={Boolean(refreshUrl.trim()) || Boolean(authTokenConfigured)}
               onClick={() => setActiveSub("auth")}
             />
@@ -2003,7 +2358,7 @@ function SiteModal({
       {activeSub === "auth" && (
         <AuthSubModal
           initial={{
-            authToken: typeof initial.auth_token === "string" ? initial.auth_token : "",
+            authToken,
             method: refreshMethod,
             url: refreshUrl,
             token: refreshToken,
@@ -2013,10 +2368,12 @@ function SiteModal({
             refreshTokenField,
             headersText: refreshHeadersText,
             cookieName: refreshCookieName,
+            inject: injectInitial,
           }}
+          priceUrl={url}
           runTest={runRefreshTest}
           onCommit={commitAuth}
-          onClose={() => setActiveSub(null)}
+          onClose={closeAuth}
         />
       )}
       {activeSub === "status" && (
@@ -2084,21 +2441,108 @@ function DeleteSitesModal({
   );
 }
 
+/* ---------- 行内采集异常提示 ---------- */
+
+const HEALTH_SECTIONS: { key: "price" | "status" | "notice"; label: string }[] = [
+  { key: "price", label: "价格采集" },
+  { key: "status", label: "渠道状态" },
+  { key: "notice", label: "站点公告" },
+];
+
+/** 站点行内的采集异常小图标：红=采集失败，黄=需认证/没抓到数据；悬停看三类明细，下一轮采集正常自动消失。 */
+function SiteHealthTip({ health }: { health: SiteCollectHealth | undefined }) {
+  const issues = HEALTH_SECTIONS.map((section) => ({ ...section, issue: health?.[section.key] })).filter(
+    (entry): entry is { key: "price" | "status" | "notice"; label: string; issue: SiteCollectIssue } =>
+      Boolean(entry.issue),
+  );
+  if (issues.length === 0) return null;
+  const tone = issues.some((entry) => entry.issue.level === "error") ? ("red" as const) : ("yellow" as const);
+  return (
+    <Tip
+      tone={tone}
+      ariaLabel="采集异常提示"
+      content={
+        <span style={{ display: "grid", gap: 8 }}>
+          {issues.map(({ key, label, issue }) => (
+            <span key={key} style={{ display: "grid", gap: 1 }}>
+              <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontWeight: 550, color: issue.level === "error" ? "#fca5a5" : "#fcd34d" }}>
+                  {label}·{issue.level === "error" ? "错误" : "注意"}
+                </span>
+                <span style={{ opacity: 0.6, fontSize: 11 }}>{formatTime(issue.time)}</span>
+              </span>
+              <span style={{ wordBreak: "break-all" }}>{issue.message}</span>
+            </span>
+          ))}
+        </span>
+      }
+    />
+  );
+}
+
+/** 站点管理页顶部的配置速查：按场景一句话"怎么配"，再加几条最容易踩的注意事项 */
+function SitesGuide() {
+  const scenarios: { when: string; how: string }[] = [
+    { when: "接口公开，直接能访问", how: "采集方式用「接口直采」，地址填接口即可，不用配认证" },
+    {
+      when: "接口要令牌",
+      how: "认证方式选「固定令牌」，令牌填进「认证与续签」；下面「凭证注入」决定它怎么带进价格、渠道状态、公告三处请求（默认 Authorization: Bearer）",
+    },
+    {
+      when: "令牌很快过期（如 new-api 登录会话）",
+      how: "认证方式选「登录会话自动续签」，把浏览器里 new_api_refresh Cookie 的值贴进 Refresh Token 点「测试续签」；Access Token 留空也行，采集被拒时会自动续签补上。贴完回浏览器重新登录一次（两边各用各的会话），每个登录最长保持 30 天",
+    },
+    {
+      when: "直接抓页面是空壳（价格靠 JS 算，如单页应用）",
+      how: "先试接口直采，抓不到会自动换无头浏览器重试；确认要渲染就选「网页模式」，Cookie、localStorage 从 F12 → 应用 → Cookies 里抄",
+    },
+    { when: "渠道状态、站点公告", how: "各自卡片里填地址就行，认证自动沿用站点凭证；被拒时会自动续签一次再试" },
+  ];
+  const notes = [
+    "认证在「认证与续签」里配一处：凭证注入把 token 送到价格、渠道状态、公告三处，接口请求头里手写的认证头会被它盖掉并自动移除",
+    "要让某处带 Cookie（如 new_api_refresh），在凭证注入那行把头名填成 cookie、值填成 new_api_refresh=${refresh_token}，续签换新会自动跟着变",
+    "localStorage 不会发给服务器，只在页面脚本内部读取；页面的 JS 靠它取登录信息时才需要填",
+    "配完点行内的「测试」马上验证；站点行的红/黄小标就是最近一次采集的异常提示",
+  ];
+  return (
+    <div style={{ display: "grid", gap: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "grid", gap: 6 }}>
+        {scenarios.map((item) => (
+          <div
+            key={item.when}
+            style={{ display: "grid", gridTemplateColumns: "minmax(140px, 260px) 1fr", gap: 10, fontSize: 12.5 }}
+          >
+            <span style={{ color: "var(--text-2)", fontWeight: 550 }}>{item.when}</span>
+            <span style={{ color: "var(--text-3)" }}>{item.how}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gap: 4 }}>
+        {notes.map((note) => (
+          <span key={note} style={{ fontSize: 12, color: "var(--text-3)" }}>
+            · {note}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function AdminSites() {
   const [sites, setSites] = useState<SiteConfig[] | null>(null);
-  const [collectStatus, setCollectStatus] = useState<Record<string, SiteStatus>>({});
-  const [unpriced, setUnpriced] = useState<Record<string, string[]>>({});
+  const [siteHealth, setSiteHealth] = useState<Record<string, SiteCollectHealth>>({});
   const [editing, setEditing] = useState<{ config: SiteConfig; isNew: boolean } | null>(null);
   const [deleting, setDeleting] = useState<string[] | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [multiSelect, setMultiSelect] = useState(false);
+  // 配置速查默认收起：不打扰熟手，新手需要时一眼能找到
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const reloadSites = useCallback(() => {
     apiSend<SitesData>("/api/sites", "GET")
       .then((data) => {
         setSites(data.sites);
-        setCollectStatus(data.collect_status ?? {});
-        setUnpriced(data.unpriced_models ?? {});
+        setSiteHealth(data.site_health ?? {});
         // 刷新后剔除已删除的站点；停用站点保留勾选（批量删除需要覆盖它们）
         setSelected((previous) => {
           const next = new Set<string>();
@@ -2151,8 +2595,8 @@ export function AdminSites() {
     {
       key: "id",
       title: "站点",
-      // 站点名 + 公告/状态/倍率标注标签的最小实宽，窄了标签会把名字挤换行
-      width: 200,
+      // 站点名 + 公告/状态/倍率标注 + 报错图标的最小实宽，窄了标签会把名字挤换行
+      width: 230,
       render: (_value, row) => {
         const site = getSiteInfo(row.id, typeof row.network?.url === "string" ? row.network.url : undefined);
         // 已开启的扩展接口小标注：公告/渠道状态/倍率，扫一眼就知道每个站点配了哪些采集
@@ -2176,6 +2620,8 @@ export function AdminSites() {
                 {extraMarks.map((mark) => mark.label).join("·")}
               </span>
             )}
+            {/* 三类采集最近一次的异常：红=失败，黄=需认证/没抓到数据；停用站点不提示 */}
+            {row.enabled && <SiteHealthTip health={siteHealth[row.id]} />}
           </span>
         );
         return site.homepage ? (
@@ -2206,43 +2652,14 @@ export function AdminSites() {
       key: "models",
       title: "模型数",
       align: "right",
-      width: 132,
-      render: (_v, row) => {
-        const count = row.models?.length ?? 0;
-        const missing = unpriced[row.id] ?? [];
-        if (missing.length === 0) return count;
-        return (
-          <span
-            title={`${missing.join("、")}：站点上找不到这个名字，去「目标模型」核对写法`}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}
-          >
-            {count}
-            <ToneTag tone="yellow">{missing.length} 个没采到</ToneTag>
-          </span>
-        );
-      },
-    },
-    {
-      key: "collect",
-      title: "最近采集",
-      width: 110,
-      mobileHide: true,
-      render: (_v, row) => {
-        const status = collectStatus[row.id];
-        if (!status) return <span style={{ color: "var(--text-3)" }}>—</span>;
-        const meta = statusMeta(row.enabled === false ? "disabled" : status.status);
-        const reason = [status.error, status.checked_at ? formatTime(status.checked_at) : null].filter(Boolean).join(" · ");
-        return (
-          <span title={reason || undefined}>
-            <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
-          </span>
-        );
-      },
+      // 右对齐的数量列，两位数加边距即够
+      width: 84,
+      render: (_v, row) => row.models?.length ?? 0,
     },
     {
       key: "enabled",
-      title: "采集状态",
-      width: 110,
+      title: "启用",
+      width: 80,
       render: (_value, row) => (
         <Switch
           defaultChecked={row.enabled !== false}
@@ -2283,6 +2700,16 @@ export function AdminSites() {
 
   return (
     <>
+      {/* 配置速查：默认收起的一行说明条，展开后按场景给"怎么配" */}
+      <div className="panel" style={{ padding: "10px 16px", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <span style={{ fontSize: 13, color: "var(--text-2)" }}>各种情况怎么配？接口直采还是无头浏览器、令牌过期怎么办，速查里都有</span>
+          <Btn variant="text" size="sm" onClick={() => setGuideOpen((open) => !open)}>
+            {guideOpen ? "收起速查" : "展开速查"}
+          </Btn>
+        </div>
+        {guideOpen && <SitesGuide />}
+      </div>
       <div
         className="panel"
         style={{ overflow: "hidden", borderBottom: "none", borderRadius: "8px 8px 0 0" }}
@@ -2294,8 +2721,8 @@ export function AdminSites() {
             rowKey="id"
             columns={siteColumns}
             rows={sites}
-            scrollX={910}
-            mobileScrollX={608}
+            scrollX={860}
+            mobileScrollX={560}
             empty={
               <Empty
                 icon={<IconAppstore size={18} />}
@@ -2351,7 +2778,6 @@ export function AdminSites() {
         <SiteModal
           initial={editing.config}
           isNew={editing.isNew}
-          unpriced={unpriced[editing.config.id] ?? []}
           onClose={() => setEditing(null)}
           onSaved={reloadSites}
         />

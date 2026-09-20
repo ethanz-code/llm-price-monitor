@@ -40,6 +40,7 @@ type DailyPoint = {
   day: string;
   ok: number;
   fallback: number;
+  param_retry: number;
   error: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -49,6 +50,7 @@ type AiLogSummary = {
   total: number;
   ok: number;
   fallback: number;
+  param_retry: number;
   error: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -64,12 +66,14 @@ const STATUSES = [
   { value: "", label: "全部结果" },
   { value: "ok", label: "成功" },
   { value: "fallback", label: "换模型重试" },
+  { value: "param_retry", label: "换参数重试" },
   { value: "error", label: "失败" },
 ];
 
 function StatusTag({ status }: { status: string }) {
   if (status === "ok") return <span className="tag tone-green">成功</span>;
   if (status === "fallback") return <span className="tag tone-blue">换模型重试</span>;
+  if (status === "param_retry") return <span className="tag tone-blue">换参数重试</span>;
   return <span className="tag tone-red">失败</span>;
 }
 
@@ -110,6 +114,7 @@ function CallsTooltip({ active, payload }: { active?: boolean; payload?: { paylo
       rows={[
         { color: lineColor, name: "成功", value: point.ok },
         { color: palette[1], name: "换模型重试", value: point.fallback },
+        { color: palette[2], name: "换参数重试", value: point.param_retry },
         { color: palette[3], name: "失败", value: point.error },
       ]}
     />
@@ -138,7 +143,7 @@ function CallsBarTooltip({ active, payload }: { active?: boolean; payload?: { pa
   return <ChartBubble label={point?.name} rows={[{ name: "调用次数", value: point?.calls ?? 0 }]} />;
 }
 
-/** 按天调用趋势：成功/换模型重试/失败堆叠柱状，配色与明细表状态标签一致。 */
+/** 按天调用趋势：成功/换模型重试/换参数重试/失败堆叠柱状，配色与明细表状态标签一致。 */
 function CallsTrendChart({ data }: { data: DailyPoint[] }) {
   const { lineColor, palette, axisColor, gridColor } = useChartTheme();
   return (
@@ -158,6 +163,7 @@ function CallsTrendChart({ data }: { data: DailyPoint[] }) {
           <ReTooltip content={<CallsTooltip />} cursor={{ fill: "rgba(127,127,127,0.12)" }} />
           <Bar dataKey="ok" name="成功" stackId="calls" fill={lineColor} maxBarSize={18} />
           <Bar dataKey="fallback" name="换模型重试" stackId="calls" fill={palette[1]} maxBarSize={18} />
+          <Bar dataKey="param_retry" name="换参数重试" stackId="calls" fill={palette[2]} maxBarSize={18} />
           <Bar dataKey="error" name="失败" stackId="calls" fill={palette[3]} radius={[3, 3, 0, 0]} maxBarSize={18} />
         </BarChart>
       </ResponsiveContainer>
@@ -260,7 +266,7 @@ function LogDetailModal({ log, onClose }: { log: AiLog; onClose: () => void }) {
         )}
         {log.prompt_excerpt && (
           <div>
-            <div style={{ color: "var(--text-3)", marginBottom: 4 }}>发送内容（前 500 字）</div>
+            <div style={{ color: "var(--text-3)", marginBottom: 4 }}>发送内容</div>
             <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
               {log.prompt_excerpt}
             </div>
@@ -268,7 +274,7 @@ function LogDetailModal({ log, onClose }: { log: AiLog; onClose: () => void }) {
         )}
         {log.response_excerpt && (
           <div>
-            <div style={{ color: "var(--text-3)", marginBottom: 4 }}>模型回复（前 500 字）</div>
+            <div style={{ color: "var(--text-3)", marginBottom: 4 }}>模型回复</div>
             <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
               {log.response_excerpt}
             </div>
@@ -322,7 +328,7 @@ export function AdminAiLogs() {
         {
           label: "调用总数",
           value: summary.total.toLocaleString("en-US"),
-          hint: `失败 ${summary.error} · 换模型重试 ${summary.fallback}`,
+          hint: `失败 ${summary.error} · 换模型重试 ${summary.fallback} · 换参数重试 ${summary.param_retry}`,
         },
         {
           label: "成功率",
@@ -383,7 +389,7 @@ export function AdminAiLogs() {
             ))}
           </div>
           <p style={{ color: "var(--text-3)", fontSize: 12, margin: 0 }}>
-            统计口径：当前保留的全部调用（日志自动保留 7 天）；「换模型重试」是同一请求里失败的尝试，不计入成功率。
+            统计口径：当前保留的全部调用（日志自动保留 7 天）；「换模型重试」「换参数重试」是同一请求里失败的尝试，不计入成功率。
           </p>
           <div className="panel" style={{ padding: "16px 20px 18px", display: "grid", gap: 28, gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
             <div>

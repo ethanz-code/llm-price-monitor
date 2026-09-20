@@ -19,7 +19,7 @@ const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "price", label: "价格采集", hint: "定时去各站点看价格，有变化就记下来" },
   { key: "status", label: "渠道状态", hint: "定时检查开了状态监测的站点，渠道有变化就记事件" },
   { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来" },
-  { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录（默认 24 小时一次）" },
+  { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录，并重新抓取所有已启用的厂商定价源（默认 24 小时一次）" },
 ];
 
 /** 数据保留天数配置项：与后端 settings 的 retention_*_days 字段一一对应；价格/状态事件与公告永不清理。 */

@@ -114,13 +114,18 @@ export function Modal({
     return () => window.clearTimeout(timer);
   }, [open, rendered]);
 
+  // onClose 多为调用方内联函数（每次渲染新引用）：存 ref，焦点 effect 只在挂载时跑一次，
+  // 否则弹窗里每敲一个字都会重渲染并把焦点抢回关闭按钮
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!rendered) return;
     const id = pushModal();
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (modalStack[modalStack.length - 1] === id) onClose();
+        if (modalStack[modalStack.length - 1] === id) onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -149,7 +154,7 @@ export function Modal({
       window.removeEventListener("keydown", onKey);
       popModal(id);
     };
-  }, [rendered, onClose]);
+  }, [rendered]);
 
   if (!rendered) return null;
   // 挂到 body：祖先的 transform/rise-in 会劫持 fixed 定位，导致遮罩盖不满全屏
@@ -545,7 +550,19 @@ export function Alert({
 
 /** 名词解释小图标：悬停/键盘聚焦弹出深色气泡。气泡 portal 到 body 并用 fixed 定位，
  *  避免被 .dtable-wrap 等滚动容器裁切。 */
-export function Tip({ text }: { text: string }) {
+export function Tip({
+  text,
+  content,
+  ariaLabel,
+  tone,
+}: {
+  text?: string;
+  /** 富内容气泡：给了就替代 text 渲染，可放多行结构化说明 */
+  content?: ReactNode;
+  ariaLabel?: string;
+  /** 图标色调：默认中性灰，报错红、警示黄 */
+  tone?: "red" | "yellow";
+}) {
   const [anchor, setAnchor] = useState<{ x: number; y: number; below?: boolean } | null>(null);
   const ref = useRef<HTMLSpanElement>(null);
 
@@ -576,7 +593,8 @@ export function Tip({ text }: { text: string }) {
       ref={ref}
       className="tip"
       tabIndex={0}
-      aria-label={text}
+      aria-label={ariaLabel ?? text}
+      style={tone ? { color: `var(--tone-${tone}-text)` } : undefined}
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
@@ -593,7 +611,7 @@ export function Tip({ text }: { text: string }) {
             role="tooltip"
             style={{ left: anchor.x, top: anchor.y, transform: anchor.below ? "translate(-50%, 10px)" : undefined }}
           >
-            {text}
+            {content ?? text}
           </span>,
           document.body,
         )}
