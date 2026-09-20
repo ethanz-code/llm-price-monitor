@@ -130,15 +130,26 @@ export function CatalogTable({ data }: { data: CatalogData }) {
       title: (
         <>
           厂商价（输入/输出）<TermTip term="list_price" />
-          <span className="thead-unit thead-unit-block">USD / 1M tokens</span>
+          <span className="thead-unit thead-unit-block">$ / ¥ · 1M tokens</span>
         </>
       ),
       key: "list",
       align: "right",
       width: 190,
+      // list 两口径都是 USD 归一值（国内条目为人民币/汇率），排序跨币种可比
       sorter: (a, b) => (a.list?.input ?? 0) - (b.list?.input ?? 0),
-      render: (_, row) =>
-        isFreePrice(row.list) ? (
+      render: (_, row) => {
+        // 国内口径只展示定价源抓来的人民币原价；models.dev 换算出的分档/音频/国际价一概不出
+        if (row.region === "cn") {
+          return isFreePrice(row.list_cny) ? (
+            <ToneTag tone="green">免费</ToneTag>
+          ) : (
+            <span className="mono num" style={{ fontWeight: 550 }}>
+              ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
+            </span>
+          );
+        }
+        return isFreePrice(row.list) ? (
           <ToneTag tone="green">免费</ToneTag>
         ) : (
           <span style={{ display: "inline-grid", gap: 2, justifyItems: "end" }}>
@@ -164,37 +175,9 @@ export function CatalogTable({ data }: { data: CatalogData }) {
                 音频 ${formatPrice(row.list_audio?.input)} / ${formatPrice(row.list_audio?.output)}
               </span>
             )}
-            {row.list_global && (
-              <span
-                className="mono num"
-                title="同厂商国际站列表价（参考）"
-                style={{ fontSize: 11.5, color: "var(--text-3)" }}
-              >
-                国际 ${formatPrice(row.list_global?.input)} / ${formatPrice(row.list_global?.output)}
-              </span>
-            )}
           </span>
-        ),
-    },
-    {
-      title: (
-        <>
-          换算价（输入/输出）<TermTip term="official_cny" />
-          <span className="thead-unit thead-unit-block">CNY / 1M tokens</span>
-        </>
-      ),
-      key: "list_cny",
-      align: "right",
-      width: 190,
-      sorter: (a, b) => (a.list_cny?.input ?? 0) - (b.list_cny?.input ?? 0),
-      render: (_, row) =>
-        isFreePrice(row.list) ? (
-          <span style={{ color: "var(--text-3)" }}>免费</span>
-        ) : (
-          <span className="mono num" style={{ color: "var(--text-2)" }}>
-            ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
-          </span>
-        ),
+        );
+      },
     },
     {
       title: (
@@ -308,8 +291,8 @@ export function CatalogTable({ data }: { data: CatalogData }) {
             columns={columns}
             rows={rows}
             paginated
-            scrollX={1410}
-            mobileScrollX={770}
+            scrollX={1220}
+            mobileScrollX={600}
             rowClassName={(row) => (row.tier === "flagship" ? "row-flagship" : undefined)}
           />
         )}

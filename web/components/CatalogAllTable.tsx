@@ -83,26 +83,6 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
     {
       title: (
         <>
-          换算价（输入/输出）
-          <span className="thead-unit thead-unit-block">CNY / 1M tokens</span>
-        </>
-      ),
-      key: "list_cny",
-      align: "right",
-      width: 180,
-      sorter: (a, b) => (a.list_cny?.input ?? 0) - (b.list_cny?.input ?? 0),
-      render: (_, row) =>
-        isFreePrice(row.list) ? (
-          <span style={{ color: "var(--text-3)" }}>免费</span>
-        ) : (
-          <span className="mono num" style={{ color: "var(--text-2)" }}>
-            ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
-          </span>
-        ),
-    },
-    {
-      title: (
-        <>
           上下文（最大/输出）
           <span className="thead-unit thead-unit-block">tokens</span>
         </>
@@ -212,7 +192,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
         {rows.length === 0 ? (
           <Empty icon={<IconSearch size={18} />} title="没有匹配的渠道价" description="换个关键词或调整筛选条件再试试。" />
         ) : (
-          <DataTable<Row> rowKey="key" columns={columns} rows={rows} paginated scrollX={1310} mobileScrollX={740} />
+          <DataTable<Row> rowKey="key" columns={columns} rows={rows} paginated scrollX={1130} mobileScrollX={560} />
         )}
       </div>
     </div>
