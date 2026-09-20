@@ -1,10 +1,10 @@
 "use client";
 
-/** 管理台「厂商定价源」：models.dev 国内价覆盖检测 + 厂商定价页抓取管理。
+/** 管理台「厂商定价源」：国内基准价的唯一配置入口。
  *
- * models.dev 对部分国内厂商只有国际站口径甚至未收录；这里先给出覆盖检测记录
- * （推荐添加），管理员为厂商配置一个公开定价页 URL 后即可抓取该页全部模型
- * 价格，结果合并进官方价目录并作为国内折扣基准。
+ * models.dev 的国内价格一律不作基准（时段价混装、他方汇率换算，与官方人民币
+ * 标价偏差大）：所有国内厂商都需要在这里配置官方定价页，由程序定时抓取标价
+ * 合并进目录；海外定价页只作国际参考价。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -18,20 +18,26 @@ import type {
 } from "@/lib/types";
 import { DataTable, type DColumn } from "./DataTable";
 import { IconNodes, IconPlus } from "./icons";
-import { PageHeader } from "./PageHeader";
 import { RiskLink } from "./RiskLink";
 import { SiteAlert } from "./SiteAlert";
 import { ToneTag, type Tone } from "./ToneTag";
-import { Btn, Empty, Input, Modal, Switch, toast } from "./ui";
+import { Btn, Empty, Input, Modal, Pick, Switch, toast } from "./ui";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const VERDICT_META: Record<VendorSourceDetection["verdict"], { label: string; tone: Tone; hint: string }> = {
-  not_listed: { label: "未收录", tone: "red", hint: "models.dev 完全没有该厂商，推荐添加国内定价页" },
-  missing_cn: { label: "仅国际口径", tone: "yellow", hint: "models.dev 收录了该厂商，但只有国际站价格，推荐添加国内定价页" },
-  has_cn: { label: "已覆盖", tone: "green", hint: "models.dev 已有该厂商的国内站价格，无需额外配置" },
+/** 覆盖检测统一口径：models.dev 的国内价一律不作基准，国内厂商都需要配置定价源，
+ * verdict 只剩记录意义，展示不再区分。 */
+const VERDICT_PENDING: { label: string; tone: Tone; hint: string } = {
+  label: "待添加",
+  tone: "yellow",
+  hint: "models.dev 的国内价格不作为折扣基准；添加国内定价页后由程序定时抓取官方标价",
+};
+const VERDICT_META: Record<VendorSourceDetection["verdict"], typeof VERDICT_PENDING> = {
+  not_listed: VERDICT_PENDING,
+  missing_cn: VERDICT_PENDING,
+  has_cn: VERDICT_PENDING,
 };
 
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
@@ -41,7 +47,11 @@ const STATUS_META: Record<string, { label: string; tone: Tone }> = {
 };
 
 function sourceSkeleton(): VendorPricingSource {
-  return { vendor: "", url: "", enabled: true };
+  return { vendor: "", url: "", enabled: true, region: "cn" };
+}
+
+function regionTag(region: "cn" | "global" | undefined) {
+  return region === "global" ? <ToneTag tone="gray">海外参考</ToneTag> : <ToneTag tone="blue">国内基准</ToneTag>;
 }
 
 function statusOf(source: VendorPricingSource): { label: string; tone: Tone; detail: string } {
@@ -59,6 +69,7 @@ export function AdminPricingSources() {
   const [detailVendor, setDetailVendor] = useState<string | null>(null);
   const [removing, setRemoving] = useState<VendorPricingSource | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
+  const [quickAdding, setQuickAdding] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     apiSend<{ sources: VendorPricingSource[] }>("/api/vendor-sources", "GET")
@@ -119,6 +130,26 @@ export function AdminPricingSources() {
     }
   }
 
+  async function quickAdd(record: VendorSourceDetection, suggestion: { kind: "web" | "json"; url: string }) {
+    if (quickAdding) return;
+    setQuickAdding(record.vendor);
+    try {
+      // 推荐项人工核验过：直接按预填配置创建国内源，随即抓取并回填状态
+      await apiSend("/api/vendor-sources", "POST", {
+        vendor: record.vendor,
+        url: suggestion.url,
+        enabled: true,
+        region: "cn",
+      });
+      toast(`已添加 ${record.vendor} 的${suggestion.kind === "json" ? "接口" : "网页"}定价源，开始抓取…`);
+      await refreshOne(record.vendor);
+    } catch (error) {
+      toast(`添加失败: ${errorText(error)}`);
+    } finally {
+      setQuickAdding(null);
+    }
+  }
+
   const sourceColumns: DColumn<VendorPricingSource>[] = [
     {
       title: "厂商",
@@ -146,13 +177,15 @@ export function AdminPricingSources() {
     {
       title: "定价页",
       dataIndex: "url",
-      render: (v: string) => (
-        <span
-          style={{ display: "inline-block", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", verticalAlign: "bottom" }}
-        >
-          <RiskLink href={v}>{v.replace(/^https?:\/\//, "")}</RiskLink>
-        </span>
-      ),
+      width: 280,
+      ellipsis: true,
+      render: (v: string) => <RiskLink href={v} title={v}>{v.replace(/^https?:\/\//, "")}</RiskLink>,
+    },
+    {
+      title: "区域",
+      dataIndex: "region",
+      width: 92,
+      render: (v: "cn" | "global" | undefined) => regionTag(v),
     },
     {
       title: "最近抓取",
@@ -160,12 +193,15 @@ export function AdminPricingSources() {
       width: 190,
       render: (_, row) => {
         const status = statusOf(row);
+        const detail = `${status.detail}${row.last_error ? ` · ${row.last_error}` : ""}`;
         return (
-          <span style={{ display: "inline-grid", gap: 2 }}>
+          <span style={{ display: "inline-grid", gap: 2, maxWidth: 190 }}>
             <ToneTag tone={status.tone}>{status.label}</ToneTag>
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              {status.detail}
-              {row.last_error ? ` · ${row.last_error}` : ""}
+            <span
+              title={detail}
+              style={{ fontSize: 12, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              {detail}
             </span>
           </span>
         );
@@ -223,16 +259,14 @@ export function AdminPricingSources() {
   ];
 
   return (
-    <div className="section-gap rise-in" style={{ display: "grid", gap: 16 }}>
-      <PageHeader
-        title="厂商定价源"
-        subtitle="models.dev 缺国内厂商官方价时，在这里配置该厂商的国内定价页；抓到的全部模型价格会作为国内基准合并进官方价目录，每 24 小时随目录自动刷新。"
-        actions={
-          <Btn variant="primary" onClick={() => setEditing({ source: sourceSkeleton(), isNew: true })}>
-            <IconPlus size={14} /> 新增定价源
-          </Btn>
-        }
-      />
+    <div className="rise-in" style={{ display: "grid", gap: 10 }}>
+      {/* 页面说明条：与站点管理页顶部速查条同款，紧凑不加标题 */}
+      <div className="panel" style={{ padding: "10px 16px" }}>
+        <span style={{ fontSize: 13, color: "var(--text-2)" }}>
+          models.dev 的国内价格不作为基准：国内厂商都需要在下方添加官方定价页，由程序定时抓取标价作为国内折扣基准；海外定价页只作国际参考，每
+          24 小时随目录自动刷新。
+        </span>
+      </div>
 
       <div className="panel" style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 550 }}>models.dev 国内价覆盖检测</div>
@@ -246,21 +280,10 @@ export function AdminPricingSources() {
               const meta = VERDICT_META[record.verdict];
               const added = record.source_added;
               return (
-                <div
-                  key={record.vendor}
-                  style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    background: "color-mix(in srgb, var(--panel-2) 55%, transparent)",
-                  }}
-                >
-                  <span style={{ fontWeight: 550, minWidth: 110 }}>{record.vendor}</span>
+                <div key={record.vendor} className="detect-row">
+                  <span className="detect-vendor">{record.vendor}</span>
                   <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
-                  <span style={{ fontSize: 12.5, color: "var(--text-2)", flex: "1 1 260px" }}>
+                  <span className="detect-note">
                     {record.note || meta.hint}
                     {record.providers.length > 0 && (
                       <span style={{ color: "var(--text-3)" }}>
@@ -270,24 +293,27 @@ export function AdminPricingSources() {
                   </span>
                   {added ? (
                     <ToneTag tone="blue">已添加定价源</ToneTag>
-                  ) : record.verdict === "has_cn" ? (
-                    <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>无需配置</span>
-                  ) : (
+                  ) : (record.suggestions ?? []).length === 0 ? (
                     <Btn
                       size="sm"
-                      onClick={() =>
-                        setEditing({
-                          source: {
-                            ...sourceSkeleton(),
-                            vendor: record.vendor,
-                            url: record.suggested_url ?? "",
-                          },
-                          isNew: true,
-                        })
-                      }
+                      onClick={() => setEditing({ source: { ...sourceSkeleton(), vendor: record.vendor }, isNew: true })}
                     >
-                      添加定价页
+                      手动添加
                     </Btn>
+                  ) : (
+                    <span style={{ display: "inline-flex", gap: 8 }}>
+                      {(record.suggestions ?? []).map((suggestion) => (
+                        <Btn
+                          key={suggestion.kind}
+                          size="sm"
+                          variant="primary"
+                          loading={quickAdding === record.vendor}
+                          onClick={() => quickAdd(record, suggestion)}
+                        >
+                          {suggestion.kind === "json" ? "一键添加接口" : "一键添加网页源"}
+                        </Btn>
+                      ))}
+                    </span>
                   )}
                 </div>
               );
@@ -297,6 +323,22 @@ export function AdminPricingSources() {
       </div>
 
       <div className="panel" style={{ overflow: "hidden" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+            padding: "12px 18px",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          <span style={{ fontSize: 14, fontWeight: 600 }}>已配置的定价源</span>
+          <Btn variant="primary" onClick={() => setEditing({ source: sourceSkeleton(), isNew: true })}>
+            <IconPlus size={14} /> 新增定价源
+          </Btn>
+        </div>
         {sources === null ? (
           <div style={{ padding: "16px 20px", color: "var(--text-2)", fontSize: 13 }}>加载中…</div>
         ) : (
@@ -309,7 +351,7 @@ export function AdminPricingSources() {
               <Empty
                 icon={<IconNodes size={18} />}
                 title="还没有厂商定价源"
-                description="从上面的覆盖检测里推荐添加，或直接配置一个厂商的国内定价页地址。"
+                description="从上面的覆盖检测里一键添加，或直接配置一个厂商的公开定价页地址。"
                 action={
                   <Btn size="sm" onClick={() => setEditing({ source: sourceSkeleton(), isNew: true })}>
                     新增定价源
@@ -342,7 +384,7 @@ export function AdminPricingSources() {
           }
         >
           <div style={{ display: "grid", gap: 8, fontSize: 13.5, color: "var(--text-2)" }}>
-            <span>删除后会自动在后台重新同步目录，该厂商的国内基准价将恢复为 models.dev 的口径。</span>
+            <span>删除后会自动在后台重新同步目录，该源合并的国内基准价会回落为 models.dev 国际站口径。</span>
             <span className="mono" style={{ fontSize: 12, wordBreak: "break-all" }}>{removing.url}</span>
           </div>
         </Modal>
@@ -365,6 +407,7 @@ function SourceModal({
   const [vendor, setVendor] = useState(initial.vendor);
   const [url, setUrl] = useState(initial.url);
   const [enabled, setEnabled] = useState(initial.enabled);
+  const [region, setRegion] = useState<"cn" | "global">(initial.region ?? "cn");
   const [saving, setSaving] = useState(false);
   const valid = vendor.trim().length > 0 && /^https?:\/\//.test(url.trim());
 
@@ -372,13 +415,14 @@ function SourceModal({
     if (!valid || saving) return;
     setSaving(true);
     try {
-      const payload = { vendor: vendor.trim(), url: url.trim(), enabled };
+      const payload = { vendor: vendor.trim(), url: url.trim(), enabled, region };
+      const basisChanged = initial.url !== payload.url || (initial.region ?? "cn") !== region;
       if (isNew) {
         await apiSend("/api/vendor-sources", "POST", payload);
         toast("定价源已添加，点「立即抓取」获取价格");
       } else {
         await apiSend(`/api/vendor-sources/${encodeURIComponent(initial.vendor)}`, "PUT", payload);
-        toast(initial.url !== payload.url ? "已保存；地址变了，记得重新「立即抓取」" : "定价源已保存");
+        toast(basisChanged ? "已保存；地址或区域变了，记得重新「立即抓取」" : "定价源已保存");
       }
       onSaved();
       onClose();
@@ -411,9 +455,24 @@ function SourceModal({
         <Input
           value={url}
           onChange={setUrl}
-          placeholder="官方定价页地址，以 https:// 开头（无需登录）"
+          placeholder="官方定价页或价格接口地址，以 https:// 开头（无需登录）"
           ariaLabel="定价页地址"
         />
+        <div style={{ display: "grid", gap: 6 }}>
+          <span style={{ fontSize: 13.5 }}>区域</span>
+          <Pick
+            value={region}
+            onChange={(value) => setRegion(value === "global" ? "global" : "cn")}
+            options={[
+              { value: "cn", label: "国内 · 折扣基准" },
+              { value: "global", label: "海外 · 国际参考" },
+            ]}
+            style={{ width: 240 }}
+          />
+          <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>
+            国内源的价格作为国内折扣基准；海外源只作国际参考价，不影响国内基准。
+          </span>
+        </div>
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
           <Switch checked={enabled} onChange={setEnabled} />
           启用（参与自动抓取与合并）

@@ -93,6 +93,14 @@ export interface HistoryListData {
   rate?: number;
 }
 
+/** 长上下文分档价档位：tier 是分档条件（models.dev 目前只有 context 阈值档，如 {type:"context", size:200000}）。 */
+export interface PriceTier {
+  input?: number | null;
+  output?: number | null;
+  cache_read?: number | null;
+  tier?: { type?: string; size?: number } | null;
+}
+
 export interface CatalogEntry {
   found: boolean;
   model: string;
@@ -109,6 +117,14 @@ export interface CatalogEntry {
   cache?: { read?: number | null; write?: number | null };
   /** 缓存价的快照汇率人民币折算，口径与 list_cny 一致 */
   cache_cny?: { read?: number | null; write?: number | null };
+  /** 长上下文分档价（USD/1M tokens，models.dev tiers 原结构）：prompt 超过阈值后整请求按该档计费；上游仅部分模型带 */
+  list_tiers?: PriceTier[] | null;
+  /** 分档价的快照汇率人民币折算，口径同 list_cny */
+  list_tiers_cny?: PriceTier[] | null;
+  /** 音频输入/输出价（USD/1M tokens）；仅音频模型带，缺失为 null */
+  list_audio?: { input?: number | null; output?: number | null } | null;
+  /** 音频价的快照汇率人民币折算，口径同 list_cny */
+  list_audio_cny?: { input?: number | null; output?: number | null } | null;
   source_url?: string;
   description?: string;
   /** 简介的中文翻译（AI 随目录同步翻译；AI 未配置或未轮到时为空，回落英文原文） */
@@ -269,11 +285,13 @@ export interface VendorSourceModel {
   price_status?: string;
 }
 
-/** 管理台「厂商定价源」：一个国内厂商的公开定价页配置与最近抓取状态。 */
+/** 管理台「厂商定价源」：一个厂商的公开定价页配置与最近抓取状态。 */
 export interface VendorPricingSource {
   vendor: string;
   url: string;
   enabled: boolean;
+  /** 区域：cn=国内折扣基准 / global=国际参考价；存量记录缺省按国内处理 */
+  region?: "cn" | "global";
   last_fetched_at?: number | null;
   last_status?: "ok" | "empty" | "failed" | null;
   last_error?: string | null;
@@ -292,7 +310,8 @@ export interface VendorSourceDetection {
   providers: string[];
   models_total: number;
   models_priced: number;
-  suggested_url?: string;
+  /** 推荐采集地址（人工核验过），kind=web 网页页 / json 价格接口；一键添加时预填 */
+  suggestions?: { kind: "web" | "json"; url: string }[];
   note?: string;
   source_added: boolean;
   source_enabled?: boolean | null;

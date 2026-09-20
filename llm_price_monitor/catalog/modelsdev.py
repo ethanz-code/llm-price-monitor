@@ -3,12 +3,15 @@
 models.dev（https://models.dev）是开源的 AI 模型规格与定价数据库，api.json 由
 Cloudflare CDN 分发；价格统一为 USD / 1M tokens。同一模型会在多个渠道条目
 （官方 lab、-cn 国内站、vertex 等平台）重复出现，官方价目录只保留白名单内的
-官方 lab 条目：国内厂商以国内站（-cn）条目为折扣基准，同厂商的国际站条目
-退居 `list_global` 参考价（同行双价），不参与基准。
+官方 lab 条目。models.dev 的国内价格一律不取（-cn 国内站条目是时段缺失的
+他方换算价，实测与官方人民币标价偏差可达数倍）：国内厂商目录里只保留国际站
+条目作为基准，国内基准价由「厂商定价源」抓取官方定价页后合并覆盖，原国际价
+退居 `list_global` 参考价（同行双价）。
 
 `fetch_catalogs` 同时产出第二份「全量渠道价」目录：不限白名单，models.dev 所有
-厂商的带价模型都进表，按 `provider:model` 键保留各渠道自己的条目，仅供展示；
-meta 里的 `providers` 是快照厂商清单（含未带价厂商），供「厂商定价源」做覆盖检测。
+国际渠道的带价模型都进表，按 `provider:model` 键保留各渠道自己的条目，仅供
+展示；国内渠道条目（-cn 后缀与国内平台）同样整体剔除。meta 里的 `providers`
+是快照厂商清单（含未带价厂商），供「厂商定价源」做覆盖检测。
 """
 from __future__ import annotations
 
@@ -21,23 +24,39 @@ from . import fx, normalize
 
 MODELSDEV_API_URL = "https://models.dev/api.json"
 
-# 厂商显示顺序（与前端厂商清单一致）由元组顺序决定；region 标注条目口径：
-# cn=国内站官方价（作为折扣基准），global=国际站官方价。处理时厂商块内国内站
-# 条目优先，被顶掉的同厂商国际站条目退居 list_global 参考价（同行双价）。
-# deepseek 单条目即国内口径（已核与官方中文价页空闲时段一致）；
-# zhipuai/zai 在 models.dev 里都指向 z.ai 国际站，智谱国内价由「厂商定价源」补。
+# 厂商显示顺序（与前端厂商清单一致）由元组顺序决定；region 标注条目口径，
+# 白名单只收国际站条目（global）：models.dev 的国内站条目不进目录，国内基准
+# 由「厂商定价源」抓官方定价页后合并覆盖，原国际价退居 list_global 参考价
+# （同行双价）。deepseek 无国际站条目，配国内定价源前官方目录暂缺该厂商。
 DEFAULT_PROVIDERS: tuple[tuple[str, str, str], ...] = (
     ("openai", "OpenAI", "global"),
     ("anthropic", "Anthropic", "global"),
     ("google", "Google", "global"),
     ("xai", "xAI", "global"),
     ("zhipuai", "Zhipu AI", "global"),
-    ("deepseek", "DeepSeek", "cn"),
     ("moonshotai", "Moonshot AI", "global"),
-    ("moonshotai-cn", "Moonshot AI", "cn"),
     ("alibaba", "Alibaba Cloud", "global"),
-    ("alibaba-cn", "Alibaba Cloud", "cn"),
 )
+
+
+# 国内渠道 id 清单（与 vendor_sources.DOMESTIC_BRANDS 的 cn_provider_ids 人工
+# 对齐，models.dev 很多国内平台渠道没有 -cn 后缀）：models.dev 的国内价格不进
+# 系统，全量渠道目录靠这份清单整体剔除国内渠道；-cn 后缀兜底快照未来新增的
+# 国内站渠道。
+DOMESTIC_PROVIDER_IDS: frozenset[str] = frozenset({
+    "deepseek", "moonshotai-cn",
+    "alibaba-cn", "alibaba-token-plan-cn", "alibaba-coding-plan-cn",
+    "minimax-cn", "minimax-cn-coding-plan",
+    "volcengine", "volcengine-coding-plan",
+    "tencent-tokenhub", "tencent-coding-plan", "tencent-token-plan",
+    "stepfun", "stepfun-step-plan", "siliconflow-cn", "sensenova",
+    "modelscope", "iflowcn", "xiaomi-token-plan-cn",
+})
+
+
+def _is_domestic_provider(provider_id: str) -> bool:
+    """models.dev 渠道 id 是否国内口径：精确清单命中或 -cn 后缀。"""
+    return provider_id.endswith("-cn") or provider_id in DOMESTIC_PROVIDER_IDS
 
 
 def _release_date(model: dict[str, Any]) -> str:
@@ -93,10 +112,20 @@ def _entry(
     source_url: str,
     logo: str | None = None,
 ) -> dict[str, Any]:
-    """models.dev 模型条目 → 目录条目（价格统一 USD，人民币按快照汇率换算）。"""
+    """models.dev 模型条目 → 目录条目（价格统一 USD，人民币按快照汇率换算）。
+
+    长上下文分档（list_tiers）与音频价（list_audio）上游仅部分模型带：基础档
+    照常入库，分档/音频缺失时对应字段为 null，与 cache 字段同口径。
+    """
     cost = model.get("cost") or {}
     input_price, output_price = cost.get("input"), cost.get("output")
     cache_read, cache_write = cost.get("cache_read"), cost.get("cache_write")
+    audio_input, audio_output = cost.get("input_audio"), cost.get("output_audio")
+    # 长上下文分档（如 >200K 翻倍档）：只留带价的档位；上游仅部分模型带，缺失为 None
+    tiers = [
+        t for t in cost.get("tiers") or []
+        if isinstance(t, dict) and (t.get("input") is not None or t.get("output") is not None)
+    ]
     release_date = _release_date(model)
     return {
         "found": True,
@@ -118,6 +147,23 @@ def _entry(
             "write": normalize.round2(cache_write * rate) if cache_write is not None else None,
         },
         "source_url": source_url,
+        "list_tiers": tiers or None,
+        "list_tiers_cny": [
+            {
+                "input": normalize.round2(t["input"] * rate) if t.get("input") is not None else None,
+                "output": normalize.round2(t["output"] * rate) if t.get("output") is not None else None,
+                "cache_read": normalize.round2(t["cache_read"] * rate) if t.get("cache_read") is not None else None,
+                "tier": t.get("tier"),
+            }
+            for t in tiers
+        ] if tiers else None,
+        "list_audio": {"input": audio_input, "output": audio_output}
+        if audio_input is not None or audio_output is not None else None,
+        "list_audio_cny": {
+            "input": normalize.round2(audio_input * rate) if audio_input is not None else None,
+            "output": normalize.round2(audio_output * rate) if audio_output is not None else None,
+        }
+        if audio_input is not None or audio_output is not None else None,
         "description": model.get("description"),
         "family": model.get("family"),
         "modalities": model.get("modalities"),
@@ -180,13 +226,15 @@ def fetch_catalogs(
     for provider_id, provider in snapshot.items():
         if not isinstance(provider, dict):
             continue
+        # models.dev 的国内渠道价格不进系统（时段分档缺失、他方汇率换算，
+        # 实测与官方人民币标价偏差大）：国内价一律以「厂商定价源」抓取为准
+        if _is_domestic_provider(str(provider_id)):
+            continue
         provider_models = provider.get("models")
         if not isinstance(provider_models, dict):
             continue
         label = str(provider.get("name") or provider_id)
         source_url = provider.get("doc") or "https://models.dev"
-        # 全量渠道仅展示用途：region 按 -cn 后缀启发式标注
-        region = "cn" if str(provider_id).endswith("-cn") else "global"
         ordered = sorted(provider_models.items(), key=lambda item: _release_date(item[1]), reverse=True)
         for model_id, model in ordered:
             cost = model.get("cost") if isinstance(model, dict) else None
@@ -198,7 +246,7 @@ def fetch_catalogs(
             if key in everything:
                 continue
             logo = f"https://models.dev/logos/{provider_id}.svg"
-            everything[key] = _entry(str(model_id), model, label, region, rate, source_url, logo)
+            everything[key] = _entry(str(model_id), model, label, "global", rate, source_url, logo)
 
     meta = {
         "generated_at": now,

@@ -106,7 +106,10 @@ def _snapshot() -> dict:
         "openai": _provider("openai", "OpenAI", "https://platform.openai.com/docs/models", {
             "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "description": "flagship model",
                             "release_date": "2026-08-01",
-                            "cost": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 6.0}},
+                            "cost": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 6.0,
+                                     "input_audio": 6.0,
+                                     "tiers": [{"input": 10.0, "output": 60.0, "cache_read": 1.0,
+                                                "tier": {"type": "context", "size": 200000}}]}},
             "gpt-5.5": {"id": "gpt-5.5", "name": "GPT-5.5", "release_date": "2026-01-01",
                         "cost": {"input": 2.5, "output": 10.0}},  # 无缓存价：应为 null
             "gpt-5.6-mini": {"id": "gpt-5.6-mini", "name": "GPT-5.6 Mini", "cost": {}},  # 无定价，跳过
@@ -124,6 +127,10 @@ def _snapshot() -> dict:
         "openrouter": _provider("openrouter", "OpenRouter", "https://openrouter.ai/docs", {
             "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "cost": {"input": 9.9, "output": 9.9}},
         }),  # 白名单外的转售平台，整体忽略
+        "volcengine": _provider("volcengine", "Volcengine Ark", "https://www.volcengine.com/docs/82379", {
+            "doubao-pro": {"id": "doubao-pro", "name": "Doubao Pro", "release_date": "2026-03-01",
+                           "cost": {"input": 0.6, "output": 3.0}},
+        }),  # 国内平台渠道（无 -cn 后缀）：全量目录 region 应标 cn 且厂商置顶
     }
 
 
@@ -137,8 +144,8 @@ def catalog_fetch(monkeypatch):
 def test_fetch_catalog_maps_whitelist_and_skips_priceless(catalog_fetch):
     doc = catalog_fetch()
     models = doc["models"]
-    # 白名单外（openrouter）不出现；无定价模型不出现
-    assert set(models) == {"gpt5.6sol", "gpt5.5", "kimik2.7", "kimik2.5"}
+    # 白名单外（openrouter）不出现；无定价模型不出现；国内渠道（moonshotai-cn）不出现
+    assert set(models) == {"gpt5.6sol", "gpt5.5", "kimik2.7"}
     entry = models["gpt5.6sol"]
     assert entry["found"] is True
     assert entry["vendor"] == "OpenAI"
@@ -148,6 +155,13 @@ def test_fetch_catalog_maps_whitelist_and_skips_priceless(catalog_fetch):
     # 缓存价：原币与折算两份，供花费计算器自动带出
     assert entry["cache"] == {"read": 0.5, "write": 6.0}
     assert entry["cache_cny"] == {"read": 3.37, "write": 40.44}
+    # 长上下文分档（tier 条件原样保留）与音频价：同样原币/折算两份
+    assert entry["list_tiers"] == [{"input": 10.0, "output": 60.0, "cache_read": 1.0,
+                                    "tier": {"type": "context", "size": 200000}}]
+    assert entry["list_tiers_cny"] == [{"input": 67.4, "output": 404.4, "cache_read": 6.74,
+                                        "tier": {"type": "context", "size": 200000}}]
+    assert entry["list_audio"] == {"input": 6.0, "output": None}
+    assert entry["list_audio_cny"] == {"input": 40.44, "output": None}
     assert entry["description"] == "flagship model"
     assert entry["source_url"] == "https://platform.openai.com/docs/models"
     # meta：来源与汇率
@@ -162,31 +176,32 @@ def test_fetch_catalog_missing_cache_cost_falls_back_to_null(catalog_fetch):
     entry = doc["models"]["gpt5.5"]
     assert entry["cache"] == {"read": None, "write": None}
     assert entry["cache_cny"] == {"read": None, "write": None}
+    # 上游没带分档/音频时同口径为 null
+    assert entry["list_tiers"] is None and entry["list_tiers_cny"] is None
+    assert entry["list_audio"] is None and entry["list_audio_cny"] is None
 
 
 def test_fetch_catalog_orders_vendors_and_newest_models_first(catalog_fetch):
     doc = catalog_fetch()
-    # 厂商权威序（openai → moonshot），厂商内按发布时间倒序（gpt-5.6-sol 新于 gpt-5.5）
+    # 厂商权威序（openai → moonshot），厂商内按发布时间倒序（gpt-5.6-sol 新于 gpt-5.5）；
+    # moonshotai-cn 的 kimi-k2.5 不再进目录（models.dev 国内价不取，基准由定价源产出）
     keys = [entry["model"] for entry in doc["models"].values()]
-    assert keys == ["gpt-5.6-sol", "gpt-5.5", "kimi-k2.7", "kimi-k2.5"]
+    assert keys == ["gpt-5.6-sol", "gpt-5.5", "kimi-k2.7"]
 
 
-def test_fetch_catalog_cn_entry_wins_and_keeps_global_reference(catalog_fetch):
+def test_fetch_catalog_excludes_domestic_channels(catalog_fetch):
+    """models.dev 的国内渠道条目不进官方目录：国内基准只来自厂商定价源。
+
+    同厂商国际站条目直接作为基准（配源合并后才退居 list_global 参考价），
+    只有国内渠道才有的模型（kimi-k2.5）在配源前不出现。
+    """
     doc = catalog_fetch()
-    # 国内站条目优先做折扣基准；被顶掉的同厂商国际站条目退居 list_global 参考价
     kimi = doc["models"]["kimik2.7"]
-    assert kimi["region"] == "cn"
-    assert kimi["list"] == {"input": 1.2, "output": 6.0}
-    assert kimi["source_url"] == "https://platform.moonshot.cn/docs/api/chat"
-    assert kimi["vendor"] == "Moonshot AI"
-    assert kimi["list_global"] == {"input": 1.9, "output": 8.0}
-    assert kimi["list_global_cny"] == {"input": 12.81, "output": 53.92}
-    # 只有国内站有的模型：cn 口径、无国际参考价
-    kimi25 = doc["models"]["kimik2.5"]
-    assert kimi25["region"] == "cn"
-    assert kimi25["list"] == {"input": 0.6, "output": 3.0}
-    assert kimi25["source_url"] == "https://platform.moonshot.cn/docs/api/chat"
-    assert "list_global" not in kimi25
+    assert kimi["region"] == "global"
+    assert kimi["list"] == {"input": 1.9, "output": 8.0}
+    assert kimi["source_url"] == "https://platform.moonshot.ai/docs/api/chat"
+    assert "list_global" not in kimi
+    assert "kimik2.5" not in doc["models"]
     # 海外厂商条目标 global
     assert doc["models"]["gpt5.6sol"]["region"] == "global"
 
@@ -216,6 +231,11 @@ def test_fetch_catalogs_shared_snapshot_covers_all_providers(monkeypatch):
     assert entry["vendor"] == "OpenRouter"
     assert entry["list"] == {"input": 9.9, "output": 9.9}
     assert entry["release_date"] is None  # 该渠道条目无发布日期
+    # models.dev 国内渠道条目（-cn 与国内平台）两份目录都不进：国内价只认厂商定价源
+    assert set(full["models"]) == {
+        "openai:gpt5.6sol", "openai:gpt5.5", "moonshotai:kimik2.7", "openrouter:gpt5.6sol",
+    }
+    assert all(item["region"] == "global" for item in full["models"].values())
     # 官方条目补发布日期，供 AI 档位判定与指纹使用
     assert official["models"]["gpt5.6sol"]["release_date"] == "2026-08-01"
     # 全量目录与官方目录同构（同一套 meta 字段）
@@ -225,6 +245,7 @@ def test_fetch_catalogs_shared_snapshot_covers_all_providers(monkeypatch):
     inventory = {item["id"]: item for item in official["providers"]}
     assert inventory["openai"]["models_total"] == 3 and inventory["openai"]["models_priced"] == 2
     assert inventory["openrouter"]["doc"] == "https://openrouter.ai/docs"
+    assert "volcengine" in inventory  # 国内平台渠道仍在厂商清单里，覆盖检测要看得见
     assert full["providers"] == official["providers"]
 
 

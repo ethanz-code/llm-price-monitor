@@ -20,6 +20,7 @@ class VendorSourceBody(BaseModel):
     vendor: str
     url: str
     enabled: bool = True
+    region: str = "cn"
 
 
 def build_router(store: Store) -> APIRouter:
@@ -54,11 +55,12 @@ def build_router(store: Store) -> APIRouter:
     def create_source(body: VendorSourceBody) -> dict[str, Any]:
         try:
             vendor, _url = vendor_sources.validate_source(body.vendor, body.url)
+            region = vendor_sources.validate_region(body.region)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if vendor in vendor_sources.load_sources(store):
             raise HTTPException(status_code=409, detail=f"厂商定价源已存在: {vendor}")
-        record = vendor_sources.upsert_source(store, body.vendor, body.url, body.enabled)
+        record = vendor_sources.upsert_source(store, body.vendor, body.url, body.enabled, region)
         return {"source": _summary(record)}
 
     @router.put("/api/vendor-sources/{vendor}")
@@ -67,11 +69,12 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"厂商定价源不存在: {vendor}")
         try:
             normalized_vendor, _url = vendor_sources.validate_source(body.vendor, body.url)
+            region = vendor_sources.validate_region(body.region)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if normalized_vendor != vendor:
             raise HTTPException(status_code=400, detail="请求体里的厂商名与路径不一致（不支持改名，请删除后重建）")
-        record = vendor_sources.upsert_source(store, vendor, body.url, body.enabled)
+        record = vendor_sources.upsert_source(store, vendor, body.url, body.enabled, region)
         revert_task_id = None
         if not body.enabled:
             # 停用后目录里上次合并的国内价会残留，自动触发目录刷新恢复 models.dev 基准
