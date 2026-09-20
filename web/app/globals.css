@@ -2242,6 +2242,13 @@ html:not([data-theme="dark"]) .panel {
       border-color 140ms linear;
   }
 
+  /* 亮色下球面是白底，11px 小字压在 80% 半透底上会发虚：文字加深一档、底色压到近实心 */
+  html:not([data-theme="dark"]) .cobe-label {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    border-color: var(--border-strong);
+  }
+
   .cobe-label:hover {
     color: var(--text);
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
