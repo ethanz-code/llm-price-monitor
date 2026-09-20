@@ -8,6 +8,7 @@ import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { ToneTag } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
+import { useNarrow } from "@/lib/useNarrow";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 
@@ -80,6 +81,8 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
 export function CatalogTable({ data }: { data: CatalogData }) {
   const [keyword, setKeyword] = useState("");
   const [vendor, setVendor] = useState("all");
+  // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：厂商并入模型列，价格一列，避免横滑藏住最后一列
+  const phone = useNarrow(560);
 
   const vendors = useMemo(
     () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))),
@@ -246,6 +249,42 @@ export function CatalogTable({ data }: { data: CatalogData }) {
     },
   ];
 
+  // 手机列组：厂商（徽标+名称）与模型上下两行合并，价格列收窄，两列一屏放得下
+  const displayColumns: DColumn<Row>[] = phone
+    ? [
+        {
+          title: "厂商 / 模型",
+          key: "vendor-model",
+          width: 180,
+          render: (_, row: Row) => (
+            <span style={{ display: "inline-grid", gap: 2, justifyItems: "start" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--text-2)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <VendorBadge vendor={row.vendor} />
+                {row.vendor}
+                {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {row.model}
+                </span>
+                {row.tier === "mainstream" && <ToneTag tone="gray">主流</ToneTag>}
+              </span>
+            </span>
+          ),
+        },
+        { ...columns[2], width: 160 },
+      ]
+    : columns;
+
   return (
     <div className="rise-in" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -288,11 +327,12 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         ) : (
           <DataTable<Row>
             rowKey="key"
-            columns={columns}
+            columns={displayColumns}
             rows={rows}
             paginated
             scrollX={1220}
-            mobileScrollX={600}
+            mobileScrollX={phone ? 340 : 600}
+            dense
             rowClassName={(row) => (row.tier === "flagship" ? "row-flagship" : undefined)}
           />
         )}

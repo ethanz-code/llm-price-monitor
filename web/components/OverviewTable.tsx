@@ -10,6 +10,7 @@ import { ToneTag, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
+import { useNarrow } from "@/lib/useNarrow";
 import { effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
 import { canonicalModel, hasUsablePrice, smartOrderRows } from "@/lib/priceRows";
 import { dotsOfGroup, dotsSuccessRate, type ChannelDot, type ChannelDotRow } from "@/lib/channelStatus";
@@ -112,6 +113,9 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       ),
     [active, dotsByRowKey, rate, data.notices, data.site_completeness],
   );
+
+  // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：输入/输出并成一列上下两行，避免横滑藏住最后一列
+  const phone = useNarrow(560);
 
   const attentionSites = useMemo(() => {
     return Object.entries(data.collect_status ?? {})
@@ -273,6 +277,32 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     },
   ];
 
+  // 手机列组：站点收窄一点，价格上下两行（入/出），横滑不再出现
+  const displayColumns: DColumn<OverviewRecord>[] = phone
+    ? [
+        { ...columns[0], width: 150 },
+        {
+          title: "输入 / 输出",
+          key: "price-inout",
+          width: 150,
+          sorter: (a, b) =>
+            (effectiveCnyPrice(a, "input_price", rate) ?? -1) - (effectiveCnyPrice(b, "input_price", rate) ?? -1),
+          render: (_v: unknown, row) => (
+            <span style={{ display: "inline-grid", gap: 2, justifyItems: "start" }}>
+              <span style={{ display: "inline-flex", gap: 4, alignItems: "baseline" }}>
+                <span style={{ fontSize: 11, color: "var(--text-3)" }}>入</span>
+                <PriceCell row={row} field="input_price" rate={rate} />
+              </span>
+              <span style={{ display: "inline-flex", gap: 4, alignItems: "baseline" }}>
+                <span style={{ fontSize: 11, color: "var(--text-3)" }}>出</span>
+                <PriceCell row={row} field="output_price" rate={rate} />
+              </span>
+            </span>
+          ),
+        },
+      ]
+    : columns;
+
   return (
     <>
       {attentionSites.length > 0 && (
@@ -338,11 +368,11 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
         </div>
         <DataTable<OverviewRecord>
           rowKey={rowKeyOf}
-          columns={columns}
+          columns={displayColumns}
           rows={parentRows}
           paginated
           scrollX={1020}
-          mobileScrollX={500}
+          mobileScrollX={phone ? 310 : 500}
           onRowClick={(row) => router.push(`/overview/status/${encodeURIComponent(row.site_id)}`)}
           empty={
             <Empty

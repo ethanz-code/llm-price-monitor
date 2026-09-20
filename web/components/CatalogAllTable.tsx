@@ -8,6 +8,7 @@ import { RiskLink } from "./RiskLink";
 import { ToneTag } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { useNarrow } from "@/lib/useNarrow";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
 interface Row extends CatalogEntry {
@@ -18,6 +19,8 @@ interface Row extends CatalogEntry {
 export function CatalogAllTable({ data }: { data: CatalogData }) {
   const [keyword, setKeyword] = useState("");
   const [vendor, setVendor] = useState("all");
+  // 手机（≤560px）：渠道并入模型列上下两行，价格一列，避免横滑藏住最后一列
+  const phone = useNarrow(560);
 
   const vendors = useMemo(
     () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))).sort((a, b) => a.localeCompare(b)),
@@ -151,6 +154,42 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
     },
   ];
 
+  // 手机列组：渠道（徽标+名称）与模型上下两行合并，价格列收窄，两列一屏放得下
+  const displayColumns: DColumn<Row>[] = phone
+    ? [
+        {
+          title: "渠道 / 模型",
+          key: "vendor-model",
+          width: 190,
+          render: (_, row: Row) => (
+            <span style={{ display: "inline-grid", gap: 2, justifyItems: "start" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--text-2)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <VendorBadge vendor={row.vendor} logo={row.logo} />
+                {row.vendor}
+              </span>
+              <span
+                className="mono"
+                title={row.name ? `${row.name}（${row.vendor}）` : row.model}
+                style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {row.model}
+              </span>
+            </span>
+          ),
+        },
+        { ...columns[2], width: 160 },
+      ]
+    : columns;
+
   return (
     <div className="rise-in" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -192,7 +231,15 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
         {rows.length === 0 ? (
           <Empty icon={<IconSearch size={18} />} title="没有匹配的渠道价" description="换个关键词或调整筛选条件再试试。" />
         ) : (
-          <DataTable<Row> rowKey="key" columns={columns} rows={rows} paginated scrollX={1130} mobileScrollX={560} />
+          <DataTable<Row>
+            rowKey="key"
+            columns={displayColumns}
+            rows={rows}
+            paginated
+            scrollX={1130}
+            mobileScrollX={phone ? 360 : 560}
+            dense
+          />
         )}
       </div>
     </div>
