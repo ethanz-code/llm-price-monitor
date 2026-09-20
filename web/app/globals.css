@@ -66,6 +66,9 @@
 
   /* 内容区最大宽度：导航、正文、页脚共用，超宽屏居中收口 */
   --page-max: 1440px;
+  /* 响应式断点全站统一四档（桌面优先，媒体查询写 max-width）：
+     ≥1441 大屏增强档 / 1025–1440 桌面档 / 768–1024 平板档 / 480–767 手机档 / <480 小屏手机档。
+     字号按档位取固定值，不用 vw/clamp 流式缩放——排版随档位切换，不随窗口连续变形 */
   /* 动效标尺：三档时长 + 统一缓出曲线，交互反馈全部引用 token */
   --dur-fast: 0.15s;
   --dur: 0.2s;
@@ -230,7 +233,7 @@ body > main {
 
 /* 页头标题：无衬线粗黑体紧凑排布，对齐控制台的标题层级（不做展示型大字） */
 .page-title {
-  font-size: clamp(22px, 2.2vw, 28px);
+  font-size: 28px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.3;
@@ -311,7 +314,7 @@ body > main {
   max-width: 620px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .settings-panel {
     padding: 16px;
   }
@@ -334,7 +337,7 @@ body > main {
   border-radius: 0 0 8px 8px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .settings-save-bar {
     margin: 0 -16px;
     padding: 12px 16px;
@@ -1830,7 +1833,7 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero-title {
-  font-size: clamp(30px, 3.6vw, 44px);
+  font-size: 42px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.2;
@@ -2080,7 +2083,7 @@ html:not([data-theme="dark"]) .panel {
   gap: 14px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .landing-duo {
     grid-template-columns: 1fr;
     gap: 36px;
@@ -2651,7 +2654,7 @@ button.footer-icon {
   transform: translateX(-2px);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .side-fab-group {
     display: none;
   }
@@ -2813,7 +2816,7 @@ html:not([data-theme="dark"]) .admin-rail a.active::before {
   word-break: break-word;
 }
 
-@media (max-width: 719px) {
+@media (max-width: 768px) {
   .detect-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px 10px;
@@ -2961,7 +2964,7 @@ a.event-card {
   color: var(--text);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1024px) {
   .dash-grid {
     grid-template-columns: 1fr;
   }
@@ -3266,8 +3269,8 @@ a.event-card {
   background: var(--tone-gray-text);
 }
 
-/* 管理后台侧栏：719px 以下才从左右两栏切为上下叠放，桌面与中窄窗口右内容始终和侧栏水平对齐 */
-@media (max-width: 719px) {
+/* 管理后台侧栏：768px 以下才从左右两栏切为上下叠放，桌面与中窄窗口右内容始终和侧栏水平对齐 */
+@media (max-width: 768px) {
   .admin-shell {
     grid-template-columns: 1fr;
   }
@@ -3307,7 +3310,23 @@ a.event-card {
 }
 
 /* 移动端通用布局：胶囊导航换汉堡菜单等（与后台侧栏断点解耦） */
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
+  /* 平板档字号：标题收一档，排版不随窗口连续变形 */
+  .page-title {
+    font-size: 24px;
+  }
+
+  .hero-title {
+    font-size: 32px;
+  }
+
+  /* hero 平板紧凑列：球列收窄给文字让位，其余结构不变 */
+  .hero {
+    grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+    gap: 32px 40px;
+    padding: 40px 0 56px;
+  }
+
   .site-footer-inner {
     grid-template-columns: 1fr;
     gap: 18px;
@@ -3405,7 +3424,7 @@ a.event-card {
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .page {
     padding: 48px 16px 64px;
   }
@@ -3441,6 +3460,19 @@ a.event-card {
     margin-bottom: 24px;
   }
 
+  /* 手机档字号：标题再收一档（固定值，不随窗口连续缩放） */
+  .page-title {
+    font-size: 22px;
+  }
+
+  .hero-title {
+    font-size: 28px;
+  }
+
+  .landing-cta h2 {
+    font-size: 22px;
+  }
+
   .nav-inner {
     padding: 0 16px;
     gap: 10px;
@@ -3448,9 +3480,14 @@ a.event-card {
 
   .hero {
     grid-template-columns: 1fr;
-    gap: 36px;
-    padding: 20px 0 28px;
+    gap: 20px;
+    padding: 8px 0 24px;
     align-items: start;
+  }
+
+  /* 手机档球收窄到 240px：标题、副文与 CTA 不被球挤出首屏 */
+  .pano-globe-layer {
+    width: min(240px, 76vw);
   }
 
   .hero-side {
@@ -3502,7 +3539,7 @@ a.event-card {
   overflow-x: auto;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .markdown-doc {
     padding: 20px 16px;
   }
@@ -4337,10 +4374,50 @@ a.event-card {
 }
 
 .landing-cta h2 {
-  font-size: clamp(20px, 2.4vw, 26px);
+  font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0 0 30px;
+}
+
+/* 大屏增强档（≥1441）：内容仍锁 1440px 居中，首页排版整体放大一档，
+   让 2K/4K 屏上首屏更饱满，而不是一套小尺寸排版浮在大画布里 */
+@media (min-width: 1441px) {
+  .hero {
+    grid-template-columns: minmax(380px, 620px) minmax(0, 1.05fr);
+    gap: 48px 64px;
+    padding: 72px 0 88px;
+  }
+
+  .hero-title {
+    font-size: 50px;
+  }
+
+  .hero-sub {
+    font-size: 17px;
+    max-width: 560px;
+    margin-top: 26px;
+  }
+
+  .landing-intro p {
+    font-size: 16px;
+  }
+
+  .landing-section {
+    padding-top: 64px;
+  }
+
+  .landing-cta {
+    padding-top: 104px;
+  }
+
+  .landing-cta h2 {
+    font-size: 30px;
+  }
+
+  .faq-item summary {
+    font-size: 16.5px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4363,14 +4440,10 @@ a.event-card {
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .landing-truth {
     grid-template-columns: 1fr;
     gap: 36px;
-  }
-
-  .landing-cta h2 {
-    font-size: 26px;
   }
 }
 
@@ -4767,7 +4840,7 @@ a.event-card {
   cursor: default;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
   /* 只挪默认位置；已拖动的气泡带行内 left，再给 right 会两头受限把气泡压窄 */
   .ai-fab:not(.ai-fab-moved) {
     right: 14px;
@@ -5001,7 +5074,7 @@ a.event-card {
   font-family: var(--mono);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .calc-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -5017,7 +5090,7 @@ a.event-card {
   }
 }
 
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .calc-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -5041,7 +5114,7 @@ a.event-card {
   mask-composite: intersect;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 1024px) {
   .chrome-mosaic {
     display: none;
   }
