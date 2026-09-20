@@ -12,3 +12,7 @@ var/
 .serena/
 .playwright-mcp/
 .DS_Store
+
+# local session artifacts
+.zcode/
+gui-test-screenshots/
