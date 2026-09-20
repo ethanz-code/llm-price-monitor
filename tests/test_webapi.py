@@ -1427,8 +1427,10 @@ def test_vendor_sources_crud_requires_admin_and_validates(workspace: Path, monke
     assert client.post("/api/vendor-sources", json={"vendor": "智谱", "url": "ftp://x.cn"}).status_code == 400
     created = client.post("/api/vendor-sources", json={
         "vendor": "ZhipuAI", "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md"}).json()["source"]
-    assert created["url"].endswith("pricing.md") and created["enabled"] is True
+    assert created["url"].endswith("pricing.md") and created["enabled"] is True and created["region"] == "cn"
     assert client.post("/api/vendor-sources", json={"vendor": "ZhipuAI", "url": "https://x.cn/p"}).status_code == 409
+    assert client.post("/api/vendor-sources", json={
+        "vendor": "Y", "url": "https://y.cn/p", "region": "eu"}).status_code == 400  # 非法 region 拒绝
 
     # PUT：停用触发目录刷新任务恢复基准
     updated = client.put("/api/vendor-sources/ZhipuAI", json={
@@ -1459,7 +1461,7 @@ def test_vendor_sources_detection_endpoint(workspace: Path):
         {"id": "alibaba-cn", "name": "Alibaba (China)", "doc": "https://alibabacloud.com", "models_total": 89, "models_priced": 80},
     ]})
     records = {r["vendor"]: r for r in client.get("/api/vendor-sources/detection").json()["records"]}
-    assert records["Zhipu AI"]["verdict"] == "missing_cn" and records["Zhipu AI"]["suggested_url"]
+    assert records["Zhipu AI"]["verdict"] == "missing_cn" and records["Zhipu AI"]["suggestions"]
     assert records["Alibaba Cloud"]["verdict"] == "has_cn"
 
 

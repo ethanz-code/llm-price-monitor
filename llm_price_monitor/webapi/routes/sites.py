@@ -10,13 +10,27 @@ import httpx
 
 from llm_price_monitor.ai import infer_token_fields
 from llm_price_monitor.config import DEPRECATED_SITE_FIELDS, SiteSpec, config_from_store, sites_from_raw
-from llm_price_monitor.report import summary_row
+from llm_price_monitor.config import slim_site_config
 from llm_price_monitor.store import Store
-from llm_price_monitor.token_refresh import refresh_site_token
+from llm_price_monitor.token_refresh import persist_refreshed_config, refresh_site_token
 
 
 class SiteBody(BaseModel):
     config: dict[str, Any]
+
+
+def _persist_refreshed_tokens(store: Store, site_id: str, access_token: str, refresh_token: str) -> None:
+    """测试续签也会真实消耗一次轮换凭据（旧值已作废）：换新的两个 token 立即落库。
+
+    否则用户在编辑弹窗里点测试后中途取消，新凭证只留在浏览器内存里，下次续签
+    拿着已作废的旧值去撞必然 401，只能回浏览器重新抓。access_token 与 refresh_token
+    一起写：取消后站点上的采集请求头也还是刚验过有效的那个，而不是旧到期的。
+    其余字段仍以用户点保存的草稿为准。
+    """
+    config = store.get_site_config(site_id)
+    if config is None or not isinstance(config.get("token_refresh"), dict):
+        return
+    persist_refreshed_config(store, site_id, access_token, refresh_token)
 
 
 def _validated_site_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -26,6 +40,7 @@ def _validated_site_config(config: dict[str, Any]) -> dict[str, Any]:
     unknown = sorted(set(config) - set(SiteSpec.__dataclass_fields__))
     if unknown:
         raise ValueError(f"站点配置包含未知字段: {', '.join(unknown)}")
+    config = slim_site_config(config)
     sites_from_raw([config])  # 结构校验：network / models / headers 等
     return config
 
@@ -52,35 +67,6 @@ def _apply_token_sample(store: Store, config: dict[str, Any]) -> str | None:
     return None
 
 
-def unpriced_targets(store: Store, sites: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """采集启用的站点里，配了却始终没采到价的目标模型 → {站点 id: [模型名]}。
-
-    站点把模型写成另一个名字（如接口里叫 deepseek-v4.1-flash、配置里是省略版本号的
-    deepseek-flash）时，这类模型在快照里连占位行都不会有，只能靠这里显式列出来。
-    """
-    latest = store.latest_all()
-    result: dict[str, list[str]] = {}
-    for config in sites:
-        if config.get("enabled") is False:
-            continue
-        site_id = str(config.get("id") or "")
-        configured = [name for name in config.get("models") or [] if isinstance(name, str) and name.strip()]
-        if not site_id or not configured:
-            continue
-        prefix = f"{site_id}:"
-        priced: dict[str, bool] = {}
-        for key, record in latest.items():
-            if not key.startswith(prefix) or not isinstance(record, dict):
-                continue
-            model = key[len(prefix):].rsplit(":", 1)[0]
-            row = summary_row(record)
-            priced[model] = priced.get(model, False) or row["input_price"] is not None or row["output_price"] is not None
-        missing = [name for name in configured if not priced.get(name, False)]
-        if missing:
-            result[site_id] = missing
-    return result
-
-
 def build_router(store: Store) -> APIRouter:
     router = APIRouter()
 
@@ -89,9 +75,14 @@ def build_router(store: Store) -> APIRouter:
         sites = store.list_site_configs()
         return {
             "sites": sites,
-            "collect_status": store.get_document("collect_status") or {},
-            "unpriced_models": unpriced_targets(store, sites),
+            # 站点管理行内报错提示用：三类采集的逐站最近一次异常
+            "site_health": store.get_document("site_collect_health") or {},
         }
+
+    @router.get("/api/sites/{site_id}/groups")
+    def site_groups(site_id: str) -> dict[str, Any]:
+        """已采集价格数据里出现过的分组名：管理台分组白名单下拉勾选用，新站点为空列表。"""
+        return {"groups": store.distinct_price_groups(site_id)}
 
     @router.post("/api/sites")
     def create_site(body: SiteBody) -> dict[str, Any]:
@@ -141,9 +132,10 @@ def build_router(store: Store) -> APIRouter:
     def test_token_refresh(body: SiteBody) -> dict[str, Any]:
         """用当前填写的续签配置真实调用一次续签接口，验证地址、凭证和响应结构都能对上。
 
-        成功返回完整的新 token，由前端回填编辑表单，保存后生效；这里不写库。
-        注意部分站点的 refresh_token 是一次性的，测试会消耗掉一次换新，
-        所以必须回填后再保存，否则下次续签会拿着已失效的旧 token 去撞。
+        成功返回完整的新 token，由前端回填编辑表单，保存后生效。
+        注意轮换型站点的 refresh_token 一次性：测试这一下就把旧值作废了，
+        所以换新的 access_token 与 refresh_token 在这里立即落库（站点已存在时），
+        前端取消也不丢凭证链。
         """
         try:
             spec: SiteSpec = sites_from_raw([{k: v for k, v in body.config.items() if k in SiteSpec.__dataclass_fields__}])[0]
@@ -157,12 +149,14 @@ def build_router(store: Store) -> APIRouter:
                 access_token, refresh_token = refresh_site_token(spec, http, settings.timeout, settings.user_agent)
         except Exception as exc:  # noqa: BLE001 - 测试端点把任何失败都转成可读提示
             raise HTTPException(status_code=400, detail=f"续签测试失败：{exc}") from exc
+        rotated = refresh_token != spec.token_refresh.get("refresh_token")
+        _persist_refreshed_tokens(store, spec.id, access_token, refresh_token)
 
         return {
             "ok": True,
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "refresh_token_rotated": refresh_token != spec.token_refresh.get("refresh_token"),
+            "refresh_token_rotated": rotated,
         }
 
     @router.delete("/api/sites/{site_id}")

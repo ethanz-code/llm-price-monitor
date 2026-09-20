@@ -22,7 +22,7 @@ from llm_price_monitor.ai import (
     ai_request,
     json_content,
 )
-from llm_price_monitor.config import AIConfig, PriceMonitorError, SiteSpec
+from llm_price_monitor.config import AIConfig, AuthRequiredError, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import payload_hash, redact_url
 
 # 内嵌 JSON 候选起点：赋值/传参后的第一个 { 或 [（window.__X__ = {...}、JSON.parse({...}) 等）
@@ -31,7 +31,7 @@ _JSON_START_PATTERN = re.compile(r"[=:=(]\s*([\[{])")
 _STATUS_KEY_HINTS = ("status", "state", "channel", "health", "available", "online", "可用", "渠道", "状态")
 _MAX_JSON_CANDIDATES = 50
 # 渠道条目的名字候选键：与前端 channelStatus.ts 的 NAME_KEYS 口径一致
-_CHANNEL_NAME_KEYS = ("name", "channel", "model", "id", "title", "key")
+_CHANNEL_NAME_KEYS = ("name", "channel", "model", "model_name", "id", "title", "key")
 
 
 def filter_status_groups(data: dict[str, Any], groups: list[str]) -> dict[str, Any]:
@@ -88,7 +88,7 @@ def ai_extract_status(
     """AI 兜底：把 HTML/JS 文本整理成状态 JSON 对象；页面原文不变时直接复用缓存结果。"""
     ai_model = config.pick_model()
     if not config.base_url or not ai_model:
-        raise PriceMonitorError("配置文件 ai.base_url 或 ai.model/ai.models 未配置")
+        raise PriceMonitorError("配置文件 ai.base_url 或 ai.models 未配置")
     if not config.api_key:
         raise PriceMonitorError("配置文件 ai.api_key 未配置")
     cache_key = payload_hash({"version": 1, "kind": "status", "url": url, "text": text})
@@ -142,7 +142,9 @@ def fetch_site_status(
 ) -> dict[str, Any]:
     """采集单个站点的渠道状态，返回含来源与解析方式的记录；data 为自由结构。"""
     entry = resolve_endpoint(spec.status, spec=spec, label="status")
-    response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+    response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="status"))
+    if response.status_code in {401, 403}:
+        raise AuthRequiredError(http_error_message("渠道状态地址", response, auth_hint=True))
     if response.is_error:
         raise PriceMonitorError(http_error_message("渠道状态地址", response, auth_hint=True))
     response.raise_for_status()

@@ -442,3 +442,58 @@ def test_scan_notices_runs_independently_of_prices(tmp_path: Path, monkeypatch):
         report = scan_prices(config, store=store, client=client)
     assert calls["collect"] == 1
     assert report.notice_records == []  # 独立价格采集不碰站点公告
+
+
+def test_scan_notices_renews_token_on_401_and_retries(tmp_path: Path):
+    """公告撞 401：配了续签的站点换一次新 token 重试，成功则照常入库并把新 token 写回配置。"""
+    from llm_price_monitor.report import scan_notices
+
+    site = {
+        "id": "demo",
+        "models": ["demo-model"],
+        "auth_token": "at_stale",
+        "network": {"url": "https://demo.test/api/pricing"},
+        "notice": {"url": "https://demo.test/api/notice"},
+        "token_refresh": {"url": "https://demo.test/api/user/auth/refresh", "refresh_token": "rt_x"},
+    }
+    config = _config_file(tmp_path, site)
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("demo", site)
+    seen_auth: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/refresh"):
+            return httpx.Response(200, json={"data": {"access_token": "at_new"}})
+        if request.url.path.endswith("/api/status"):
+            return httpx.Response(200, json={"success": True, "data": {}})  # 多条公告接口，无 announcements
+        seen_auth.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != "Bearer at_new":
+            return httpx.Response(401, json={"success": False, "message": "未登录"})
+        return httpx.Response(200, json={"success": True, "data": "第一版公告"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        scan = scan_notices(config, store=store, client=client)
+
+    assert scan.errors == []
+    assert [event["kind"] for event in scan.events] == ["notice_init"]
+    assert scan.records[0]["content"] == "第一版公告"
+    assert seen_auth == ["Bearer at_stale", "Bearer at_new"]  # 旧 token 撞 401，换新后重试成功
+    assert store.get_site_config("demo")["auth_token"] == "at_new"
+
+
+def test_scan_notices_401_without_refresh_config_reports_error(tmp_path: Path):
+    """没配续签的站点撞 401 不尝试换新：公告采集照常记错误并给出需认证提示。"""
+    from llm_price_monitor.report import scan_notices
+
+    config = _config_file(tmp_path, {**_site_raw_config({"url": "https://demo.test/api/notice"})})
+    store = Store(tmp_path / "monitor.db")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"success": False, "message": "未登录"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        scan = scan_notices(config, store=store, client=client)
+
+    assert scan.records == []
+    assert len(scan.errors) == 1 and "可能需要认证" in scan.errors[0]["error"]
+    assert scan.site_results[0]["outcome"] == "error"

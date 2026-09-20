@@ -5,8 +5,10 @@ MonitorConfig，不再接触原始字典。
 """
 from __future__ import annotations
 
+import base64
 import json
 import secrets
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -28,12 +30,126 @@ class PriceMonitorError(RuntimeError):
     pass
 
 
+class AuthRequiredError(PriceMonitorError):
+    """接口返回 401/403：配置了续签的站点据此触发一次换新并重试，其余情况按普通失败处理。"""
+
+
 @dataclass(frozen=True)
 class ModelTarget:
     name: str
 
 
 DEPRECATED_SITE_FIELDS = frozenset({"note", "preferred_response_url_patterns", "ratio_base_price", "model_list_url", "currency"})  # 已废弃的站点字段：加载/保存时静默丢弃
+
+# 凭证注入的三个目标：价格采集（含附加地址、倍率接口、无头浏览器）、渠道状态、站点公告
+AUTH_INJECT_TARGETS = ("price", "status", "notice")
+# 注入值里可引用的凭证变量：续签换新后自动展开成新值
+ACCESS_TOKEN_VAR = "${access_token}"
+REFRESH_TOKEN_VAR = "${refresh_token}"
+
+# 站点级字段的默认值：与默认相同就不落库，读取时由 SiteSpec 默认值兜底
+SITE_FIELD_DEFAULTS: dict[str, Any] = {
+    "adapter": "standard",
+    "auth_header": "Authorization",
+    "auth_prefix": "Bearer ",
+    "enabled": True,
+}
+
+
+def slim_site_config(config: dict[str, Any]) -> dict[str, Any]:
+    """去掉站点配置里的空值与默认值字段（auth_token: null、auth_header: "Authorization"、空的 params 等）。
+
+    这些键写出来只是噪音：认证三项本来就是站点级通用配置，null/空容器读取时走默认值。
+    旧配置里显式写了这些字段的，保存或整理一次后自动瘦身。
+    """
+    def slim(value: Any) -> Any:
+        if isinstance(value, dict):
+            slimmed = {key: slim(item) for key, item in value.items()}
+            return {key: item for key, item in slimmed.items() if item is not None and item != {} and item != []}
+        if isinstance(value, list):
+            return [slim(item) for item in value]
+        return value
+
+    slimmed = slim(config)
+    return {
+        key: value
+        for key, value in slimmed.items()
+        if key == "enabled" or key not in SITE_FIELD_DEFAULTS or value != SITE_FIELD_DEFAULTS[key]
+    }  # enabled 始终落库：管理台行内启用判断和渲染直接读它，缺省会让前端当成停用
+
+
+def canonical_site_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """把存量站点配置整理成当前结构，返回（整理结果, 变更说明）。
+
+    两件整理：瘦身（见 slim_site_config）；认证收口——各接口 headers 里手写的 Authorization
+    是站点级 auth_token 的重复实现且不随续签更新，把其中最新的一个（按 JWT exp，非 JWT 视为最旧）
+    收编进站点级 auth_token（已有 auth_token 时以它为准），其余全部移除；顺带清掉
+    token_refresh 里残留的 response_sample（它只在保存时供 AI 分析用，不落库）。
+    """
+    notes: list[str] = []
+    slimmed = slim_site_config(config)
+    if slimmed != config:
+        notes.append("去掉空值与默认值字段（auth_token: null、默认 auth_header/auth_prefix、空容器等）")
+    config = slimmed
+
+    refresh = config.get("token_refresh")
+    if isinstance(refresh, dict) and isinstance(refresh.get("response_sample"), str):
+        refresh.pop("response_sample")
+        notes.append("清理 token_refresh.response_sample 残留（只在保存时供 AI 分析用）")
+        if not refresh:
+            config.pop("token_refresh", None)
+
+    def _jwt_exp(value: str) -> float:
+        try:
+            part = value.removeprefix("Bearer ").split(".")[1]
+            part += "=" * (-len(part) % 4)
+            return float(json.loads(base64.urlsafe_b64decode(part)).get("exp") or 0)
+        except Exception:
+            return 0.0
+
+    best_token, best_exp, best_where = "", 0.0, ""
+
+    def _clean(entry: dict[str, Any], label: str) -> None:
+        nonlocal best_token, best_exp, best_where
+        headers = entry.get("headers")
+        if not isinstance(headers, dict):
+            return
+        auth_values = [value for key, value in headers.items() if str(key).lower() == "authorization" and isinstance(value, str) and value.strip()]
+        if not auth_values:
+            return
+        for value in auth_values:
+            exp = _jwt_exp(value)
+            if exp >= best_exp:
+                best_exp, best_token, best_where = exp, value, label
+        kept = {key: value for key, value in headers.items() if str(key).lower() != "authorization"}
+        if kept:
+            entry["headers"] = kept
+        else:
+            entry.pop("headers", None)
+        notes.append(f"移除 {label}.headers 里手写的 Authorization")
+
+    network = config.get("network")
+    if isinstance(network, dict):
+        _clean(network, "network")
+        ratio = network.get("ratio_url")
+        if isinstance(ratio, dict):
+            _clean(ratio, "network.ratio_url")
+    for index, entry in enumerate(config.get("networks") or []):
+        if isinstance(entry, dict):
+            _clean(entry, f"networks[{index}]")
+    for key in ("status", "notice"):
+        section = config.get(key)
+        if isinstance(section, dict):
+            _clean(section, key)
+
+    if best_token:
+        if not str(config.get("auth_token") or "").strip():
+            config["auth_token"] = best_token.removeprefix("Bearer ").strip()
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(best_exp)) if best_exp > 0 else "无过期信息"
+            notes.append(f"把 {best_where} 的 token 收编为站点级 auth_token（exp {when}）")
+        else:
+            notes.append("已有站点级 auth_token，手写的 Authorization 一律以它为准移除")
+    return config, notes
 
 # 四类采集任务的定时间隔（分钟），存 settings.schedule；0 = 关闭该项定时、只保留手动触发
 DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440}
@@ -68,7 +184,8 @@ class SiteSpec:
     networks: tuple[dict[str, Any], ...] = ()  # 附加采集地址：与 network 同构，逐个采集后合并价格
     status: dict[str, Any] = field(default_factory=dict)
     notice: dict[str, Any] = field(default_factory=dict)
-    token_refresh: dict[str, Any] = field(default_factory=dict)  # 认证续签请求配置：url/method/params/headers/body/refresh_token  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
+    token_refresh: dict[str, Any] = field(default_factory=dict)
+    auth_inject: dict[str, Any] = field(default_factory=dict)  # 凭证注入规则：{价格/状态/公告目标: {header, value}}  # 认证续签请求配置：url/method/params/headers/body/refresh_token  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
 
 
 class AIResultCache(Protocol):
@@ -244,6 +361,30 @@ def _validate_token_refresh(raw: dict[str, Any], site_id: str) -> None:
         raise ValueError(f"站点 {site_id} 的 token_refresh.refresh_token 不能为空")
 
 
+def _validate_auth_inject(raw: Any, site_id: str) -> None:
+    """校验凭证注入规则：只认价格/状态/公告三个目标，每条规则是 {header, value}。"""
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise ValueError(f"站点 {site_id} 的 auth_inject 必须是对象")
+    for target, rule in raw.items():
+        if target not in AUTH_INJECT_TARGETS:
+            raise ValueError(f"站点 {site_id} 的 auth_inject.{target} 不是可注入目标（可选 {'、'.join(AUTH_INJECT_TARGETS)}）")
+        if not isinstance(rule, dict):
+            raise ValueError(f"站点 {site_id} 的 auth_inject.{target} 必须是对象")
+        unknown = sorted(set(rule) - {"header", "value"})
+        if unknown:
+            raise ValueError(f"站点 {site_id} 的 auth_inject.{target} 只支持 header 与 value：{'、'.join(unknown)} 不认识")
+        header = rule.get("header")
+        if not isinstance(header, str) or not header.strip():
+            raise ValueError(f"站点 {site_id} 的 auth_inject.{target}.header 必须是非空字符串（如 Authorization 或 cookie）")
+        value = rule.get("value")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"站点 {site_id} 的 auth_inject.{target}.value 必须是非空字符串（如 Bearer ${{access_token}}）"
+            )
+
+
 def _validate_headless(network: dict[str, Any], site_id: str) -> None:
     """校验站点 network.headless 段；未启用时只校验 enabled 本身，其余字段可以不填。"""
     headless = network.get("headless")
@@ -374,6 +515,8 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
         if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
             raise ValueError(f"站点 {site_id} 的 models 必须是字符串数组；模型分组/别名字段已下线，别名由 AI 自动解析")
         models = tuple(ModelTarget(item.strip()) for item in raw_models if item.strip())
+        raw_auth_inject = value.get("auth_inject", {})
+        _validate_auth_inject(raw_auth_inject, site_id)
         site_values = {
             **value,
             "adapter": adapter,
@@ -383,6 +526,7 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
             "networks": tuple(normalized_networks),
             "status": raw_status,
             "notice": raw_notice,
+            "auth_inject": raw_auth_inject if isinstance(raw_auth_inject, dict) else {},
         }
         if set(value) <= {"id"}:
             site_values["enabled"] = False

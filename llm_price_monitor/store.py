@@ -166,6 +166,16 @@ def _price_event_group(payload: dict[str, Any]) -> str:
     return "default"
 
 
+# AI 日志里 prompt / 回复 / 错误原文的入库截断长度：完整证据可能几十万字符，整段入库会撑爆库
+_AI_LOG_TEXT_CHARS = 500
+
+
+def _clip_ai_log_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value[:_AI_LOG_TEXT_CHARS] + ("…" if len(value) > _AI_LOG_TEXT_CHARS else "")
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -253,13 +263,15 @@ class Store:
                 # latest 的 key 形如 "{site_id}:{model}:{group}"，用前缀精确匹配避免 LIKE 通配符歧义
                 conn.execute("DELETE FROM latest WHERE substr(key, 1, ?) = ?", (len(site_id) + 1, f"{site_id}:"))
                 conn.execute("DELETE FROM documents WHERE name = ?", (f"status_ref:{site_id}",))
-                row = conn.execute("SELECT content FROM documents WHERE name = 'collect_status'").fetchone()
-                if row:
-                    merged = {k: v for k, v in (json.loads(row[0]) or {}).items() if k != site_id}
-                    conn.execute(
-                        "UPDATE documents SET content = ? WHERE name = 'collect_status'",
-                        (json.dumps(merged, ensure_ascii=False),),
-                    )
+                # collect_status 与 site_collect_health 都是 site_id → 状态 的文档，删站点时同步摘除
+                for doc_name in ("collect_status", "site_collect_health"):
+                    row = conn.execute("SELECT content FROM documents WHERE name = ?", (doc_name,)).fetchone()
+                    if row:
+                        merged = {k: v for k, v in (json.loads(row[0]) or {}).items() if k != site_id}
+                        conn.execute(
+                            "UPDATE documents SET content = ? WHERE name = ?",
+                            (json.dumps(merged, ensure_ascii=False), doc_name),
+                        )
         return deleted
 
     def rename_site(self, old_id: str, new_id: str) -> bool:
@@ -425,10 +437,21 @@ class Store:
             )
 
     def read_events(
-        self, *, limit: int, site_id: str | None = None, kind: str | None = None
+        self,
+        *,
+        limit: int,
+        site_id: str | None = None,
+        kind: str | None = None,
+        exclude_kind: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         return self._read_rows(
-            "price_events", limit=limit, site_id=site_id, kind=kind, kind_column="kind", payload_column="payload"
+            "price_events",
+            limit=limit,
+            site_id=site_id,
+            kind=kind,
+            exclude_kind=exclude_kind,
+            kind_column="kind",
+            payload_column="payload",
         )
 
     # ---------- 站点提交 ----------
@@ -541,6 +564,9 @@ class Store:
         prompt_excerpt: str | None = None,
         response_excerpt: str | None = None,
     ) -> None:
+        error = _clip_ai_log_text(error)
+        prompt_excerpt = _clip_ai_log_text(prompt_excerpt)
+        response_excerpt = _clip_ai_log_text(response_excerpt)
         with self._conn() as conn:
             now = time.time()
             conn.execute(
@@ -590,7 +616,7 @@ class Store:
     def ai_logs_summary(self, *, trend_days: int = 7) -> dict[str, Any]:
         """AI 调用统计聚合：全部保留记录的 KPI、按天趋势与场景/模型分布。
 
-        成功率按尝试次数计：status=ok 占比；fallback（换模型重试）与 error 都算未成功。
+        成功率按尝试次数计：status=ok 占比；fallback（换模型重试）、param_retry（换参数重试）与 error 都算未成功。
         按天序列补零对齐，日期统一用本地时区（与 visit_summary 的口径一致）。
         """
         today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -600,6 +626,7 @@ class Store:
                 "SELECT COUNT(*) AS total,"
                 " COALESCE(SUM(status = 'ok'), 0) AS ok,"
                 " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
+                " COALESCE(SUM(status = 'param_retry'), 0) AS param_retry,"
                 " COALESCE(SUM(status = 'error'), 0) AS error,"
                 " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
                 " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
@@ -611,6 +638,7 @@ class Store:
                 row["day"]: (
                     int(row["ok"]),
                     int(row["fallback"]),
+                    int(row["param_retry"]),
                     int(row["error"]),
                     int(row["prompt_tokens"]),
                     int(row["completion_tokens"]),
@@ -619,6 +647,7 @@ class Store:
                     "SELECT date(ts, 'unixepoch', 'localtime') AS day,"
                     " COALESCE(SUM(status = 'ok'), 0) AS ok,"
                     " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
+                    " COALESCE(SUM(status = 'param_retry'), 0) AS param_retry,"
                     " COALESCE(SUM(status = 'error'), 0) AS error,"
                     " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
                     " COALESCE(SUM(completion_tokens), 0) AS completion_tokens"
@@ -639,15 +668,16 @@ class Store:
                 )
             ]
         today = date.fromtimestamp(time.time())
-        zeros = (0, 0, 0, 0, 0)
+        zeros = (0, 0, 0, 0, 0, 0)
         daily = [
             {
                 "day": (today - timedelta(days=offset)).isoformat()[5:],
                 "ok": values[0],
                 "fallback": values[1],
-                "error": values[2],
-                "prompt_tokens": values[3],
-                "completion_tokens": values[4],
+                "param_retry": values[2],
+                "error": values[3],
+                "prompt_tokens": values[4],
+                "completion_tokens": values[5],
             }
             for offset in range(trend_days - 1, -1, -1)
             for values in [by_day.get((today - timedelta(days=offset)).isoformat(), zeros)]
@@ -656,6 +686,7 @@ class Store:
             "total": int(totals["total"]),
             "ok": int(totals["ok"]),
             "fallback": int(totals["fallback"]),
+            "param_retry": int(totals["param_retry"]),
             "error": int(totals["error"]),
             "prompt_tokens": int(totals["prompt_tokens"]),
             "completion_tokens": int(totals["completion_tokens"]),
@@ -974,6 +1005,14 @@ class Store:
                 self.set_document("group_miss", pruned_watch)
         return stats
 
+    def distinct_price_groups(self, site_id: str) -> list[str]:
+        """该站点已入库价格数据里出现过的分组名（去重升序），供管理台分组白名单下拉勾选。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT group_name FROM price_trend WHERE site_id = ? ORDER BY group_name", (site_id,)
+            ).fetchall()
+        return [row["group_name"] for row in rows if row["group_name"]]
+
     def read_status(
         self,
         *,
@@ -1111,6 +1150,7 @@ class Store:
         kind: str | None,
         kind_column: str,
         payload_column: str,
+        exclude_kind: str | None = None,
         since: float | None = None,
         max_records: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -1125,6 +1165,9 @@ class Store:
         if kind:
             clauses.append(f"{kind_column} = ?")
             params.append(kind)
+        if exclude_kind:
+            clauses.append(f"{kind_column} != ?")
+            params.append(exclude_kind)
         if since is not None:
             clauses.append("captured_at >= ?")
             params.append(since)
