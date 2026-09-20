@@ -12,7 +12,7 @@ RUN npm ci
 COPY web/ ./
 # 前端把 /api 反代到后端，目标地址在 next build 时烘焙进产物，
 # 必须与 compose 里的 api 服务名一致；改服务名时这里和 web 阶段要同步改
-ARG PRICE_WEB_API_URL=http://api:8000
+ARG PRICE_WEB_API_URL=http://api:8437
 ENV PRICE_WEB_API_URL=$PRICE_WEB_API_URL
 RUN npm run build
 
@@ -35,12 +35,12 @@ RUN uv sync --frozen --no-dev
 # 无头浏览器采集：浏览器二进制与系统依赖烤进镜像，启动时只需自检不再联网下载
 RUN playwright install --with-deps chromium
 ENV PATH="/app/.venv/bin:$PATH"
-EXPOSE 8000
-CMD ["price-web", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8437
+CMD ["price-web", "--host", "0.0.0.0", "--port", "8437"]
 
 ########## 阶段 3：Web 运行镜像 ##########
 FROM node:22-alpine AS web
-ENV NODE_ENV=production TZ=Asia/Shanghai NEXT_TELEMETRY_DISABLED=1 PRICE_WEB_API_URL=http://api:8000
+ENV NODE_ENV=production TZ=Asia/Shanghai NEXT_TELEMETRY_DISABLED=1 PRICE_WEB_API_URL=http://api:8437
 RUN apk add --no-cache tzdata
 WORKDIR /app/web
 COPY --from=web-builder /app/web/.next ./.next
