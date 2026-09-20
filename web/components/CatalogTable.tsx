@@ -152,7 +152,7 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         return isFreePrice(row.list) ? (
           <ToneTag tone="green">免费</ToneTag>
         ) : (
-          <span style={{ display: "inline-grid", gap: 2, justifyItems: "end" }}>
+          <span style={{ display: "inline-grid", gap: 1, justifyItems: "end" }}>
             <span className="mono num" style={{ fontWeight: 550 }}>
               ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
             </span>

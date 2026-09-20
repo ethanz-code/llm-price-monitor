@@ -445,7 +445,7 @@ body > main {
   position: relative;
   white-space: nowrap;
   text-align: left;
-  padding: 12px 12px;
+  padding: 8px 12px;
   /* 分隔线用 inset 阴影而非 border：collapsed border 下不会脱落 */
   box-shadow: inset 0 -1px 0 var(--border);
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
@@ -468,7 +468,7 @@ body > main {
 /* 排序箭头钉在表头右上角：带两行式单位表头时不会掉到第三行 */
 .dtable thead .sort {
   position: absolute;
-  top: 14px;
+  top: 10px;
   right: 10px;
   opacity: 0.45;
   font-size: 11px;
@@ -480,7 +480,7 @@ body > main {
 }
 
 .dtable td {
-  padding: 15px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
 
