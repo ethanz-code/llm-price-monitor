@@ -127,7 +127,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "站点",
       dataIndex: "site_id",
-      width: 170,
+      width: 150,
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
         // 状态列已去掉：确认/候选价是常态不挂标签；需认证/无数据挂标签，规则价用小字低调标注
@@ -167,7 +167,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       ),
       dataIndex: "input_price",
       align: "right",
-      width: 140,
+      width: 120,
       sorter: (a, b) => (effectiveCnyPrice(a, "input_price", rate) ?? -1) - (effectiveCnyPrice(b, "input_price", rate) ?? -1),
       render: (_v: number | null, row) => <PriceCell row={row} field="input_price" rate={rate} />,
     },
@@ -180,14 +180,14 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       ),
       dataIndex: "output_price",
       align: "right",
-      width: 140,
+      width: 120,
       sorter: (a, b) => (effectiveCnyPrice(a, "output_price", rate) ?? -1) - (effectiveCnyPrice(b, "output_price", rate) ?? -1),
       render: (_v: number | null, row) => <PriceCell row={row} field="output_price" rate={rate} />,
     },
     {
       title: "分组",
       key: "group",
-      width: 140,
+      width: 110,
       mobileHide: true,
       render: (_v: unknown, row) => {
         const group = row.metadata?.group;
@@ -208,15 +208,10 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
         </>
       ),
       key: "discount",
-      width: 180,
+      width: 150,
       mobileHide: true,
       sorter: (a, b) => (a.discount?.input ?? 9) - (b.discount?.input ?? 9),
-      render: (_, row) => (
-        <span style={{ display: "inline-grid", gap: 3 }}>
-          <DiscountBars discount={row.discount} />
-          {row.discount?.region === "cn" && <ToneTag tone="green">国内基准</ToneTag>}
-        </span>
-      ),
+      render: (_, row) => <DiscountBars discount={row.discount} />,
     },
     {
       title: (
@@ -226,7 +221,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
         </>
       ),
       key: "channels",
-      width: 250,
+      width: 200,
       mobileHide: true,
       render: (_v: unknown, row) => {
         const dots = dotsByRowKey.get(rowKeyOf(row));
@@ -262,14 +257,14 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             <span
               style={{
                 display: "-webkit-box",
-                WebkitLineClamp: 3,
+                WebkitLineClamp: 2,
                 WebkitBoxOrient: "vertical",
                 overflow: "hidden",
                 whiteSpace: "normal",
                 lineHeight: 1.55,
               }}
             >
-              {noticeExcerpt(notice.content, 3)}
+              {noticeExcerpt(notice.content, 2)}
             </span>
           </Link>
         );
@@ -280,7 +275,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
   // 手机列组：站点收窄一点，价格上下两行（入/出），横滑不再出现
   const displayColumns: DColumn<OverviewRecord>[] = phone
     ? [
-        { ...columns[0], width: 150 },
+        columns[0],
         {
           title: "输入 / 输出",
           key: "price-inout",
@@ -371,8 +366,9 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
           columns={displayColumns}
           rows={parentRows}
           paginated
-          scrollX={1020}
+          scrollX={870}
           mobileScrollX={phone ? 310 : 500}
+          dense
           onRowClick={(row) => router.push(`/overview/status/${encodeURIComponent(row.site_id)}`)}
           empty={
             <Empty
