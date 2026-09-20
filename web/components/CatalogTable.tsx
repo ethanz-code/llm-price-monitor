@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
 import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
@@ -34,9 +34,59 @@ const VENDOR_KEY: Record<string, string> = {
   xai: "xai",
 };
 
-/** 厂商 Logo：全量渠道优先用 models.dev 托管的品牌图，加载失败回落；官方视图走本地内置 SVG；都没有则首字母色块。 */
+/** models.dev 远程 logo：拉一次 SVG 文本内联进页面，单色版（fill=currentColor）才能跟随文字色适配暗色——
+ *  走 <img> 时外部样式进不去，currentColor 只能落到默认黑色。Promise 按 URL 缓存，同一 logo 多行只发一次请求；
+ *  拉取失败返回 null，回落外链 img。 */
+const remoteLogoPromises = new Map<string, Promise<string | null>>();
+
+function loadRemoteLogo(url: string): Promise<string | null> {
+  let promise = remoteLogoPromises.get(url);
+  if (!promise) {
+    promise = fetch(url)
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((text) => {
+        const safe = text.trimStart().startsWith("<svg") && !text.includes("<script") ? text : null;
+        // 无任何 fill/stroke 配色的纯形状 logo 默认黑，补 currentColor 让它跟随主题
+        if (safe && !/fill=|stroke=/.test(safe)) return safe.replace(/<svg\b/, '<svg fill="currentColor"');
+        return safe;
+      })
+      .catch(() => null);
+    remoteLogoPromises.set(url, promise);
+  }
+  return promise;
+}
+
+function useRemoteLogoSvg(url: string | null | undefined): string | null {
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    setSvg(null);
+    if (!url) return;
+    let alive = true;
+    loadRemoteLogo(url).then((text) => {
+      if (alive) setSvg(text);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [url]);
+  return svg;
+}
+
+/** 厂商 Logo：全量渠道优先内联 models.dev 托管的品牌 SVG（随主题适配，拉取失败回落外链 img）；
+ *  官方视图走本地内置 SVG；都没有则首字母色块。 */
 export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | null }) {
   const [failed, setFailed] = useState(false);
+  const remoteSvg = useRemoteLogoSvg(logo ?? null);
+  if (remoteSvg) {
+    return (
+      <span
+        aria-hidden
+        className="vendor-logo"
+        title={vendor}
+        dangerouslySetInnerHTML={{ __html: remoteSvg }}
+      />
+    );
+  }
   if (logo && !failed) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
