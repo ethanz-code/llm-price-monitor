@@ -14,17 +14,23 @@ export interface ChannelStatus {
   availability7d?: number;
 }
 
-/** 单个检测点：状态 + 检测时间（秒级时间戳，站点未提供时间时缺省）+ 自报延迟（ms）。 */
+/** 单个检测点：状态 + 检测时间（秒级时间戳，站点未提供时间时缺省）+ 自报延迟（ms）；
+ *  指标型站点（无状态词、用数值成功率表达健康度）附带自报成功率（%）与出字速度（TPS）。 */
 export interface ChannelDot {
   status: string;
   ok: boolean;
   at?: number;
   latency?: number;
+  rate?: number;
+  tps?: number;
 }
 
 /** 一个渠道的检测点序列（时间升序）。 */
 export interface ChannelDotRow extends ChannelStatus {
   dots: ChannelDot[];
+  /** 指标型渠道补充：24h 汇总成功率（%）与最近几轮成功率，最近一轮决定当前状态 */
+  successRate24h?: number;
+  recentRates?: number[];
 }
 
 /** 点阵行名归一：去首尾空格、忽略大小写，用于与计价分组名匹配。 */
@@ -116,7 +122,7 @@ const UP_WORDS = new Set([
 
 const STATUS_KEYS = ["status", "state", "health"];
 // "key"：分组形态接口的分组名（如 groups[].key）
-const NAME_KEYS = ["name", "channel", "model", "id", "title", "key"];
+const NAME_KEYS = ["name", "channel", "model", "model_name", "id", "title", "key"];
 /** 纯容器键名：可以递归进入，但不能当作渠道名回退 */
 const FALLBACK_NAME_KEYS = new Set(["items", "channels", "data", "list", "models", "services", "result", "results"]);
 /** 历史序列键名：不作为独立渠道递归，而是并成所属渠道的检测点 */
@@ -168,9 +174,9 @@ function availabilityPct(...values: unknown[]): number | undefined {
   return value != null && value <= 1 ? Math.round(value * 10000) / 100 : value;
 }
 
-const LATENCY_KEYS = ["latency_ms", "latency", "response_ms", "primary_latency_ms", "average_latency_ms"];
+const LATENCY_KEYS = ["latency_ms", "latency", "response_ms", "primary_latency_ms", "average_latency_ms", "avg_latency_ms"];
 
-/** 渠道自报延迟（ms）：时间线条目用 latency_ms，渠道条目用 primary_latency_ms，聚合均值用 average_latency_ms。 */
+/** 渠道自报延迟（ms）：时间线条目用 latency_ms，渠道条目用 primary_latency_ms，聚合均值用 average_latency_ms / avg_latency_ms。 */
 function findLatency(obj: Record<string, unknown>): number | undefined {
   for (const key of LATENCY_KEYS) {
     const value = obj[key];
@@ -179,8 +185,41 @@ function findLatency(obj: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
+/** 指标型站点的同义字段取值：成功率（%）、出字速度（TPS）与最近几轮成功率序列。 */
+const SUCCESS_RATE_KEYS = ["success_rate", "successRate"];
+const TPS_KEYS = ["avg_tps", "tps"];
+const RECENT_RATES_KEYS = ["recent_success_rates", "recentSuccessRates"];
+
+function findMetric(obj: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function recentRounds(obj: Record<string, unknown>): number[] {
+  for (const key of RECENT_RATES_KEYS) {
+    const value = obj[key];
+    if (Array.isArray(value)) {
+      return value.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    }
+  }
+  return [];
+}
+
+/** 指标型渠道成功率三档：≥95 正常、≥80 偏低、更低异常。
+ *  与站点级聚合的 rateLevel（80/60）口径不同：单渠道的成功率门槛理应更严。 */
+export function successRateLevel(rate: number): RateLevel {
+  if (rate >= 95) return "ok";
+  if (rate >= 80) return "warn";
+  return "down";
+}
+
 interface RawChannel extends ChannelStatus {
   dots: ChannelDot[];
+  successRate24h?: number;
+  recentRates?: number[];
 }
 
 /** 解析时间线数组为检测点。 */
@@ -221,6 +260,30 @@ function collectChannels(node: unknown, fallback: string | null, depth: number, 
       dots: [{ status, ok: isUp(status), latency: findLatency(obj) }],
     };
     out.push(own);
+  } else {
+    // 指标型条目：没有状态词，用数值成功率表达健康度（如 AIHub365 perf-metrics 的模型列表）。
+    // 24h 汇总只是均值，最近一轮才接近“现在”，当前状态取最近一轮，汇总留给展示列；
+    // 必须自带名字键才认，避免把站点返回里无名的汇总对象误当成渠道。
+    const rounds = recentRounds(obj);
+    const summaryRate = findMetric(obj, SUCCESS_RATE_KEYS);
+    const rate = rounds.length > 0 ? rounds[rounds.length - 1] : summaryRate;
+    const nameKey = NAME_KEYS.find((key) => typeof obj[key] === "string" || typeof obj[key] === "number");
+    if (rate != null && nameKey != null) {
+      const ok = successRateLevel(rate) === "ok";
+      const status = `${rate.toFixed(2)}%`;
+      own = {
+        name: String(obj[nameKey]),
+        status,
+        ok,
+        provider: typeof obj.provider === "string" ? obj.provider : undefined,
+        model: typeof obj.primary_model === "string" ? obj.primary_model : typeof obj.model === "string" ? obj.model : undefined,
+        availability7d: availabilityPct(obj.availability_7d, obj.availability),
+        dots: [{ status, ok, latency: findLatency(obj), rate, tps: findMetric(obj, TPS_KEYS) }],
+        successRate24h: summaryRate,
+        recentRates: rounds.length > 0 ? rounds : undefined,
+      };
+      out.push(own);
+    }
   }
   if (depth > 0) {
     for (const [key, child] of Object.entries(obj)) {
@@ -280,7 +343,14 @@ export function channelDotsBySite(records: { site_id: string; captured_at: numbe
         dots.push(...embedded.dots);
       } else {
         const first = instances[0];
-        dots.push({ status: first.status, ok: first.ok, at: record.captured_at, latency: first.dots[0]?.latency });
+        dots.push({
+          status: first.status,
+          ok: first.ok,
+          at: record.captured_at,
+          latency: first.dots[0]?.latency,
+          rate: first.dots[0]?.rate,
+          tps: first.dots[0]?.tps,
+        });
       }
       siteMap.set(name, dots);
       if (!siteMeta.has(name)) siteMeta.set(name, instances[0]);
@@ -300,6 +370,8 @@ export function channelDotsBySite(records: { site_id: string; captured_at: numbe
         provider: first?.provider,
         model: first?.model,
         availability7d: first?.availability7d,
+        successRate24h: first?.successRate24h,
+        recentRates: first?.recentRates,
         dots: sorted,
       };
     });
@@ -473,7 +545,7 @@ export const NARROW_CHART_POINTS = 240;
  *  详情页延迟趋势图与站点分享图共用，保证两边画的是同一条线。 */
 export function buildChannelModel(
   channels: ChannelDotRow[],
-  pick: (dot: { ok: boolean; latency?: number }) => number | null,
+  pick: (dot: ChannelDot) => number | null,
   narrow: boolean,
   worse: (a: ChannelSample, b: ChannelSample) => ChannelSample,
 ) {

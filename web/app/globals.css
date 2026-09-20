@@ -63,6 +63,9 @@
   --z-pop: 200;
   --z-modal: 1000;
   --z-top: 1100;
+
+  /* 内容区最大宽度：导航、正文、页脚共用，超宽屏居中收口 */
+  --page-max: 1440px;
   /* 动效标尺：三档时长 + 统一缓出曲线，交互反馈全部引用 token */
   --dur-fast: 0.15s;
   --dur: 0.2s;
@@ -211,8 +214,10 @@ body > main {
 
 .page {
   width: 100%;
-  /* 顶部留白需大于吸顶导航高度（约 60px），首屏标题不与透明导航交叠 */
-  padding: 76px 32px 96px;
+  max-width: var(--page-max);
+  margin-inline: auto;
+  /* 吸顶导航在文档流内占位，此留白是导航与首屏内容之间的呼吸空间 */
+  padding: 64px 32px 96px;
   overflow-x: clip;
 }
 
@@ -238,6 +243,34 @@ body > main {
   margin: 10px 0 0;
   max-width: 640px;
   text-wrap: pretty;
+}
+
+/* 页顶数据摘要条：一行真实数字（mono）+ 灰标签，细线收底，给首屏一个轻的锚点 */
+.page-digest {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding-bottom: 14px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.page-digest-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.page-digest-label {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.page-digest-value {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
 }
 
 /* 小节标题：只靠字号字重分层，不加装饰件（避免模板感） */
@@ -1371,16 +1404,16 @@ html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 3px;
+  padding: 2px;
   gap: 2px;
 }
 
 .seg-item {
   border: none;
   background: transparent;
-  padding: 7px 14px;
+  padding: 5px 11px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-2);
   cursor: pointer;
   font-family: inherit;
@@ -1667,9 +1700,25 @@ html:not([data-theme="dark"]) .panel {
   z-index: var(--z-header);
   padding: 14px 0 10px;
   background: transparent;
+  /* 上滑滑回:0.35s 缓出慢慢浮现;visibility 0s 延迟保证显示方向立即可见再滑入 */
+  transition:
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+/* 下滑藏起:整体上移出屏,视觉等同被顶出去后裁掉;
+   不用 overflow:hidden,以免裁掉挂在导航内部的下拉弹层 */
+.site-header[data-hidden] {
+  transform: translateY(calc(-100% - 24px));
+  visibility: hidden;
+  transition:
+    transform 0.22s ease-in,
+    visibility 0s linear 0.22s;
 }
 
 .nav-inner {
+  max-width: var(--page-max);
+  margin-inline: auto;
   padding: 0 32px;
   display: flex;
   align-items: center;
@@ -2523,6 +2572,8 @@ html:not([data-theme="dark"]) .panel {
 .site-footer-inner {
   position: relative;
   z-index: 1;
+  max-width: var(--page-max);
+  margin-inline: auto;
   padding: 24px 32px 18px;
   display: grid;
   grid-template-columns: 7fr 3fr;
@@ -2609,6 +2660,8 @@ button.footer-icon {
 .site-footer-meta {
   position: relative;
   z-index: 1;
+  max-width: var(--page-max);
+  margin-inline: auto;
   padding: 12px 32px 18px;
   color: var(--text-3);
   font-size: 12px;
@@ -2668,6 +2721,8 @@ button.footer-icon {
 .admin-rail {
   position: sticky;
   top: 76px;
+  /* 吸顶间距跟随导航显隐切换时平滑过渡，曲线与导航滑回动画一致 */
+  transition: top 0.35s cubic-bezier(0.22, 1, 0.36, 1);
   /* 毛玻璃 + 发丝边框：材质对齐导航胶囊，页头光晕从底下柔和透出不生硬 */
   background: color-mix(in srgb, var(--panel) 84%, transparent);
   backdrop-filter: blur(14px);
@@ -2734,6 +2789,44 @@ html:not([data-theme="dark"]) .admin-rail a.active::before {
   min-width: 0;
 }
 
+/* 厂商定价源·覆盖检测行：固定列宽保证各列纵向对齐，窄屏降为两列堆叠 */
+.detect-row {
+  display: grid;
+  grid-template-columns: 150px 92px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  /* 子项（状态标签等）靠列起点收缩，不随列宽拉伸 */
+  justify-items: start;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+.detect-row .detect-vendor {
+  font-weight: 550;
+}
+
+.detect-row .detect-note {
+  font-size: 12.5px;
+  color: var(--text-2);
+  min-width: 0;
+  word-break: break-word;
+}
+
+@media (max-width: 719px) {
+  .detect-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    align-items: start;
+  }
+
+  /* 窄屏：厂商与状态同行，说明与操作按钮各自独占整行 */
+  .detect-row .detect-note,
+  .detect-row > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ---- 管理概览：双栏仪表盘 ---- */
 .dash-grid {
   display: grid;
@@ -2750,8 +2843,19 @@ html:not([data-theme="dark"]) .admin-rail a.active::before {
 
 .dash-side {
   min-width: 0;
+  /* 与左侧菜单同款吸顶：滚动时右栏整列停在 76px，顶部留出呼吸间隔 */
+  position: sticky;
+  top: 76px;
+  transition: top 0.35s cubic-bezier(0.22, 1, 0.36, 1);
   display: grid;
   gap: 20px;
+}
+
+/* 导航下滑自动藏起时，两侧吸顶面板跟着贴顶（12px）；导航滑回，恢复 76px 给导航让位。
+   data-hidden 由 SiteNav 的滚动方向检测驱动，header 是 main 的前置兄弟节点，纯 CSS 即可联动 */
+.site-header[data-hidden] ~ main .admin-rail,
+.site-header[data-hidden] ~ main .dash-side {
+  top: 12px;
 }
 
 .dash-panel-head {
@@ -2860,6 +2964,11 @@ a.event-card {
 @media (max-width: 1100px) {
   .dash-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* 单列后右栏排到主栏下方，取消吸顶按自然滚动 */
+  .dash-side {
+    position: static;
   }
 }
 
@@ -3016,6 +3125,9 @@ a.event-card {
 
 .auth-field .input {
   height: 38px;
+  /* 默认白底 + 偏蓝淡边框在浅色页面底上发糊：换中性灰边框、底色压成极浅灰白，轮廓更清楚 */
+  background: color-mix(in srgb, var(--panel-2) 40%, var(--panel));
+  border-color: color-mix(in srgb, var(--text) 20%, transparent);
 }
 
 .auth-error {
@@ -3295,7 +3407,13 @@ a.event-card {
 
 @media (max-width: 720px) {
   .page {
-    padding: 56px 16px 64px;
+    padding: 48px 16px 64px;
+  }
+
+  .page-digest {
+    gap: 6px 16px;
+    padding-bottom: 12px;
+    margin-bottom: 20px;
   }
 
   /* 页脚与正文左右对齐（.page 窄屏收窄到 16px，页脚还是 32px 会错位） */
@@ -3681,6 +3799,36 @@ a.event-card {
   transform: rotate(90deg);
 }
 
+/* 弹窗里的折叠摘要行（如「续签接口」）：整行可点，▸ 展开时旋转 90° */
+.disclosure-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 5px 6px;
+  margin: 0 -6px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.disclosure-row:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.disclosure-row > .caret {
+  display: inline-block;
+  color: var(--text-3);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.disclosure-row[aria-expanded="true"] > .caret {
+  transform: rotate(90deg);
+}
+
 /* 单元格文本自适应截断：撑满单元格宽度，到列真实边界才出省略号（DataTable 列配 ellipsis: true） */
 .cell-ellipsis {
   display: block;
@@ -3903,14 +4051,29 @@ a.event-card {
   text-underline-offset: 3px;
 }
 
-/* 渠道状态详情页：表头 + 渠道名(含厂商/模型小字) | 当前状态 | 延迟·7日可用率 | 可用记录条 | 正常次数 */
+/* 渠道状态详情页：表头 + 渠道名(含厂商/模型小字) | 当前状态(含近三轮小字) | 延迟·7日可用率 | 成功率·出字速度 | 可用记录条 | 正常次数 */
 .ch-row {
   display: grid;
-  grid-template-columns: minmax(110px, 200px) auto 1fr minmax(120px, 220px) auto;
+  grid-template-columns: minmax(110px, 200px) auto auto 1fr minmax(120px, 220px) auto;
   gap: 8px;
   align-items: center;
   padding: 5px 0;
   border-top: 1px solid var(--border);
+}
+
+/* 状态单元格：状态标签 + 指标型渠道的近三轮成功率小字 */
+.ch-state {
+  display: grid;
+  gap: 1px;
+  justify-items: start;
+}
+
+/* 指标型渠道的 24h 成功率 · 出字速度列 */
+.ch-metrics {
+  justify-self: end;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 
 .ch-upt {
@@ -3955,13 +4118,14 @@ a.event-card {
 }
 
 .ch-head .ch-lat,
+.ch-head .ch-metrics,
 .ch-head .ch-rate {
   font-size: 11px;
   color: var(--text-3);
 }
 
-/* 渠道状态行五列在 375px 放不下：塌成两行两列（渠道|状态 / 延迟·可用率|正常次数），时段条窄屏隐藏。
-   必须放在 .ch-row 基础定义之后，同特异性下后者胜出 */
+/* 渠道状态行六列在 375px 放不下：塌成两行两列（渠道|状态 / 延迟·可用率|正常次数），
+   时段条与成功率·出字速度列窄屏隐藏。必须放在 .ch-row 基础定义之后，同特异性下后者胜出 */
 @media (max-width: 480px) {
   .ch-row {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -3972,11 +4136,10 @@ a.event-card {
     justify-self: start;
   }
 
-  .ch-row .ch-upt {
-    display: none;
-  }
-
-  .ch-head .ch-upt {
+  .ch-row .ch-upt,
+  .ch-row .ch-metrics,
+  .ch-head .ch-upt,
+  .ch-head .ch-metrics {
     display: none;
   }
 }
@@ -4212,16 +4375,6 @@ a.event-card {
 }
 
 /* 智能分析助手：右下角悬浮球 + 右侧抽屉对话（配色只用语义变量，深浅主题自适应） */
-@keyframes ai-orb-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 7px transparent;
-  }
-}
-
 @keyframes ai-drawer-in {
   from {
     opacity: 0;
@@ -4249,20 +4402,22 @@ a.event-card {
   right: 18px;
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   z-index: var(--z-fab);
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 11px 16px 11px 13px;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--header-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  color: var(--text-2);
   cursor: pointer;
   transition:
     border-color var(--dur),
-    transform var(--dur),
+    color var(--dur),
     box-shadow var(--dur);
 }
 
@@ -4290,11 +4445,9 @@ a.event-card {
 
 .ai-fab:hover {
   border-color: var(--border-strong);
-  transform: translateY(-2px);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.2);
+  color: var(--accent-text);
 }
 
-.ai-fab-orb,
 .ai-orb {
   width: 22px;
   height: 22px;
@@ -4306,17 +4459,6 @@ a.event-card {
     var(--accent) 58%,
     color-mix(in srgb, var(--accent) 70%, #000000)
   );
-}
-
-.ai-fab-orb {
-  animation: ai-orb-pulse 2.8s ease-in-out infinite;
-}
-
-.ai-fab-text {
-  font-size: 13px;
-  font-weight: 620;
-  color: var(--text-1);
-  letter-spacing: 0.5px;
 }
 
 .ai-drawer {
@@ -4626,10 +4768,10 @@ a.event-card {
 }
 
 @media (max-width: 640px) {
-  .ai-fab {
+  /* 只挪默认位置；已拖动的气泡带行内 left，再给 right 会两头受限把气泡压窄 */
+  .ai-fab:not(.ai-fab-moved) {
     right: 14px;
     bottom: 14px;
-    padding: 10px 14px 10px 11px;
   }
 
   .ai-drawer {
@@ -4645,7 +4787,6 @@ a.event-card {
 .calculator {
   display: grid;
   gap: 16px;
-  margin-top: 32px;
   max-width: 880px;
 }
 

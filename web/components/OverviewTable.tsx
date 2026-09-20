@@ -287,7 +287,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
               <span key={site.siteId} title={site.error ?? undefined} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                 <ToneTag tone={meta.tone}>{getSiteInfo(site.siteId).name || site.siteId}</ToneTag>
                 <span className="mono" style={{ color: "var(--text-2)", fontSize: 12.5 }}>
-                  {site.error || meta.label}
+                  {meta.label}
                 </span>
               </span>
             );

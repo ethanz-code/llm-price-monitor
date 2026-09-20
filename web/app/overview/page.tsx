@@ -2,8 +2,8 @@ import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
 import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
 import type { OverviewData, StatusSnapshot } from "@/lib/types";
-import { PageHeader } from "@/components/PageHeader";
-import { alerts, subtitles } from "@/lib/copy";
+import { alerts } from "@/lib/copy";
+import { PageDigest } from "@/components/PageDigest";
 import { OverviewTable } from "@/components/OverviewTable";
 import { SiteAlert } from "@/components/SiteAlert";
 
@@ -37,11 +37,16 @@ export default async function OverviewPage() {
 
   return (
     <div className="page">
-      <PageHeader
-        title="中转站定价"
-        subtitle={subtitles.overview}
-      />
       {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}
+      {data && (
+        <PageDigest
+          items={[
+            { label: "站点", value: String(new Set(data.records.map((row) => row.site_id)).size) },
+            { label: "模型", value: String(new Set(data.records.map((row) => row.model)).size) },
+            { label: "价格记录", value: String(data.records.length) },
+          ]}
+        />
+      )}
       {data && <OverviewTable data={data} statusDots={statusDots} />}
     </div>
   );

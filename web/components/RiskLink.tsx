@@ -14,11 +14,14 @@ export function RiskLink({
   href,
   children,
   variant = "muted",
+  title,
 }: {
   href: string;
   children: React.ReactNode;
   /** muted：来源类弱链接；site：站点名主链接 */
   variant?: "muted" | "site";
+  /** 悬停提示（截断展示的长地址用它给全文） */
+  title?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [skip, setSkip] = useState(false);
@@ -66,6 +69,7 @@ export function RiskLink({
         rel="noreferrer"
         onClick={handleClick}
         className={variant === "site" ? "site-link" : undefined}
+        title={title}
       >
         {children}
       </a>

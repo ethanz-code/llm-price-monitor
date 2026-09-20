@@ -172,7 +172,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
   ];
 
   return (
-    <div className="section-gap rise-in" style={{ display: "grid", gap: 16 }}>
+    <div className="rise-in" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <Input
           placeholder="搜索模型、名称或渠道"

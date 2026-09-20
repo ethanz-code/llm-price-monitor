@@ -32,7 +32,7 @@ export function CatalogEmptyState() {
   }, [router]);
 
   return (
-    <div className="panel section-gap" style={{ padding: "32px 28px", textAlign: "center" }}>
+    <div className="panel" style={{ padding: "32px 28px", textAlign: "center" }}>
       <div style={{ fontSize: 15, fontWeight: 550, marginBottom: 8 }}>厂商定价正在同步</div>
       <p style={{ color: "var(--text-2)", fontSize: 13.5, lineHeight: 1.8, margin: "0 auto" }}>
         后台正在从开源模型目录{" "}
