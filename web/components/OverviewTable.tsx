@@ -123,7 +123,8 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "站点",
       dataIndex: "site_id",
-      width: 150,
+      // 不设固定宽度：与公告列一起平分剩余空间（两者都不设 width 即均分），
+      // 避免公告在宽屏独吞剩余宽度、也避免窄屏挤压价格列；手机端由 mobileScrollX 兜底
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
         // 状态列已去掉：确认/候选价是常态不挂标签；需认证/无数据挂标签，规则价用小字低调标注
@@ -233,7 +234,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "公告",
       key: "notice",
-      // 不设固定宽度：剩余空间都给公告；最多 3 行，超出 CSS 钳制，悬停看更长摘要
+      // 不设固定宽度：与站点列平分剩余空间，宽屏下不再独吞；最多 2 行，悬停看更长摘要
       mobileHide: true,
       render: (_v: unknown, row) => {
         const notice = data.notices?.[row.site_id];
