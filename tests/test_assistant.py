@@ -13,7 +13,7 @@ from tests.test_webapi import _config, workspace  # noqa: F401  workspace 为共
 def _enable_ai(client: TestClient) -> None:
     # 种子模式 skip_existing 不会覆盖已有的 ai 配置，这里直接写库
     client.app.state.store.set_document(
-        "ai", {"enabled": True, "base_url": "https://ai.test/v1", "model": "test-model", "api_key": "sk-test"}
+        "ai", {"enabled": True, "base_url": "https://ai.test/v1", "models": ["test-model"], "api_key": "sk-test"}
     )
 
 
@@ -216,6 +216,20 @@ def test_ask_stream_failure_does_not_consume_quota(workspace: Path, monkeypatch)
     assert any(_json.loads(frame).get("done") for frame in frames)
 
 
+def test_ask_stream_unexpected_exception_becomes_error_frame(workspace: Path, monkeypatch):
+    """SSE 边界：任何异常都要转成错误帧送达前端，抛出去会直接掐断连接。"""
+    def broken_stream(*args: Any, **kwargs: Any):
+        raise RuntimeError("模拟未预期异常")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(assistant, "ai_stream_fallback", broken_stream)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    res = client.post("/api/assistant/ask/stream", json={"question": "demo 什么价？"})
+    assert res.status_code == 200
+    assert "模拟未预期异常" in res.text
+
+
 def test_quota_counted_in_sqlite_and_enforced(workspace: Path, monkeypatch):
     """配额计数落 SQLite：提问成功后 assistant_usage 表 +1，重启/换文档都不影响限额判断。"""
     captured: dict = {}
@@ -239,7 +253,7 @@ def test_ask_falls_back_to_next_model_on_model_error(workspace: Path, monkeypatc
         calls.append(json["model"])
         if json["model"] == "bad-model":
             request = httpx.Request("POST", url)
-            return httpx.Response(400, json={"error": {"message": "enable_thinking 参数受限"}}, request=request)
+            return httpx.Response(400, json={"error": {"message": "模型不存在"}}, request=request)
         return _FakeResponse()
 
     monkeypatch.setattr(assistant.httpx, "post", fake_post)
@@ -257,3 +271,61 @@ def test_ask_falls_back_to_next_model_on_model_error(workspace: Path, monkeypatc
     assert "demo-model" in res.json()["answer"]
     # 坏模型报 400 后自动换下一个模型，两个都被尝试过
     assert set(calls) == {"bad-model", "good-model"}
+
+
+def test_ask_retries_same_model_when_thinking_restricted(workspace: Path, monkeypatch):
+    """思考不可关的模型（如 glm-5.3）拒收 enable_thinking=false：同模型翻参重试成功，不换模型。"""
+    import httpx
+
+    calls: list[dict] = []
+
+    def fake_post(url: str, *, headers: dict, json: dict, timeout: float):
+        calls.append({"model": json["model"], "enable_thinking": json.get("enable_thinking")})
+        if json.get("enable_thinking") is False:
+            request = httpx.Request("POST", url)
+            return httpx.Response(400, json={"error": {"message": "The value of the enable_thinking parameter is restricted to True."}}, request=request)
+        return _FakeResponse()
+
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    store = client.app.state.store
+    doc = dict(store.get_document("ai") or {})
+    doc["models"] = ["glm-5.3"]
+    doc.pop("model", None)
+    store.set_document("ai", doc)
+    res = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
+    assert res.status_code == 200
+    assert "demo-model" in res.json()["answer"]
+    # 分类门控与正式回答各触发一次"同模型翻参重试"：第一次 false 被 400 拒，翻 true 重发成功
+    assert [call["model"] for call in calls] == ["glm-5.3"] * 4
+    assert [call["enable_thinking"] for call in calls] == [False, True, False, True]
+    # 翻参重试在日志里记为独立的 param_retry 状态，不与换模型重试（fallback）混淆
+    assert store.read_ai_logs(status="param_retry")[1] == 2
+    assert store.read_ai_logs(status="fallback")[1] == 0
+
+
+def test_stream_fallback_retries_same_model_when_thinking_restricted(monkeypatch):
+    """流式链路同样翻参重试：enable_thinking=false 被 400 拒后用 true 原模型重发并正常产出分片。"""
+    import json
+
+    import httpx
+
+    import llm_price_monitor.ai as ai_module
+    from llm_price_monitor.ai import ai_stream_fallback
+    from llm_price_monitor.config import AIConfig
+
+    calls: list[bool | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body.get("enable_thinking"))
+        if body.get("enable_thinking") is False:
+            return httpx.Response(400, json={"error": {"message": "The value of the enable_thinking parameter is restricted to True."}})
+        return httpx.Response(200, text='data: {"choices": [{"delta": {"content": "回答"}}]}\n\ndata: [DONE]\n\n')
+
+    real_client = httpx.Client
+    monkeypatch.setattr(ai_module.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("test-model",))
+    assert list(ai_stream_fallback(config, "系统提示", "用户问题", scene="流式测试")) == ["回答"]
+    assert calls == [False, True]

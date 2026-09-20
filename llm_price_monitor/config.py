@@ -221,7 +221,6 @@ class MonitorSettings:
 class AIConfig:
     enabled: bool = True
     base_url: str = ""
-    model: str = ""
     models: tuple[str, ...] = ()
     api_key: str | None = None
     api_format: str = "chat_completions"
@@ -232,9 +231,8 @@ class AIConfig:
     cache: AIResultCache | None = None
 
     def pick_model(self) -> str:
-        # 每次调用随机选一个模型，models 与旧字段 model 合并去重后作为候选池。
-        pool = [item for item in dict.fromkeys((*self.models, self.model)) if item]
-        return secrets.choice(pool) if pool else ""
+        # 每次调用随机选一个模型，多模型分摊用量。
+        return secrets.choice(self.models) if self.models else ""
 
 
 @dataclass(frozen=True)
@@ -290,7 +288,6 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
     return AIConfig(
         enabled=bool(raw.get("enabled", True)),
         base_url=base_url,
-        model=str(raw.get("model", "")).strip(),
         models=tuple(dict.fromkeys(item.strip() for item in raw_models if item.strip())),
         api_key=api_key or None,
         api_format=api_format,

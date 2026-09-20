@@ -43,9 +43,6 @@ class AIExtractionError(PriceMonitorError):
 AiLogHook = Any
 ai_log_hook: AiLogHook | None = None
 
-# 日志里 prompt / 回复原文的截断长度
-_LOG_EXCERPT_CHARS = 500
-
 
 def log_ai_request(**fields: Any) -> None:
     if ai_log_hook is None:
@@ -54,12 +51,6 @@ def log_ai_request(**fields: Any) -> None:
         ai_log_hook(**fields)
     except Exception:
         pass  # 日志失败绝不影响主流程
-
-
-def _excerpt(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return value[:_LOG_EXCERPT_CHARS] + ("…" if len(value) > _LOG_EXCERPT_CHARS else "")
 
 
 def _usage_tokens(api_format: str, payload: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
@@ -116,10 +107,64 @@ def _prompt_too_long(exc: httpx.HTTPStatusError) -> bool:
     return any(marker in body for marker in _PROMPT_TOO_LONG_MARKERS)
 
 
+# 递归找错误消息的字段优先级：常见消息字段 → error/errors/detail 子结构
+_ERROR_MESSAGE_KEYS = ("message", "msg", "detail", "error_description", "description")
+_ERROR_NEST_KEYS = ("error", "errors", "detail")
+
+
+def _error_message(value: Any, depth: int = 4) -> str:
+    """在任意结构的错误 JSON 里递归找第一个可读消息，找不到返回空串。"""
+    if depth < 0:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in _ERROR_MESSAGE_KEYS:
+            field = value.get(key)
+            if isinstance(field, str) and field.strip():
+                return field.strip()
+        for key in _ERROR_NEST_KEYS:
+            if key in value:
+                found = _error_message(value[key], depth - 1)
+                if found:
+                    return found
+    if isinstance(value, list):
+        for item in value:
+            found = _error_message(item, depth - 1)
+            if found:
+                return found
+    return ""
+
+
+def provider_error_detail(response: httpx.Response) -> str:
+    """把任意供应商的错误响应整理成可读一句话，不假定错误 JSON 的具体结构。
+
+    递归找消息字段（OpenAI/DashScope、Anthropic、Gemini 的 {"error":{"message":...}}、
+    Google 的 errors 数组、new-api/FastAPI 的 {"detail":...}、error 直接是字符串的写法都覆盖），
+    HTML 错误页剥掉标签，纯文本原样保留；都取不到时退回响应原文。
+    """
+    body = response.text.strip()
+    message = ""
+    code = ""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    if payload is not None:
+        message = _error_message(payload)
+        if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+            error = payload["error"]
+            raw_code = error.get("type") or error.get("status") or error.get("code")
+            code = str(raw_code) if raw_code is not None and not isinstance(raw_code, (int, float)) else ""
+    if not message:
+        message = _plain_text(body)[:300] if body.startswith("<") else body[:300]
+    suffix = f"（{code}）" if code and code not in message else ""
+    return f"HTTP {response.status_code}：{message[:300]}{suffix}"
+
+
 def _response_detail(exc: httpx.HTTPError) -> str:
     response = getattr(exc, "response", None)
-    body = response.text[:300].strip() if response is not None else ""
-    return f"；响应: {body}" if body else ""
+    return f"；{provider_error_detail(response)}" if response is not None else ""
 
 
 def ai_endpoint(base_url: str) -> str:
@@ -128,13 +173,18 @@ def ai_endpoint(base_url: str) -> str:
 
 
 def model_pool(config: AIConfig) -> list[str]:
-    """models 与旧字段 model 合并去重后的候选池。"""
-    return [item for item in dict.fromkeys((*config.models, config.model)) if item]
+    """去重后的候选模型池。"""
+    return list(config.models)
 
 
 # 这类状态码多半是单个模型的问题（不支持参数、无权限、限流、上游抖动），换池子里下一个模型重试；
 # 401 是密钥问题，换模型没用，直接抛。
 _MODEL_FALLBACK_STATUSES = frozenset({400, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504})
+
+
+def _thinking_restricted(response: httpx.Response) -> bool:
+    """思考不可关的模型（如 glm-5.3）：收到 enable_thinking=false 报 400，且文案点名该参数。"""
+    return response.status_code == 400 and "enable_thinking" in response.text
 
 
 def request_with_model_fallback(
@@ -149,12 +199,13 @@ def request_with_model_fallback(
 ) -> tuple[str, httpx.Response]:
     """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
 
+    思考不可关的模型拒收 enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。
     prompt 超长与 401 属于请求级/配置级问题，换模型无意义，原样抛出；池子耗尽时抛最后一个错误。
     返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。
     """
     pool = model_pool(config)
     if not pool:
-        raise AIExtractionError("配置文件 ai.model/ai.models 未配置")
+        raise AIExtractionError("配置文件 ai.models 未配置")
     order = pool[:]
     random.shuffle(order)
     passed_client = client is not None
@@ -162,41 +213,49 @@ def request_with_model_fallback(
     last_exc: httpx.HTTPStatusError | None = None
     try:
         for model in order:
-            url, headers, request_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
-            started = time.monotonic()
-            try:
-                # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
-                response = (
-                    client.post(url, headers=headers, json=request_body, timeout=config.timeout)
-                    if passed_client
-                    else httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
-                )
-                response.raise_for_status()
-                duration_ms = int((time.monotonic() - started) * 1000)
+            url, headers, base_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
+            candidates = [base_body]
+            if base_body.get("enable_thinking") is False:
+                candidates.append({**base_body, "enable_thinking": True})
+            for request_body in candidates:
+                started = time.monotonic()
                 try:
-                    payload = response.json()
-                    prompt_tokens, completion_tokens, total_tokens = _usage_tokens(config.api_format, payload)
-                    answer_excerpt = _excerpt(ai_content(config.api_format, payload))
-                except Exception:
-                    prompt_tokens = completion_tokens = total_tokens = None
-                    answer_excerpt = None
-                log_ai_request(
-                    scene=scene, model=model, status="ok", duration_ms=duration_ms,
-                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
-                    prompt_excerpt=_excerpt(user), response_excerpt=answer_excerpt,
-                )
-                return model, response
-            except httpx.HTTPStatusError as exc:
-                duration_ms = int((time.monotonic() - started) * 1000)
-                error_text = f"HTTP {exc.response.status_code}：{exc.response.text[:200]}"
-                if exc.response.status_code == 401 or _prompt_too_long(exc):
-                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
-                    raise
-                if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
-                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
-                    raise
-                log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
-                last_exc = exc
+                    # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
+                    response = (
+                        client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                        if passed_client
+                        else httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                    )
+                    response.raise_for_status()
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    try:
+                        payload = response.json()
+                        prompt_tokens, completion_tokens, total_tokens = _usage_tokens(config.api_format, payload)
+                        answer = ai_content(config.api_format, payload)
+                    except Exception:
+                        prompt_tokens = completion_tokens = total_tokens = None
+                        answer = None
+                    log_ai_request(
+                        scene=scene, model=model, status="ok", duration_ms=duration_ms,
+                        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
+                        prompt_excerpt=user, response_excerpt=answer,
+                    )
+                    return model, response
+                except httpx.HTTPStatusError as exc:
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    error_text = provider_error_detail(exc.response)
+                    if _thinking_restricted(exc.response) and request_body.get("enable_thinking") is False:
+                        log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=user)
+                        continue
+                    if exc.response.status_code == 401 or _prompt_too_long(exc):
+                        log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
+                        raise
+                    if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
+                        log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
+                        raise
+                    log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
+                    last_exc = exc
+                    break
         assert last_exc is not None
         raise last_exc
     finally:
@@ -205,53 +264,65 @@ def request_with_model_fallback(
 
 
 def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None, scene: str = "AI 请求") -> Iterator[str]:
-    """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。"""
+    """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。
+
+    思考不可关的模型拒收 enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。
+    """
     pool = model_pool(config)
     if not pool:
-        raise AIExtractionError("配置文件 ai.model/ai.models 未配置")
+        raise AIExtractionError("配置文件 ai.models 未配置")
     order = pool[:]
     random.shuffle(order)
     last_exc: httpx.HTTPStatusError | None = None
     for model in order:
-        started = time.monotonic()
-        received: list[str] = []
-        try:
-            for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens):
-                received.append(chunk)
-                yield chunk
-            log_ai_request(
-                scene=scene, model=model, status="ok", duration_ms=int((time.monotonic() - started) * 1000),
-                prompt_excerpt=_excerpt(user), response_excerpt=_excerpt("".join(received)),
-            )
-            return
-        except httpx.HTTPStatusError as exc:
-            duration_ms = int((time.monotonic() - started) * 1000)
-            error_text = f"HTTP {exc.response.status_code}：{exc.response.text[:200]}"
-            status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
-            log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=_excerpt(user))
-            if exc.response.status_code == 401 or status == "error":
-                raise
-            last_exc = exc
-        except (httpx.HTTPError, AIExtractionError) as exc:
-            log_ai_request(
-                scene=scene, model=model, status="error", duration_ms=int((time.monotonic() - started) * 1000),
-                error=str(exc)[:300], prompt_excerpt=_excerpt(user),
-            )
-            raise
+        attempts: list[bool | None] = [None]
+        # 只有 chat_completions 的请求体带 enable_thinking；其他结构翻参重试只会白发一次同样的请求
+        if config.enable_thinking is False and config.api_format == "chat_completions":
+            attempts.append(True)
+        for enable_thinking in attempts:
+            started = time.monotonic()
+            received: list[str] = []
+            try:
+                for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens, enable_thinking=enable_thinking):
+                    received.append(chunk)
+                    yield chunk
+                log_ai_request(
+                    scene=scene, model=model, status="ok", duration_ms=int((time.monotonic() - started) * 1000),
+                    prompt_excerpt=user, response_excerpt="".join(received),
+                )
+                return
+            except httpx.HTTPStatusError as exc:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                error_text = provider_error_detail(exc.response)
+                if _thinking_restricted(exc.response) and config.enable_thinking is False and enable_thinking is None:
+                    log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=user)
+                    continue
+                status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
+                log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
+                if exc.response.status_code == 401 or status == "error":
+                    raise AIExtractionError(error_text) from exc
+                last_exc = exc
+                break
     assert last_exc is not None
-    raise last_exc
+    # 整个模型池都失败：把状态码和供应商报错要点一起报出去，这才是用户该看到的真实原因
+    raise AIExtractionError(f"模型池全部失败，最后一次错误 {provider_error_detail(last_exc.response)}") from last_exc
 
 
 def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None) -> str:
-    """发送一次最小对话请求验证 AI 配置连通性，返回模型回复文本；HTTP/网络错误原样抛出。"""
-    url, headers, request_body = ai_request(config, model, "", "连接测试，请只回复 ok", max_tokens=8, json_mode=False)
+    """发送一次最小对话请求验证 AI 配置连通性，返回模型回复文本；HTTP/网络错误原样抛出。
+
+    思考不可关的模型拒收 enable_thinking=false：翻成 true 重试一次，避免把可用配置误判为不通。
+    """
+    url, headers, base_body = ai_request(config, model, "", "连接测试，请只回复 ok", max_tokens=8, json_mode=False)
     own_client = client or httpx.Client(timeout=config.timeout)
     try:
-        response = own_client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+        response = own_client.post(url, headers=headers, json=base_body, timeout=config.timeout)
+        if _thinking_restricted(response) and base_body.get("enable_thinking") is False:
+            response = own_client.post(url, headers=headers, json={**base_body, "enable_thinking": True}, timeout=config.timeout)
+        response.raise_for_status()
     finally:
         if client is None:
             own_client.close()
-    response.raise_for_status()
     return ai_content(config.api_format, response.json()).strip()
 
 
@@ -283,9 +354,14 @@ def _stream_delta(api_format: str, payload: dict[str, Any]) -> str:
     raise AIExtractionError(f"未知的 AI 接口结构: {api_format}")
 
 
-def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_tokens: int | None = None) -> Iterator[str]:
-    """流式对话：逐段产出模型输出文本；四种接口结构都走各自的 stream 模式，HTTP 错误原样抛出。"""
+def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_tokens: int | None = None, enable_thinking: bool | None = None) -> Iterator[str]:
+    """流式对话：逐段产出模型输出文本；四种接口结构都走各自的 stream 模式，HTTP 错误原样抛出。
+
+    enable_thinking 供换模型重试链路覆盖配置值（翻参重试）；None 表示按配置，且只对带该参数的接口结构生效。
+    """
     url, headers, body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=False)
+    if enable_thinking is not None and "enable_thinking" in body:
+        body["enable_thinking"] = enable_thinking
     api_format = config.api_format
     if api_format in {"chat_completions", "openai_responses", "anthropic"}:
         body["stream"] = True
@@ -293,6 +369,9 @@ def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_token
         url = url.replace(":generateContent", ":streamGenerateContent?alt=sse")
     with httpx.Client(timeout=config.timeout) as client:
         with client.stream("POST", url, headers=headers, json=body) as response:
+            if response.is_error:
+                # 供应商报错时先读出响应体：流式响应默认不读正文，后续取 .text 会直接抛 ResponseNotRead
+                response.read()
             response.raise_for_status()
             for line in response.iter_lines():
                 line = line.strip()
@@ -319,7 +398,7 @@ def infer_token_fields(config: AIConfig, sample: str) -> dict[str, str]:
     调用失败抛异常，由调用方决定是否降级。
     """
     sample = sample.strip()
-    if not config.base_url or not (config.models or config.model):
+    if not config.base_url or not config.models:
         raise AIExtractionError("AI 未配置，无法分析响应案例")
     if len(sample) > config.max_input_chars:
         sample = sample[: config.max_input_chars]
@@ -758,7 +837,7 @@ expected_models：
             raise AIExtractionError("价格监控 AI 已禁用")
         ai_model = self.config.pick_model()
         if not self.config.base_url or not ai_model:
-            raise AIExtractionError("配置文件 ai.base_url 或 ai.model/ai.models 未配置")
+            raise AIExtractionError("配置文件 ai.base_url 或 ai.models 未配置")
         expected = list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
         if not expected:
             raise AIExtractionError("browser 价格监控必须配置目标模型 models")
@@ -832,7 +911,7 @@ expected_models：
         allowed_urls: set[str],
         response_bodies: dict[str, str] | None = None,
         expected_models: list[str] | None = None,
-        ai_model: str | None = None,
+        ai_model: str = "",
     ) -> list[PriceRecord]:
         raw_models = result.get("models")
         if not isinstance(raw_models, list):
@@ -960,7 +1039,7 @@ expected_models：
                 unit = unit.replace("USD", "CNY")
             metadata = {
                 "adapter": "browser_ai",
-                "ai_model": ai_model if ai_model is not None else self.config.model,
+                "ai_model": ai_model,
                 "ai_result_sha256": result_hash,
                 "observed_model": observed_model or None,
                 "aliases": aliases,
@@ -1019,7 +1098,7 @@ expected_models：
                 time.time(),
                 {
                     "adapter": "browser_ai",
-                    "ai_model": ai_model if ai_model is not None else self.config.model,
+                    "ai_model": ai_model,
                     "ai_result_sha256": result_hash,
                     "pricing_kind": "unavailable",
                     "currency": None,

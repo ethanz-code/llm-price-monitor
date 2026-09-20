@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from llm_price_monitor import wxpusher
-from llm_price_monitor.ai import ping_model
+from llm_price_monitor.ai import ping_model, provider_error_detail
 from llm_price_monitor.config import ai_from_raw, schedule_from_raw, settings_from_raw
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.seed import MODES, apply_seed
@@ -115,9 +115,9 @@ def build_router(store: Store) -> APIRouter:
         try:
             if body.target == "ai":
                 ai_config = ai_from_raw(merged_ai, cache=None)
-                model = ai_config.models[0] if ai_config.models else ai_config.model
-                if not ai_config.base_url or not model:
+                if not ai_config.base_url or not ai_config.models:
                     raise ValueError("请先填写 AI Base URL 和模型列表")
+                model = ai_config.models[0]
                 reply = ping_model(ai_config, model)
                 return {"ok": True, "elapsed_ms": elapsed_ms(), "model": model, "reply": reply}
             token = str(merged_settings.get("wxpusher_app_token") or "").strip()
@@ -135,7 +135,7 @@ def build_router(store: Store) -> APIRouter:
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except httpx.HTTPStatusError as exc:
-            raise HTTPException(status_code=400, detail=f"目标服务返回 HTTP {exc.response.status_code}: {exc.response.text[:200]}") from exc
+            raise HTTPException(status_code=400, detail=f"目标服务返回了错误：{provider_error_detail(exc.response)}") from exc
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=400, detail=f"连接目标服务失败: {exc}") from exc
 
