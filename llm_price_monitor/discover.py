@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ from urllib.parse import urlsplit
 import httpx
 
 OUT_DIR = Path("var/discovery")
+# 与 admin_cli 一致：PRICE_MONITOR_DB 可把库指到别处，比对库内已有站点用
+DB_PATH = Path(os.getenv("PRICE_MONITOR_DB") or "var/monitor.db")
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
@@ -62,6 +65,14 @@ def is_noise_host(host: str) -> bool:
     return any(host == noise or host.endswith(f".{noise}") for noise in NOISE_HOSTS)
 
 
+def normalize_host(host: str) -> str:
+    """域名比对口径：剥掉 www/api/console 等基础设施前缀后整体比较（cun.ai == www.cun.ai）。"""
+    labels = [label for label in host.lower().split(".") if label]
+    while labels and labels[0] in INFRA_LABELS:
+        labels = labels[1:]
+    return ".".join(labels)
+
+
 def origin_of(url: str) -> str | None:
     """候选链接归一到 scheme://host（去掉 /register?aff=xxx 之类的推广路径）。"""
     parts = urlsplit(url.strip())
@@ -91,8 +102,15 @@ def host_to_id(host: str, taken: set[str]) -> str:
 
 # ---------- 聚合源 ----------
 
-AWESOME_README_URL = "https://raw.githubusercontent.com/daheiai/awesome-api-proxy/main/README.md"
-WELFARE_SITES_URL = "https://raw.githubusercontent.com/panxunying/ai-coding-welfare/main/data/sites.json"
+# raw.githubusercontent.com 国内直连经常超时，全部挂 jsDelivr 镜像兜底
+AWESOME_README_URLS = (
+    "https://raw.githubusercontent.com/daheiai/awesome-api-proxy/main/README.md",
+    "https://cdn.jsdelivr.net/gh/daheiai/awesome-api-proxy@main/README.md",
+)
+WELFARE_SITES_URLS = (
+    "https://raw.githubusercontent.com/panxunying/ai-coding-welfare/main/data/sites.json",
+    "https://cdn.jsdelivr.net/gh/panxunying/ai-coding-welfare@main/data/sites.json",
+)
 APISOU_BASE = "https://www.apisou.com"
 AIAPIPK_URL = "https://www.aiapipk.com"
 
@@ -207,20 +225,21 @@ async def harvest(proxy: str | None) -> list[Candidate]:
             results = await asyncio.gather(*(one(slug) for slug in slugs))
             return [cand for cand in results if cand is not None]
 
-        async def simple(fn, url: str, timeout: float = 20.0) -> list[Candidate]:
-            # 大文件（596 站的 README 有 137KB）首拉容易超时，重试一次
-            for attempt in (1, 2):
+        async def simple(fn, urls: tuple[str, ...], timeout: float = 20.0) -> list[Candidate]:
+            """逐个镜像尝试，全挂才报错返回空（大文件如 596 站 README 给更长超时）。"""
+            last_exc: Exception | None = None
+            for url in urls:
                 try:
                     return fn(await get_text(url, timeout=timeout))
                 except Exception as exc:
-                    if attempt == 2:
-                        print(f"  源 {url} 拉取失败：{type(exc).__name__} {exc}")
+                    last_exc = exc
+            print(f"  源 {urls[0]} 拉取失败：{type(last_exc).__name__} {last_exc}")
             return []
 
         awesome, welfare, aiapipk, apisou = await asyncio.gather(
-            simple(harvest_awesome_api_proxy, AWESOME_README_URL, timeout=60.0),
-            simple(harvest_welfare, WELFARE_SITES_URL),
-            simple(harvest_aiapipk, AIAPIPK_URL),
+            simple(harvest_awesome_api_proxy, AWESOME_README_URLS, timeout=60.0),
+            simple(harvest_welfare, WELFARE_SITES_URLS),
+            simple(harvest_aiapipk, (AIAPIPK_URL,)),
             apisou_all(),
         )
         print(f"  awesome-api-proxy {len(awesome)}、ai-coding-welfare {len(welfare)}、aiapipk {len(aiapipk)}、apisou {len(apisou)}")
@@ -295,8 +314,13 @@ async def probe(candidates: list[Candidate], concurrency: int, timeout: float, p
         return await asyncio.gather(*(one(cand) for cand in candidates))
 
 
-def build_importable(cands_by_host: dict[str, Candidate], probed: list[dict]) -> list[dict]:
-    """探测通过的站点生成配置（默认停用，导入后在面板按批启用）。"""
+def build_importable(cands_by_host: dict[str, Candidate], probed: list[dict], exclude_hosts: set[str] | None = None) -> list[dict]:
+    """探测通过的站点生成配置（默认停用，导入后在面板按批启用）。
+
+    exclude_hosts 是库内已有站点的归一化域名：候选池可能收录了你手动加过的站，
+    且池子按域名生成的 id 与手填 id 可能只差大小写，导入前必须排除防重复。
+    """
+    excluded = {normalize_host(host) for host in (exclude_hosts or set())}
     taken: set[str] = set()
     configs: list[dict] = []
     ranked = sorted(probed, key=lambda r: (not r["new_api"], -r["models"], r["url"]))
@@ -304,6 +328,8 @@ def build_importable(cands_by_host: dict[str, Candidate], probed: list[dict]) ->
         if not row["pricing_ok"]:
             continue
         cand = cands_by_host[urlsplit(row["url"]).hostname or ""]
+        if normalize_host(cand.host) in excluded:
+            continue
         site_id = host_to_id(cand.host, taken)
         origin = row["url"]
         configs.append(
@@ -317,18 +343,42 @@ def build_importable(cands_by_host: dict[str, Candidate], probed: list[dict]) ->
     return configs
 
 
+def existing_site_hosts() -> dict[str, str]:
+    """库内已有站点：归一化域名 → 站点 id。库不在/没站点时返回空。"""
+    try:
+        from llm_price_monitor.store import Store  # 采集侧模块按需拉起，harvest/probe 不依赖库
+
+        configs = Store(DB_PATH).list_site_configs()
+    except Exception:
+        return {}
+    hosts: dict[str, str] = {}
+    for config in configs:
+        host = urlsplit(config.get("network", {}).get("url", "")).hostname or ""
+        if host:
+            hosts[normalize_host(host)] = str(config.get("id") or "")
+    return hosts
+
+
 async def run_harvest(proxy: str | None) -> None:
     print("正在拉取聚合源…")
-    candidates = await harvest(proxy)
+    fresh = await harvest(proxy)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = OUT_DIR / "candidates.json"
+    # 与已有候选池增量合并：某源拉挂只影响本轮新拉到的站，不会把上轮的站从池子里挤掉
+    previous: list[Candidate] = []
+    if out_file.exists():
+        try:
+            previous = [Candidate(**item) for item in json.loads(out_file.read_text(encoding="utf-8"))["candidates"]]
+        except Exception as exc:
+            print(f"  已有 {out_file} 解析失败，按空池处理：{type(exc).__name__} {exc}")
+    candidates = merge_candidates([fresh, previous])
     payload = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "count": len(candidates),
         "candidates": [cand.__dict__ for cand in candidates],
     }
     out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"共 {len(candidates)} 个候选站点（按 host 去重）→ {out_file}")
+    print(f"本轮拉到 {len(fresh)}、已有池 {len(previous)}、合并去重后 {len(candidates)}（新增 {max(len(candidates) - len(previous), 0)}）→ {out_file}")
 
 
 async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | None) -> None:
@@ -349,14 +399,33 @@ async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | No
     )
 
     cands_by_host = {cand.host: cand for cand in candidates}
-    importable = build_importable(cands_by_host, probed)
+    in_library = existing_site_hosts()
+    importable = build_importable(cands_by_host, probed, exclude_hosts=set(in_library))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "probed.json").write_text(
         json.dumps({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "results": probed}, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
     (OUT_DIR / "importable.json").write_text(json.dumps(importable, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"明细 → {OUT_DIR / 'probed.json'}；可导入配置 {len(importable)} 条（默认停用）→ {OUT_DIR / 'importable.json'}")
+    print(f"明细 → {OUT_DIR / 'probed.json'}；可导入配置 {len(importable)} 条（默认停用，已排除库内已有 {len(in_library)} 站）→ {OUT_DIR / 'importable.json'}")
+
+
+def run_diff() -> None:
+    """只比对不探测：候选池 vs 库内已有站点，看哪些收录重合、哪些是纯新增。"""
+    raw = json.loads((OUT_DIR / "candidates.json").read_text(encoding="utf-8"))
+    pool_by_norm: dict[str, Candidate] = {normalize_host(cand.host): cand for cand in (Candidate(**item) for item in raw["candidates"])}
+    in_library = existing_site_hosts()
+    if not in_library:
+        print("库读不到或没有站点，只统计候选池。")
+    overlap = 0
+    for norm_host, site_id in sorted(in_library.items(), key=lambda kv: kv[1]):
+        cand = pool_by_norm.get(norm_host)
+        if cand:
+            overlap += 1
+            print(f"  已收录 {site_id:24} {cand.host:30} 来源：{'、'.join(cand.sources)}")
+        else:
+            print(f"  不在池 {site_id:24} {norm_host:30}（聚合源没收录，仅你手动加的）")
+    print(f"候选池 {len(pool_by_norm)} 站：库内已有 {len(in_library)} 站中重合 {overlap} 个，纯新增候选 {len(pool_by_norm) - overlap} 个（只发现未探测，跑 probe 才会检测）。")
 
 
 def main() -> None:
@@ -369,9 +438,12 @@ def main() -> None:
     p_probe.add_argument("--concurrency", type=int, default=12)
     p_probe.add_argument("--timeout", type=float, default=10.0)
     p_probe.add_argument("--proxy", help="可选代理，如 http://127.0.0.1:7890")
+    sub.add_parser("diff", help="只比对不探测：候选池里哪些站库里已有、哪些是新增")
     args = parser.parse_args()
     if args.command == "harvest":
         asyncio.run(run_harvest(args.proxy))
+    elif args.command == "diff":
+        run_diff()
     else:
         asyncio.run(run_probe(args.take, args.concurrency, args.timeout, args.proxy))
 

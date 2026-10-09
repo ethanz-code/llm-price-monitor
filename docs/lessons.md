@@ -71,6 +71,7 @@
 | 新页面样式随意发挥 | 服从 design-guide.md（色彩 token、组件规范、去 AI 味清单） | design-guide.md |
 | 首页这类常驻动画页上 Browser Use 的 Playwright 定位点击卡 actionability 超时、导航/刷新后立即截图超时 | 元素确认可命中后改用坐标点击（cua.click）；截图前先等 2–3s 页面稳定，一次只拍一张 | 首页 2D 地球替换走查实测 |
 | 同一事件流多个页面各画各的：首页不折叠、追踪页折叠，站点名一边美化名一边原始 site_id，用户并排一看以为数据错乱 | 多页面共用数据源的展示口径（折叠/命名/排序）抽到 web/lib 单处共享，改口径只能改一处 | 提交 1e7ec68 |
+| 常驻动画页走查深水区：IAB 截图通道跑一阵后整体卡死（surface preparation timed out / capture failed for guest），force click 也被拖超时；fullPage 整页截图对 Reveal 懒显页全空白（下方 opacity:0 不触发） | 读 DOM 的 evaluate 始终可用；截图降级 Chrome DevTools MCP（独立实例互不拖累）；懒显页逐段滚动触发后再截视口图；受控下拉（如主题菜单）点不开时按「环境准备」预置 localStorage 再 reload | 首页叙事三区走查实测 |
 
 ## 5. 部署与运维
 

@@ -4829,24 +4829,259 @@ a.event-card {
   background: var(--panel-2);
 }
 
-/* —— 首页编号分区（参考 nan.builders 的 01/02… 节奏）—— */
+/* —— 首页叙事三区（能力总览 / 采集流水线 / 使用场景）——
+ * 视觉规格对照 openhands.dev 实测：36px 陈述式区头、图标芯片横滑卡列、
+ * 整块次级底舞台 + 虚线节点路径、mono 编号跳转卡；全部走本站 token。 */
 
-/* 01 介绍区：居中一段话，讲清产品定位 */
-.landing-intro {
-  margin-top: 24px;
-  max-width: 620px;
-  margin-left: auto;
-  margin-right: auto;
-  text-align: center;
-  padding-bottom: 56px;
+.landing-statement {
+  padding-top: 72px;
 }
 
-.landing-intro p {
-  font-size: 15px;
-  line-height: 1.9;
-  color: var(--text-2);
+.landing-statement .landing-section-head h2 {
+  font-size: 36px;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.landing-statement .landing-section-sub {
+  font-size: 14.5px;
+  margin: -4px 0 30px;
+  max-width: 640px;
+}
+
+/* 能力总览：横向滚动卡列（对齐 OpenHands automations 卡车），横滑看全六张 */
+.cap-row {
+  list-style: none;
   margin: 0;
-  text-wrap: balance;
+  padding: 4px 4px 14px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: min(316px, 78vw);
+  gap: 14px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.cap-row::-webkit-scrollbar {
+  display: none;
+}
+
+.cap-card {
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 24px 24px 22px;
+  background: var(--panel);
+  border: var(--card-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-panel);
+  transition: border-color var(--dur) var(--ease);
+}
+
+.cap-card:hover {
+  border-color: var(--border-strong);
+}
+
+.cap-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--accent-text);
+}
+
+.cap-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cap-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.cap-tag {
+  margin-top: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-3);
+  background: var(--panel-2);
+  border-radius: 9999px;
+  padding: 5px 10px;
+}
+
+/* 采集流水线：整块舞台（次级底、大圆角）承载六步；桌面档虚线把节点串成路径 */
+.pipe-stage {
+  background: var(--panel-2);
+  border: var(--card-border);
+  border-radius: 20px;
+  padding: 44px 48px 48px;
+}
+
+.pipe-stage .landing-section-sub {
+  margin-bottom: 34px;
+}
+
+.pipe-band {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 20px;
+  position: relative;
+}
+
+.pipe-band::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: 34px;
+  right: 34px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.pipe-step {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.pipe-no {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  font-size: 12.5px;
+  color: var(--accent-text);
+}
+
+.pipe-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pipe-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+/* 使用场景：mono 编号 + 箭头的可点卡（对齐 OpenHands use cases），整卡直达功能页 */
+.use-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.use-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 26px 26px;
+  background: var(--panel);
+  border: var(--card-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-panel);
+  color: inherit;
+  text-decoration: none;
+  transition:
+    transform var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.use-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+}
+
+.use-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.use-no {
+  font-size: 13px;
+  color: var(--accent-text);
+}
+
+.use-go {
+  font-size: 16px;
+  color: var(--text-3);
+  transition:
+    color var(--dur),
+    transform var(--dur) var(--ease);
+}
+
+.use-card:hover .use-go {
+  color: var(--accent-text);
+  transform: translate(2px, -2px);
+}
+
+.use-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.use-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+/* 响应式：舞台横带 6→3→2→1 列（多行档撤掉串线），场景卡 2→1 列，卡列移动端自然横滑 */
+@media (max-width: 1024px) {
+  .pipe-band {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px 20px;
+  }
+
+  .pipe-band::before {
+    content: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .use-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-statement .landing-section-head h2 {
+    font-size: 27px;
+  }
+
+  .pipe-stage {
+    padding: 30px 22px 32px;
+    border-radius: 14px;
+  }
+
+  .pipe-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .pipe-band {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 04 数据从哪来：与常见问题同行双栏，本列内要点卡片竖排 */
@@ -4982,10 +5217,6 @@ a.event-card {
     margin-top: 26px;
   }
 
-  .landing-intro p {
-    font-size: 16px;
-  }
-
   .landing-section {
     padding-top: 64px;
   }
@@ -5010,6 +5241,16 @@ a.event-card {
   .faq-body {
     transition: none;
     animation: none;
+  }
+
+  .use-card,
+  .use-go,
+  .cap-card {
+    transition: none;
+  }
+
+  .use-card:hover {
+    transform: none;
   }
 
   .reveal {

@@ -515,7 +515,7 @@ export function AdminLoading() {
     <div className="page" aria-hidden>
       <h1 className="sr-only">控制台</h1>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 40px", padding: "14px 20px 12px", background: "var(--panel)", borderRadius: 12 }}>
-        {["监控站点", "价格记录", "事件总数", "输入折扣中位数"].map((label, index) => (
+        {["检测站点", "价格记录", "事件总数", "输入折扣中位数"].map((label, index) => (
           <div key={label} style={{ display: "grid", gap: 6 }}>
             <Skel w={label.length * 12} h={12} delay={index * 70} />
             <Skel w={64} h={20} delay={index * 70 + 30} />
@@ -672,8 +672,8 @@ function RankListSkeleton() {
   );
 }
 
-/** 首页骨架：hero（左球 + 右文案 + 两排节点轮播）+ 简介 + 最新价表 + 趋势/事件两栏
- *  + 站点卡 + 榜单速览 + 数据来源 + FAQ + CTA，节次与真实页一致，换入不跳版。 */
+/** 首页骨架：hero（左球 + 右文案 + 两排节点轮播）+ 能力总览 + 采集流水线 + 使用场景
+ *  + 最新价表 + 趋势/事件两栏 + 站点卡 + 榜单速览 + 数据来源 + FAQ + CTA，节次与真实页一致，换入不跳版。 */
 export function LandingLoading() {
   return (
     <div className="page landing">
@@ -738,9 +738,71 @@ export function LandingLoading() {
         ))}
       </section>
 
-      <section className="landing-intro" aria-hidden>
-        <Skel w="100%" h={13} />
-        <Skel w="64%" h={13} style={{ marginInline: "auto" }} delay={90} />
+      {/* 叙事三区骨架：能力总览（横滑图标卡列）→ 采集流水线（舞台横带）→ 使用场景（编号可点卡） */}
+      <section className="landing-section landing-statement" aria-hidden>
+        <div className="landing-section-head">
+          <Skel w={230} h={36} />
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <Skel w="46%" h={12} delay={80} />
+        </div>
+        <div className="cap-row" style={{ marginTop: 24 }}>
+          {[0, 1, 2, 3].map((row) => (
+            <div key={row} className="cap-card">
+              <Skel w={44} h={44} style={{ borderRadius: 10 }} delay={row * 70} />
+              <Skel w={`${64 - (row % 2) * 8}%`} h={15} delay={row * 70 + 20} />
+              <Skel w="88%" h={12} delay={row * 70 + 40} />
+              <Skel w={56} h={20} style={{ borderRadius: 9999, marginTop: "auto" }} delay={row * 70 + 55} />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section landing-statement" aria-hidden>
+        <div className="pipe-stage">
+          <div className="landing-section-head">
+            <Skel w={250} h={36} />
+          </div>
+          <div style={{ marginTop: 14, marginBottom: 30 }}>
+            <Skel w="52%" h={12} delay={80} />
+          </div>
+          <div className="pipe-band">
+            {[0, 1, 2, 3, 4, 5].map((step) => (
+              <div key={step} className="pipe-step">
+                <Skel w={30} h={30} style={{ borderRadius: 9999 }} delay={step * 60} />
+                <Skel w={52} h={15} delay={step * 60 + 20} />
+                <Skel w="90%" h={11} delay={step * 60 + 40} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-statement" aria-hidden>
+        <div className="landing-section-head">
+          <Skel w={200} h={36} />
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <Skel w="40%" h={12} delay={80} />
+        </div>
+        <div className="use-grid" style={{ marginTop: 26 }}>
+          {[0, 1, 2, 3].map((row) => (
+            <div key={row} className="use-card">
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Skel w={22} h={13} delay={row * 70} />
+                <Skel w={14} h={14} delay={row * 70 + 15} />
+              </div>
+              <Skel w={96} h={17} delay={row * 70 + 25} />
+              <Skel w={`${76 - (row % 2) * 8}%`} h={12} delay={row * 70 + 35} />
+            </div>
+          ))}
+        </div>
       </section>
 
       <section className="landing-section" aria-hidden>

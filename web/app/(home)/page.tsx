@@ -30,6 +30,11 @@ import { SiteSubmitButton } from "@/components/SiteSubmitModal";
 import { SiteGridSpotlight } from "@/components/SiteGridSpotlight";
 import { SectionRail } from "@/components/SectionRail";
 import { Reveal } from "@/components/Reveal";
+import {
+  CapabilityGrid,
+  PipelineSteps,
+  UseCaseCards,
+} from "@/components/LandingNarrative";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
 import type { GlobeSite, SiteGeo } from "@/components/SiteGlobe";
@@ -293,10 +298,17 @@ export default async function LandingPage() {
           }
         />
 
+        {/* 叙事三区（能力总览 → 采集流水线 → 使用场景），先讲清产品是什么，再看活数据 */}
         <Reveal>
-          <section className="landing-intro">
-            <p>{home.intro}</p>
-          </section>
+          <CapabilityGrid />
+        </Reveal>
+
+        <Reveal>
+          <PipelineSteps />
+        </Reveal>
+
+        <Reveal>
+          <UseCaseCards />
         </Reveal>
 
         {records.length > 0 && (
