@@ -1,4 +1,4 @@
-"""官方价目录端点：目录读取、手动刷新与折扣对比。
+"""官方价目录端点：目录读取与手动刷新。
 
 定时同步由统一的调度器（webapi.scheduler）负责，到点提交 catalog-refresh 任务；
 手动刷新共用同一个任务体（jobs.catalog_refresh_job）。
@@ -9,11 +9,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from llm_price_monitor.catalog.discount import build_discount, summarize
-from llm_price_monitor.report import summary_row
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import tasks
-from llm_price_monitor.webapi.deps import catalog_models, require_catalog_rate
 from llm_price_monitor.webapi.jobs import catalog_refresh_job
 
 
@@ -41,35 +38,5 @@ def build_router(store: Store) -> APIRouter:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"task_id": task_id}
-
-    @router.get("/api/discount")
-    def discount() -> dict[str, Any]:
-        report = store.get_document("catalog")
-        models, meta = catalog_models(report)
-        if not models:
-            raise HTTPException(status_code=404, detail="厂商价目录不存在或为空，请先刷新厂商价")
-        latest_rows = [row for row in store.latest_all().values() if isinstance(row, dict)]
-        rate, rate_source = require_catalog_rate(report)
-        entries = []
-        skipped: list[dict[str, Any]] = []
-        for row in latest_rows:
-            entry, reason = build_discount(summary_row(row), models, rate)
-            if entry is None:
-                skipped.append({"site_id": row.get("site_id"), "model": row.get("model"), "reason": reason})
-            else:
-                entries.append(entry)
-        discounts: list[dict[str, Any]] = []
-        for entry in entries:
-            item = entry.as_dict()
-            item.update({"site_id": entry.site_id, "model": entry.model, "group": entry.group})
-            discounts.append(item)
-        return {
-            "usd_cny_rate": round(rate, 2),
-            "rate_source": rate_source,
-            "official_generated_at": meta.get("generated_at_iso"),
-            "discounts": discounts,
-            "summary": summarize(entries),
-            "skipped": skipped,
-        }
 
     return router

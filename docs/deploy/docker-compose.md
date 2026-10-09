@@ -47,6 +47,19 @@ docker compose logs -f
 
 打开 `http://服务器IP:3000`：数据库里还没有账号时会进入 `/setup` 创建管理员 → 填 AI 密钥 → 按指引添加站点、触发首次采集。
 
+## 数据接口封锁（推荐）
+
+默认情况下，浏览器可以直接访问 `http://站点/api/overview` 这类读接口拿走整份 JSON 数据。设置内网令牌后，这些读接口只对 Next 服务端渲染请求和管理员会话开放——访客照常看页面，但别人调不到你的数据 API：
+
+```bash
+# 在 docker-compose.yml 同目录生成 .env（compose 会自动读取）
+echo "PRICE_WEB_INTERNAL_TOKEN=$(openssl rand -hex 32)" > .env
+docker compose up -d
+```
+
+- 令牌只放在服务器 `.env` 里，两个容器共用同一个值；不设置则不启用封锁（本地开发不需要）。
+- 保持公开的例外：`/api/health`（健康检查）、`/api/auth/state`（登录页跳转判断）、`/api/assistant/status`（AI 助手浮球）；写接口与管理接口原有鉴权不变。
+
 ## 反向代理与 HTTPS（推荐）
 
 3000 端口只应内网可达，对外统一走 80/443，按你的环境三选一：

@@ -84,7 +84,7 @@ def refreshed_spec(spec: SiteSpec, access_token: str, refresh_token: str) -> Sit
 
 
 def _retokenize_value(value: str, token: str) -> str:
-    """替换认证头的 token 部分，保留 "Bearer " 之类的前缀；Cookie 是 "name=值" 格式，保留 name=。"""
+    """替换认证头的 token 部分，保留 "Bearer " 之类的前缀。"""
     prefix, _, rest = value.partition(" ")
     if prefix and rest:
         return f"{prefix} {token}"
@@ -93,13 +93,16 @@ def _retokenize_value(value: str, token: str) -> str:
 
 
 def _synced_endpoint(endpoint: Any, token: str, auth_header: str) -> Any:
-    """把 endpoint 配置 headers 里写死的认证头同步成新 token；没有认证头则原样返回。"""
+    """把 endpoint 配置 headers 里写死的认证头同步成新 token；没有认证头则原样返回。
+
+    Cookie 不在同步范围：会话凭据续签拿不到，写死了只能手动维护。
+    """
     if not isinstance(endpoint, dict):
         return endpoint
     headers = endpoint.get("headers")
     if not isinstance(headers, dict):
         return endpoint
-    auth_names = {auth_header.lower(), "authorization", "cookie"}
+    auth_names = {auth_header.lower(), "authorization"}
     synced = {
         key: (_retokenize_value(value, token) if key.lower() in auth_names and isinstance(value, str) else value)
         for key, value in headers.items()
@@ -119,12 +122,7 @@ def _with_access_token(spec: SiteSpec, access_token: str) -> SiteSpec:
 
 
 def persist_refreshed_config(store: Any, site_id: str, access_token: str, refresh_token: str) -> None:
-    """把新 token 写回数据库里的站点 JSON：auth_token 之外，写死的认证请求头也一并替换。
-
-    部分站点把 Authorization / Cookie 直接写死在采集地址 headers 里，采集时它会覆盖
-    auth_token / cookie 拼出的同名头，不同步的话续签永远"成功"但请求头还是旧 token。
-    价格、渠道状态、公告地址都在同步范围内。
-    """
+    """把新 token 写回数据库里的站点 JSON：auth_token 之外，写死的认证请求头也一并替换。\n\n    部分站点把 Authorization 直接写死在采集地址 headers 里，采集时它会覆盖\n    auth_token 拼出的同名头，不同步的话续签永远"成功"但请求头还是旧 token。\n    价格、渠道状态、公告地址都在同步范围内；Cookie 不动（会话凭据续签拿不到，手动维护）。\n    """
     config = store.get_site_config(site_id)
     if config is None:
         return
@@ -150,19 +148,26 @@ def refresh_and_recollect(
     timeout: float,
     user_agent: str,
     store: Any | None,
-) -> tuple[list[PriceRecord], str | None]:
+) -> tuple[list[PriceRecord], list[str]]:
     """需要续签时调用续签接口，成功则回写配置并用新 token 重新采集一次。
 
-    collect 是"给定 spec → 采集记录"的回调（含多地址循环）；返回 (新记录, 失败原因)。
+    collect 是"给定 spec → (记录, 地址错误)"的采集回调（含多地址循环）。
+    返回 (记录, 错误列表)，与 collect 契约一致，调用方整体替换本轮结果，不再有元组/列表形状错配。
+
+    退回占位记录（而非空列表）的两种情况：续签失败、续签成功但重采一条都没拿到。
+    空列表会被调用方当成"该站点本轮无数据"，从而照常跑分组下线判定、把全部分组记成缺失；
+    退回带 requires_auth 的占位记录才能保住"需认证"状态，让判定照旧跳过。
     """
     try:
         access_token, refresh_token = refresh_site_token(spec, client, timeout, user_agent)
     except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
-        return collected, f"token 续签失败：{exc}"
+        return collected, [f"token 续签失败：{exc}"]
     if store is not None:
         persist_refreshed_config(store, spec.id, access_token, refresh_token)
     try:
-        retried = collect(refreshed_spec(spec, access_token, refresh_token))
+        retried, retry_errors = collect(refreshed_spec(spec, access_token, refresh_token))
     except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
-        return collected, f"token 续签成功但重新采集失败：{exc}"
-    return retried, None
+        return collected, [f"token 续签成功但重新采集失败：{exc}"]
+    if not retried:
+        return collected, [*retry_errors, "token 续签成功但重新采集未取到任何价格"]
+    return retried, retry_errors

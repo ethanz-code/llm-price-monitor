@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth
-from llm_price_monitor.webapi.deps import client_ip
+from llm_price_monitor.webapi.deps import client_ip, is_admin
 
 SETUP_PATH = "/api/setup"
 # 登录/登出/首次设置与访客行为本身必须是公开写接口，否则永远进不了门；
@@ -96,5 +96,14 @@ def build_router(store: Store) -> APIRouter:
     def logout(response: Response) -> dict[str, bool]:
         response.delete_cookie(auth.SESSION_COOKIE, path="/")
         return {"is_admin": False}
+
+    @router.get("/api/auth/state")
+    def auth_state(request: Request) -> dict[str, bool]:
+        """登录态探测：只暴露是否需要首次设置与当前会话是否管理员，不含任何站点数据。
+
+        数据读接口封锁（app.py）启用后，/api/meta 对匿名请求关闭，
+        导航栏与登录页改用这个端点判断跳转。
+        """
+        return {"needs_setup": auth.get_admin(store) is None, "is_admin": is_admin(store, request)}
 
     return router

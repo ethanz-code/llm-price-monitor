@@ -91,6 +91,25 @@ def test_fetch_site_notice_reads_newapi_data_field():
     assert record["source_url"] == "https://demo.test/api/notice"
 
 
+def test_fetch_site_notice_html_data_kept_verbatim(monkeypatch):
+    """data 直接是 HTML 公告片段时原样保留，不经 AI 改写（改写会触发假公告变化）。"""
+
+    def forbidden_extract(config, raw_text, *, client=None):
+        raise AssertionError("HTML 内容不应交给 AI 提取")
+
+    monkeypatch.setattr("llm_price_monitor.notice.extract_notice_content", forbidden_extract)
+    spec = _spec({"url": "https://demo.test/api/notice"})
+    html = "<div><h2>维护公告</h2><p>今晚升级。</p></div>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": True, "message": "", "data": html})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1", ai=AIConfig(enabled=True))
+    assert record["parse"] == "json"
+    assert record["content"] == html
+
+
 def test_fetch_site_notice_handles_json_list_payload():
     """公告接口顶层是 JSON 数组时按原文处理，不再把正文丢成空串。"""
     spec = _spec({"url": "https://demo.test/api/notice"})
@@ -125,6 +144,42 @@ def test_fetch_site_notice_merges_status_announcements():
     assert record["content"].startswith("置顶维护公告")
     assert "## 新公告（2026-09-03）" in record["content"]
     assert record["content"].index("新公告正文") < record["content"].index("旧公告正文")
+
+
+def test_fetch_site_notice_reads_data_array_announcements():
+    """totokens 型：data 直接是公告数组，结构化解析，不再二次请求 /api/status、不走 AI。"""
+    spec = _spec({"url": "https://demo.test/api/v1/announcements"})
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        return httpx.Response(200, json={"code": 0, "message": "success", "data": [
+            {"id": 9, "title": "旧公告", "content": "旧公告正文", "created_at": "2026-09-01T10:00:00.000000+08:00"},
+            {"id": 16, "title": "服务波动", "content": "今日凌晨出现响应延迟。", "created_at": "2026-09-10T12:31:14.994625+08:00"},
+        ]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1")
+    assert seen_paths == ["/api/v1/announcements"]
+    assert record["parse"] == "status"
+    assert record["content"].startswith("## 服务波动（2026-09-10）")
+    assert record["content"].index("今日凌晨出现响应延迟。") < record["content"].index("旧公告正文")
+
+
+def test_fetch_site_notice_reads_top_level_announcements():
+    """icodeeasy 型：announcements 数组挂在顶层，同样结构化解析。"""
+    spec = _spec({"url": "https://demo.test/api/user/announcements"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"announcements": [
+            {"id": 60, "title": "降价公告", "content": "Kimi K3、GLM 全线降至 2 折。", "created_at": "2026-09-09T08:00:00.000000+08:00"},
+        ]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1")
+    assert record["parse"] == "status"
+    assert "## 降价公告（2026-09-09）" in record["content"]
+    assert "全线降至 2 折" in record["content"]
 
 
 def test_fetch_site_notice_falls_back_when_status_unavailable():
@@ -204,22 +259,22 @@ def test_fetch_site_notice_reuses_network_headers():
 
 
 def test_fetch_site_notice_ai_fallback(monkeypatch):
-    """固定解析认不出的响应结构（announcements 数组）交给 AI 提取正文。"""
+    """固定解析认不出的响应结构（自造包装、正文是 HTML）交给 AI 原样提取正文。"""
     spec = _spec({"url": "https://demo.test/api/announcements"})
 
     def fake_extract(config, raw_text, *, client=None):
-        assert '"announcements"' in raw_text
-        return "## 平台公告\n\n切换 GPT-6。"
+        assert '"html"' in raw_text
+        return "<p>维护公告：今晚升级。</p>"
 
     monkeypatch.setattr("llm_price_monitor.notice.extract_notice_content", fake_extract)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"announcements": [{"id": 1, "title": "平台公告", "content": "切换 GPT-6。"}]})
+        return httpx.Response(200, json={"html": "<p>维护公告：今晚升级。</p>"})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         record = fetch_site_notice(spec, client, 10.0, "ua/1", ai=AIConfig(enabled=True))
     assert record["parse"] == "ai"
-    assert "GPT-6" in record["content"]
+    assert "维护公告" in record["content"]
 
 
 def test_extract_notice_content_parses_json_reply():

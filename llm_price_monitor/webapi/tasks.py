@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 import uuid
@@ -187,3 +188,78 @@ def recent(limit: int = 100) -> list[dict[str, Any]]:
                 | {"log_count": len(item["logs"]), "error_count": len(errors), "error_summary": errors[-1]["message"] if errors else None}
             )
         return rows
+
+
+# 概览页“采集异常”卡片的清除标记：被移除的单条日志键与“清空”时间点，
+# 只影响该卡片的展示，不改动任务本体日志
+_DISMISS_DOC = "task_error_stream"
+_DISMISS_KEEP = 1000
+
+
+def _dismiss_state() -> dict[str, Any]:
+    store = _store
+    if store is None:
+        return {}
+    try:
+        return store.get_document(_DISMISS_DOC) or {}
+    except Exception:
+        return {}
+
+
+def _error_key(task_id: str, log: dict[str, Any]) -> str:
+    raw = f"{task_id}|{log.get('time')}|{log.get('level')}|{log.get('message')}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def error_stream(limit: int = 200) -> list[dict[str, Any]]:
+    """跨任务汇总 warn/error 日志（新在前），滤掉已移除/清空时间点之前的条目，供概览页异常卡片展示。"""
+    state = _dismiss_state()
+    cleared_at = state.get("cleared_at")
+    dismissed = set(state.get("dismissed", []))
+    with _lock:
+        items = sorted(_tasks.values(), key=lambda item: str(item["started_at"]), reverse=True)
+        entries = []
+        for item in items:
+            for log in item.get("logs", []):
+                if log.get("level") not in ("warn", "error"):
+                    continue
+                if cleared_at is not None and float(log.get("time") or 0) <= float(cleared_at):
+                    continue
+                key = _error_key(item["id"], log)
+                if key in dismissed:
+                    continue
+                entries.append(
+                    {
+                        "key": key,
+                        "task_id": item["id"],
+                        "kind": item["kind"],
+                        "time": log.get("time"),
+                        "level": log.get("level"),
+                        "message": log.get("message"),
+                    }
+                )
+        entries.sort(key=lambda entry: float(entry["time"] or 0), reverse=True)
+        return entries[:limit]
+
+
+def dismiss_error(key: str) -> bool:
+    """移除异常卡片里的单条日志：只记入清除标记，任务本体日志保持不动。"""
+    store = _store
+    if store is None:
+        return False
+    state = _dismiss_state()
+    dismissed = list(state.get("dismissed", []))
+    if key not in dismissed:
+        dismissed.append(key)
+    state["dismissed"] = dismissed[-_DISMISS_KEEP:]
+    store.set_document(_DISMISS_DOC, state)
+    return True
+
+
+def clear_errors() -> int:
+    """清空异常卡片：以当前时间为界隐藏此前的日志，返回剩余可见条数。"""
+    store = _store
+    if store is None:
+        return 0
+    store.set_document(_DISMISS_DOC, {"cleared_at": time.time(), "dismissed": []})
+    return len(error_stream())

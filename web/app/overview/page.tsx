@@ -38,7 +38,6 @@ export default async function OverviewPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="OVERVIEW"
         title="中转站定价"
         subtitle={subtitles.overview}
       />

@@ -53,6 +53,11 @@ def _full_collect_job(config: MonitorConfig, store: Store, persist: bool) -> Cal
             "errors": report.errors,
             "persisted": persist,
             "catalog": output["catalog"],
+            # 逐站价格采集状态：401/需认证这类"整站无价但不算错误"的情况靠它报给用户
+            "site_price_status": [
+                {"site_id": site_id, "status": value.get("status"), "error": value.get("error")}
+                for site_id, value in report.site_status.items()
+            ],
             # 公告只在内容新增/更新时产生记录；渠道状态只回传有变化的事件，无变化不展示
             "notices": [
                 {"site_id": item["site_id"], "kind": item["kind"], "content": item["content"]}
@@ -104,6 +109,20 @@ def build_router(store: Store) -> APIRouter:
     @router.get("/api/tasks")
     def list_tasks() -> dict[str, Any]:
         return {"tasks": tasks.recent()}
+
+    # 概览页“采集异常”卡片：跨任务汇总警告/错误日志，支持逐条移除与一键清空；
+    # 需声明在 /api/tasks/{task_id} 之前，否则 "errors" 会被当成 task_id 吞掉
+    @router.get("/api/tasks/errors")
+    def task_error_stream() -> dict[str, Any]:
+        return {"entries": tasks.error_stream()}
+
+    @router.delete("/api/tasks/errors")
+    def clear_task_errors() -> dict[str, int]:
+        return {"remaining": tasks.clear_errors()}
+
+    @router.delete("/api/tasks/errors/{key}")
+    def dismiss_task_error(key: str) -> dict[str, bool]:
+        return {"ok": tasks.dismiss_error(key)}
 
     @router.get("/api/tasks/{task_id}")
     def task_status(task_id: str) -> dict[str, Any]:

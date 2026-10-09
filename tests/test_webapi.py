@@ -107,15 +107,24 @@ def test_latest_history_events_official_endpoints(workspace: Path):
     assert catalog["models"]["demomodel"]["vendor"] == "Demo"
 
 
-def test_discount_computes_ratio_with_site_and_model(workspace: Path):
+def test_feed_hides_group_removed_events(workspace: Path):
+    """分组下线事件只在库里留档：/api/feed 为访客页与管理台共用的事件出口，在此一并隐藏。"""
+    from llm_price_monitor.store import Store
+
     client = TestClient(create_app(_config(workspace)))
-    data = client.get("/api/discount").json()
-    assert data["usd_cny_rate"] == 7.0
-    assert len(data["discounts"]) == 1
-    entry = data["discounts"][0]
-    assert entry["site_id"] == "demo" and entry["model"] == "demo-model"
-    assert entry["input"] == 0.5 and entry["output"] == 0.5
-    assert data["skipped"] == []
+    store = Store(workspace / "var" / "monitor.db")
+    store.append_events([
+        {"site_id": "demo", "model": "demo-model", "kind": "changed", "detected_at": 1.0,
+         "previous": {"input_price": 1.0}, "current": {"input_price": 2.0}},
+        {"site_id": "demo", "model": "demo-model", "kind": "group_removed", "detected_at": 2.0,
+         "previous": {"metadata": {"group": "vip"}}, "current": None},
+    ])
+
+    feed = client.get("/api/feed").json()
+    assert all(event["kind"] != "group_removed" for event in feed["events"])
+    removed_total = store.read_events(limit=1, kind="group_removed")[1]
+    assert feed["price_total"] == store.read_events(limit=1)[1] - removed_total  # 总数与可见列表同口径
+    assert "group_removed" in [event["kind"] for event in store.read_events(limit=50)[0]]  # 库里仍留档
 
 
 def test_overview_attaches_discount_and_catalog_context(workspace: Path):
@@ -132,7 +141,6 @@ def test_catalog_missing_returns_404(workspace: Path):
     # 调度已在 _config 里关闭，目录缺失时不会触发自动同步，保持"无数据"状态
     client = TestClient(create_app(_config(workspace)))
     assert client.get("/api/catalog").status_code == 404
-    assert client.get("/api/discount").status_code == 404
 
 
 def test_scheduler_submits_due_jobs_periodically(workspace: Path, monkeypatch):
@@ -220,6 +228,7 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
             [],
             status_events=[{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}],
             notice_records=[{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}],
+            site_status={"demo": {"status": "auth_required", "error": "HTTP 401", "checked_at": 1.0}},
         )
 
     monkeypatch.setattr(collect_routes, "run_once", fake_run_once)
@@ -238,6 +247,10 @@ def test_collect_runs_in_background_without_persist(workspace: Path, monkeypatch
     # 公告与渠道状态结果随任务带回：公告含正文，状态只回传有变化的事件
     assert task["result"]["notices"] == [{"site_id": "demo", "kind": "notice_init", "content": "维护公告"}]
     assert task["result"]["statuses"] == [{"site_id": "demo", "kind": "status_changed", "changes": [{"op": "edit", "path": "$.a"}]}]
+    # 逐站价格采集状态随任务带回：测试弹窗靠它把 401 这类原因报给用户
+    assert task["result"]["site_price_status"] == [
+        {"site_id": "demo", "status": "auth_required", "error": "HTTP 401"}
+    ]
 
 
 def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeypatch):
@@ -355,6 +368,34 @@ def test_setup_login_and_gate(workspace: Path):
     assert meta["is_admin"] is True and meta["needs_setup"] is False
 
 
+def test_read_gate_with_internal_token(workspace: Path, monkeypatch):
+    """设置 PRICE_WEB_INTERNAL_TOKEN 后：匿名读接口一律 401，
+    令牌请求与管理员会话放行；健康检查、登录态探测、助手状态保持公开。"""
+    monkeypatch.setenv("PRICE_WEB_INTERNAL_TOKEN", "internal-secret")
+    client = TestClient(create_app(_config(workspace)))
+
+    # 匿名：数据读接口与接口文档全部关闭
+    assert client.get("/api/meta").status_code == 401
+    assert client.get("/api/overview").status_code == 401
+    assert client.get("/openapi.json").status_code == 401
+    # 访客功能例外保持公开
+    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/auth/state").json() == {"needs_setup": True, "is_admin": False}
+
+    # 内网令牌放行服务端渲染取数
+    assert client.get("/api/meta", headers={"x-internal-token": "internal-secret"}).status_code == 200
+    assert client.get("/api/overview", headers={"x-internal-token": "internal-secret"}).status_code == 200
+
+    # 管理员会话同样放行（管理端浏览器走同源代理靠 cookie）
+    assert client.post("/api/setup", json={"username": "ethan", "password": "s3cret"}).status_code == 200
+    assert client.get("/api/meta").status_code == 200
+
+    # 令牌未设置时不启用封锁，行为与旧版一致
+    monkeypatch.delenv("PRICE_WEB_INTERNAL_TOKEN")
+    open_client = TestClient(create_app(_config(workspace)))
+    assert open_client.get("/api/meta").status_code == 200
+
+
 def test_login_rate_limit_blocks_after_repeated_failures(workspace: Path):
     """同一来源连续失败达上限后 429 限流；成功登录清零计数。"""
     client = _admin_client(workspace)
@@ -385,16 +426,6 @@ def test_collect_status_admin_only_and_tasks_gated(workspace: Path):
     status = admin.get("/api/overview").json()["collect_status"]
     assert status["demo"]["error"] == "boom"
     assert admin.get("/api/tasks").status_code == 200
-
-
-def test_env_password_seeds_admin_for_existing_deployments(workspace: Path, monkeypatch):
-    monkeypatch.setenv("PRICE_WEB_PASSWORD", "s3cret")
-    monkeypatch.setenv("PRICE_WEB_USERNAME", "ethan")
-    client = TestClient(create_app(_config(workspace)))
-    meta = client.get("/api/meta").json()
-    assert meta["needs_setup"] is False and meta["is_admin"] is False
-    assert client.post("/api/auth/login", json={"username": "ethan", "password": "s3cret"}).status_code == 200
-    assert client.get("/api/meta").json()["is_admin"] is True
 
 
 def test_settings_roundtrip_and_validation(workspace: Path):
@@ -461,8 +492,23 @@ def test_sites_crud_requires_admin_and_validates(workspace: Path):
     assert client.delete("/api/sites/x").status_code == 200
     assert client.delete("/api/sites/x").status_code == 404
 
+
+def test_sites_endpoint_lists_targets_that_never_got_a_price(workspace: Path):
+    """配了却始终没采到价的目标模型要在站点列表里点出来（站点用别的模型名时才会出现）。"""
+    client = _admin_client(workspace)
+    assert client.get("/api/sites").json()["unpriced_models"] == {}
+
+    demo = client.get("/api/sites").json()["sites"][0]
+    client.put("/api/sites/demo", json={"config": {**demo, "models": ["demo-model", "deepseek-flash"]}})
+    assert client.get("/api/sites").json()["unpriced_models"] == {"demo": ["deepseek-flash"]}
+
+    # 停用的站点不参与采集，不作为"漏采"提示
+    client.put("/api/sites/demo", json={"config": {**demo, "models": ["deepseek-flash"], "enabled": False}})
+    assert client.get("/api/sites").json()["unpriced_models"] == {}
+
+
 def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
-    """编辑站点设置分组过滤时，库里未选中分组的历史状态数据一并清理；口径不变或清空则不动。"""
+    """编辑站点设置分组过滤时，库里未选中分组的历史状态与价格数据一并清理；口径不变或清空则不动。"""
     from llm_price_monitor.store import Store
 
     client = _admin_client(workspace)
@@ -475,12 +521,26 @@ def test_site_update_with_group_filter_cleans_status_history(workspace: Path):
             "data": {"channels": [{"name": "svip", "state": "ok"}, {"name": "vip", "state": "down"}]},
         },
     ])
+    store.replace_latest({
+        "demo:demo-model:svip": {"site_id": "demo", "model": "demo-model", "input_price": 1.0, "metadata": {"group": "svip"}},
+        "demo:demo-model:default": {"site_id": "demo", "model": "demo-model", "input_price": 2.0, "metadata": {"group": "default"}},
+    })
+    store.append_events([
+        {"site_id": "demo", "model": "demo-model", "kind": "changed", "detected_at": 1.0,
+         "previous": {"metadata": {"group": "default"}}, "current": {"metadata": {"group": "default"}}},
+    ])
 
     status = {"url": "https://demo.test/status", "groups": ["svip"]}
+    _, events_total = store.read_events(site_id="demo", limit=100)
     saved = client.put("/api/sites/demo", json={"config": {**config, "status": status}})
     assert saved.status_code == 200 and saved.json()["cleaned"]["records"] == 1
+    cleaned = saved.json()["cleaned"]
+    assert cleaned["price_latest"] >= 1 and cleaned["price_events"] >= 1
     records, _ = store.read_status(site_id="demo")
     assert records[0]["data"]["channels"] == [{"name": "svip", "state": "ok"}]
+    assert {key for key in store.latest_all() if key.startswith("demo:")} == {"demo:demo-model:svip"}
+    _, remaining_events = store.read_events(site_id="demo", limit=100)
+    assert cleaned["price_events"] == events_total - remaining_events
 
     # 相同分组重复保存不再清理；去掉过滤恢复全量采集，也不动数据
     again = client.put("/api/sites/demo", json={"config": {**config, "status": status}})
@@ -719,6 +779,26 @@ def test_analytics_admin_gate_summary_logs_clear(workspace: Path):
     assert admin.get("/api/analytics/logs").json()["total"] == 0
 
 
+def test_ai_logs_summary_endpoint(workspace: Path):
+    """AI 调用统计：仅管理员可读；返回 KPI 与 7 天按天序列，空库时补零。"""
+    from llm_price_monitor.store import Store
+
+    plain = TestClient(create_app(_config(workspace)))
+    assert plain.get("/api/ai-logs/summary").status_code == 401
+
+    admin = _admin_client(workspace)
+    store = Store(workspace / "var" / "monitor.db")
+    store.add_ai_log(
+        scene="助手问答", model="m1", status="ok", duration_ms=800,
+        prompt_tokens=10, completion_tokens=20, total_tokens=30,
+    )
+    body = admin.get("/api/ai-logs/summary").json()
+    assert body["total"] == 1 and body["ok"] == 1
+    assert (body["prompt_tokens"], body["completion_tokens"], body["total_tokens"]) == (10, 20, 30)
+    assert len(body["daily"]) == 7 and body["daily"][-1]["ok"] == 1
+    assert body["scenes"] == [{"name": "助手问答", "calls": 1}]
+
+
 def test_store_purge_visits_keeps_recent(workspace: Path):
     """purge_visits 只删窗口之前的记录，供 90 天保留策略调用。"""
     from llm_price_monitor.store import Store
@@ -738,9 +818,10 @@ def test_store_purge_visits_keeps_recent(workspace: Path):
 def test_collect_section_endpoints_submit_split_tasks(workspace: Path, monkeypatch):
     """价格/渠道状态/公告拆分端点各自提交独立任务，摘要与对应扫描结果一致。"""
     import llm_price_monitor.webapi.jobs as jobs
-    from llm_price_monitor.report import SectionScan
+    from llm_price_monitor.report import MonitorReport, SectionScan
 
-    monkeypatch.setattr(jobs, "scan_prices", lambda _config, **_kw: SectionScan(records=[{"model": "demo-model"}]))
+    # scan_prices 真实返回 MonitorReport（带逐站采集状态），这里按真实类型替换
+    monkeypatch.setattr(jobs, "scan_prices", lambda _config, **_kw: MonitorReport(0.0, 1.0, records=[{"model": "demo-model"}]))
     monkeypatch.setattr(jobs, "scan_statuses", lambda _config, **_kw: SectionScan(records=[{"site_id": "demo"}], events=[{"kind": "status_init"}]))
     monkeypatch.setattr(jobs, "scan_notices", lambda _config, **_kw: SectionScan(records=[]))
 
@@ -972,6 +1053,51 @@ def test_tasklog_emit_without_binding_is_noop():
     tasklog.emit("错误也应被忽略", "error")
 
 
+def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
+    """概览页异常卡片：跨任务汇总警告/错误日志；逐条移除与清空只影响卡片展示，任务日志本体不动。"""
+    import llm_price_monitor.webapi.routes.collect as collect_routes
+    from llm_price_monitor import tasklog
+    from llm_price_monitor.report import MonitorReport
+    from llm_price_monitor.webapi import tasks
+
+    def flaky(_config, **_kwargs):
+        tasklog.emit("[demo] 渠道状态被跳过：站点未开放", "warn")
+        tasklog.emit("[demo] 价格采集失败：连接超时", "error")
+        return MonitorReport(0.0, 1.0, [], [], [])
+
+    monkeypatch.setattr(collect_routes, "run_once", flaky)
+    tasks.reset()  # 任务注册表进程内共享，先清场再用精确条数断言
+    assert TestClient(create_app(_config(workspace))).get("/api/tasks/errors").status_code == 401  # 未登录不可见
+
+    client = _admin_client(workspace)
+
+    def run_collect() -> str:
+        task_id = client.post("/api/collect", json={}).json()["task_id"]
+        for _ in range(50):
+            if client.get(f"/api/tasks/{task_id}").json()["status"] != "running":
+                break
+            time.sleep(0.02)
+        return task_id
+
+    run_collect()
+    entries = client.get("/api/tasks/errors").json()["entries"]
+    assert [entry["level"] for entry in entries] == ["error", "warn"]  # 新日志在前，info 不进卡片
+    assert all("价格采集失败" in entry["message"] or "渠道状态被跳过" in entry["message"] for entry in entries)
+
+    warn_key = next(entry["key"] for entry in entries if entry["level"] == "warn")
+    assert client.delete(f"/api/tasks/errors/{warn_key}").status_code == 200
+    remaining = client.get("/api/tasks/errors").json()["entries"]
+    assert [entry["level"] for entry in remaining] == ["error"]
+    detail = client.get(f"/api/tasks/{next(iter(client.get('/api/tasks').json()['tasks']))['id']}").json()
+    assert any("渠道状态被跳过" in log["message"] for log in detail["logs"])  # 任务日志本体不受影响
+
+    assert client.delete("/api/tasks/errors").json()["remaining"] == 0
+    assert client.get("/api/tasks/errors").json()["entries"] == []
+    run_collect()  # 清空后旧日志被时间点挡住，新产生的仍然可见
+    entries_after = client.get("/api/tasks/errors").json()["entries"]
+    assert [entry["level"] for entry in entries_after] == ["error", "warn"]
+
+
 def test_site_geo_endpoint_mocked(workspace: Path, monkeypatch):
     """站点 IP 定位端点：定位结果原样透传，网络定位函数被 mock，不真正联网。"""
     import llm_price_monitor.webapi.routes.geo as geo_route
@@ -1024,7 +1150,7 @@ def test_site_token_refresh_sample_analyzed_on_save(workspace: Path, monkeypatch
 
 
 def test_persist_refresh_updates_hardcoded_auth_header(workspace: Path):
-    """续签落盘时，写死在 network/networks/status/notice headers 里的 Authorization / Cookie 也要换成新 token（保留前缀）。"""
+    """续签落盘时，写死在 network/networks/status/notice headers 里的 Authorization 要换成新 token（保留前缀）；Cookie 不动，手动维护。"""
     from llm_price_monitor.store import Store
     from llm_price_monitor.token_refresh import persist_refreshed_config
 
@@ -1052,7 +1178,7 @@ def test_persist_refresh_updates_hardcoded_auth_header(workspace: Path):
     assert config["network"]["headers"]["Authorization"] == "Bearer new_access"
     assert config["network"]["headers"]["referer"] == "https://hard.test"
     assert config["networks"][0]["headers"]["authorization"] == "Bearer new_access"
-    assert config["networks"][1]["headers"]["Cookie"] == "session=new_access"
+    assert config["networks"][1]["headers"]["Cookie"] == "session=old_cookie"
     assert config["status"]["headers"]["Authorization"] == "Bearer new_access"
     assert config["notice"]["headers"]["authorization"] == "Bearer new_access"
     assert config["token_refresh"]["refresh_token"] == "new_refresh"

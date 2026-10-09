@@ -239,13 +239,12 @@ def join_page_sources(page_sources: list[dict[str, Any]]) -> str:
 def structure_page_source(source: dict[str, str], expected_models: list[str]) -> dict[str, Any] | None:
     raw_text = str(source.get("text", ""))
     text = target_page_text(raw_text, expected_models)
-    if not text and contains_price_evidence(str(source.get("text", ""))):
-        text = clip(" ".join(str(source.get("text", "")).split()), 12000)
-    # 兼容历史证据数据；当前 network 适配器不会采集或读取页面文档。
+    # 模型卡片没识别出来时保留原始 DOM 文本：动态渲染站点常没有可匹配的价格特征
     if not text and raw_text.strip():
         text = clip(" ".join(raw_text.split()), 12000)
     if not text:
         return None
+    text = annotate_positional_price_arrays(text, expected_models, full_text=raw_text)
     model = next(
         (target for target in expected_models if contains_model_alias(text, target)),
         expected_models[0] if expected_models else None,
@@ -256,6 +255,127 @@ def structure_page_source(source: dict[str, str], expected_models: list[str]) ->
         "target_model": model,
         "quote": text,
     }
+
+
+# 压缩 JS 里模型价格行按位置排列，没有字段名，AI 只能猜，容易把官方参考价当成售价。
+# 由确定性代码先判读成带字段名的结论行，AI 只负责采信与填字段：
+#   3 个数字：官方输入/输出/缓存读取（官方参考价 = 上游美元价 × 7，实付基础价 = 官方价 ÷ 7）
+#   6 个数字：官方三项 + 站内实付基础价三项
+#   7 个数字：官方四项（含缓存创建）+ 站内实付基础价三项
+_POSITIONAL_PRICE_ROW = re.compile(
+    r'["\']?(?P<model>[A-Za-z0-9][A-Za-z0-9._/-]{2,63})["\']?\s*,\s*'
+    r"(?P<numbers>-?\d*\.?\d+(?:\s*,\s*-?\d*\.?\d+){2,6})"
+)
+_POSITIONAL_NUMBER = re.compile(r"-?\d*\.?\d+")
+_GROUP_ROW = re.compile(
+    r'\[\s*"(?P<name>[A-Za-z0-9_.\-]{2,32})"\s*,\s*'
+    r'(?:[A-Za-z_$][\w$.]*|"[^"]{0,80}")\s*,\s*"[^"]{0,80}"\s*,\s*"[^"]{0,80}"\s*,\s*'
+    r"(?P<ratio>0?\.\d+|0|1(?:\.\d+)?)\s*,"
+)
+# 页面可能在校验/覆写逻辑里改掉分组倍率（如 gptFullGroup[4] = .3），以覆写值为准。
+_GROUP_VAR_BINDING = re.compile(
+    r'(\w+)\s*=\s*\w+\s*\.find\(\s*\w+\s*=>\s*\w+\s*\[0\]\s*===\s*"([A-Za-z0-9_.\-]+)"\s*\)'
+)
+_GROUP_RATIO_OVERRIDE = re.compile(r"(\w+)\s*\[4\]\s*=\s*(0?\.\d+|0|1(?:\.\d+)?)")
+
+
+def _trim_number(value: float) -> str:
+    return f"{round(value, 6):g}"
+
+
+def _price_triplet_row(model: str, numbers: list[str]) -> tuple[list[str], list[str]] | None:
+    """位置数组 → (官方三项, 站内实付基础价三项)；无法判读返回 None。"""
+    if len(numbers) == 3:
+        official = numbers
+        return official, [_trim_number(float(item) / 7) for item in official]
+    if len(numbers) == 6:
+        return numbers[0:3], numbers[3:6]
+    if len(numbers) == 7:
+        # 官方四项（输入/输出/缓存创建/缓存读取）+ 实付三项
+        return [numbers[0], numbers[1], numbers[3]], numbers[4:7]
+    return None
+
+
+def _group_rows(text: str) -> list[tuple[str, str, int, int]]:
+    """提取分组行 → (分组名, 倍率文本, 起始位置, 结束位置)；倍率已应用 JS 覆写。"""
+    rows = [
+        (match.group("name"), match.group("ratio"), match.start(), match.end())
+        for match in _GROUP_ROW.finditer(text)
+    ]
+    if not rows:
+        return []
+    overrides = {
+        binding.group(1): binding.group(2)
+        for binding in _GROUP_VAR_BINDING.finditer(text)
+    }
+    ratios = {
+        overrides.get(match.group(1), match.group(1)): match.group(2)
+        for match in _GROUP_RATIO_OVERRIDE.finditer(text)
+    }
+    bounds = [row[2] for row in rows] + [len(text)]
+    return [
+        (name, ratios.get(name, ratio), start, bounds[index + 1])
+        for index, (name, ratio, start, _) in enumerate(rows)
+    ]
+
+
+def annotate_positional_price_arrays(text: str, expected_models: list[str], *, full_text: str | None = None) -> str:
+    """把位置型价格数组翻译成带字段名的结论行，供 AI 直接采信。
+
+    分组倍率与 JS 覆写从 full_text（未裁剪的整页文本）提取，避免裁剪丢掉倍率覆写。
+    """
+    annotations: list[str] = []
+    seen: set[str] = set()
+    for match in _POSITIONAL_PRICE_ROW.finditer(text):
+        model = match.group("model")
+        if model.casefold() in seen:
+            continue
+        if expected_models and not any(
+            contains_model_alias(model, target) or target.casefold() in model.casefold()
+            for target in expected_models
+        ):
+            continue
+        numbers = [item.strip() for item in _POSITIONAL_NUMBER.findall(match.group("numbers"))]
+        parsed = _price_triplet_row(model, numbers)
+        if parsed is None:
+            continue
+        official, base = parsed
+        seen.add(model.casefold())
+        annotations.append(
+            f"[位置型价格数组解读] 模型 {model}：官方参考价 输入={official[0]} / 输出={official[1]} / 缓存读取={official[2]}；"
+            f"站内实付基础价 输入={base[0]} / 输出={base[1]} / 缓存读取={base[2]}。"
+            "官方参考价不得填入 input_price/output_price。"
+        )
+        model_annotations = [
+            f"[分组实付价结论] 模型 {model} @ {name}（倍率 {ratio}x）：输入={final[0]} / 输出={final[1]} / 缓存读取={final[2]}"
+            for name, ratio, final in _grouped_rows_for(full_text or text, model, base)
+        ]
+        annotations.extend(model_annotations or [
+            f"[分组实付价结论] 模型 {model}：未识别到分组倍率，input_price/output_price 填 null 并标 rule_only。"
+        ])
+    if not annotations:
+        return text
+    return text + "\n" + "\n".join(annotations)
+
+
+def _grouped_rows_for(
+    full_text: str,
+    model: str,
+    base: list[str],
+) -> list[tuple[str, str, list[str]]]:
+    """按分组倍率折算实付价；只保留白名单命中该模型（或无白名单）的分组。"""
+    rows: list[tuple[str, str, list[str]]] = []
+    for name, ratio, start, end in _group_rows(full_text):
+        group_text = full_text[start:end]
+        if '["' in group_text and not contains_model_alias(group_text, model):
+            continue
+        try:
+            ratio_value = float(ratio)
+            final = [_trim_number(float(item) * ratio_value) for item in base]
+        except ValueError:
+            continue
+        rows.append((name, _trim_number(ratio_value), final))
+    return rows
 
 
 def first_model_segment(value: str, model: str, expected_models: list[str], limit: int = 2800) -> str:

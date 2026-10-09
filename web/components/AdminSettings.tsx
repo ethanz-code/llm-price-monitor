@@ -18,7 +18,7 @@ const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5,
 const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "price", label: "价格采集", hint: "定时去各站点看价格，有变化就记下来" },
   { key: "status", label: "渠道状态", hint: "定时检查开了状态监测的站点，渠道有变化就记事件" },
-  { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来并通知" },
+  { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来" },
   { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录（默认 24 小时一次）" },
 ];
 
@@ -476,7 +476,7 @@ export function AdminSettings() {
           </SettingsSection>
           <SettingsSection
             title="通知推送（WxPusher）"
-            description="站点价格/状态/公告有变化、收到新建议、或有访客提交站点时通知你；Token 留空就只保存不推送"
+            description="收到新建议、或有访客提交站点时通知你；站点价格、渠道状态和公告的变化不推送，到面板看即可。Token 留空就只保存不推送"
             action={
               <Btn size="sm" loading={testing === "wxpusher"} onClick={() => runTest("wxpusher")}>
                 发测试消息

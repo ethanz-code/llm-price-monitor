@@ -156,6 +156,16 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _price_event_group(payload: dict[str, Any]) -> str:
+    """价格事件的分组归属：current/previous 里的 metadata.group，都没有视为 default。"""
+    for part in (payload.get("current"), payload.get("previous")):
+        if isinstance(part, dict):
+            group = (part.get("metadata") or {}).get("group")
+            if group:
+                return str(group)
+    return "default"
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -577,6 +587,85 @@ class Store:
             cursor = conn.execute("DELETE FROM ai_logs WHERE ts < ?", (before_ts,))
             return int(cursor.rowcount)
 
+    def ai_logs_summary(self, *, trend_days: int = 7) -> dict[str, Any]:
+        """AI 调用统计聚合：全部保留记录的 KPI、按天趋势与场景/模型分布。
+
+        成功率按尝试次数计：status=ok 占比；fallback（换模型重试）与 error 都算未成功。
+        按天序列补零对齐，日期统一用本地时区（与 visit_summary 的口径一致）。
+        """
+        today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        cutoff = today0 - (trend_days - 1) * 86400
+        with self._conn() as conn:
+            totals = conn.execute(
+                "SELECT COUNT(*) AS total,"
+                " COALESCE(SUM(status = 'ok'), 0) AS ok,"
+                " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
+                " COALESCE(SUM(status = 'error'), 0) AS error,"
+                " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+                " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+                " COALESCE(AVG(duration_ms), 0) AS avg_duration_ms"
+                " FROM ai_logs"
+            ).fetchone()
+            by_day = {
+                row["day"]: (
+                    int(row["ok"]),
+                    int(row["fallback"]),
+                    int(row["error"]),
+                    int(row["prompt_tokens"]),
+                    int(row["completion_tokens"]),
+                )
+                for row in conn.execute(
+                    "SELECT date(ts, 'unixepoch', 'localtime') AS day,"
+                    " COALESCE(SUM(status = 'ok'), 0) AS ok,"
+                    " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
+                    " COALESCE(SUM(status = 'error'), 0) AS error,"
+                    " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                    " COALESCE(SUM(completion_tokens), 0) AS completion_tokens"
+                    " FROM ai_logs WHERE ts >= ? GROUP BY day",
+                    (cutoff,),
+                )
+            }
+            scenes = [
+                {"name": row["scene"], "calls": int(row["calls"])}
+                for row in conn.execute(
+                    "SELECT scene, COUNT(*) AS calls FROM ai_logs GROUP BY scene ORDER BY calls DESC, scene LIMIT 10"
+                )
+            ]
+            models = [
+                {"name": row["model"], "calls": int(row["calls"])}
+                for row in conn.execute(
+                    "SELECT model, COUNT(*) AS calls FROM ai_logs GROUP BY model ORDER BY calls DESC, model LIMIT 10"
+                )
+            ]
+        today = date.fromtimestamp(time.time())
+        zeros = (0, 0, 0, 0, 0)
+        daily = [
+            {
+                "day": (today - timedelta(days=offset)).isoformat()[5:],
+                "ok": values[0],
+                "fallback": values[1],
+                "error": values[2],
+                "prompt_tokens": values[3],
+                "completion_tokens": values[4],
+            }
+            for offset in range(trend_days - 1, -1, -1)
+            for values in [by_day.get((today - timedelta(days=offset)).isoformat(), zeros)]
+        ]
+        return {
+            "total": int(totals["total"]),
+            "ok": int(totals["ok"]),
+            "fallback": int(totals["fallback"]),
+            "error": int(totals["error"]),
+            "prompt_tokens": int(totals["prompt_tokens"]),
+            "completion_tokens": int(totals["completion_tokens"]),
+            "total_tokens": int(totals["total_tokens"]),
+            "avg_duration_ms": round(float(totals["avg_duration_ms"])),
+            "daily": daily,
+            "scenes": scenes,
+            "models": models,
+        }
+
     # ---------- 访客 IP 归属地 ----------
 
     def pending_geo_ips(self, *, cutoff: float, limit: int = 100, fail_ttl: float = 86400.0) -> list[str]:
@@ -822,6 +911,67 @@ class Store:
                 reference["data"] = pruned
                 self.set_document(f"status_ref:{site_id}", reference)
                 stats["ref"] = 1
+        return stats
+
+    def prune_price_groups(self, site_id: str, groups: list[str]) -> dict[str, int]:
+        """按分组过滤口径清理该站点已入库的价格数据：最新快照、历史趋势点与价格事件里
+        未选中分组的行直接删除，分组缺失计数同步清掉。供保存分组配置时调用，幂等；返回清理统计。"""
+        stats = {"latest": 0, "trend": 0, "events": 0}
+        targets = {group.strip().casefold() for group in groups if group.strip()}
+        if not targets:
+            return stats
+        prefix_len = len(site_id) + 1
+        site_prefix = f"{site_id}:"
+
+        def in_targets(group: Any) -> bool:
+            return str(group or "default").strip().casefold() in targets
+
+        with self._conn() as conn:
+            # 快照：key 形如 "{site_id}:{model}:{group}"，分组是最后一段
+            stale_keys = [
+                row["key"]
+                for row in conn.execute(
+                    "SELECT key FROM latest WHERE substr(key, 1, ?) = ?", (prefix_len, site_prefix)
+                ).fetchall()
+                if not in_targets(row["key"][prefix_len:].rsplit(":", 1)[-1])
+            ]
+            if stale_keys:
+                conn.executemany("DELETE FROM latest WHERE key = ?", [(key,) for key in stale_keys])
+                stats["latest"] = len(stale_keys)
+
+            # 历史趋势点：group_name 列直接比对
+            for row in conn.execute(
+                "SELECT DISTINCT group_name FROM price_trend WHERE site_id = ?", (site_id,)
+            ).fetchall():
+                if in_targets(row["group_name"]):
+                    continue
+                cursor = conn.execute(
+                    "DELETE FROM price_trend WHERE site_id = ? AND group_name = ?", (site_id, row["group_name"])
+                )
+                stats["trend"] += cursor.rowcount
+
+            # 价格事件：分组藏在 payload 的 previous/current.metadata.group 里
+            stale_event_ids = [
+                row["id"]
+                for row in conn.execute("SELECT id, payload FROM price_events WHERE site_id = ?", (site_id,)).fetchall()
+                if not in_targets(_price_event_group(json.loads(row["payload"])))
+            ]
+            if stale_event_ids:
+                conn.execute(
+                    f"DELETE FROM price_events WHERE id IN ({','.join('?' * len(stale_event_ids))})", stale_event_ids
+                )
+                stats["events"] = len(stale_event_ids)
+
+        # 分组缺失计数：被过滤分组的 key 一并清掉，避免重新启用白名单时带着旧计数
+        watch = self.get_document("group_miss")
+        if isinstance(watch, dict) and any(key.startswith(site_prefix) for key in watch):
+            pruned_watch = {
+                key: count
+                for key, count in watch.items()
+                if not key.startswith(site_prefix) or in_targets(key[prefix_len:].rsplit(":", 1)[-1])
+            }
+            if pruned_watch != watch:
+                self.set_document("group_miss", pruned_watch)
         return stats
 
     def read_status(

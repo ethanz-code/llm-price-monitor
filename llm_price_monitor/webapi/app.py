@@ -123,13 +123,6 @@ def _ensure_schedule_defaults(store: Store) -> None:
     store.set_document("settings", settings)
 
 
-def _seed_admin_from_env(store: Store) -> None:
-    """兼容旧部署：设置了 PRICE_WEB_PASSWORD 且库里还没有管理员账号时，把环境凭据落库。"""
-    if auth.get_admin(store) is not None or not os.getenv("PRICE_WEB_PASSWORD"):
-        return
-    auth.set_admin(store, os.getenv("PRICE_WEB_USERNAME", "admin"), os.getenv("PRICE_WEB_PASSWORD", ""))
-
-
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="llm-price-monitor", docs_url=None, redoc_url=None)
     app.state.config_path = config_path
@@ -137,7 +130,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     store = Store(Path(os.getenv("PRICE_MONITOR_DB") or DB_PATH))
     _seed_store(store, config_path)
     _ensure_schedule_defaults(store)
-    _seed_admin_from_env(store)
     tasks.attach_store(store)  # 历史任务连同日志落 SQLite，重启后仍可查看
     app.state.store = store
 
@@ -150,14 +142,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
     # /api/tasks/{task_id} 为动态路径，另行按前缀匹配
-    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/admin/site-submissions"}
+    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions"}
     admin_get_prefixes = ("/api/tasks/",)
+    # 公开读接口封锁：部署时设置 PRICE_WEB_INTERNAL_TOKEN 后，数据读接口只对
+    # 携带令牌的服务端渲染请求（Next 直连）或管理员会话开放，匿名浏览器请求
+    # 一律 401——访客照常看页面，但拿不到可直接抓取的 JSON API。
+    # 令牌未设置时（本地开发）不启用封锁。健康检查、登录态探测与 AI 助手状态
+    # 属于访客功能本身，保持公开。
+    public_get_paths = {"/api/health", "/api/auth/state", "/api/assistant/status"}
+    internal_token = os.environ.get("PRICE_WEB_INTERNAL_TOKEN", "")
 
     @app.middleware("http")
     async def _admin_gate(request: Request, call_next: Any) -> Response:
         """读接口公开浏览；写操作与管理设置读取需要管理员会话。
 
         首次启动（尚未创建管理员账号）只放行 /api/setup，其余写接口一律 401。
+        设置 PRICE_WEB_INTERNAL_TOKEN 后，公开读接口进一步要求内网令牌或管理员
+        会话，匿名浏览器请求一律 401（见 public_get_paths 注释）。
         """
         needs_admin = (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
@@ -171,6 +172,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return Response(status_code=401)
             if has_admin and not is_admin(store, request):
                 return Response(status_code=401)
+        elif (
+            internal_token
+            and request.method == "GET"
+            and request.url.path not in public_get_paths
+            and (
+                request.url.path.startswith("/api/")
+                or request.url.path in {"/docs", "/redoc", "/openapi.json"}
+            )
+            and request.headers.get("x-internal-token") != internal_token
+            and not is_admin(store, request)
+        ):
+            return Response(status_code=401)
         return await call_next(request)
 
     app.include_router(routes.auth.build_router(store))

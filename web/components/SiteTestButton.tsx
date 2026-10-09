@@ -6,8 +6,8 @@ import { useState } from "react";
 import { toast, Btn, Modal } from "./ui";
 import { DataTable, type DColumn } from "./DataTable";
 import { ToneTag } from "./ToneTag";
-import { formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
-import type { SiteConfig, TaskInfo } from "@/lib/types";
+import { formatClock, formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
+import type { SiteConfig, TaskDetail } from "@/lib/types";
 
 type TestRecord = {
   model: string | null;
@@ -23,6 +23,8 @@ type TestRecord = {
 type TestNotice = { site_id: string; kind: string | null; content: string };
 type TestNoticeResult = { site_id: string; outcome: string; content: string; latest?: string };
 type TestStatus = { site_id: string; kind: string | null; changes: { op: string }[] };
+/** 逐站价格采集状态：需认证/无数据这类"没价但不算错误"的情况只有这里带原因 */
+type TestSitePriceStatus = { site_id: string; status: string | null; error: string | null };
 
 function priceCell(value: number | null, unit: string | null) {
   return (
@@ -36,7 +38,7 @@ function priceCell(value: number | null, unit: string | null) {
 export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: () => void }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [task, setTask] = useState<TaskInfo | null>(null);
+  const [task, setTask] = useState<TaskDetail | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
   // 轮询兜底：任务卡死时最多等 5 分钟，超时后不再锁死弹窗
@@ -45,7 +47,7 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
   async function poll(taskId: string, startedAt: number) {
     for (;;) {
       const res = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
-      const info = (await res.json()) as TaskInfo;
+      const info = (await res.json()) as TaskDetail;
       setTask(info);
       if (info.status !== "running") {
         setElapsed(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
@@ -97,6 +99,10 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
   const notices = (task?.result?.notices as TestNotice[] | undefined) ?? [];
   const noticeResults = (task?.result?.notice_results as TestNoticeResult[] | undefined) ?? [];
   const statuses = (task?.result?.statuses as TestStatus[] | undefined) ?? [];
+  const sitePriceStatus = (task?.result?.site_price_status as TestSitePriceStatus[] | undefined)?.find(
+    (row) => row.site_id === site.id,
+  );
+  const needsAuth = sitePriceStatus?.status === "auth_required";
   // 无有效价格的记录：占位（unavailable，如 token 过期需认证）或两类单价都缺失
   const invalid = records.filter(
     (row) => row.price_status === "unavailable" || (row.input_price === null && row.output_price === null),
@@ -149,8 +155,18 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
             <div style={{ display: "grid", gap: 8 }}>
               {running && <ToneTag tone="blue">测试中…</ToneTag>}
               {task.status === "done" && allInvalid && <ToneTag tone="red">失败：{failReason}</ToneTag>}
-              {task.status === "done" && !allInvalid && (
-                <ToneTag tone="green">
+              {task.status === "done" && !allInvalid && needsAuth && (
+                <>
+                  <span title={sitePriceStatus?.error ?? undefined}>
+                    <ToneTag tone="red">没采到价格：站点要求登录</ToneTag>
+                  </span>
+                  <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13 }}>
+                    {sitePriceStatus?.error ?? "价格接口返回 401/403"}。更新站点设置里的认证信息（token 或 cookie）后再测一次。
+                  </p>
+                </>
+              )}
+              {task.status === "done" && !allInvalid && !needsAuth && (
+                <ToneTag tone={records.length > 0 ? "green" : "yellow"}>
                   完成：{records.length} 条记录{elapsed !== null ? ` · 耗时 ${elapsed} 秒` : ""}
                 </ToneTag>
               )}
@@ -169,9 +185,11 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
                   mobileScrollX={430}
                 />
               )}
-              {task.status === "done" && records.length === 0 && errors.length === 0 && (
+              {task.status === "done" && records.length === 0 && errors.length === 0 && !needsAuth && (
                 <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13 }}>
-                  没有解析到价格：请确认目标模型名与站点返回的数据一致后重试；本地解析失败时会自动交给 AI 兜底。
+                  {sitePriceStatus?.error
+                    ? `没有解析到价格：${sitePriceStatus.error}。请确认目标模型名与站点返回的数据一致后重试。`
+                    : "没有解析到价格：请确认目标模型名与站点返回的数据一致后重试；本地解析失败时会自动交给 AI 兜底。"}
                 </p>
               )}
               {task.status === "done" && notices.length > 0 && (
@@ -195,10 +213,41 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
                 </ToneTag>
               )}
               {errors.map((item) => (
-                <p key={item.site_id} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>
+                <p key={`${item.site_id}-${item.error}`} style={{ color: "var(--tone-red-text)", fontSize: 13, margin: 0 }}>
                   {item.site_id}: {item.error}
                 </p>
               ))}
+              {task.logs && task.logs.length > 0 && (
+                <details
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: "8px 12px",
+                    background: "var(--bg)",
+                  }}
+                >
+                  <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-2)" }}>
+                    采集日志（{task.logs.length} 行）
+                  </summary>
+                  <div style={{ display: "grid", gap: 3, marginTop: 8, maxHeight: 260, overflowY: "auto" }}>
+                    {task.logs.map((log, index) => (
+                      <div key={index} style={{ display: "flex", gap: 10, fontSize: 12.5, lineHeight: 1.7 }}>
+                        <span className="mono" style={{ color: "var(--text-3)", flexShrink: 0 }}>
+                          {formatClock(log.time)}
+                        </span>
+                        <span
+                          style={{
+                            color: log.level === "error" ? "var(--tone-red-text)" : "var(--text)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {log.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
           {!running && task === null && (

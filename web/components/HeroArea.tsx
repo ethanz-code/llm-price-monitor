@@ -1,13 +1,12 @@
 "use client";
 
 /** 首屏监控区：左侧 cobe 大球 + 右侧文案列 + 底部跨整行的站点节点轮播；
- *  站点按 IP 归属地落点（客户端异步拉 /api/geo，不阻塞页面）；
+ *  站点按 IP 归属地落点（geo 由服务端页取好传入，浏览器不再直接调数据接口）；
  *  悬停轮播里的站点，球会转过去把它送到面前高亮，球上标签也会反向点亮轮播项；
  *  两排恒滚动：半条轨道不足一屏宽时自动复制节点补满，实现无缝循环，悬停暂停。 */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { apiGet } from "@/lib/api";
 import { rateLevel } from "@/lib/channelStatus";
 import { SiteGlobe, type GlobeSite, type SiteGeo } from "./SiteGlobe";
 
@@ -28,27 +27,15 @@ function sortWeight(site: GlobeSite): number {
 
 export function HeroArea({
   sites,
+  geo,
   main,
 }: {
   sites: GlobeSite[];
+  geo: Record<string, SiteGeo>;
   main: ReactNode;
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [geo, setGeo] = useState<Record<string, SiteGeo>>({});
   const router = useRouter();
-
-  // 站点定位较慢（DNS + 归属地查询），客户端异步拉取：球先转起来，节点好了再亮
-  useEffect(() => {
-    let alive = true;
-    apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo")
-      .then((data) => {
-        if (alive) setGeo(data.geo ?? {});
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   const sorted = [...sites].sort((a, b) => sortWeight(a) - sortWeight(b));
 

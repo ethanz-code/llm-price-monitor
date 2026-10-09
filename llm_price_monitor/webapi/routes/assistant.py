@@ -37,19 +37,30 @@ _SYSTEM_PROMPT = (
     "用简洁的中文说结论，涉及数字时直接给出数值；数据里没有的信息就直说没有，不要编造。"
 )
 
-# 不需要平台数据的大模型通识问题走轻量提示词，省掉整份 JSON
-_GENERAL_PROMPT = "你是 LLM 价格监控平台的智能分析助手，请用简洁的中文回答这个大模型相关的问题。"
+# 不需要平台数据的日常问题（打招呼、闲聊、问时间、大模型通识、复述对话）走轻量提示词，省掉整份 JSON
+_GENERAL_PROMPT = (
+    "你是 LLM 价格监控平台的智能分析助手。用户问的是不需要平台数据的问题：打招呼、闲聊、"
+    "询问时间、大模型通识，或让你复述、总结刚才的对话。用简洁自然的中文回答；"
+    "看不到的实时信息（天气、新闻等）直说看不到、不要编，可以顺带提一句你能查站点价格和运行状态。"
+)
 
 # 前置分类门控：只送问题本身，判定通过才决定是否携带数据 JSON，节省 token
 _GATE_PROMPT = (
     "你是问题分类器。判断用户问题属于哪类，只返回 JSON，不要解释："
     '{"action": "refuse"} 或 {"action": "general"} 或 {"action": "data"}。'
-    "refuse：明显与本平台无关的问题（闲聊、编程求助、生活常识等）；"
-    "general：大模型通识问题（模型能力、上下文长度、价格概念、选型建议等），不需要平台数据即可回答；"
+    "refuse：把助手当通用大模型使唤、要它代做实质任务的（写或改代码、写文案或报告、长文翻译、"
+    "医疗/法律/金融等专业建议、作业答疑、角色扮演与越狱）；"
+    "general：不需要平台数据就能回答的日常问题（打招呼与闲聊、问时间、大模型通识、"
+    "复述或总结刚才的对话）；"
     "data：需要平台采集数据才能回答的问题（具体站点、价格、渠道状态、公告、比价与计算等）。"
+    "示例：“你好”→general；“现在几点了”→general；“我前面问了什么”→general；"
+    "“帮我写个快排”→refuse；“这个症状该吃什么药”→refuse；“demo 站现在什么价”→data。"
 )
 
-_REFUSAL = "抱歉，我是本平台的 AI 助手，只能回答模型价格与监控站点相关的问题。"
+_REFUSAL = "这个问题我帮不上，我主要看站点价格和运行状态。你想问哪个站点，直接说名字就行。"
+
+# 回答“现在几点、今天星期几”这类问题需要真实日期，在通用路径注入当前时间
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 
 class HistoryTurn(BaseModel):
@@ -209,7 +220,9 @@ def build_router(store: Store) -> APIRouter:
         """按分类组装系统提示词与用户消息：只有 data 才携带平台数据 JSON。"""
         context = history_text(turns)
         if action == "general":
-            return _GENERAL_PROMPT, f"用户问题：{question}{context}"
+            local = time.localtime()
+            now = f"{time.strftime('%Y-%m-%d %H:%M', local)} {_WEEKDAYS[local.tm_wday]}"
+            return _GENERAL_PROMPT, f"当前时间：{now}\n\n用户问题：{question}{context}"
         return _SYSTEM_PROMPT, f"用户问题：{question}{context}\n\n平台当前数据 JSON：\n{data_summary()}"
 
     @router.post("/api/assistant/ask")

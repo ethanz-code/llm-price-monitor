@@ -502,7 +502,7 @@ def ai_content(api_format: str, payload: dict[str, Any]) -> str:
     return chat_content(payload)
 
 def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Client | None = None) -> str | None:
-    """让 AI 从公告接口的原始响应中提取公告正文（Markdown），站点没有公告时返回空串。
+    """让 AI 从公告接口的原始响应中逐字原样提取公告正文，站点没有公告时返回空串。
 
     原始响应可能是任意结构（new-api 包装、announcements 数组、HTML 片段等），
     固定解析规则认不出的形态交给 AI 判断什么是真正要拿的数据；AI 未启用、
@@ -517,10 +517,11 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
         return None
     system = (
         "你是站点公告数据提取器。用户消息是某个 API 站点公告接口的原始响应（可能是 JSON、HTML 或纯文本）。"
-        "从中提取站方发布的公告正文，整理成简洁的 Markdown 纯文本：保留公告标题、日期和正文内容，"
-        "去掉样式、脚本、样式属性等与内容无关的标记；多条公告按时间从新到旧分节。"
-        "只能使用原始响应中的内容，禁止凭常识补全。站点没有发布任何公告时，content 返回空字符串。"
-        '必须只返回 JSON：{"content": "公告正文 Markdown"}，不要解释。'
+        "从中找出站方发布的公告，并逐字原样提取正文：保持原文的用词、标点、空格和换行，"
+        "禁止改写、润色、翻译、增删任何字符，禁止调整排版；响应是 HTML 时只去掉标签本身，标签内的文字原样保留。"
+        "多条公告按时间从新到旧排列，每条开头保留它的标题和日期（同样逐字照抄原文）。"
+        "只能使用原始响应中出现的内容，禁止凭常识补全。站点没有发布任何公告时，content 返回空字符串。"
+        '必须只返回 JSON：{"content": "公告正文"}，不要解释。'
     )
     user = f"公告接口原始响应：\n{text[:config.max_input_chars]}"
     own = client is None
@@ -544,8 +545,8 @@ class AIPriceExtractor:
         self.config = config
 
     def _cache_key(self, spec: SiteSpec, expected_models: list[str], evidence: str) -> str:
-                # version=3：币种回退规则上线后旧缓存结果不可信，整体失效重抽。
-        return payload_hash({"version": 3, "site": spec.id, "models": expected_models, "evidence": evidence})
+                # version=8：位置型数组与分组倍率规则上线后旧缓存结果不可信，整体失效重抽。
+        return payload_hash({"version": 11, "site": spec.id, "models": expected_models, "evidence": evidence})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -722,12 +723,16 @@ class AIPriceExtractor:
 - aliases：确认模型后必须至少列出接口原始 ID、规范展示名、供应商前缀 ID 三种形式（如识别到 gpt-5.6-sol，aliases 为 ["gpt-5.6-sol", "GPT-5.6 Sol", "openai/gpt-5.6-sol"]）；只允许基于已确认 ID 做格式规范化，不得把其他模型当别名。
 - 监控目标是站点实际售价，不是官方参考价：页面同时出现站点价与“官方价”时必须填站点价；official_pricing、official_price 等官方价字段只能作参考证据，绝不能填入 input_price 或 output_price。
 - input_price、output_price 不明确时填 null，不得把倍率或余额当成价格。页面多个价格的显示顺序不等于归属；只有页面明确标注来源时才映射，否则填 null 并在 notes 说明无法映射。
+- 位置型价格数组：证据里出现"[位置型价格数组解读]"和"[分组实付价结论]"结论行时，它们是调用方对压缩数组的确定性判读，直接采信：每个"[分组实付价结论]"各输出一条记录，group 填结论中的分组名，input_price/output_price/cache_read_price 填结论里的数值，status=candidate，notes 一句话说明取自结论行；不得再以"字段顺序不明"标 rule_only 或填 null。
+- 没有上述结论行时才自行判读：压缩 JS/JSON 数组（如 ["模型ID",14,84,1.4,2,12,.2]）没有字段名时，按结构判读而不是臆造：同一数组出现两组"输入/输出/缓存读取"三元组时，较大一组是官方参考价（页面通常声明"官方参考价 = 上游美元价 × 7"之类的公式，数值也正好是 7 的倍数），另一组较小的就是站内实付基础价。input_price/output_price 必须填站内实付基础价 × 所在分组倍率的结果，官方价只能写进 notes 作参考。基础价 × 分组倍率是本任务的标准换算，必须执行，不算推断；只有白名单或倍率确实缺失时才允许 rule_only。识别出两组三元组即视为"页面明确标注来源"，本条优先于"不明确时填 null""字段名不清晰标 rule_only"等其他规则。严禁把无法解释的数字编造成"缓存创建""1小时缓存"等字段名，解释不了的数字留在 quote/notes 里。
+- 分组倍率：页面存在多个分组（如 lite/plus/full）且每组标注倍率（如 .15/.2/.3）、目标模型出现在该分组的模型白名单里时，input_price/output_price = 站内实付价 × 该分组倍率；每个命中分组各展开一条记录（pricing_rules.groups 同步展开），group 填分组名，不得全部塞进 default。倍率或白名单缺失、无法确定目标模型所属分组时，价格填 null 并标 rule_only。
 - 同一 page_evidence 中的“页面共享价格字段说明”是页面模型卡片共用的表头或字段定义；只有它明确给出字段顺序时，才可将同一卡片的数值映射为输入、输出或缓存价格，不得把其他模型的数值当表头或目标模型价格。
 - currency/unit 必须依据证据中的币种标识（如 ¥/元/人民币/$/USD、priceMicroUsd 等字段名）填写；证据完全没说明币种时按人民币回退，填 CNY 与 "CNY/1M tokens" 并在 notes 说明；不得凭字段是纯数字就猜 USD。
 - 价格按分组或上下文长度变化时，必须保留所有分组和 tiers（每个 tier 记 context_min/context_max、输入/输出和缓存价格），group 缺省为 default；上下文阶梯边界必须按证据原文填写（如 context_max=278000 与下一档 context_min=278001），不要猜测或改写。统一定价的站点也要输出一个 default 分组和一个无上限 tier，不要因为没有梯度就输出 unavailable。
 - model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。
 - 响应使用公式、倍率或字段名不清晰时，保留原始 pricing_rules 并在 notes 说明未能换算成确定单价，不要丢弃原始规则；status=rule_only 用于只有 quota 倍率、公式或计费规则的站点。
 - 每个模型必须独立建立证据闭环：模型名称、输入价格、输出价格必须出现在同一条页面或网络证据中；严禁把一个模型的价格复制、平均、换算或推断到另一个模型，严禁用其他模型的价格填补缺失字段。
+- notes 每条不超过 120 字，只写关键字段依据（如"两组三元组，大组为官方价，小组合计基础价×倍率"）；推导过程不要在多条记录里重复，完整原文引用放 quote。
 - status=confirmed 只有在网络响应证据和页面可见证据都存在且一致时才允许；cross_validation.conflicts 只能描述同一个模型的证据冲突，不同模型之间不要生成冲突。
 - network_evidence 和 page_evidence 只能引用下方证据中真实出现的 source、URL 和 quote；quote 只保留能证明当前模型及价格的短原文片段，每条最多 500 个字符，不得回显完整网络响应或整页文本。
 - 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。
@@ -847,10 +852,6 @@ expected_models：
                 continue
             returned_models.add(model)
             network_evidence = item.get("network_evidence") if isinstance(item.get("network_evidence"), list) else []
-            if not network_evidence:
-                legacy_api_evidence = item.get("api_evidence", []) if isinstance(item.get("api_evidence"), list) else []
-                legacy_response_evidence = item.get("response_evidence", []) if isinstance(item.get("response_evidence"), list) else []
-                network_evidence = [*legacy_api_evidence, *legacy_response_evidence]
             page_evidence = item.get("page_evidence") if isinstance(item.get("page_evidence"), list) else []
             observed_model = str(item.get("observed_model") or "").strip()
             aliases = [
@@ -987,6 +988,7 @@ expected_models：
                 records.append(PriceRecord(model, input_price, output_price, unit, str(spec.network.get("url") or ""), time.time(), metadata, price_status))
                 continue
             # AI 路径把多个分组的单价塞在同一条记录里时，拆成与 NewAPI 路径一致的 per-group 记录。
+            # 各分组的具体价留在 metadata.pricing_rules，由 report.summary_row 按分组平铺。
             item_group = str(item.get("group") or "default").casefold()
             for group in split_groups:
                 group_name = str(group.get("name") or "default")

@@ -21,4 +21,9 @@ def build_router(store: Store) -> APIRouter:
         rows, total = store.read_ai_logs(limit=min(limit, 500), offset=offset, scene=scene, status=status)
         return {"logs": rows, "total": total}
 
+    @router.get("/api/ai-logs/summary")
+    def ai_logs_summary() -> dict[str, Any]:
+        """AI 调用统计聚合（管理员）：KPI、按天趋势与场景/模型分布，口径为全部保留记录。"""
+        return store.ai_logs_summary()
+
     return router

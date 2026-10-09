@@ -30,7 +30,7 @@ import { SiteSubmitButton } from "@/components/SiteSubmitModal";
 import { Reveal } from "@/components/Reveal";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
-import type { GlobeSite } from "@/components/SiteGlobe";
+import type { GlobeSite, SiteGeo } from "@/components/SiteGlobe";
 import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -44,6 +44,8 @@ interface LandingData {
   feed: FeedData | null;
   history: HistoryListData | null;
   status: StatusSnapshot[];
+  /** 站点 IP 归属地：服务端取好传给首屏地球，读接口封锁后浏览器不再直接调 */
+  geo: Record<string, SiteGeo>;
   error: string | null;
 }
 
@@ -58,13 +60,15 @@ const STRIP_TONE: Record<RateLevel, string> = {
 async function loadLanding(): Promise<LandingData> {
   try {
     // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
-    const [overview, meta, feed, status] = await Promise.all([
+    const [overview, meta, feed, status, geo] = await Promise.all([
       apiGet<OverviewData>("/api/overview"),
       apiGet<MetaData>("/api/meta"),
       apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8").catch(() => null),
       apiGet<{ records: StatusSnapshot[] }>("/api/status?per_site=30").catch(() => ({
         records: [] as StatusSnapshot[],
       })),
+      // 站点定位较慢（DNS + 归属地查询），失败只影响地球落点，不阻塞整页
+      apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo").catch(() => ({ geo: {} })),
     ]);
     // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
     let history: HistoryListData | null;
@@ -73,7 +77,7 @@ async function loadLanding(): Promise<LandingData> {
     } catch {
       history = null;
     }
-    return { overview, meta, feed, history, status: status.records, error: null };
+    return { overview, meta, feed, history, status: status.records, geo: geo.geo, error: null };
   } catch (cause) {
     return {
       overview: null,
@@ -81,6 +85,7 @@ async function loadLanding(): Promise<LandingData> {
       feed: null,
       history: null,
       status: [],
+      geo: {},
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
@@ -110,7 +115,7 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 }
 
 export default async function LandingPage() {
-  const { overview, meta, feed, history, status, error } = await loadLanding();
+  const { overview, meta, feed, history, status, geo, error } = await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
   // 站点价统一按 RMB 展示：汇率取厂商价快照口径
@@ -157,20 +162,20 @@ export default async function LandingPage() {
   // 最新快照与价格总览同一口径：不折叠，各分组各占一行
   const parentRows = sortSnapshotRows(records);
 
-  // 终端演示窗内容用真实数据渲染：没有快照时整个窗不出现，不放占位假数
+  // 终端演示窗内容用真实数据渲染：没有快照时整个窗不出现，不放占位假数。
+  // 命令行首用虚构的 monitor.sh / 日志文件名，不出现本站任何真实接口路径
   const termPriceLines = parentRows.slice(0, 3).map((row) => {
     const converted = toCnyPrice(row.input_price, row.unit, rate);
     const price = converted ?? row.input_price;
     const symbol = converted !== null || currencySymbol(row.unit) === "¥" ? "¥" : currencySymbol(row.unit);
-    return `site: ${row.site_id}  model: ${row.model}  ${symbol} ${formatPrice(price)} /1M`;
+    return `site: ${getSiteInfo(row.site_id).name || row.site_id}  model: ${row.model}  ${symbol} ${formatPrice(price)} /1M`;
   });
   const firstNotice = Object.values(overview?.notices ?? {})[0];
-  const termNoticeLine =
-    firstNotice?.content
-      ? `「${noticeExcerpt(firstNotice.content, 1).slice(0, 40)}」${
-          firstNotice.captured_at ? ` · ${formatTime(firstNotice.captured_at)} 存档` : ""
-        }`
-      : null;
+  const termNoticeLine = firstNotice?.content
+    ? `「${noticeExcerpt(firstNotice.content, 1).slice(0, 40)}」${
+        firstNotice.captured_at ? ` · ${formatTime(firstNotice.captured_at)} 存档` : ""
+      }`
+    : null;
   const uptimeSample = sites.map((site) => stripOf(site.id)).find((list) => list.length > 0);
   const termUptimeLine = uptimeSample
     ? `${uptimeSample
@@ -186,6 +191,7 @@ export default async function LandingPage() {
       <div className="page landing">
         <HeroArea
           sites={globeSites}
+          geo={geo}
           main={
             <>
               <h1 className="hero-title">
@@ -198,7 +204,7 @@ export default async function LandingPage() {
                     {home.heroButtons.primary}
                   </Btn>
                 </Link>
-                <Link href="/discount">
+                <Link href="/calculator">
                   <Btn size="lg">{home.heroButtons.secondary}</Btn>
                 </Link>
               </div>
@@ -217,7 +223,6 @@ export default async function LandingPage() {
             <section className="landing-section">
               <div className="landing-section-head">
                 <div className="landing-section-title">
-                  <span className="section-num">01</span>
                   <h2>{home.sections.latestPrice}</h2>
                 </div>
                 <Link href="/overview" className="landing-more">
@@ -235,7 +240,6 @@ export default async function LandingPage() {
             <div>
               <div className="landing-section-head">
                 <div className="landing-section-title">
-                  <span className="section-num">02</span>
                   <h2>{home.sections.trend}</h2>
                 </div>
               </div>
@@ -302,7 +306,6 @@ export default async function LandingPage() {
           <section className="landing-section">
             <div className="landing-section-head">
               <div className="landing-section-title">
-                <span className="section-num">03</span>
                 <h2>{home.sections.sites}</h2>
               </div>
               <SiteSubmitButton label={home.submitSite} variant="text" />
@@ -312,13 +315,13 @@ export default async function LandingPage() {
               <div className="site-cards">
                 {sites.map((site) => {
                   const info = getSiteInfo(site.id, site.sourceUrl);
-                  const href = info.homepage || site.sourceUrl || "";
+                  const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
                   const strip = stripOf(site.id);
                   const latestPoint = strip[strip.length - 1];
                   const latestLatency = latestLatencyOf(site.id);
                   const notice = overview?.notices?.[site.id];
                   return (
-                    <div key={site.id} className="site-card">
+                    <Link key={site.id} href={statusHref} className="site-card">
                       <div className="site-card-head">
                         <span
                           aria-hidden
@@ -329,14 +332,7 @@ export default async function LandingPage() {
                               : "var(--text-3)",
                           }}
                         />
-                        <span className="site-name">
-                          <Link
-                            href={`/overview/status/${encodeURIComponent(site.id)}`}
-                            className="site-link"
-                          >
-                            {info.name}
-                          </Link>
-                        </span>
+                        <span className="site-name">{info.name}</span>
                         <span className="site-count mono">
                           {site.models} 模型{site.enabled ? "" : ` · ${home.empty.siteDisabled}`}
                         </span>
@@ -401,7 +397,7 @@ export default async function LandingPage() {
                           </span>
                         )}
                       </p>
-                    </div>
+                    </Link>
                   );
                 })}
               </div>
@@ -415,7 +411,6 @@ export default async function LandingPage() {
           <section className="landing-section">
             <div className="landing-section-head">
               <div className="landing-section-title">
-                <span className="section-num">04</span>
                 <h2>{home.sections.dataSource}</h2>
               </div>
             </div>
@@ -426,7 +421,7 @@ export default async function LandingPage() {
                 ))}
               </ul>
               {termPriceLines.length > 0 && (
-                <div className="term" aria-hidden>
+                <div className="term">
                   <div className="term-bar">
                     <span />
                     <span />
@@ -434,10 +429,10 @@ export default async function LandingPage() {
                     <span className="term-title">monitor.sh</span>
                   </div>
                   <pre className="term-body">
-                    {`$ curl -s /api/overview | head -3
-${termPriceLines.join("\n")}${termNoticeLine ? `\n\n$ cat notices.log | tail -1\n${termNoticeLine}` : ""}${
-                      termUptimeLine ? `\n\n$ tail -5 uptime.log\n${termUptimeLine}` : ""
-                    }`}
+                    {`$ ./monitor.sh
+${termPriceLines.join("\n")}${
+                      termNoticeLine ? `\n\n$ cat notices.log | tail -1\n${termNoticeLine}` : ""
+                    }${termUptimeLine ? `\n\n$ tail -5 uptime.log\n${termUptimeLine}` : ""}`}
                     <span className="term-cursor" />
                   </pre>
                 </div>
@@ -450,7 +445,6 @@ ${termPriceLines.join("\n")}${termNoticeLine ? `\n\n$ cat notices.log | tail -1\
           <section className="landing-section">
             <div className="landing-section-head">
               <div className="landing-section-title">
-                <span className="section-num">05</span>
                 <h2>{home.sections.faq}</h2>
               </div>
             </div>

@@ -321,32 +321,13 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <span style={{ fontWeight: 550, fontSize: 15, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            {active ? (
-              <>
-                <span className="mono">{active.model}</span>
-                {active.aliases.length > 0 && (
-                  <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
-                    别名：{active.aliases.join("、")}
-                  </span>
-                )}
-              </>
-            ) : (
-              "最新快照"
-            )}
-            {active && (
-              <span style={{ color: "var(--text-3)", fontSize: 12.5, fontWeight: 400 }}>
-                {active.rows.length} 条记录 · {active.sites} 个站点 · 同站点同模型的各分组各占一行 · 默认综合价低、渠道正常的在前 · 点行内查看站点检测详情
-              </span>
-            )}
+          <span style={{ fontWeight: 550, fontSize: 15 }}>
+            {active ? <span className="mono">{active.model}</span> : "最新快照"}
           </span>
           {data.catalog.enabled && (
             <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-              厂商价快照 <span className="mono">{data.catalog.generated_at_iso ?? "—"}</span> · 汇率{" "}
-              <span className="mono">{data.catalog.usd_cny_rate ?? "—"}</span>（{data.catalog.rate_source}）·{" "}
-              <Link href="/discount" style={{ color: "var(--accent-text)" }}>
-                折扣明细
-              </Link>
+              数据时间 <span className="mono">{data.catalog.generated_at_iso ?? "—"}</span> · 汇率{" "}
+              <span className="mono">{data.catalog.usd_cny_rate ?? "—"}</span>
             </span>
           )}
         </div>

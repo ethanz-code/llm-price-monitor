@@ -459,6 +459,57 @@ function latencyFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string
   return result;
 }
 
+/** 延迟模型的一个样本：某渠道某次检测的取值（无效值已被 pick 过滤）。 */
+export interface ChannelSample {
+  at: number;
+  value: number;
+}
+
+/** 窄屏抽帧上限：小屏像素少，全量点既看不清也拖不动；抽到这个量依然顺滑。 */
+export const NARROW_CHART_POINTS = 240;
+
+/** 把各渠道的检测点对齐到统一时间轴：某时刻的值取「该渠道最近一次检测」的结果（阶梯保持），
+ *  首次检测之前为 null。桌面端保留全部检测点；窄屏按桶保留「最坏」点，故障形状不丢。
+ *  详情页延迟趋势图与站点分享图共用，保证两边画的是同一条线。 */
+export function buildChannelModel(
+  channels: ChannelDotRow[],
+  pick: (dot: { ok: boolean; latency?: number }) => number | null,
+  narrow: boolean,
+  worse: (a: ChannelSample, b: ChannelSample) => ChannelSample,
+) {
+  const per = channels
+    .map((channel) => ({
+      name: channel.name,
+      dots: channel.dots
+        .filter((dot) => dot.at != null)
+        .map((dot) => ({ at: dot.at as number, value: pick(dot) }))
+        .filter((dot): dot is ChannelSample => dot.value != null),
+    }))
+    .filter((channel) => channel.dots.length > 0);
+  const kept = narrow
+    ? per.map((c) => ({ ...c, dots: downsampleWorst(c.dots, NARROW_CHART_POINTS, worse) }))
+    : per;
+
+  const seen = new Set<number>();
+  kept.forEach((c) => c.dots.forEach((d) => seen.add(d.at)));
+  const times = [...seen].sort((a, b) => a - b);
+
+  const series = kept.map((c) => {
+    const values: (number | null)[] = [];
+    let cursor = 0;
+    let last: number | null = null;
+    for (const t of times) {
+      while (cursor < c.dots.length && c.dots[cursor].at <= t) {
+        last = c.dots[cursor].value;
+        cursor += 1;
+      }
+      values.push(last);
+    }
+    return { name: c.name, values };
+  });
+  return { times, series };
+}
+
 /** 详情页视图集合：渠道行、可用率序列、延迟序列共享同一次 channelDotsBySite 全量走查，
  *  避免页面把同一批记录解析三遍。 */
 export function buildSiteViews(records: { site_id: string; captured_at: number; data: unknown }[]): {

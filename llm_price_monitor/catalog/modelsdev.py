@@ -65,6 +65,7 @@ def _entry(
     """models.dev 模型条目 → 目录条目（价格统一 USD，人民币按快照汇率换算）。"""
     cost = model.get("cost") or {}
     input_price, output_price = cost.get("input"), cost.get("output")
+    cache_read, cache_write = cost.get("cache_read"), cost.get("cache_write")
     release_date = _release_date(model)
     return {
         "found": True,
@@ -77,6 +78,12 @@ def _entry(
         "list_cny": {
             "input": normalize.round2(input_price * rate) if input_price is not None else None,
             "output": normalize.round2(output_price * rate) if output_price is not None else None,
+        },
+        # 缓存读/写价：models.dev 只覆盖部分模型（读约六成、写约两成），缺失为 null 由调用方决定回落
+        "cache": {"read": cache_read, "write": cache_write},
+        "cache_cny": {
+            "read": normalize.round2(cache_read * rate) if cache_read is not None else None,
+            "write": normalize.round2(cache_write * rate) if cache_write is not None else None,
         },
         "source_url": source_url,
         "description": model.get("description"),

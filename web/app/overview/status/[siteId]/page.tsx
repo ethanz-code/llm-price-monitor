@@ -1,10 +1,7 @@
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { apiGet } from "@/lib/api";
 import { PageHeader } from "@/components/PageHeader";
+import { NoticeBody } from "@/components/NoticeBody";
 import { ToneTag } from "@/components/ToneTag";
 import { StatusCharts } from "@/components/StatusCharts";
 import { StatusUptimeBars } from "@/components/StatusUptimeBars";
@@ -18,24 +15,11 @@ import {
   type RateLevel,
 } from "@/lib/channelStatus";
 import { getSiteInfo } from "@/lib/sites";
-import { subtitles } from "@/lib/copy";
 import type { NoticeSnapshot, StatusSnapshot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "站点检测" };
-
-/**
- * 公告正文允许的 HTML 白名单：站点公告常带 HTML 片段，经 rehype-raw 渲染；
- * 白名单在默认基础上放开 class，保住站点的排版样式，脚本等危险内容仍被剥掉。
- */
-const NOTICE_SANITIZE_SCHEMA = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    "*": [...(defaultSchema.attributes?.["*"] ?? []), "className"],
-  },
-};
 
 const RATE_TONE: Record<RateLevel, string> = {
   ok: "var(--tone-green-text)",
@@ -47,20 +31,45 @@ const RATE_TONE: Record<RateLevel, string> = {
 function NoticeSection({ notices }: { notices: NoticeSnapshot[] }) {
   if (notices.length === 0) return null;
   const notice = notices[0];
+  // 内容为空（站点没发布或公告被清空）就不渲染整块，免得只剩一行采集时间
+  if (!notice.content.trim()) return null;
+  // 来源只展示域名，完整地址留在链接里；存的地址解析失败就只显示采集时间
+  let sourceHost = "";
+  try {
+    sourceHost = new URL(notice.source_url).host;
+  } catch {
+    sourceHost = "";
+  }
   return (
-    <section className="panel" style={{ display: "grid", gap: 8, padding: 16 }}>
-      <h3 className="section-title">站点公告</h3>
-      <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
-        {formatTime(notice.captured_at)} 采集 · 来源：{notice.source_url ?? "—"}
-      </span>
-      <div className="notice-body" style={{ fontSize: 13.5, lineHeight: 1.65 }}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeRaw, [rehypeSanitize, NOTICE_SANITIZE_SCHEMA]]}
-        >
-          {notice.content}
-        </ReactMarkdown>
+    <section className="panel" style={{ display: "grid", gap: 10, padding: 16 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "baseline",
+          gap: "2px 12px",
+        }}
+      >
+        <h3 className="section-title">站点公告</h3>
+        <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
+          {formatTime(notice.captured_at)} 采集
+          {sourceHost && (
+            <>
+              {" · 来源 "}
+              <a
+                className="notice-src"
+                href={notice.source_url}
+                target="_blank"
+                rel="noreferrer"
+                title={notice.source_url}
+              >
+                {sourceHost}
+              </a>
+            </>
+          )}
+        </span>
       </div>
+      <NoticeBody content={notice.content} />
     </section>
   );
 }
@@ -101,19 +110,13 @@ export default async function StatusDetailPage({
   const views = buildSiteViews(records);
   const series = views.availability[siteId] ?? [];
   const channels = views.channels[siteId] ?? [];
-  const latencySeries = views.latency[siteId] ?? [];
-  const latencyNames = channels
-    .filter((channel) => channel.dots.some((dot) => dot.latency != null))
-    .map((channel) => channel.name);
   // 顶部整站时段色块：同样服务端预分桶，客户端只拿 ~28 个桶
   const uptimeBuckets = buildUptimeBuckets(series, 28);
 
   return (
     <div className="page">
       <PageHeader
-        eyebrow="SITE CHECK"
         title={`站点检测 · ${getSiteInfo(siteId).name || siteId}`}
-        subtitle={subtitles.siteStatus}
         actions={
           records.length > 0 ? (
             <ShareSiteButton
@@ -121,8 +124,6 @@ export default async function StatusDetailPage({
               homepage={getSiteInfo(siteId).homepage}
               availability={series}
               channels={channels}
-              latency={latencySeries}
-              latencyNames={latencyNames}
             />
           ) : undefined
         }
@@ -133,8 +134,7 @@ export default async function StatusDetailPage({
         <div style={{ display: "grid", gap: 16 }}>
           {records.length === 0 && (
             <p style={{ color: "var(--text-3)" }}>
-              这个中转站最近 7 天的检测档案：可用渠道占比趋势、各渠道当前状态与
-              站点公告；绿色为正常、灰色为异常或未知。
+              这个站点还没有检测记录，等下一轮检测出结果再来看看。
             </p>
           )}
           {records.length > 0 && (

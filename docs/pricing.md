@@ -248,7 +248,7 @@ curl http://127.0.0.1:8000/api/discount
 | `networks` | 附加采集地址数组，每项 `{url, params, headers}`（url 必填），与 `network` 同构 |
 | `enabled` | `false` 跳过该站点；只写 `{"id": "..."}` 的站点自动禁用 |
 
-配置只填标准模型名即可：AI 会从接口原始 `model_name` 自动解析别名（`gpt-5.6-sol` → `GPT-5.6 Sol` → `openai/gpt-5.6-sol`）。模型的 `enable_groups` 分组全部展开输出（分组价来自接口，非配置）。
+配置只填标准模型名即可：命中站点 `model_name` 时先按名字精确匹配（含 AI 解析出的别名），名字对不上时再认"一侧省略了版本号"的写法——站点写 `deepseek-v4.1-flash`、配置里是目录 id `deepseek-flash`（该条目的显示名恰好是 "DeepSeek V4.1 Flash"）也能采到；两侧都带版本号（`deepseek-v4-flash` 与 `deepseek-v4.1-flash`）视为两个模型，站点同时挂着这两版而又没版本号可依时不做猜测，改在管理端站点列表提示该模型没采到价。模型的 `enable_groups` 分组全部展开输出（分组价来自接口，非配置）。
 
 ## 工作原理
 

@@ -14,7 +14,7 @@ import {
 } from "./icons";
 import { LogoMark } from "./LogoMark";
 import { useTheme } from "@/app/providers";
-import { fetchMeta } from "@/lib/api";
+import { fetchAuthState } from "@/lib/api";
 import { nav, site } from "@/lib/copy";
 import type { ThemeMode } from "@/theme";
 
@@ -123,8 +123,8 @@ export function SiteNav() {
 
   useEffect(() => {
     let alive = true;
-    fetchMeta().then((meta) => {
-      if (alive && meta?.is_admin) setIsAdmin(true);
+    fetchAuthState().then((state) => {
+      if (alive && state?.is_admin) setIsAdmin(true);
     });
     return () => {
       alive = false;

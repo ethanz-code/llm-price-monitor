@@ -50,7 +50,6 @@ export function SiteFooter() {
       <div className="site-footer-meta">
         <span>© 2026 {site.name}</span>
         <span className="site-footer-meta-links">
-          <Link href="/discount">{footer.links.discount}</Link>
           <Link href="/catalog">{footer.links.catalog}</Link>
           <button type="button" onClick={() => setFeedbackOpen(true)}>{footer.links.feedback}</button>
           <Link href="/admin" className="footer-admin-link">{footer.links.admin}</Link>

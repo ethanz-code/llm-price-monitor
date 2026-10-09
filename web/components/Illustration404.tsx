@@ -4,14 +4,13 @@ export function Illustration404() {
   return (
     <svg width="220" height="170" viewBox="0 0 220 170" fill="none" aria-hidden>
       <defs>
-        <linearGradient id="il-chr-0" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" style={{ stopColor: "var(--chrome-hi)" }} />
-          <stop offset="1" style={{ stopColor: "var(--chrome-lo)" }} />
+        <linearGradient id="il-tile-0" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" style={{ stopColor: "var(--border-strong)" }} />
+          <stop offset="1" style={{ stopColor: "var(--border)" }} />
         </linearGradient>
-        <linearGradient id="il-chr-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" style={{ stopColor: "var(--chrome-hi)" }} />
-          <stop offset="0.5" style={{ stopColor: "var(--chrome-glint)" }} />
-          <stop offset="1" style={{ stopColor: "var(--chrome-lo)" }} />
+        <linearGradient id="il-tile-g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" style={{ stopColor: "var(--text-3)" }} />
+          <stop offset="1" style={{ stopColor: "var(--border-strong)" }} />
         </linearGradient>
       </defs>
 
@@ -25,12 +24,12 @@ export function Illustration404() {
       {/* 价格曲线：先平稳、后掉出屏幕下缘 */}
       <path
         d="M40 78 L64 72 L86 80 L108 66 L126 74 L142 96 L154 128 L160 150"
-        style={{ stroke: "var(--accent)" }}
+        style={{ stroke: "var(--accent-text)" }}
         strokeWidth="2.5"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="108" cy="66" r="4" style={{ fill: "var(--accent)" }} />
+      <circle cx="108" cy="66" r="4" style={{ fill: "var(--accent-text)" }} />
 
       {/* 掉落处的省略号：曲线消失在屏幕外 */}
       <circle cx="176" cy="118" r="3" style={{ fill: "var(--text-3)" }} />
@@ -44,10 +43,10 @@ export function Illustration404() {
         <path d="M116 102 L124 98 L132 104" style={{ stroke: "var(--text-3)" }} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </g>
 
-      {/* 右上角溶解中的镀铬小方块：呼应站点背景的金属马赛克 */}
-      <rect x="186" y="8" width="14" height="14" fill="url(#il-chr-g)" />
-      <rect x="170" y="14" width="10" height="10" fill="url(#il-chr-0)" opacity="0.7" />
-      <rect x="158" y="6" width="7" height="7" fill="url(#il-chr-0)" opacity="0.45" />
+      {/* 右上角散落的小方块：曲线掉出画面后飞出的数据碎片 */}
+      <rect x="186" y="8" width="14" height="14" fill="url(#il-tile-g)" />
+      <rect x="170" y="14" width="10" height="10" fill="url(#il-tile-0)" opacity="0.7" />
+      <rect x="158" y="6" width="7" height="7" fill="url(#il-tile-0)" opacity="0.45" />
     </svg>
   );
 }

@@ -292,6 +292,7 @@ export function Sel({
   disabled,
   style,
   title,
+  ariaLabel,
 }: {
   value?: string;
   defaultValue?: string;
@@ -300,12 +301,15 @@ export function Sel({
   disabled?: boolean;
   style?: React.CSSProperties;
   title?: string;
+  /** 无可见标签时提供可访问名称（同时消除浏览器"表单字段缺 id/name"提示） */
+  ariaLabel?: string;
 }) {
   return (
     <span className="sel-wrap" style={style}>
       <select
         className="sel"
         title={title}
+        aria-label={ariaLabel}
         value={value}
         defaultValue={defaultValue}
         disabled={disabled}
@@ -460,18 +464,12 @@ export function Empty({
   title,
   description,
   action,
-  children,
 }: {
   icon?: ReactNode;
   title?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
-  children?: ReactNode;
 }) {
-  // 兼容旧用法：<Empty>纯文本</Empty> 仍渲染为一行灰字
-  if (!icon && !title && !action) {
-    return <div className="empty">{children}</div>;
-  }
   return (
     <div className="empty-state">
       {icon && (
@@ -480,7 +478,7 @@ export function Empty({
         </span>
       )}
       {title && <p className="empty-title">{title}</p>}
-      <p className="empty-desc">{description ?? children}</p>
+      <p className="empty-desc">{description}</p>
       {action && <div className="empty-action">{action}</div>}
     </div>
   );
@@ -525,7 +523,8 @@ export function Alert({
   band,
 }: {
   tone?: "info" | "warn";
-  title: string;
+  /** 省略时只渲染正文，用于页面顶部的说明行 */
+  title?: string;
   children?: ReactNode;
   className?: string;
   /** 全宽色带变体：去边框圆角，用 tone 底色通栏铺在内容区 */
@@ -533,8 +532,9 @@ export function Alert({
 }) {
   return (
     <div className={`alert alert-${tone}${band ? " alert-band" : ""}${className ? ` ${className}` : ""}`}>
+      <IconAlertCircle size={14} className="alert-icon" />
       <div>
-        <div className="alert-title">{title}</div>
+        {title && <div className="alert-title">{title}</div>}
         {children && <div className="alert-desc">{children}</div>}
       </div>
     </div>

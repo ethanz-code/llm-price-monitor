@@ -26,29 +26,6 @@ from llm_price_monitor.notice import fetch_site_notice
 from llm_price_monitor.status import diff_status, fetch_site_status
 from llm_price_monitor.store import Store
 from llm_price_monitor.token_refresh import needs_refresh, refresh_and_recollect
-from llm_price_monitor import wxpusher
-
-
-def _push_notifications(
-    config: MonitorConfig,
-    *,
-    price_events: list[dict[str, Any]] | None = None,
-    status_events: list[dict[str, Any]] | None = None,
-    notice_events: list[dict[str, Any]] | None = None,
-) -> None:
-    """变化事件汇总推送到 WxPusher；未配置 appToken 或推送失败只记日志，不影响采集结果。"""
-    if not config.settings.wxpusher_app_token:
-        return
-    try:
-        wxpusher.send_change_digest(
-            app_token=config.settings.wxpusher_app_token,
-            uid=config.settings.wxpusher_uid,
-            price_events=price_events or [],
-            status_events=status_events or [],
-            notice_events=notice_events or [],
-        )
-    except Exception as exc:  # 推送是旁路能力，失败不能让采集任务标失败
-        tasklog.emit(f"WxPusher 推送失败：{exc}", "error")
 
 
 @dataclass(frozen=True)
@@ -73,6 +50,9 @@ class MonitorReport:
     notice_records: list[dict[str, Any]] = field(default_factory=list)
     notice_events: list[dict[str, Any]] = field(default_factory=list)
     notice_results: list[dict[str, Any]] = field(default_factory=list)
+    # 逐站价格采集状态（ok/inferred/no_data/auth_required/error + 原因）：
+    # 401 这类"整站没价但不算错误"的情况只在这里，测试采集要靠它把真实原因报给用户
+    site_status: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def record_dict(site_id: str, record: PriceRecord) -> dict[str, Any]:
@@ -214,6 +194,20 @@ def _backfill_rule_price(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _filter_price_groups(records: list[PriceRecord], groups: list[str]) -> list[PriceRecord]:
+    """按站点分组白名单过滤采集到的价格记录：分组名忽略大小写，metadata 缺分组视为 default；
+    一个都没匹配上时保留原记录，避免白名单写错把整站价格清空（与状态侧口径一致）。"""
+    targets = {group.strip().casefold() for group in groups if group.strip()}
+    if not targets:
+        return records
+
+    def group_of(record: PriceRecord) -> str:
+        return str((record.metadata or {}).get("group") or "default").strip().casefold()
+
+    matched = [record for record in records if group_of(record) in targets]
+    return matched if matched else records
+
+
 def _scan_prices(
     config: MonitorConfig,
     client: httpx.Client,
@@ -248,6 +242,9 @@ def _scan_prices(
             tasklog.emit(f"[{spec.id}] 价格采集失败：未知适配器 {spec.adapter}", "error")
             continue
         # 多地址站点：主地址 + networks 附加地址依次采集；同一模型重复命中时主地址优先
+        # 分组白名单：status.groups 配置了就只保留选中分组的记录（含续签重采路径）
+        whitelist = [str(item) for item in spec.status["groups"]] if isinstance(spec.status.get("groups"), list) else []
+
         def collect_all(site_spec: SiteSpec) -> tuple[list[PriceRecord], list[str]]:
             site_records: list[PriceRecord] = []
             site_by_key: dict[tuple[str | None, str | None], PriceRecord] = {}
@@ -255,7 +252,10 @@ def _scan_prices(
             for index, endpoint in enumerate([site_spec.network, *site_spec.networks]):
                 endpoint_spec = replace(site_spec, network=endpoint, networks=())
                 try:
-                    endpoint_records = adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai)
+                    endpoint_records = _filter_price_groups(
+                        adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai),
+                        whitelist,
+                    )
                 except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
                     site_errors.append(f"{'主地址' if index == 0 else f'附加地址{index}'}: {exc}")
                     continue
@@ -281,7 +281,10 @@ def _scan_prices(
         # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
         if spec.token_refresh and needs_refresh(collected):
             tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
-            collected, refresh_error = refresh_and_recollect(
+            # 重采结果整体替换本轮记录与地址错误；续签失败或重采无数据时拿到的是续签前的
+            # "需认证"占位记录，保住该状态下面才会跳过分组下线判定（401 是我方凭证问题，
+            # 不代表分组真的下线）。错误列表不再被静默清空，重采阶段的地址失败照常上报。
+            collected, collect_errors = refresh_and_recollect(
                 spec,
                 collected,
                 collect=collect_all,
@@ -290,11 +293,7 @@ def _scan_prices(
                 user_agent=user_agent,
                 store=store,
             )
-            if refresh_error:
-                collect_errors.append(refresh_error)
-                tasklog.emit(f"[{spec.id}] {refresh_error}", "error")
-            else:
-                collect_errors = []
+            if not collect_errors:
                 tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(collected)} 条价格")
         if collect_errors and not collected:
             message = "；".join(collect_errors)
@@ -308,6 +307,12 @@ def _scan_prices(
         site_status[spec.id] = {"checked_at": time.time(), **site_status_from_records(collected)}
         site_changed = 0
         site_keys: set[str] = set()
+        # 本轮开始前快照里已有的模型：这些模型冒出新分组记 group_added，全新模型仍记 new
+        known_models = {
+            key[len(site_prefix):].rsplit(":", 1)[0]
+            for key in latest
+            if key.startswith(site_prefix := f"{spec.id}:")
+        }
         for record in collected:
             current = _backfill_rule_price(record_dict(spec.id, record))
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定
@@ -334,22 +339,27 @@ def _scan_prices(
             # 指纹去重：价格口径与上一轮一致就不写历史行，趋势表只保留真实变化点
             if previous is None or previous.get("fingerprint") != current["fingerprint"]:
                 history_rows.append(current)
-            kind = classify(previous, current)
+            if previous is None and record.model in known_models:
+                kind = "group_added"  # 老模型的新分组：与分组下线对称，区别于全新模型的"新增"
+            else:
+                kind = classify(previous, current)
             events.append(asdict(PriceEvent(spec.id, record.model, kind, previous, current, time.time())))
             site_changed += kind != "unchanged"
             latest[key] = current
         # 出现"需认证"占位行（401/403）时是我方凭证问题，不代表分组真的下线，
         # 跳过缺失计数，避免 token 过期把分组刷成下线事件；
+        # 有地址采集失败时本轮记录同样不完整（没采到 ≠ 分组下线），一并跳过；
         # 测试采集（persist=False）同样不计数——不完整的测试轮次不得污染正式下线阈值
-        if store is not None and persist and not needs_refresh(collected):
+        if store is not None and persist and not needs_refresh(collected) and not collect_errors:
             removed_keys |= _detect_removed_groups(store, latest, spec.id, site_keys, events)
         tasklog.emit(f"[{spec.id}] 价格采集成功：{len(collected)} 条价格，{site_changed} 处变化，{time.time() - site_started:.1f}s")
     tasklog.emit(f"价格采集完成：{len(records)} 条记录，{len(errors)} 个错误，{time.time() - scan_started:.1f}s")
     return records, history_rows, events, errors, site_status, removed_keys
 
 
-# 分组连续缺失这么多次才判定"下线"：容忍单轮抓取抖动，避免误报刷屏
-GROUP_REMOVED_MISSES = 2
+# 分组连续缺失这么多次才判定"下线"：站点换分组清单、临时调整常态发生，
+# 短阈值会把改版刷成下线事件；采集间隔 1 小时，6 轮即容忍半天的窗口期
+GROUP_REMOVED_MISSES = 6
 
 
 def _detect_removed_groups(
@@ -539,8 +549,7 @@ def scan_prices(
             store.append_events(changed_events)
             _persist_latest(store, latest, removed_keys=removed_keys)
             _merge_collect_status(store, config, site_status)
-            _push_notifications(config, price_events=changed_events)
-        return MonitorReport(started, time.time(), records, changed_events, errors)
+        return MonitorReport(started, time.time(), records, changed_events, errors, site_status=site_status)
     finally:
         if own:
             client.close()
@@ -563,7 +572,6 @@ def scan_statuses(
         if persist and store is not None:
             store.append_status_records(scan.records)
             store.append_status_events(scan.events)
-            _push_notifications(config, status_events=scan.events)
         return scan
     finally:
         if own:
@@ -587,7 +595,6 @@ def scan_notices(
         if persist and store is not None:
             store.append_notice_records(scan.records)
             store.append_notice_events(scan.events)
-            _push_notifications(config, notice_events=scan.events)
         return scan
     finally:
         if own:
@@ -623,7 +630,6 @@ def run_once(
             store.append_notice_records(notice_scan.records)
             store.append_notice_events(notice_scan.events)
             _merge_collect_status(store, config, site_status)
-            _push_notifications(config, price_events=changed_events, status_events=status_scan.events, notice_events=notice_scan.events)
         return MonitorReport(
             started,
             time.time(),
@@ -635,6 +641,7 @@ def run_once(
             notice_scan.records,
             notice_scan.events,
             notice_scan.site_results,
+            site_status,
         )
     finally:
         if own:
