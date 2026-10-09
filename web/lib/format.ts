@@ -313,6 +313,11 @@ export function toneText(tone: Tone): string {
   return `var(--tone-${tone}-text)`;
 }
 
+/** Tone → 浅底色 CSS 变量，与文本色同源；折扣芯片等浅底语义块用。 */
+export function toneBg(tone: Tone): string {
+  return `var(--tone-${tone}-bg)`;
+}
+
 /** 采集状态语义：key 与后端 price_status / collect_status 文档对齐。 */
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   ok: { label: "正常", tone: "green" },

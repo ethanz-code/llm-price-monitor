@@ -69,7 +69,8 @@
 
 ## 5. 形状：圆角 / 描边 / 投影
 
-- 圆角：卡片 12px；提示条 8px；按钮、输入框、seg 项 4–6px；胶囊/圆点 9999px。
+- 圆角：卡片 12px；提示条 8px；**按钮、输入框、状态标签、分页一律胶囊 9999px**（2026-10-05 用户定：全站控件除 tabs/seg 分段外不用小圆角）；seg 项 4px。
+  **唯一例外：多行/长文本输入用 12px**（`.input.textarea` 与提建议表单 `.feedback-form .input`）——胶囊圆角会把多行框首尾行文字裁进圆弧、单行框滚动到边缘时裁字（2026-10-05 用户反馈）。
 - 卡片 = `--card-border` 发丝描边 + `--shadow-panel` 极轻投影；**不用大投影、不用无边框毛玻璃当卡片**（导航胶囊除外）。
 - 描边与分隔线统一用 `--border`；hover 强化才用 `--border-strong`。
 
@@ -78,7 +79,7 @@
 - **Panel 卡片**：`.panel` 基座；结构分隔用内部发丝线，不叠多层投影。
 - **Alert 提示条**：`info` 用 `--panel-2` 灰底、`warn` 用 `--tone-yellow-bg`；前置 `IconAlertCircle`（14px）；**无彩色左竖线、无白底描边卡**。整宽告警用 `band` 变体（tone 底色通栏铺开）。
 - **数据表格 `.dtable`**：表头 12px 灰字、底部分隔线用 inset 阴影；单元格 `padding: 15px 12px`，首尾列 16px；行 hover 变底色；横向滚动只发生在 `.dtable-scroll` 内。
-- **按钮 `.btn`**：高 34px，圆角 4px；`primary` = accent 填充 + `--accent-contrast` 文字；`ghost` / `text` 走描边或纯文字。
+- **按钮 `.btn`**：高 34px，胶囊圆角 9999px；`primary` = accent 填充 + `--accent-contrast` 文字；`ghost` / `text` 走描边或纯文字。
 - **Seg 分段控件**：小胶囊组，激活项亮底 + `--shadow-pop`。
 - **Tip 名词提示**：深色气泡 `--tooltip-bg`，portal 到 body 防裁切。
 - **Modal / Toaster / Skel**：统一从 `ui.tsx` 引用，弹窗圆角 12px。

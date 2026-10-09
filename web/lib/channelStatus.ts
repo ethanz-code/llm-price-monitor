@@ -392,6 +392,14 @@ export function rateLevel(pct: number): RateLevel {
   return "down";
 }
 
+/** 状态三档 → 图表色 CSS 变量（亮暗主题各自有值，见 globals.css --chart-*）。
+ *  服务端组件取不到 chartTheme 的 client hook，统一从这里拿同一套色。 */
+export const chartToneVar: Record<RateLevel, string> = {
+  ok: "var(--chart-ok)",
+  warn: "var(--chart-warn)",
+  down: "var(--chart-down)",
+};
+
 /** 时段可用率色块的一个桶：起止时间、检测次数、平均/最差正常率与异常渠道名单。 */
 export interface UptimeBucket {
   start: number;

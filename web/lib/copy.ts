@@ -17,7 +17,7 @@ export const site = {
 export const nav = {
   items: [
     { key: "/", label: "首页" },
-    { key: "/overview", label: "中转 Sites 数据" },
+    { key: "/overview", label: "站点数据" },
     { key: "/catalog", label: "厂商数据" },
     { key: "/discover", label: "发现" },
   ],
@@ -190,12 +190,15 @@ export const alerts = {
   },
 };
 
+/** 对外联系邮箱：页脚 mailto 用 */
+export const CONTACT_EMAIL = "service@llmprices.cn";
+
 /** 页脚 */
 export const footer = {
   brandLine:
     "我们检测各家 API 中转站的价格、渠道状态和公告，数据都抓自各站点公开页面，仅供使用参考，不构成任何使用推荐。\n最后祝大家 Vibe Coding 之路畅通无阻，永远用到低价不降智模型，天天 Happy.",
   links: {
-    overview: "中转 Sites 数据",
+    overview: "站点数据",
     calculator: "花费计算",
     history: "事件追踪",
     catalog: "厂商数据",
@@ -205,8 +208,9 @@ export const footer = {
   aria: {
     github: "GitHub 仓库",
     mail: "邮件联系",
-    wecom: "企业微信联系",
   },
+  /** 企业微信二维码：直接平铺在页脚右列，替换 web/public/wecom-qr.png 即可生效 */
+  wecomQrSrc: "/wecom-qr.png",
 };
 
 /** 分享图 */

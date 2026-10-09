@@ -55,6 +55,8 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
       title: "监控状态",
       dataIndex: "imported_id",
       width: 110,
+      // 手机上整列几乎全是「未监控」，价值不如模型数；监控与否用筛选 tab 表达
+      mobileHide: true,
       render: (v: string | null) =>
         v ? (
           <Link href={`/overview/status/${encodeURIComponent(v)}`} style={{ color: "var(--accent-text)" }}>
@@ -68,12 +70,11 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
       title: (
         <>
           价格接口
-          <span className="thead-unit thead-unit-block">探明情况</span>
+          <span className="thead-unit thead-unit-block">探明模型数</span>
         </>
       ),
       dataIndex: "pricing_state",
-      width: 96,
-      mobileHide: true,
+      width: 100,
       render: (v: DiscoveryStation["pricing_state"], row) =>
         v === "public" ? (
           <span className="mono num">{row.models}</span>

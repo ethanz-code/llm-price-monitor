@@ -183,8 +183,8 @@ export function CatalogTable({
     {
       title: "模型",
       dataIndex: "model",
-      // 248：给下方 Artificial Analysis 全称徽标留足一行宽度，避免"指数"数值被省略号吃掉
-      width: 248,
+      // 296：给下方 Artificial Analysis 全称徽标留足一行宽度，避免"智能指数"数值被省略号吃掉
+      width: 296,
       render: (v: string, row: Row) => {
         const hit = rankingHit(rankingsIndex, row.model);
         return (
@@ -201,11 +201,11 @@ export function CatalogTable({
             {hit && (
               <span
                 className="mono"
-                title="Artificial Analysis 榜单排名与智能指数（自测口径，非本站评测）"
+                title="Artificial Analysis 榜单排名与智能指数（0–100，第三方自测口径，非本站评测）"
                 style={{ fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
               >
                 Artificial Analysis #{hit.rank}
-                {hit.intelligence_index != null && ` · 指数 ${hit.intelligence_index}`}
+                {hit.intelligence_index != null && ` · 智能指数 ${hit.intelligence_index}/100`}
               </span>
             )}
           </span>

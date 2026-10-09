@@ -1,7 +1,8 @@
 "use client";
 
 import { DataTable, type DColumn } from "./DataTable";
-import { formatPrice, toCnyPrice, recordStatusKey } from "@/lib/format";
+import { formatPrice, formatTimeAgo, toCnyPrice, recordStatusKey } from "@/lib/format";
+import { chartToneVar, type RateLevel } from "@/lib/channelStatus";
 import { getSiteInfo } from "@/lib/sites";
 import type { OverviewRecord } from "@/lib/types";
 import { RulePriceMark } from "./ToneTag";
@@ -18,10 +19,16 @@ function unitSuffix(unit: string | null | undefined): string {
 export function SnapshotPreview({
   rows,
   rate,
+  siteLevels,
+  snapshotAt,
 }: {
   rows: OverviewRecord[];
   /** 展示汇率：站点价统一按 RMB 显示，缺失时回落原币数值 */
   rate?: number | null;
+  /** 站点当前三档状态（与首页站点墙同口径）：给站名前的小色点供色 */
+  siteLevels?: Record<string, RateLevel | null>;
+  /** 快照数据新鲜度：全行最新一次采集时间（秒级时间戳） */
+  snapshotAt?: number | null;
 }) {
   const columns: DColumn<OverviewRecord>[] = [
     {
@@ -33,11 +40,20 @@ export function SnapshotPreview({
         const site = getSiteInfo(v, row.source_url);
         // 规则价行在站名旁低调标注，首页精选与总览表保持一致的可信度提示
         const statusKey = recordStatusKey(row);
+        const level = siteLevels?.[v] ?? null;
         return (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
-            <RiskLink href={site.homepage || row.source_url} variant="site">
-              <span className="mono">{site.name}</span>
-            </RiskLink>
+            {/* 圆点与站名绑成一组不拆行：窄屏列宽收缩时不再上下堆叠，长站名就地省略 */}
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%" }}>
+              {level && (
+                <span aria-hidden className="site-dot" style={{ background: chartToneVar[level], flexShrink: 0 }} />
+              )}
+              <RiskLink href={site.homepage || row.source_url} variant="site" title={site.name}>
+                <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {site.name}
+                </span>
+              </RiskLink>
+            </span>
             {statusKey === "rule_only" && <RulePriceMark />}
           </span>
         );
@@ -71,11 +87,11 @@ export function SnapshotPreview({
         const converted = toCnyPrice(v, row.unit, rate);
         const suffix = unitSuffix(row.unit);
         return (
-          <span className="mono">
+          <span className="mono" style={{ fontWeight: 550 }}>
             {converted !== null ? "¥" : ""}
             {formatPrice(converted ?? v)}
             {suffix && (
-              <span style={{ color: "var(--text-3)", fontSize: 12 }}> /{suffix}</span>
+              <span style={{ color: "var(--text-3)", fontSize: 12, fontWeight: 400 }}> /{suffix}</span>
             )}
           </span>
         );
@@ -96,11 +112,11 @@ export function SnapshotPreview({
         const converted = toCnyPrice(v, row.unit, rate);
         const suffix = unitSuffix(row.unit);
         return (
-          <span className="mono">
+          <span className="mono" style={{ fontWeight: 550 }}>
             {converted !== null ? "¥" : ""}
             {formatPrice(converted ?? v)}
             {suffix && (
-              <span style={{ color: "var(--text-3)", fontSize: 12 }}> /{suffix}</span>
+              <span style={{ color: "var(--text-3)", fontSize: 12, fontWeight: 400 }}> /{suffix}</span>
             )}
           </span>
         );
@@ -139,6 +155,15 @@ export function SnapshotPreview({
 
   return (
     <div className="panel" style={{ overflow: "hidden" }}>
+      {snapshotAt != null && (
+        <div className="snap-head">
+          <span className="snap-head-title">
+            <span className="snap-head-dot" aria-hidden />
+            实时快照
+          </span>
+          <span className="snap-head-meta">{formatTimeAgo(snapshotAt)}更新</span>
+        </div>
+      )}
       <DataTable<OverviewRecord>
         rowKey={(row) => `${row.site_id}:${row.model}:${row.unit}:${row.metadata?.group ?? ""}`}
         columns={columns}

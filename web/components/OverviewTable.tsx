@@ -342,13 +342,12 @@ export function OverviewTable({
               const hit = rankingHit(rankingsIndex, active.model);
               if (!hit) return null;
               return (
-                <span
-                  className="mono"
-                  title="Artificial Analysis 榜单排名与智能指数（自测口径，非本站评测）"
-                  style={{ fontSize: 12, color: "var(--text-3)" }}
-                >
-                  Artificial Analysis #{hit.rank}
-                  {hit.intelligence_index != null && ` · 指数 ${hit.intelligence_index}`}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
+                    Artificial Analysis #{hit.rank}
+                    {hit.intelligence_index != null && ` · 智能指数 ${hit.intelligence_index}/100`}
+                  </span>
+                  <TermTip term="aa_rank" />
                 </span>
               );
             })()}

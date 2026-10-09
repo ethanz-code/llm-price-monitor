@@ -205,7 +205,11 @@ def _merge_site_health(store: Store, section: str, entries: dict[str, dict[str, 
         store.set_document("site_collect_health", doc)
 
 
-_TRANSPORT_ERROR_RE = re.compile(r"ssl\b|\beof\b|timed out|timeout|connection|disconnect", re.IGNORECASE)
+_TRANSPORT_ERROR_RE = re.compile(
+    r"ssl\b|\beof\b|timed out|timeout|connection|disconnect"
+    r"|nodename nor servname|getaddrinfo|name or service not known|no address associated",
+    re.IGNORECASE,
+)
 
 # 渠道状态连续多少轮传输抖动后才升级为错误：状态 5 分钟一轮，3 轮约 15 分钟。
 # 秒级/分钟级的线路抖动每轮都刷错误卡片等于噪声，持续宕机仍会在容忍窗口内报警

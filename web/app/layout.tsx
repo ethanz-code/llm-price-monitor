@@ -4,7 +4,6 @@ import { Providers } from "./providers";
 import { Toaster } from "@/components/ui";
 import { SiteNav } from "@/components/SiteNav";
 import { SiteFooter } from "@/components/SiteFooter";
-import { SideFab } from "@/components/SideFab";
 import { ScrollToTop } from "@/components/ScrollToTop";
 import { AssistantDock } from "@/components/AssistantDock";
 import { themeInitScript } from "@/theme";
@@ -61,7 +60,6 @@ export default function RootLayout({ children }: React.PropsWithChildren) {
           <ScrollToTop />
           <main>{children}</main>
           <SiteFooter />
-          <SideFab />
           <AssistantDock />
           <Toaster />
         </Providers>

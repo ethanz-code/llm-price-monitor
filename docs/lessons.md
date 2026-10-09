@@ -18,6 +18,9 @@
 
 | 踩过的坑 | 已落地的方案 | 指针 |
 | --- | --- | --- |
+| headless 渲染出登录墙（DaiTuAI 缺 `auth_user` 跳登录页），据此断定"价格采不到/吃老本"——实际价格全在前端打包 JS（不需要登录），采集靠引用链爬 JS 照常拿到，登录态对该站结果零影响；AI 抽取有随机性，把条数波动归因给修复纯属错判 | 纯壳 SPA 站先确认数据源在渲染页面还是打包 JS 里再谈登录态影响；归因差异要用受控对比，别拿单次 AI 输出当证据；补登录态无害可留（防站点改成接口动态下发价） | 提交见 git log |
+| AI 对证据里没有的模型照样编价格（notes 自认"证据未出现具体数值，仅通过 JS 结构推断"仍给出具体数字），旧代码发现模型名不在证据只降状态不清价，幻觉价以 candidate 身份混进快照、再被合理性校验每轮作废刷异常卡片 | `ai.py _records` 里模型名不在证据 → 价格与 pricing_rules 一并清空（幻觉价无从落地）；异常卡片再出现"价格异常作废"先查该站页面是否真有此模型 | 提交见 git log |
+| 传输错误正则漏了 DNS 解析失败（`[Errno 8] nodename nor servname` 不含 connection/timeout 字样），本机网络瞬断的 warn 刷进异常卡片 | `_TRANSPORT_ERROR_RE` 补 nodename/getaddrinfo/name or service not known | 提交见 git log |
 | httpx 直采没有浏览器环境，DOM 页必须免登录；认证要显式配 headers/token_refresh | 无头浏览器是例外分支（`network.headless.enabled`），注入 Cookie/localStorage 后渲染再解析 | Serena 记忆；`browser_fetch.py` |
 | new-api 系站点 401：光有 Cookie 不够，还要 `New-Api-User` 头；Cookie 只挂公告 headers 时全站采不到 | Cookie 提升到站点级 `network.headers` 共享 | Serena 记忆 |
 | Cloudflare WAF 403：多为缺 `Referer`/`Origin` 头，补齐后匿名也能过；别只报"可能需要认证" | 站点级 request_headers 配齐 Referer+Origin+Accept，看响应体里的真实 message | Serena 记忆 |
@@ -77,6 +80,7 @@
 | 用 python 按行号替换大 CSS 块，旧行号在多次编辑后失效，一刀把 globals.css 砍掉 3300 行（hero 平板列/导航汉堡/动画全套全没），390px 出现横向溢出才暴露 | 大文件删改必须用「锚定内容」定位（str.index 断言锚点存在），替换后立刻 `wc -l` 对账 + grep 被删类名确认零残留；走查见溢出先用 `git stash` 对照基线定位是否新引入 | 首页站点区 Statuspage 化实测 |
 | 参考站只抓文字结构不截页面，做出来的「同构」设计全是小灰字（被用户打回两次） | 参考站必须真开浏览器逐屏截图，量标题字号、卡片 padding、图标做法、分段节奏再动手；监控站点列表直接抄行业事实标准 Atlassian Statuspage（状态横幅 + 一行一组件 + 90 天可用率条），不要自创瓷贴 | 首页重设计返工实录 |
 | grid 子项超宽（全出血大图）把隐式轨道撑大，`justify-self: center` 的居中/两侧出血全失效（居中发生在被撑大的轨道里）；子项的 `margin-inline: auto` 又会压过 justify-self 让它贴左 | 轨道显式 `grid-template-columns: minmax(0, 1fr)` 锁到容器宽，子项清零 auto margin，居中溢出交给 grid | 首页星空 hero 改版实测 |
+| 组件修饰类用裸常用词（如 `empty`）静默继承全局同名工具类——globals.css 里有全局 `.empty { padding: 36px 0 }`，flex 子项被撑高 72px 溢出卡片，视觉上"多出几根悬挂灰条" | 修饰类避开裸常用词（改 `is-empty`）；或像 `.uptime-slot` 那样显式声明 `padding: 0` 压制。新增类名前先 grep globals.css 是否已有同名/同名单类 | 首页站点墙 uptime 色条实测 |
 
 ## 5. 部署与运维
 

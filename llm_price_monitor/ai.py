@@ -1784,7 +1784,14 @@ expected_models：
                     break
             if not model_in_evidence:
                 status = "unavailable"
-                item["notes"] = f"模型名未在网页或 JSON 证据中出现；{item.get('notes', '')}".strip()
+                # 模型名都不在证据里，价格必然是模型按常识编造的（实测 DaiTuAI 页面无 MiniMax
+                # 时 AI 自报"证据未出现具体数值"仍给出 0.0014/0.0056），只降状态不清价会让
+                # 幻觉价以 candidate 身份混进快照、再被合理性校验每轮作废刷异常卡片
+                if input_price is not None or output_price is not None:
+                    input_price = None
+                    output_price = None
+                    item.pop("pricing_rules", None)
+                    item["notes"] = f"模型名未在网页或 JSON 证据中出现，AI 给出的价格已作废；{item.get('notes', '')}".strip()
             elif status == "confirmed" and (
                 validation_status != "matched"
                 or not network_evidence

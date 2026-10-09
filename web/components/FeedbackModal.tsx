@@ -42,7 +42,7 @@ export function FeedbackModal({ open, onClose }: { open: boolean; onClose: () =>
         </Btn>
       }
     >
-      <div style={{ display: "grid", gap: 12 }}>
+      <div className="feedback-form" style={{ display: "grid", gap: 12 }}>
         <textarea
           className="input textarea"
           rows={5}

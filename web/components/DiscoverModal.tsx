@@ -170,7 +170,8 @@ export function DiscoverModal({
     {
       key: "pricing",
       title: "价格接口",
-      width: 92,
+      // 实宽要容下「公开 · 1486 模型」一行不折（92 会把「模型」挤到第二行）
+      width: 124,
       render: (_v, row) =>
         row.pricing_state === "public" ? (
           <span style={{ color: "var(--text-2)" }}>
@@ -254,7 +255,16 @@ export function DiscoverModal({
             </div>
           </div>
 
-          <div style={{ borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}>
+          {/* 表格区域限高内滚：弹窗高度稳定，底部「导入所选」操作条始终可见 */}
+          <div
+            style={{
+              borderRadius: 8,
+              overflow: "hidden",
+              border: "1px solid var(--border)",
+              maxHeight: "min(48vh, 430px)",
+              overflowY: "auto",
+            }}
+          >
             <DataTable<DiscoveryStation>
               rowKey="host"
               columns={columns}

@@ -316,7 +316,7 @@ export function AdminSites() {
         {guideOpen && <SitesGuide />}
       </div>
       <div className="panel" style={{ padding: "10px 16px", marginBottom: 10, display: "grid", gap: 8 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 200px) 1fr", gap: 12, alignItems: "start" }}>
+        <div className="admin-setting-row">
           <div>
             <div style={{ fontSize: 13, fontWeight: 550 }}>检测模型</div>
             <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>全部站点共用；列出要检测的模型名</div>
@@ -325,7 +325,7 @@ export function AdminSites() {
             {monitorModels === null ? <Skel w={130} h={13} /> : <ModelMultiSelect value={monitorModels} onChange={saveMonitorModels} />}
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 200px) 1fr", gap: 12, alignItems: "start" }}>
+        <div className="admin-setting-row">
           <div>
             <div style={{ fontSize: 13, fontWeight: 550 }}>自动更新</div>
             <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>目录刷新后自动维护这份清单</div>

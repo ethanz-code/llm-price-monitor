@@ -2,17 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { IconGithub, IconMail, IconWecom } from "./icons";
+import { IconGithub, IconMail } from "./icons";
 import { LogoMark } from "./LogoMark";
 import { FeedbackModal } from "./FeedbackModal";
-import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
-import { footer, site } from "@/lib/copy";
+import { CONTACT_EMAIL, footer, site } from "@/lib/copy";
 import { useAuthPage } from "@/lib/useAuthPage";
 
-/** 全站页脚：品牌 + 一句话说明合并数据免责；联系方式图标与低调管理入口在底行。 */
+/** 全站页脚：品牌 + 一句话说明合并数据免责；企业微信二维码直接平铺右列，联系方式图标与低调管理入口在底行。 */
 export function SiteFooter() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [contactOpen, setContactOpen] = useState(false);
   if (useAuthPage()) return null;
   return (
     <footer className="site-footer">
@@ -37,14 +35,14 @@ export function SiteFooter() {
             <a className="footer-icon" href={`mailto:${CONTACT_EMAIL}`} aria-label={footer.aria.mail}>
               <IconMail size={18} />
             </a>
-            <button
-              type="button"
-              className="footer-icon"
-              aria-label={footer.aria.wecom}
-              onClick={() => setContactOpen(true)}
-            >
-              <IconWecom size={18} />
-            </button>
+          </div>
+        </div>
+        <div className="site-footer-qr">
+          {/* 白底内衬是二维码的 quiet zone，被页脚深底包住也能扫 */}
+          <img src={footer.wecomQrSrc} alt="企业微信二维码" width={84} height={84} loading="lazy" />
+          <div className="site-footer-qr-text">
+            <span className="qr-title">扫码加我们企业微信</span>
+            <span className="qr-sub">咨询、建议、合作都欢迎</span>
           </div>
         </div>
       </div>
@@ -60,7 +58,6 @@ export function SiteFooter() {
         </span>
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
-      <ContactModal open={contactOpen} onClose={() => setContactOpen(false)} />
     </footer>
   );
 }

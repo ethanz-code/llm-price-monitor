@@ -1,6 +1,6 @@
 /** 与后端 llm_price_monitor 输出结构对应的类型定义。 */
 
-interface DiscountInfo {
+export interface DiscountInfo {
   input: number | null;
   output: number | null;
   input_price_cny: number | null;

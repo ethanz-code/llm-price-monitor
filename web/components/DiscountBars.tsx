@@ -1,4 +1,4 @@
-import { discountTone, formatDiscount, toneText } from "@/lib/format";
+import { discountTone, formatDiscount, toneBg, toneText } from "@/lib/format";
 
 /** 折扣条渐变色：0 全绿 → 0.5 纯黄 → 1 全红，在语义 tone 色之间按数值连续插值。
  *  低折扣段按平方根布色（1%→14% 黄混、5%→32%、25%→71%），把常见 1–5 折数据的颜色差异放大到肉眼可辨；
@@ -38,10 +38,12 @@ function DiscountBar({ label, value }: { label: string; value: number | null | u
   );
 }
 
-/** 紧凑折扣数值：语义色直读（≤50% 绿、≤80% 黄、其余红），不再画色点。 */
+/** 紧凑折扣数值：浅语义底芯片（≤50% 绿、≤80% 黄、其余红），比纯色文字多一层底色，
+ *  让折扣列在整张灰阶表格里有落点。 */
 function DiscountValue({ value }: { value: number }) {
+  const tone = discountTone(value);
   return (
-    <span className="mono" style={{ fontSize: 12.5, color: toneText(discountTone(value)) }}>
+    <span className="mono disc-chip" style={{ background: toneBg(tone), color: toneText(tone) }}>
       {formatDiscount(value)}
     </span>
   );

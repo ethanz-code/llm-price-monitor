@@ -178,8 +178,8 @@ body > main {
   align-items: center;
   gap: 4px;
   padding: 1px 10px;
-  /* 小圆角与按钮/页码一致：胶囊形在状态标签上过于圆润，与整体 4px 圆角体系不符 */
-  border-radius: 4px;
+  /* 状态标签同样走胶囊：全站除 tabs/seg 外统一全圆角 */
+  border-radius: 9999px;
   font-size: 12px;
   line-height: 20px;
   letter-spacing: 0.01em;
@@ -722,6 +722,16 @@ body > main {
   font-size: 12.5px;
 }
 
+/* 折扣数值芯片（首页快照表）：浅语义底 + 语义字色，灰阶表格里的彩色落点 */
+.disc-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
 .disc-bar-track {
   display: block;
   height: 3px;
@@ -849,7 +859,7 @@ body > main {
   min-width: 34px;
   height: 34px;
   padding: 0 8px;
-  border-radius: 4px;
+  border-radius: 9999px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-2);
@@ -938,7 +948,8 @@ body > main {
   gap: 6px;
   height: 34px;
   padding: 0 16px;
-  border-radius: 4px;
+  /* 胶囊形按钮（2026-10-05 用户定）：除 tabs/seg 分段外，控件一律全圆角 */
+  border-radius: 9999px;
   border: 1px solid transparent;
   font-size: 13.5px;
   font-weight: 550;
@@ -1439,7 +1450,7 @@ html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
 
 .input {
   height: 34px;
-  border-radius: 6px;
+  border-radius: 9999px;
   /* 静态无边框只靠填充底分层：省一层描边噪音，1px 透明边占位避免聚焦时跳动 */
   border: 1px solid transparent;
   background: var(--field-bg);
@@ -1458,13 +1469,20 @@ html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
   background: var(--field-bg-hover);
 }
 
-/* 多行输入：复用 .input 皮肤，放开固定高度 */
+/* 提建议表单：建议内容长、联系方式也可能超宽，胶囊圆角在滚动到边缘时会裁字，
+   整表单收 12px（2026-10-05 用户反馈「输入显示不完全」） */
+.feedback-form .input {
+  border-radius: 12px;
+}
+
+/* 多行输入：复用 .input 皮肤，放开固定高度；胶囊圆角会把首尾行文字裁进圆弧，多行框一律 12px */
 .input.textarea {
   height: auto;
   min-height: 60px;
   padding: 10px 12px;
   resize: vertical;
   line-height: 1.6;
+  border-radius: 12px;
 }
 
 .input:focus {
@@ -2273,6 +2291,11 @@ html:not([data-theme="dark"]) .panel {
   color: var(--accent-text);
 }
 
+/* 站点链接在 flex 单元格里允许收缩，配合省略号避免长站名把窄列撑成两行 */
+.site-link {
+  min-width: 0;
+}
+
 .site-count {
   font-size: 12px;
   color: var(--text-3);
@@ -2382,7 +2405,7 @@ html:not([data-theme="dark"]) .panel {
   color: var(--text-3);
 }
 
-/* 右侧吸顶区块目录（AA 同款）：≥1280 显示，钉在导航下方右缘（垂直居中会撞企业微信/提建议悬浮球），
+/* 右侧吸顶区块目录（AA 同款）：≥1280 显示，钉在导航下方右缘，
    当前区块点亮成长条，标签仅悬停时展开（避免压到窄屏内容） */
 .section-rail {
   position: fixed;
@@ -2895,6 +2918,55 @@ html:not([data-theme="dark"]) .panel {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* 静态可用率色块条：首页站点卡与 bento 示例用，与上方交互版同一套分桶与三档色；
+   不带悬停（外层卡片可点进详情看交互版），空档 = 该时段无检测 */
+.uptime-strip {
+  display: flex;
+  gap: 3px;
+  height: 14px;
+}
+
+.uptime-strip-slot {
+  flex: 1;
+  min-width: 0;
+  border-radius: 2px;
+}
+
+/* 修饰类用 is-empty 而非 empty：globals 里另有全局 .empty 工具类（36px 上下 padding），避免撞名 */
+.uptime-strip-slot.is-empty {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* 快照表面板头：活数据的时间戳，把素表格变成「此刻的快照」 */
+.snap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.snap-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.snap-head-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--chart-ok);
+}
+
+.snap-head-meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 /* Bento 产品介绍：1 大（主价值可点）+ 3 小（能力一句话），panel 发丝线卡一套语言 */
 .bento-grid {
   display: grid;
@@ -3056,6 +3128,71 @@ html:not([data-theme="dark"]) .panel {
   color: var(--text-3);
 }
 
+/* bento 小卡微缩示例：真实数据缩影垫在卡底（与大卡 mini 表同一套浅底内嵌语言，
+   不做自己的描边），数据缺席时整块不渲染 */
+.bento-demo {
+  margin-top: auto;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+  border-radius: 10px;
+}
+
+.bento-demo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bento-demo-site {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bento-demo-model {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bento-demo-note {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.bento-demo-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.bento-demo-delta {
+  font-weight: 600;
+}
+
+.bento-demo .uptime-strip {
+  height: 16px;
+}
+
+/* bento 内折扣条形收窄：小卡里去头部标签行间距，贴卡片留白 */
+.bento-demo--disc {
+  gap: 6px;
+}
+
+.bento-demo--disc .disc-bar + .disc-bar {
+  margin-top: 6px;
+}
+
 @media (max-width: 900px) {
   .bento-card--feature {
     grid-template-columns: 1fr;
@@ -3064,7 +3201,15 @@ html:not([data-theme="dark"]) .panel {
   }
 }
 
-/* 监控站点小卡：一卡一站（状态点 + 可用率 + 模型数），普通卡片网格不做状态页 */
+/* 站点墙软底舞台：一整块浅底托住均匀卡片阵列，页面白/灰节奏换口气 */
+.landing-band {
+  padding: 18px;
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* 监控站点小卡：一卡一站（状态点 + 可用率色块 + 最近检测），普通卡片网格不做状态页 */
 .site-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -3157,9 +3302,17 @@ html:not([data-theme="dark"]) .panel {
     grid-template-columns: 1fr;
   }
 
+  .landing-band {
+    padding: 10px;
+  }
+
   .site-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .faq-list {
+    padding: 2px 16px;
   }
 }
 
@@ -3283,55 +3436,39 @@ button.footer-icon {
   color: var(--accent-text);
 }
 
-/* 右侧悬浮入口组：企业微信 + 提建议竖排标签，材质对齐导航的半透明 + 毛玻璃 */
-.side-fab-group {
-  position: fixed;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: var(--z-fab);
+/* 企业微信二维码：直接平铺页脚右列，免点开弹窗 */
+.site-footer-qr {
+  justify-self: end;
+  align-self: start;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
-}
-
-.side-fab {
-  display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 14px 9px 12px;
+  gap: 14px;
+}
+
+/* 白底内衬是二维码的 quiet zone，被页脚底色包住也扫得上 */
+.site-footer-qr img {
+  width: 84px;
+  height: 84px;
+  padding: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  border-right: 0;
-  border-radius: 8px 0 0 8px;
-  background: var(--header-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: #fff;
+}
+
+.site-footer-qr-text {
+  display: grid;
+  gap: 4px;
+}
+
+.site-footer-qr-text .qr-title {
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-2);
-  cursor: pointer;
-  transition:
-    color var(--dur),
-    border-color var(--dur),
-    transform var(--dur);
 }
 
-.side-fab span {
-  writing-mode: vertical-rl;
-  font-size: 11px;
-  letter-spacing: 2px;
-}
-
-.side-fab:hover {
-  color: var(--accent-text);
-  border-color: var(--border-strong);
-  transform: translateX(-2px);
-}
-
-@media (max-width: 1024px) {
-  .side-fab-group {
-    display: none;
-  }
+.site-footer-qr-text .qr-sub {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
 .site-footer-meta {
@@ -3354,6 +3491,9 @@ button.footer-icon {
   display: inline-flex;
   align-items: center;
   gap: 18px;
+  /* 窄屏一行放不下时整条换行，别把「花费计算」压成竖排断字 */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .site-footer-meta-links a {
@@ -3416,6 +3556,21 @@ button.footer-icon {
   font-size: 12px;
   color: var(--text-3);
   padding: 6px 12px 8px;
+}
+
+/* 后台设置行（检测模型/自动更新）：标签左、内容右；窄屏改上下叠放，让芯片列表占满整行不挤压 */
+.admin-setting-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .admin-setting-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 
 .admin-rail a {
@@ -4007,6 +4162,10 @@ a.event-card {
   .site-footer-inner {
     grid-template-columns: 1fr;
     gap: 18px;
+  }
+
+  .site-footer-qr {
+    justify-self: start;
   }
 
   .nav-inner .nav-pill {
@@ -4982,11 +5141,21 @@ a.event-card {
   justify-content: center;
 }
 
+/* FAQ 收进一张整卡：发丝线分项，与全页卡片同语言，不再是一列悬浮文字 */
 .faq-list {
-  max-width: 860px;
+  max-width: 780px;
   margin: 0 auto;
   display: grid;
-  gap: 2px;
+  gap: 0;
+  padding: 4px 24px;
+  background: var(--panel);
+  border: var(--card-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-panel);
+}
+
+.faq-item + .faq-item {
+  border-top: 1px solid var(--border);
 }
 
 .faq-item .faq-question {

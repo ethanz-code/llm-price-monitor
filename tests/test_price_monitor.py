@@ -842,6 +842,57 @@ def test_ai_extractor_supports_anthropic_messages_format():
     assert "system" in seen["body"]
 
 
+def test_ai_extractor_discards_prices_for_models_missing_from_evidence():
+    """模型名不在证据里时，AI 编造的价格必须清空：只降状态不清价会让幻觉价以 candidate 混进快照。
+
+    实测案例：DaiTuAI 页面没有 MiniMax-M3，AI 自报"证据未出现具体数值"仍给出价格，每轮被
+    合理性校验作废刷异常卡片。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "real-model",
+                "observed_model": "real-model",
+                "input_price": 1.5,
+                "output_price": 7.5,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "candidate",
+                "confidence": 0.95,
+                "page_evidence": ["real-model ¥1.50 ¥7.50 / 1M tokens"],
+            },
+            {
+                "model": "ghost-model",
+                "observed_model": "ghost-model",
+                "input_price": 0.0014,
+                "output_price": 0.0056,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "candidate",
+                "confidence": 0.8,
+                "pricing_rules": {"groups": [{"name": "default", "tiers": [{"input_price": 0.0014, "output_price": 0.0056, "unit": "CNY/1M tokens"}]}]},
+                "notes": "证据中未出现具体数值，仅通过 JS 结构推断字段含义",
+            },
+        ], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("real-model"), ModelTarget("ghost-model")))
+    records = extractor.extract(
+        spec, "real-model 输入 ¥1.50 输出 ¥7.50 / 1M tokens",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    by_model = {record.model: record for record in records}
+    assert by_model["real-model"].price_status == "candidate"
+    assert by_model["real-model"].output_price == 7.5
+    # 幻觉价清空：模型名不在证据里，价格无论编得多像真的都不能落记录
+    assert by_model["ghost-model"].price_status == "unavailable"
+    assert by_model["ghost-model"].input_price is None
+    assert by_model["ghost-model"].output_price is None
+    assert "已作废" in (by_model["ghost-model"].metadata or {}).get("notes", "")
+
+
 _ASSISTANT_TOOLS = [
     {"type": "function", "function": {"name": "get_prices", "description": "查询模型最新价格", "parameters": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}}
 ]

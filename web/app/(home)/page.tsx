@@ -15,11 +15,15 @@ import { canonicalModel, lowestPriceRowPerModel, orderByReleaseDesc } from "@/li
 import { foldEvents } from "@/lib/events";
 import {
   buildSiteViews,
+  chartToneVar,
   rateLevel,
   type RateLevel,
+  type UptimeBucket,
 } from "@/lib/channelStatus";
 import type {
   CatalogData,
+  DiscountInfo,
+  EventRow,
   FeedData,
   HistoryListData,
   MetaData,
@@ -40,6 +44,7 @@ import { DajuChartNap, DajuNap, DajuYarn } from "@/components/DajuArt";
 import { FaqList } from "@/components/FaqList";
 import { JsonLd } from "@/components/JsonLd";
 import { IconAim, IconMonitor, IconSync } from "@/components/icons";
+import { DiscountBars } from "@/components/DiscountBars";
 import { alerts, home, site } from "@/lib/copy";
 import { siteOrigin } from "@/lib/seo";
 
@@ -66,21 +71,6 @@ interface LandingData {
   catalog: CatalogData | null;
   error: string | null;
 }
-
-/** 站点瓷贴状态色：与详情页图表 statusColors 同一套（亮/暗各一组，见 globals.css --chart-*），
- *  阈值一致：可用率 80/60 三档，延迟 1000/3000ms 三档。 */
-const STRIP_TONE: Record<RateLevel, string> = {
-  ok: "var(--chart-ok)",
-  warn: "var(--chart-warn)",
-  down: "var(--chart-down)",
-};
-
-/** 瓷贴状态点：正常点降到半强度（大面积重复的好状态不抢注意力），异常/延迟档保持全色。 */
-const TILE_DOT_TONE: Record<RateLevel, string> = {
-  ok: "color-mix(in srgb, var(--chart-ok) 45%, transparent)",
-  warn: "var(--chart-warn)",
-  down: "var(--chart-down)",
-};
 
 /** 行列表封顶：首页只列这么多行，其余进「还有 N 个站点」链接 */
 const SITE_ROW_MAX = 18;
@@ -165,6 +155,93 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
   }));
 }
 
+/** 静态可用率色块条：与详情页 StatusUptimeBars 同一套分桶与三档色（chartToneVar），
+ *  纯展示不带悬停——外层卡片本身可点进详情看交互版；不足 2 桶（数据太少）不渲染。 */
+function UptimeStrip({ buckets }: { buckets: (UptimeBucket | null)[] }) {
+  if (buckets.length < 2) return null;
+  return (
+    <span className="uptime-strip" aria-hidden>
+      {buckets.map((bucket, index) => (
+        <span
+          key={index}
+          className={`uptime-strip-slot${bucket ? "" : " is-empty"}`}
+          style={bucket ? { background: chartToneVar[rateLevel(bucket.avg)] } : undefined}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** bento 小卡的微缩示例：三种能力各配一块「真实数据缩影」（调价 diff / 近 7 天探测色块 /
+ *  折扣条形），对应数据缺席时整块不渲染，卡片回落纯文案。 */
+function BentoDemo({
+  kind,
+  event,
+  eventSite,
+  buckets,
+  bucketSite,
+  discount,
+  rate,
+}: {
+  kind: keyof typeof BENTO_ICONS;
+  event: EventRow | null;
+  eventSite: string | null;
+  buckets: (UptimeBucket | null)[] | null;
+  bucketSite: string | null;
+  discount: DiscountInfo | null;
+  rate: number | null;
+}) {
+  if (kind === "sync") {
+    const previous = event?.previous;
+    const current = event?.current;
+    if (!event || !eventSite || !previous?.input_price || !current?.input_price) return null;
+    const prev = toCnyPrice(previous.input_price, previous.unit, rate) ?? previous.input_price;
+    const curr = toCnyPrice(current.input_price, current.unit, rate) ?? current.input_price;
+    if (prev <= 0 || prev === curr) return null;
+    const drop = curr < prev;
+    const pct = Math.round((Math.abs(curr - prev) / prev) * 100);
+    return (
+      <div className="bento-demo" aria-hidden>
+        <span className="bento-demo-head">
+          <span className="bento-demo-site">{eventSite}</span>
+          <span className="mono bento-demo-model">{event.model}</span>
+        </span>
+        <span className="bento-demo-line mono">
+          {prev !== null && "¥"}
+          {formatPrice(prev)} → {curr !== null && "¥"}
+          {formatPrice(curr)}
+          <b
+            className="bento-demo-delta"
+            style={{ color: drop ? "var(--tone-green-text)" : "var(--tone-red-text)" }}
+          >
+            {drop ? "↓" : "↑"}
+            {pct}%
+          </b>
+        </span>
+      </div>
+    );
+  }
+  if (kind === "monitor") {
+    if (!buckets || buckets.length < 2 || !bucketSite) return null;
+    return (
+      <div className="bento-demo" aria-hidden>
+        <span className="bento-demo-head">
+          <span className="bento-demo-site">{bucketSite}</span>
+          <span className="bento-demo-note">近 7 天探测</span>
+        </span>
+        <UptimeStrip buckets={buckets} />
+      </div>
+    );
+  }
+  // aim：折扣一眼看清 —— 真实行的输入/输出折扣条形（与总览表同一组件）
+  if (!discount || (discount.input == null && discount.output == null)) return null;
+  return (
+    <div className="bento-demo bento-demo--disc" aria-hidden>
+      <DiscountBars discount={discount} />
+    </div>
+  );
+}
+
 export default async function LandingPage() {
   const { overview, meta, feed, history, status, geo, rankings, catalog, error } = await loadLanding();
   // JSON-LD 里的站点地址要绝对 URL，与 metadataBase 同一推导口径
@@ -239,6 +316,31 @@ export default async function LandingPage() {
     if (entry?.model) releaseByModel[canonicalModel(entry.model)] = entry.release_date ?? "";
   }
   const parentRows = orderByReleaseDesc(lowestPriceRowPerModel(records, rate), releaseByModel);
+
+  // bento 小卡微缩示例的数据（全部真实数据，缺席时对应示例不渲染）：
+  // 调价 diff 取最近一条带新旧输入价的调价事件；探测色块取检测数据最多的站点；折扣取最新发布模型的行
+  const demoEvent =
+    (feed?.events ?? []).find(
+      (event): event is EventRow =>
+        !isNoticeEvent(event) && event.previous?.input_price != null && event.current?.input_price != null,
+    ) ?? null;
+  const demoEventSite = demoEvent
+    ? getSiteInfo(demoEvent.site_id, demoEvent.current?.source_url ?? demoEvent.previous?.source_url).name
+    : null;
+  const demoBucketSite = [...sites].sort(
+    (a, b) => (bucketsBySite[b.id]?.length ?? 0) - (bucketsBySite[a.id]?.length ?? 0),
+  )[0];
+  const demoBuckets = demoBucketSite ? (bucketsBySite[demoBucketSite.id] ?? null) : null;
+  const demoBucketName = demoBucketSite ? getSiteInfo(demoBucketSite.id, demoBucketSite.sourceUrl).name : null;
+  const demoDiscount = parentRows[0]?.discount ?? null;
+
+  // 快照表附加口径：站点三档状态点（与站点墙同一套）+ 数据新鲜度
+  const siteLevelBySite: Record<string, RateLevel | null> = {};
+  for (const site of sites) {
+    const latest = (availBySite[site.id] ?? []).slice(-1)[0];
+    siteLevelBySite[site.id] = site.enabled && latest ? rateLevel(latest.pct) : null;
+  }
+  const snapshotAt = records.length > 0 ? Math.max(...records.map((row) => row.captured_at)) : null;
 
   return (
     <>
@@ -332,6 +434,15 @@ export default async function LandingPage() {
                     </span>
                     <span className="bento-title">{item.title}</span>
                     <p className="bento-desc">{item.desc}</p>
+                    <BentoDemo
+                      kind={item.icon}
+                      event={demoEvent}
+                      eventSite={demoEventSite}
+                      buckets={demoBuckets}
+                      bucketSite={demoBucketName}
+                      discount={demoDiscount}
+                      rate={rate}
+                    />
                   </div>
                 );
               })}
@@ -351,7 +462,7 @@ export default async function LandingPage() {
                 </Link>
               </div>
               <p className="landing-section-sub">{home.sectionSubs.latestPrice}</p>
-              <SnapshotPreview rows={parentRows.slice(0, 12)} rate={rate} />
+              <SnapshotPreview rows={parentRows.slice(0, 12)} rate={rate} siteLevels={siteLevelBySite} snapshotAt={snapshotAt} />
             </section>
           </Reveal>
         )}
@@ -436,56 +547,60 @@ export default async function LandingPage() {
             </div>
             <p className="landing-section-sub">{home.sectionSubs.sites}</p>
             {sites.length > 0 ? (
-              <div className="site-grid">
-                {wallSites.map((site) => {
-                  const info = getSiteInfo(site.id, site.sourceUrl);
-                  const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
-                  const latest = (availBySite[site.id] ?? []).slice(-1)[0];
-                  const pct = site.enabled && latest ? latest.pct : null;
-                  const level = pct != null ? rateLevel(pct) : null;
-                  return (
-                    <Link
-                      key={site.id}
-                      href={statusHref}
-                      className={`site-card${site.enabled ? "" : " site-card--off"}`}
-                      title={`${info.name} · ${pct != null ? `最新正常 ${pct}%` : site.enabled ? home.empty.siteNoCheckRecord : home.empty.siteDisabled}`}
-                    >
-                      <span className="site-card-head">
-                        <span
-                          aria-hidden
-                          className="site-card-dot"
-                          style={{
-                            background:
-                              level != null
-                                ? levelColor(level)
-                                : "var(--text-3)",
-                          }}
-                        />
-                        <span className="site-card-name">{info.name}</span>
-                        <span
-                          className="site-card-avg mono num"
-                          style={level ? { color: levelColor(level) } : undefined}
-                        >
-                          {pct != null ? `${pct}%` : "—"}
+              <div className="landing-band">
+                <div className="site-grid">
+                  {wallSites.map((site) => {
+                    const info = getSiteInfo(site.id, site.sourceUrl);
+                    const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
+                    const latest = (availBySite[site.id] ?? []).slice(-1)[0];
+                    const pct = site.enabled && latest ? latest.pct : null;
+                    const level = pct != null ? rateLevel(pct) : null;
+                    const buckets = site.enabled ? (bucketsBySite[site.id] ?? []) : [];
+                    return (
+                      <Link
+                        key={site.id}
+                        href={statusHref}
+                        className={`site-card${site.enabled ? "" : " site-card--off"}`}
+                        title={`${info.name} · ${pct != null ? `最新正常 ${pct}%` : site.enabled ? home.empty.siteNoCheckRecord : home.empty.siteDisabled}`}
+                      >
+                        <span className="site-card-head">
+                          <span
+                            aria-hidden
+                            className="site-card-dot"
+                            style={{
+                              background:
+                                level != null
+                                  ? levelColor(level)
+                                  : "var(--text-3)",
+                            }}
+                          />
+                          <span className="site-card-name">{info.name}</span>
+                          <span
+                            className="site-card-avg mono num"
+                            style={level ? { color: levelColor(level) } : undefined}
+                          >
+                            {pct != null ? `${pct}%` : "—"}
+                          </span>
                         </span>
-                      </span>
-                      <span className="site-card-meta">
-                        {latest
-                          ? `${formatTimeAgo(latest.at)}检测`
-                          : site.enabled
-                            ? home.empty.siteNoCheckRecord
-                            : home.empty.siteDisabled}
+                        <UptimeStrip buckets={buckets} />
+                        <span className="site-card-meta">
+                          {latest
+                            ? `${formatTimeAgo(latest.at)}检测`
+                            : site.enabled
+                              ? home.empty.siteNoCheckRecord
+                              : home.empty.siteDisabled}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                  {sites.length > wallSites.length && (
+                    <Link href="/overview" className="site-card site-card--more">
+                      <span className="site-card-more-label">
+                        {home.sitesOverview.more(sites.length - wallSites.length)}
                       </span>
                     </Link>
-                  );
-                })}
-                {sites.length > wallSites.length && (
-                  <Link href="/overview" className="site-card site-card--more">
-                    <span className="site-card-more-label">
-                      {home.sitesOverview.more(sites.length - wallSites.length)}
-                    </span>
-                  </Link>
-                )}
+                  )}
+                </div>
               </div>
             ) : (
               <div className="landing-empty">
