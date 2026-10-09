@@ -171,9 +171,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     )
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
-    # /api/tasks/{task_id}、/api/sites/{site_id}/groups 为动态路径，另行按前缀匹配
+    # /api/tasks/{task_id}、/api/sites/{site_id}/groups、/api/ai-logs/{log_id} 为动态路径，另行按前缀匹配
     admin_get_paths = {"/api/settings", "/api/settings/proxy-status", "/api/settings/test-models", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions", "/api/vendor-sources", "/api/vendor-sources/detection"}
-    admin_get_prefixes = ("/api/tasks/", "/api/sites/", "/api/vendor-sources/")
+    admin_get_prefixes = ("/api/tasks/", "/api/sites/", "/api/vendor-sources/", "/api/ai-logs/")
     # 公开读接口封锁：部署时设置 PRICE_WEB_INTERNAL_TOKEN 后，数据读接口只对
     # 携带令牌的服务端渲染请求（Next 直连）或管理员会话开放，匿名浏览器请求
     # 一律 401——访客照常看页面，但拿不到可直接抓取的 JSON API。

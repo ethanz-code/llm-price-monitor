@@ -11,6 +11,11 @@ from typing import Any
 # ai_cache 是整份文档读-改-写，进程内加锁避免并发任务互相覆盖丢条目
 _AI_CACHE_LOCK = threading.Lock()
 
+# 缓存保留：单条结果几 KB 到几十 KB，条目键随页面内容变，旧键自然失效却永远留在文档里；
+# 写入时按时间戳淘汰过期条目，并限制总条数（保留最新），防止整份文档无限膨胀
+_AI_CACHE_TTL_SECONDS = 30 * 86400
+_AI_CACHE_MAX_ENTRIES = 300
+
 # AI 日志里 prompt / 回复 / 错误原文的入库截断长度：完整证据可能几十万字符，整段入库会撑爆库；
 # 上限取 4000 是详情弹窗够看的折中——太长的 prompt（整页证据）仍只留开头，以「…」标注
 _AI_LOG_TEXT_CHARS = 4000
@@ -116,6 +121,12 @@ class AIStoreMixin:
                 return frozenset(item for item in value if isinstance(item, str) and item)
         return frozenset()
 
+    # 列表查询不带回的重量列：摘要正文（最长 4000 字符×2）只走单条详情接口，避免列表全量拉取时响应爆炸
+    _AI_LOG_LIST_COLUMNS = (
+        "id, ts, scene, model, status, duration_ms,"
+        " prompt_tokens, completion_tokens, total_tokens, error"
+    )
+
     def read_ai_logs(
         self, *, limit: int = 100, offset: int = 0, scene: str | None = None, status: str | None = None
     ) -> tuple[list[dict[str, Any]], int]:
@@ -131,10 +142,16 @@ class AIStoreMixin:
         with self._conn() as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM ai_logs{where}", params).fetchone()[0])
             rows = conn.execute(
-                f"SELECT * FROM ai_logs{where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT {self._AI_LOG_LIST_COLUMNS} FROM ai_logs{where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
         return [dict(row) for row in rows], total
+
+    def read_ai_log(self, log_id: int) -> dict[str, Any] | None:
+        """单条 AI 日志全文（含 prompt/回复摘要）：详情弹窗按需取用。"""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM ai_logs WHERE id = ?", (log_id,)).fetchone()
+        return dict(row) if row else None
 
     def ai_logs_summary(self, *, trend_days: int = 7) -> dict[str, Any]:
         """AI 调用统计聚合：全部保留记录的 KPI、按天趋势与场景/模型分布。
@@ -259,12 +276,30 @@ class AIStoreMixin:
     def cache_get(self, key: str) -> dict[str, Any] | None:
         cache = self.get_document("ai_cache")
         value = cache.get(key) if isinstance(cache, dict) else None
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        # 新条目包一层 {"cached_at", "result"}；旧条目本身就是结果，直接透传
+        result = value.get("result", value)
+        return result if isinstance(result, dict) else None
 
     def cache_put(self, key: str, result: dict[str, Any]) -> None:
         # 整份 ai_cache 文档是读-改-写，进程内加锁避免并发任务互相覆盖丢条目
         with _AI_CACHE_LOCK:
             cache = self.get_document("ai_cache")
             cache = cache if isinstance(cache, dict) else {}
-            cache[key] = result
-            self.set_document("ai_cache", cache)
+            now = time.time()
+            cache[key] = {"cached_at": now, "result": result}
+            kept: dict[str, dict[str, Any]] = {}
+            for entry_key, entry in cache.items():
+                if not isinstance(entry, dict):
+                    continue
+                cached_at = entry.get("cached_at")
+                if cached_at is None:
+                    # 旧条目没有时间戳：补当前时间从本轮起算，直接清掉会让下轮白跑一次 AI
+                    kept[entry_key] = {"cached_at": now, "result": entry}
+                elif now - float(cached_at) <= _AI_CACHE_TTL_SECONDS:
+                    kept[entry_key] = entry
+            if len(kept) > _AI_CACHE_MAX_ENTRIES:
+                newest = sorted(kept.items(), key=lambda pair: float(pair[1].get("cached_at") or 0.0), reverse=True)
+                kept = dict(newest[:_AI_CACHE_MAX_ENTRIES])
+            self.set_document("ai_cache", kept)

@@ -332,5 +332,46 @@ def test_refresh_online_reports_progress(tmp_path: Path, monkeypatch):
     messages: list[str] = []
     stats = asyncio.run(discover_mod.refresh_online(progress=messages.append))
     assert stats["online_total"] == 201
-    assert any("开始探测 201 个候选" in message for message in messages)
+    assert any("探测新收录 201 个" in message for message in messages)
     assert any("探测进度 200/201" in message for message in messages)
+
+
+def test_refresh_online_probes_only_new_candidates(tmp_path: Path, monkeypatch):
+    """刷新只探从没测过的候选：上轮在线与失联结果原样沿用，失联站不被反复重探。"""
+    monkeypatch.setattr(discover_mod, "OUT_DIR", tmp_path)
+    (tmp_path / "candidates.json").write_text(json.dumps({
+        "generated_at": "x", "count": 3,
+        "candidates": [
+            {"host": "old-online.example.com", "url": "https://old-online.example.com", "name": "旧在线", "sources": ["zuiquanapi"], "note": "", "meta": {}},
+            {"host": "old-dead.example.com", "url": "https://old-dead.example.com", "name": "旧失联", "sources": ["zuiquanapi"], "note": "", "meta": {}},
+            {"host": "fresh.example.com", "url": "https://fresh.example.com", "name": "新站", "sources": ["zuiquanapi"], "note": "", "meta": {}},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "probed.json").write_text(json.dumps({"generated_at": "old", "results": [
+        {"name": "旧在线", "url": "https://old-online.example.com", "online": True, "pricing_ok": True, "models": 5},
+        {"name": "旧失联", "url": "https://old-dead.example.com", "online": False, "pricing_ok": False, "models": 0},
+    ]}, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_harvest(proxy, only=None):
+        return []
+
+    probed_urls: list[str] = []
+
+    async def fake_probe(candidates, concurrency, timeout, proxy):
+        probed_urls.extend(cand.url for cand in candidates)
+        return [
+            {"name": cand.name, "url": cand.url, "sources": cand.sources, "online": True, "new_api": True,
+             "pricing_ok": True, "models": 1, "auth_required": False, "error": ""}
+            for cand in candidates
+        ]
+
+    monkeypatch.setattr(discover_mod, "harvest", fake_harvest)
+    monkeypatch.setattr(discover_mod, "probe", fake_probe)
+    stats = asyncio.run(discover_mod.refresh_online())
+    assert probed_urls == ["https://fresh.example.com"]  # 只探新收录，旧失联不重探
+    assert stats["online_total"] == 2  # 旧在线 + 新在线
+    results = json.loads((tmp_path / "probed.json").read_text(encoding="utf-8"))["results"]
+    # 失联结果也保留在档（此前每轮被丢弃、下轮又重探），失联数才真实可信
+    assert [row["url"] for row in results] == [
+        "https://old-online.example.com", "https://old-dead.example.com", "https://fresh.example.com",
+    ]

@@ -107,11 +107,13 @@ def status_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
     """渠道状态采集任务体：只拉 status.url，diff 变化写入状态事件。"""
     def _run() -> dict[str, Any]:
         scan = scan_statuses(config, store=store)
-        # 顺带执行保留清理：状态时序只留配置的天数；状态事件永不清理
+        # 顺带执行保留清理：状态快照与变化事件同口径只留配置的天数
         cutoff = time.time() - config.settings.retention_status_days * 86400
         purged = store.purge_status(cutoff)
-        if purged:
-            tasklog.emit(f"保留清理：移除 {purged} 条过期状态记录")
+        if purged["records"] or purged["events"]:
+            tasklog.emit(
+                f"保留清理：移除过期状态记录 {purged['records']} 条、状态事件 {purged['events']} 条"
+            )
         return {
             "records": scan.records,
             "events": [event["kind"] for event in scan.events],
@@ -410,7 +412,7 @@ def discovery_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
         stats = asyncio.run(discover.refresh_online(progress=tasklog.emit))
         tasklog.emit(
             f"新站发现完成：池子 {stats['pool']}（新增 {stats['pool_added']}），"
-            f"本轮探测 {stats['probed_now']} 个、在线 {stats['online_now']}，累计在线 {stats['online_total']}，"
+            f"本轮探测新收录 {stats['probed_now']} 个、在线 {stats['online_now']}，累计在线 {stats['online_total']}，"
             f"待导入 {stats['importable']}"
         )
         return stats

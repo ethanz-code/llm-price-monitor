@@ -66,6 +66,45 @@ def _validated_price_payload(answer: str) -> dict[str, Any]:
         raise AIExtractionError("AI 标准化结果缺少 models 数组")
     return result
 
+
+def _validated_alias_payload(answer: str) -> dict[str, Any]:
+    """模型名对照换模型链的内容校验：合法 JSON 且带 mappings 数组。"""
+    result = json_content(answer)
+    if not isinstance(result.get("mappings"), list):
+        raise AIExtractionError("AI 模型名对照结果缺少 mappings 数组")
+    return result
+
+
+def _alias_mappings(
+    mappings: list[Any],
+    expected: list[str],
+    site_names: set[str],
+) -> dict[str, dict[str, Any]]:
+    """对照结果收紧：只留目标集合内的标准名，原始名与别名都必须真实出现在站点名单里。
+
+    对照表只用于和站点接口名单做匹配，名单外的值是模型幻觉——留着匹配不上是废料，
+    万一撞名还会把别的模型的价格挂到目标头上，必须丢弃。
+    """
+    details: dict[str, dict[str, Any]] = {}
+    for item in mappings:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get("model") or "").strip()
+        if model not in expected or model in details:
+            continue
+        observed = str(item.get("observed_model") or "").strip()
+        if observed and observed not in site_names:
+            observed = ""
+        aliases: list[str] = []
+        for alias in item.get("aliases") or []:
+            text = str(alias).strip()
+            if text in site_names and text not in aliases:
+                aliases.append(text)
+        if not observed and not aliases:
+            continue
+        details[model] = {"observed_model": observed, "aliases": aliases}
+    return details
+
 # 缓存键里的逐请求噪声字段：值随机、与模型名/价格无关（如 cun 每次请求把随机哈希
 # pricing_version 挂在随机模型上），只从缓存键里剔除，发给 AI 的证据原文不动
 _CACHE_KEY_NOISE_KEYS = frozenset({"pricing_version"})
@@ -358,6 +397,75 @@ expected_models：
         finally:
             if own:
                 client.close()
+
+    def extract_aliases(
+        self,
+        spec: SiteSpec,
+        responses: list[dict[str, Any]],
+        *,
+        client: httpx.Client | None = None,
+        expected_models: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """new-api 直采路径专用的轻量模型名对照：单次调用，只回名字映射不回价格。
+
+        重量级 extract() 的输出按统一结构带价格分档和证据引用，一条 300~700 tokens，
+        必须按 4 模型分批才塞得进输出预算；而直采路径价格本来就不从 AI 来，AI 只提供
+        「标准名 → 站点接口模型名」的对照，输出是纯映射表，全部目标模型一次调用完成。
+        返回 {标准名: {"observed_model": str, "aliases": [str, ...]}}，原始名与别名都
+        已过滤到站点接口名单内；接口里没有模型名单时返回空表（直采同样解析不出，
+        不值得烧一次 AI），解析或校验失败抛 AIExtractionError，调用方按既定设计回落
+        无别名的直采定价。
+        """
+        if not self.config.enabled:
+            raise AIExtractionError("价格监控 AI 已禁用")
+        if not self.config.base_url or not self.config.pick_model():
+            raise AIExtractionError("配置文件 ai.base_url 或 ai.models 未配置")
+        expected = [name for name in dict.fromkeys(expected_models or [target.name for target in spec.models]) if name]
+        if not expected:
+            raise AIExtractionError(f"站点 {spec.id} 未配置目标模型 models")
+        site_names = sorted({
+            str(item.get("model_name")).strip()
+            for response in responses
+            if isinstance(response.get("payload"), dict)
+            for item in response["payload"].get("data", [])
+            if isinstance(item, dict) and str(item.get("model_name", "")).strip()
+        })
+        if not site_names:
+            return {}
+        # 缓存键独立于价格抽取：对照只取决于两份名单，名单没变（顺序无关）就一直命中
+        evidence = json.dumps({"models": expected, "site_names": site_names}, ensure_ascii=False)
+        key = payload_hash({"version": 1, "kind": "aliases", "site": spec.id, "evidence": evidence})
+        cached = self._cached_result(key)
+        if isinstance(cached, dict) and isinstance(cached.get("mappings"), list):
+            return _alias_mappings(cached["mappings"], expected, set(site_names))
+        own = client is None
+        client = client or ai_http_client(self.config)
+        system = (
+            "你是模型名对照助手。给你两份名单：目标模型的标准名列表，和一个模型中转站接口返回的模型 ID 列表。"
+            "把每个标准名对应到站点名单里属于同一模型的模型 ID：只允许同一家模型的命名变体"
+            "（供应商前缀、大小写、分隔符、版本号写法差异），禁止把标准名对应到另一个不同模型。"
+            "站点名单里找不到对应项的标准名直接省略，不要编造。必须只返回 JSON，不要解释。"
+        )
+        user = (
+            f"目标标准名：{json.dumps(expected, ensure_ascii=False)}\n"
+            f"站点接口模型名：{json.dumps(site_names, ensure_ascii=False)}\n"
+            '输出结构：{"mappings": [{"model": "标准名", "observed_model": "站上模型 ID 或空串", "aliases": ["属于该标准名的站点模型 ID"]}]}'
+        )
+        try:
+            _, response = _ai.request_with_model_fallback(
+                self.config, system, user,
+                max_tokens=4000,
+                client=client,
+                scene="模型名对照",
+                validate=_validated_alias_payload,
+                deadline=time.monotonic() + 300,
+            )
+        finally:
+            if own:
+                client.close()
+        mappings = _validated_alias_payload(ai_content(self.config.api_format, response.json()))["mappings"]
+        self._save_cached_result(key, {"mappings": mappings})
+        return _alias_mappings(mappings, expected, set(site_names))
 
     def _extract_batch(
         self,

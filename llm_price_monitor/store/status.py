@@ -18,10 +18,12 @@ from .base import StoreBase, _dumps
 class StatusStoreMixin(StoreBase):
     # ---------- 渠道状态时序与变化事件 ----------
 
-    def purge_status(self, before_ts: float) -> int:
+    def purge_status(self, before_ts: float) -> dict[str, int]:
+        """过期状态数据清理：快照与变化事件同口径按保留天数淘汰（事件原先永不清理，会无限累积）。"""
         with self._conn() as conn:
-            cursor = conn.execute("DELETE FROM status_records WHERE captured_at < ?", (before_ts,))
-            return int(cursor.rowcount)
+            records = conn.execute("DELETE FROM status_records WHERE captured_at < ?", (before_ts,))
+            events = conn.execute("DELETE FROM status_events WHERE detected_at < ?", (before_ts,))
+            return {"records": int(records.rowcount), "events": int(events.rowcount)}
 
     def append_status_records(self, rows: list[dict[str, Any]]) -> None:
         """状态快照入库前先做增量裁剪：与该站点上一条原始快照（documents 里的参照）比对，

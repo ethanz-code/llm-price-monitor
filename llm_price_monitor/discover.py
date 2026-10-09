@@ -650,11 +650,13 @@ def run_sweep(engine: str, panel: str, query: str | None, size: int) -> None:
 async def refresh_online(
     concurrency: int = 16, timeout: float = 8.0, proxy: str | None = None, progress: Callable[[str], None] | None = None
 ) -> dict:
-    """管理台「刷新发现」任务体：拉默认源（zuiquanapi）更新候选池，只探测没测过在线的候选，
-    与上轮在线结果合并落盘三件套。返回统计给任务日志与前端提示。
+    """管理台「刷新发现」任务体：拉默认源（zuiquanapi）更新候选池，只探测从没测过的新候选，
+    与上轮全部探测结果（在线与失联都算）合并落盘三件套。返回统计给任务日志与前端提示。
 
-    progress 是可选的进度回调（tasklog/CLI 各自接）：整轮要探几千个候选、耗时以十分钟计，
-    不报进度的话任务日志从头到尾只有开始一行，界面上就像卡死。
+    刷新的定位是「拿站点与简介」：拉源秒级完成，探测只对新增候选做一次——上轮失联的站
+    不反复重探（几千个全量重探会把定时刷新拖成十几分钟的哑巴活）；要给失联站翻案用
+    CLI probe --retry-failed。progress 是可选进度回调（tasklog/CLI 各自接），
+    首轮全量建档或单源新增较多时让界面有东西可看。
     """
     def report(message: str) -> None:
         if progress is not None:
@@ -672,9 +674,9 @@ async def refresh_online(
             previous = json.loads(probed_file.read_text(encoding="utf-8"))["results"]
         except Exception:
             previous = []
-    known_online = {row["url"] for row in previous if row.get("online")}
-    todo = [cand for url, cand in all_candidates.items() if url not in known_online]
-    report(f"候选池 {pool_total}（新增 {pool_added}），开始探测 {len(todo)} 个候选（上轮在线 {len(known_online)} 个保留）…")
+    probed_urls = {row["url"] for row in previous}
+    todo = [cand for url, cand in all_candidates.items() if url not in probed_urls]
+    report(f"候选池 {pool_total}（新增 {pool_added}），探测新收录 {len(todo)} 个（已测 {len(probed_urls)} 个沿用上轮结果）…")
     # 分批探测逐批上报：单批太小会拖慢整体（批间重建连接），200 约一批十几秒、粒度够看
     probed: list[dict] = []
     batch_size = 200
@@ -682,7 +684,7 @@ async def refresh_online(
         probed.extend(await probe(todo[start : start + batch_size], concurrency, timeout, proxy))
         if len(todo) > batch_size:
             report(f"探测进度 {min(start + batch_size, len(todo))}/{len(todo)}")
-    merged = [row for row in previous if row.get("online")] + probed
+    merged = previous + probed
 
     importable = build_importable({cand.host: cand for cand in all_candidates.values()}, merged, exclude_hosts=set(existing_site_hosts()))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -696,7 +698,7 @@ async def refresh_online(
         "pool_added": pool_added,
         "probed_now": len(probed),
         "online_now": len([r for r in probed if r.get("online")]),
-        "online_total": len(merged),
+        "online_total": len([r for r in merged if r.get("online")]),
         "importable": len(importable),
     }
 

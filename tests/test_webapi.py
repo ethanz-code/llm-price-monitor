@@ -982,6 +982,32 @@ def test_ai_logs_endpoint_clamps_limit_and_offset(workspace: Path):
     assert body["total"] == 1 and len(body["logs"]) == 1
 
 
+def test_ai_log_detail_endpoint(workspace: Path):
+    """单条详情接口：仅管理员可读，含 prompt/回复摘要全文；列表接口不带回摘要列。"""
+    from llm_price_monitor.store import Store
+
+    plain = TestClient(create_app(_config(workspace)))
+    assert plain.get("/api/ai-logs/1").status_code == 401
+
+    admin = _admin_client(workspace)
+    store = Store(workspace / "var" / "monitor.db")
+    long_prompt = "a" * 5000  # 超过入库截断上限，应被裁到上限长度
+    store.add_ai_log(
+        scene="价格抽取", model="m1", status="ok", duration_ms=100,
+        prompt_excerpt=long_prompt, response_excerpt="模型回复",
+    )
+    listed = admin.get("/api/ai-logs").json()["logs"]
+    assert listed and "prompt_excerpt" not in listed[0] and "response_excerpt" not in listed[0]
+
+    log_id = listed[0]["id"]
+    detail = admin.get(f"/api/ai-logs/{log_id}").json()["log"]
+    from llm_price_monitor.store import _AI_LOG_TEXT_CHARS
+
+    assert detail["prompt_excerpt"] == "a" * _AI_LOG_TEXT_CHARS + "…"
+    assert detail["response_excerpt"] == "模型回复"
+    assert admin.get("/api/ai-logs/999999").status_code == 404
+
+
 def test_catalog_tasks_are_mutually_exclusive():
     """目录刷新与单厂商源刷新都读-改-写同一份 catalog 文档，必须互相冲突（与采集组无关）。"""
     from llm_price_monitor.webapi import tasks
@@ -1088,9 +1114,9 @@ def test_settings_validates_schedule(workspace: Path):
     client = _admin_client(workspace)
     assert client.put("/api/settings", json={"settings": {"schedule": {"price": -5}}}).status_code == 400
     assert client.put("/api/settings", json={"settings": {"schedule": {"price": True}}}).status_code == 400
-    ok = client.put("/api/settings", json={"settings": {"schedule": {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0}}})
+    ok = client.put("/api/settings", json={"settings": {"schedule": {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0, "discovery": 0}}})
     assert ok.status_code == 200
-    assert ok.json()["settings"]["schedule"] == {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0}
+    assert ok.json()["settings"]["schedule"] == {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0, "discovery": 0}
 
 
 def test_settings_schedule_defaults_backfill_per_key(tmp_path: Path):
@@ -1182,7 +1208,7 @@ def test_reseed_modes(workspace: Path):
 
     # overwrite：种子里的键逐项覆盖；sites 为空数组时受保护不清空
     seed_path.write_text(json.dumps({
-        "settings": {"timeout": 20, "schedule": {"price": 30, "status": 5, "notice": 10, "catalog": 720, "rankings": 0}},
+        "settings": {"timeout": 20, "schedule": {"price": 30, "status": 5, "notice": 10, "catalog": 720, "rankings": 0, "discovery": 0}},
         "ai": {"enabled": True},
         "sites": [],
     }), encoding="utf-8")

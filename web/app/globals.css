@@ -4169,8 +4169,10 @@ a.event-card {
     display: inline-flex;
   }
 
-  /* 主题切换只保留汉堡菜单里的入口 */
-  .theme-wrap {
+  /* 主题切换只保留汉堡菜单里的入口；nav-actions 整体隐藏，避免它和
+     nav-mobile-wrap 各吃一份 auto 边距，把汉堡按钮挤离右缘 */
+  .theme-wrap,
+  .nav-actions {
     display: none;
   }
 

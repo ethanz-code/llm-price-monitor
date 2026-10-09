@@ -23,6 +23,10 @@ _log = logging.getLogger("llm_price_monitor.webapi.tasks")
 DEFAULT_MAX_TASK_RUNS = 100
 DEFAULT_MAX_LOG_LINES = 500
 
+# 落盘时保留完整日志的最近任务数：快照最多留 100 条任务、每条日志可到 500 行，
+# 全量落盘会让 tasks 文档膨胀到十几 MB；更早的任务只留一条归档说明（内存里日志不裁）
+KEEP_LOGGED_RUNS = 10
+
 _lock = threading.Lock()
 _tasks: dict[str, dict[str, Any]] = {}
 _RUNNING_KINDS: dict[str, str] = {}
@@ -85,6 +89,15 @@ def _persist() -> None:
         max_runs, _ = _limits()
         items = sorted(_tasks.values(), key=lambda item: str(item["started_at"]), reverse=True)
         snapshot = [dict(item, logs=list(item["logs"])) for item in items[:max_runs]]
+        for index, entry in enumerate(snapshot):
+            if index >= KEEP_LOGGED_RUNS and entry["logs"]:
+                entry["logs"] = [
+                    {
+                        "time": entry.get("finished_at") or entry["started_at"],
+                        "message": "历史任务日志已归档省略",
+                        "level": "info",
+                    }
+                ]
     try:
         store.set_document("tasks", {"runs": snapshot})
     except Exception as exc:  # 落盘失败不阻断采集：日志属辅助信息，任务状态仍在内存可用

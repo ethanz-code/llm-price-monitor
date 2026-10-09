@@ -553,14 +553,10 @@ def test_network_pricing_prefers_exact_model_name_over_versionless_target():
 
 
 def test_network_adapter_uses_ai_alias_before_newapi_calculation(monkeypatch):
-    def fake_extract(self, spec, page_text, responses, **kwargs):
-        return [PriceRecord(
-            "informal-gpt", None, None, "CNY/1M tokens", "", 0,
-            {"observed_model": "openai/gpt-5.6-sol", "aliases": ["GPT-5.6 Sol"]},
-            "candidate",
-        )]
+    def fake_extract_aliases(self, spec, responses, **kwargs):
+        return {"informal-gpt": {"observed_model": "openai/gpt-5.6-sol", "aliases": ["GPT-5.6 Sol"]}}
 
-    monkeypatch.setattr("llm_price_monitor.ai.AIPriceExtractor.extract", fake_extract)
+    monkeypatch.setattr("llm_price_monitor.ai.AIPriceExtractor.extract_aliases", fake_extract_aliases)
     spec = SiteSpec(
         id="demo",
         models=(ModelTarget("informal-gpt"),),
@@ -3651,6 +3647,78 @@ def test_ai_cache_key_ignores_order_and_noise_fields():
     key = extractor._cache_key(spec, ["m-1"], evidence(first))
     assert key == extractor._cache_key(spec, ["m-1"], evidence(second))
     assert key != extractor._cache_key(spec, ["m-1"], evidence(changed))
+
+
+class _FakeAliasCache:
+    def __init__(self) -> None:
+        self.data: dict[str, dict] = {}
+
+    def cache_get(self, key: str) -> dict | None:
+        return self.data.get(key)
+
+    def cache_put(self, key: str, result: dict) -> None:
+        self.data[key] = result
+
+
+def test_ai_extract_aliases_single_call_filtered_and_cached():
+    """轻量对照：单次调用出全量映射；别名收紧到站点名单，名单外/目标外的丢弃；同输入二走缓存。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"mappings": [
+            {"model": "gpt-6-luna", "observed_model": "gpt-6-luna", "aliases": ["openai/gpt-6-luna", "幻觉名", "gpt-6-luna"]},
+            {"model": "ghost-model", "observed_model": "名单外的名字", "aliases": ["也是幻觉"]},
+            {"model": "gpt-6-sol", "observed_model": "gpt-6-sol", "aliases": []},
+            {"model": "kimi-k3", "observed_model": "", "aliases": []},
+        ]})}}]})
+
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/api/pricing"})
+    responses = [{
+        "url": "https://demo.test/api/pricing",
+        "resource_type": "fetch",
+        "payload": {"data": [{"model_name": "gpt-6-luna"}, {"model_name": "openai/gpt-6-luna"}, {"model_name": "gpt-6-sol"}]},
+    }]
+    expected = ["gpt-6-luna", "ghost-model", "gpt-6-sol", "kimi-k3"]
+    cache = _FakeAliasCache()
+    extractor = AIPriceExtractor(AIConfig(
+        enabled=True, base_url="https://ai.test/v1", models=("test-model",), api_key="k", cache=cache,
+    ))
+    details = extractor.extract_aliases(
+        spec, responses, client=httpx.Client(transport=httpx.MockTransport(handler)), expected_models=expected,
+    )
+    assert calls["n"] == 1
+    # 幻觉名（不在站点名单）被剔掉，名单内的重复项去重保留
+    assert details["gpt-6-luna"] == {"observed_model": "gpt-6-luna", "aliases": ["openai/gpt-6-luna", "gpt-6-luna"]}
+    # 原始名与别名全在名单外的条目、全空条目丢弃；原始名在名单内的正常保留
+    assert set(details) == {"gpt-6-luna", "gpt-6-sol"}
+    assert details["gpt-6-sol"] == {"observed_model": "gpt-6-sol", "aliases": []}
+    # 同输入第二次直接命中缓存，不再发请求
+    again = extractor.extract_aliases(
+        spec, responses, client=httpx.Client(transport=httpx.MockTransport(handler)), expected_models=expected,
+    )
+    assert calls["n"] == 1
+    assert again == details
+
+
+def test_ai_extract_aliases_empty_site_names_skips_ai():
+    """接口里没有模型名单时无从对照：返回空表且不发起 AI 调用。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/api/pricing"})
+    extractor = AIPriceExtractor(AIConfig(enabled=True, base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    details = extractor.extract_aliases(
+        spec,
+        [{"url": "https://demo.test/api/pricing", "resource_type": "fetch", "payload": {"data": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        expected_models=["gpt-6-luna"],
+    )
+    assert details == {}
+    assert calls["n"] == 0
 
 
 def test_ai_config_rejects_max_tokens_below_4000():

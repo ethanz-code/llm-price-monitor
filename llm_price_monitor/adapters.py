@@ -523,31 +523,29 @@ class NetworkAdapter:
             # model_name aliases; pricing itself remains deterministic.
             if ai is not None and ai.usable:
                 try:
-                    ai_records = AIPriceExtractor(ai).extract(
-                        spec, "", [captured], client=client,
+                    alias_details = AIPriceExtractor(ai).extract_aliases(
+                        spec, [captured], client=client,
                         expected_models=[target.name for target in spec.models],
                     )
                     aliases: dict[str, tuple[str, ...]] = {}
-                    for record in ai_records:
-                        metadata = record.metadata or {}
-                        values = [metadata.get("observed_model"), *(metadata.get("aliases") or [])]
-                        aliases[record.model] = tuple(
-                            value.strip() for value in values
-                            if isinstance(value, str) and value.strip()
+                    for model, details in alias_details.items():
+                        observed = str(details.get("observed_model") or "")
+                        aliases[model] = tuple(
+                            value for value in (observed, *(details.get("aliases") or [])) if value
                         )
                     resolved_records = network_pricing_records(spec, [captured], aliases)
-                    alias_metadata = {
-                        record.model: record.metadata or {}
-                        for record in ai_records
-                    }
                     for resolved in resolved_records:
-                        details = dict(resolved.metadata or {})
-                        ai_details = alias_metadata.get(resolved.model, {})
-                        if ai_details.get("observed_model"):
-                            details["observed_model"] = ai_details["observed_model"]
-                        if ai_details.get("aliases"):
-                            details["aliases"] = ai_details["aliases"]
-                        resolved.metadata = details
+                        details = alias_details.get(resolved.model)
+                        if not details:
+                            continue
+                        merged = dict(resolved.metadata or {})
+                        if details.get("observed_model"):
+                            merged["observed_model"] = details["observed_model"]
+                        if details.get("aliases"):
+                            merged["aliases"] = details["aliases"]
+                        resolved.metadata = merged
+                    if aliases:
+                        tasklog.emit(f"[{spec.id}] AI 模型名对照：命中 {len(aliases)} 个标准名")
                     if any(record.price_status != "unavailable" for record in resolved_records):
                         return resolved_records
                 except AIExtractionError as exc:
