@@ -118,6 +118,37 @@ CREATE TABLE IF NOT EXISTS ip_geo (
     ok INTEGER NOT NULL DEFAULT 1,
     resolved_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    models TEXT,
+    contact TEXT,
+    ip TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_usage (
+    ip TEXT NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (ip, day)
+);
+CREATE TABLE IF NOT EXISTS ai_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    scene TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    error TEXT,
+    prompt_excerpt TEXT,
+    response_excerpt TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_logs_ts ON ai_logs(ts);
 """
 
 
@@ -390,6 +421,62 @@ class Store:
             "price_events", limit=limit, site_id=site_id, kind=kind, kind_column="kind", payload_column="payload"
         )
 
+    # ---------- 站点提交 ----------
+
+    def add_site_submission(
+        self, *, name: str, url: str, models: str | None, contact: str | None, ip: str
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO site_submissions (name, url, models, contact, ip, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?, 'new', ?)",
+                (name, url, models, contact, ip, time.time()),
+            )
+
+    def list_site_submissions(
+        self, *, limit: int = 100, offset: int = 0, status: str | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, min(limit, _MAX_ROW_LIMIT))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM site_submissions {where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM site_submissions {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def set_site_submission_status(self, submission_id: int, status: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE site_submissions SET status = ? WHERE id = ?", (status, submission_id)
+            )
+        return cursor.rowcount > 0
+
+    # ---------- AI 助手配额（SQLite 计数：重启不丢、并发不互相覆盖） ----------
+
+    def quota_used(self, ip: str, day: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT count FROM assistant_usage WHERE ip = ? AND day = ?", (ip, day)
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def record_quota(self, ip: str, day: str) -> None:
+        """计数 +1；顺带清理历史日期的行，避免表随天数无限增长。"""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO assistant_usage (ip, day, count) VALUES (?, ?, 1)"
+                " ON CONFLICT(ip, day) DO UPDATE SET count = count + 1",
+                (ip, day),
+            )
+            conn.execute("DELETE FROM assistant_usage WHERE day < ?", (day,))
+
     def append_feedback(self, content: str, contact: str | None) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -423,6 +510,71 @@ class Store:
     def purge_visits(self, before_ts: float) -> int:
         with self._conn() as conn:
             cursor = conn.execute("DELETE FROM visit_logs WHERE ts < ?", (before_ts,))
+            return int(cursor.rowcount)
+
+    # ---------- AI 请求日志 ----------
+
+    # 日志保留天数：写入时顺带清理，超过即淘汰
+    AI_LOG_RETENTION_DAYS = 7
+
+    def add_ai_log(
+        self,
+        *,
+        scene: str,
+        model: str,
+        status: str,
+        duration_ms: int,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        error: str | None = None,
+        prompt_excerpt: str | None = None,
+        response_excerpt: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            now = time.time()
+            conn.execute(
+                "INSERT INTO ai_logs (ts, scene, model, status, duration_ms, prompt_tokens, completion_tokens,"
+                " total_tokens, error, prompt_excerpt, response_excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    now,
+                    scene,
+                    model,
+                    status,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    error,
+                    prompt_excerpt,
+                    response_excerpt,
+                ),
+            )
+            conn.execute("DELETE FROM ai_logs WHERE ts < ?", (now - self.AI_LOG_RETENTION_DAYS * 86400,))
+
+    def read_ai_logs(
+        self, *, limit: int = 100, offset: int = 0, scene: str | None = None, status: str | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        conditions = []
+        params: list[Any] = []
+        if scene:
+            conditions.append("scene = ?")
+            params.append(scene)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._conn() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM ai_logs{where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM ai_logs{where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def purge_ai_logs(self, before_ts: float) -> int:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM ai_logs WHERE ts < ?", (before_ts,))
             return int(cursor.rowcount)
 
     # ---------- 访客 IP 归属地 ----------

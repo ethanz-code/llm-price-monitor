@@ -32,6 +32,8 @@ COPY config/ ./config/
 # 管理面板「使用文档」页在运行时读取仓库根 README.md，镜像里必须带上
 COPY README.md ./
 RUN uv sync --frozen --no-dev
+# 无头浏览器采集：浏览器二进制与系统依赖烤进镜像，启动时只需自检不再联网下载
+RUN playwright install --with-deps chromium
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 CMD ["price-web", "--host", "0.0.0.0", "--port", "8000"]

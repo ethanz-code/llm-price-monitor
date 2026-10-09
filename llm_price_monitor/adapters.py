@@ -301,6 +301,22 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
     return list(records.values())
 
 
+class _BrowserPageResponse:
+    """无头浏览器抓到的页面伪装成 httpx.Response 的最小接口，让后续 HTML 解析路径直接复用。"""
+
+    def __init__(self, url: str, text: str) -> None:
+        self.url = url
+        self.text = text
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+
+    def json(self) -> Any:
+        raise ValueError("无头浏览器页面没有 JSON 载荷")
+
+    def raise_for_status(self) -> None:
+        return None
+
+
 class NetworkAdapter:
     def collect(
         self,
@@ -343,7 +359,13 @@ class NetworkAdapter:
                 raise PriceMonitorError(f"站点 {spec.id} 未配置 network.url")
             # 扁平形态：params/headers 等直接挂在 network 下
             entry = resolve_endpoint({**network, "url": url_value}, spec=spec, label="network")
-        response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+        headless_config = network.get("headless") or {}
+        if isinstance(headless_config, dict) and headless_config.get("enabled"):
+            from llm_price_monitor.browser_fetch import fetch_page_html
+
+            response: Any = _BrowserPageResponse(entry.url, fetch_page_html(entry.url, headless_config, user_agent))
+        else:
+            response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
         if response.status_code in {401, 403}:
             return auth_required_records(spec, f"网络价格接口返回 HTTP {response.status_code}", str(response.url))
         response.raise_for_status()
@@ -402,13 +424,13 @@ class NetworkAdapter:
                 # 记录的 source_url 指向倍率接口，倍率证据排在基准价证据前面
                 resolve_rate = None
                 source_url = str(response.url)
-                ratio_url = network.get("ratio_url")
-                if isinstance(ratio_url, str) and ratio_url.strip():
+                ratio = _ratio_endpoint(network)
+                if ratio is not None:
                     resolve_rate, rate_evidence = _rate_resolver(
-                        spec, client, entry, user_agent, timeout, ratio_url.strip(),
+                        spec, client, entry, user_agent, timeout, ratio[0], extra_headers=ratio[1],
                     )
                     entry_evidence = [rate_evidence[0], *entry_evidence]
-                    source_url = ratio_url.strip()
+                    source_url = ratio[0]
                 records = _records_from_base_entries(
                     spec, entries, entry_evidence, source_url, adapter_label="browser_network",
                     resolve_rate=resolve_rate,
@@ -587,6 +609,22 @@ def _base_entry_unavailable(
     )
 
 
+def _ratio_endpoint(network: dict[str, Any]) -> tuple[str, dict[str, str]] | None:
+    """network.ratio_url 归一成 (url, 独立请求头)；兼容旧的纯 URL 字符串写法。"""
+    ratio_raw = network.get("ratio_url")
+    if ratio_raw is None:
+        return None
+    if isinstance(ratio_raw, str):
+        return (ratio_raw.strip(), {}) if ratio_raw.strip() else None
+    if isinstance(ratio_raw, dict):
+        url = ratio_raw.get("url")
+        headers = ratio_raw.get("headers")
+        if not isinstance(url, str) or not url.strip():
+            return None
+        return url.strip(), {str(key): expand_header_value(str(value)) for key, value in headers.items()} if isinstance(headers, dict) else {}
+    return None
+
+
 def _rate_resolver(
     spec: SiteSpec,
     client: httpx.Client,
@@ -594,13 +632,16 @@ def _rate_resolver(
     user_agent: str,
     timeout: float,
     ratio_url: str,
+    *,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[Callable[[dict[str, Any]], tuple[float | None, str | None]], list[dict[str, Any]]]:
     """倍率接口 JSON → (resolve_rate(entry), 证据)。
 
     接口行形如 {provider, model_display, rate}；倍率先按模型显示名匹配，
     缺失时回退厂商级。返回的 resolve_rate 交给 _records_from_base_entries 消费。
+    extra_headers 是倍率接口自己的独立请求头，盖过站点级认证头里的同名键。
     """
-    request_headers = build_request_kwargs(entry, spec, user_agent, timeout)["headers"]
+    request_headers = {**build_request_kwargs(entry, spec, user_agent, timeout)["headers"], **(extra_headers or {})}
     response = client.get(ratio_url, headers=request_headers, timeout=timeout)
     response.raise_for_status()
     try:

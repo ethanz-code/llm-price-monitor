@@ -22,15 +22,10 @@
       "qwen3.8-flash",
       "qwen3.8-27b",
       "qwen3.8-max",
-      "qwen3.8-2.4t-a95b",
       "kimi-k3",
       "kimi-k2.7-code",
-      "glm-5.2",
       "deepseek-v4-pro-0813",
-      "deepseek-v4-flash-0731",
-      "qwen3.7-plus",
-      "qwen3.7-plus-2026-05-26",
-      "qwen3.7-max-2026-06-08"
+      "deepseek-v4-flash-0731"
     ],
     "max_input_chars": 60000,
     "max_tokens": 4000

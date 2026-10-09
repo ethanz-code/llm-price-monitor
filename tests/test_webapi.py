@@ -556,6 +556,51 @@ def test_feedback_push_failure_does_not_block_save(workspace: Path, monkeypatch)
 
 
 
+def test_site_submission_saves_pushes_and_admin_manages(workspace: Path, monkeypatch) -> None:
+    sent: dict = {}
+
+    def fake_send(*, app_token: str, content: str, summary: str, uid: str | None, timeout: float = 10.0) -> None:
+        sent.update(app_token=app_token, content=content, uid=uid)
+
+    monkeypatch.setattr(wxpusher, "send_wxpusher", fake_send)
+    anon = TestClient(create_app(_config(workspace)))
+    # 未登录也能提交（公开写接口），但看不到列表
+    assert anon.post(
+        "/api/site-submissions",
+        json={"name": "Example 中转", "url": "https://example.com", "models": "gpt-5.6", "contact": "a@b.c"},
+    ).status_code == 200
+    assert anon.get("/api/admin/site-submissions").status_code == 401
+    # 校验：地址必须 http(s) 开头
+    assert anon.post("/api/site-submissions", json={"name": "x", "url": "ftp://bad"}).status_code == 400
+
+    assert not sent  # 未配置 WxPusher 时不应推送
+    sent.clear()
+    client = _admin_client(workspace)
+    client.put("/api/settings", json={"settings": {"wxpusher_app_token": "AT_x", "wxpusher_uid": "UID_y"}})
+    assert client.post(
+        "/api/site-submissions", json={"name": "第二家", "url": "https://two.example.com"}
+    ).status_code == 200
+    assert "第二家" in sent["content"] and sent["uid"] == "UID_y"
+
+    listed = client.get("/api/admin/site-submissions").json()
+    assert listed["total"] == 2
+    first_id = listed["submissions"][-1]["id"]  # 倒序，最早一条在末尾
+    assert listed["submissions"][-1]["status"] == "new"
+    assert client.post(f"/api/admin/site-submissions/{first_id}/status", json={"status": "done"}).status_code == 200
+    assert client.get("/api/admin/site-submissions", params={"status": "done"}).json()["total"] == 1
+    assert client.post("/api/admin/site-submissions/999/status", json={"status": "done"}).status_code == 404
+    with sqlite3.connect(workspace / "var" / "monitor.db") as conn:
+        rows = conn.execute("SELECT name, status FROM site_submissions ORDER BY id").fetchall()
+    assert rows == [("Example 中转", "done"), ("第二家", "new")]
+
+
+def test_site_submission_rate_limits_per_ip(workspace: Path) -> None:
+    client = TestClient(create_app(_config(workspace)))
+    for _ in range(3):
+        assert client.post("/api/site-submissions", json={"name": "x", "url": "https://x.test"}).status_code == 200
+    assert client.post("/api/site-submissions", json={"name": "x", "url": "https://x.test"}).status_code == 429
+
+
 def test_settings_test_probes_external_services_with_form_values(workspace: Path, monkeypatch) -> None:
     import llm_price_monitor.webapi.routes.settings as settings_routes
 

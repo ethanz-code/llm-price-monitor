@@ -26,7 +26,7 @@ import type {
   OverviewData,
   StatusSnapshot,
 } from "@/lib/types";
-import { ComingSoon } from "@/components/ui";
+import { SiteSubmitButton } from "@/components/SiteSubmitModal";
 import { Reveal } from "@/components/Reveal";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
@@ -305,12 +305,7 @@ export default async function LandingPage() {
                 <span className="section-num">03</span>
                 <h2>{home.sections.sites}</h2>
               </div>
-              <ComingSoon
-                label={home.submitSite}
-                variant="text"
-                title={home.submitSite}
-                description={home.submitSiteDesc}
-              />
+              <SiteSubmitButton label={home.submitSite} variant="text" />
             </div>
             <p className="landing-section-sub">{home.sectionSubs.sites}</p>
             {sites.length > 0 ? (
