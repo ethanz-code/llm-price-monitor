@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from llm_price_monitor import egress, tasklog
+from llm_price_monitor import egress, proxy_switch, tasklog
 
 # 传输层错误最多重试次数；总尝试 = 1 + RETRY_ATTEMPTS。3 次退避约 10s 窗口：
 # 2 次（1s/2s）只够盖住秒级抖动，实测对端会持续掐十几秒才恢复
@@ -131,7 +131,16 @@ class FallbackTransport(httpx.BaseTransport):
                 raise
             egress.mark_direct_failed(host)
             tasklog.emit(f"[{host}] 直连失败（{exc}），改走备用代理重试", "warn")
-            return self._proxied.handle_request(request)
+            try:
+                return self._proxied.handle_request(request)
+            except httpx.TransportError as proxy_exc:
+                # 代理出口也被目标站拒绝：配置了控制接口就自动换到对该站可达的节点，
+                # 重试一次；未启用/冷却中/无可达节点维持原样失败上报
+                switched = proxy_switch.auto_switch_for(host, str(request.url))
+                if switched is None:
+                    raise proxy_exc
+                tasklog.emit(f"[{host}] 节点已切换，重试一次代理请求")
+                return self._proxied.handle_request(request)
         if response.status_code in _FALLBACK_STATUS_CODES:
             egress.mark_direct_failed(host)
             tasklog.emit(

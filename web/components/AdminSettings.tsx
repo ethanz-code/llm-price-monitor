@@ -179,6 +179,9 @@ export function AdminSettings() {
   const [assistantDailyLimit, setAssistantDailyLimit] = useState("");
   const [assistantHourlyLimit, setAssistantHourlyLimit] = useState("");
   const [fallbackProxy, setFallbackProxy] = useState("");
+  const [proxyControllerUrl, setProxyControllerUrl] = useState("");
+  const [proxyControllerSecret, setProxyControllerSecret] = useState("");
+  const [proxySwitchGroup, setProxySwitchGroup] = useState("");
   const [aiMaxInputChars, setAiMaxInputChars] = useState("");
   const [aiMaxTokens, setAiMaxTokens] = useState("");
   const [saving, setSaving] = useState(false);
@@ -242,6 +245,9 @@ export function AdminSettings() {
             : "",
         );
         setFallbackProxy(typeof loaded.settings.fallback_proxy === "string" ? loaded.settings.fallback_proxy : "");
+        setProxyControllerUrl(typeof loaded.settings.proxy_controller_url === "string" ? loaded.settings.proxy_controller_url : "");
+        setProxyControllerSecret(typeof loaded.settings.proxy_controller_secret === "string" ? loaded.settings.proxy_controller_secret : "");
+        setProxySwitchGroup(typeof loaded.settings.proxy_switch_group === "string" ? loaded.settings.proxy_switch_group : "");
     } catch {
       setData({ settings: {}, ai: {} });
     }
@@ -313,9 +319,23 @@ export function AdminSettings() {
       toast("采集备用代理需以 http:// 或 https:// 开头，留空表示不启用");
       return;
     }
+    // 节点自动切换：控制地址与组名要么都填要么都留空；地址填了就必须是完整 http(s)
+    const controllerText = proxyControllerUrl.trim();
+    const switchGroupText = proxySwitchGroup.trim();
+    if (controllerText && !/^https?:\/\//i.test(controllerText)) {
+      toast("节点控制接口地址需以 http:// 或 https:// 开头，留空表示不启用自动切换");
+      return;
+    }
+    if (Boolean(controllerText) !== Boolean(switchGroupText)) {
+      toast("节点控制接口地址与节点组名需同时填写（或同时留空）");
+      return;
+    }
     const settings = {
       ...data.settings,
       fallback_proxy: proxyText || null,
+      proxy_controller_url: controllerText || null,
+      proxy_controller_secret: proxyControllerSecret.trim() || null,
+      proxy_switch_group: switchGroupText || null,
       wxpusher_app_token: wxToken.trim() || null,
       wxpusher_uid: wxUid.trim() || null,
       schedule: scheduleOut,
@@ -520,6 +540,36 @@ export function AdminSettings() {
                   测试连通
                 </Btn>
               </div>
+            </SettingRow>
+          </SettingsSection>
+          <SettingsSection
+            title="节点自动切换"
+            description="备用代理的出口也被目标站拒绝（拉黑）时，自动把代理节点切到对该站实测可达的其他节点再重试一次。三项都配置才启用；切换后同一站点 10 分钟内不会反复换。控制接口在 Clash Verge/mihomo 里叫 External Controller"
+            result={results.proxy}
+          >
+            <SettingRow label="控制接口地址" hint="例如 http://127.0.0.1:9097（Docker 部署填 mihomo 容器地址）；留空 = 不启用自动切换">
+              <Input
+                value={proxyControllerUrl}
+                onChange={setProxyControllerUrl}
+                placeholder="留空 = 不启用"
+                style={{ width: 260, maxWidth: "100%" }}
+              />
+            </SettingRow>
+            <SettingRow label="控制接口密钥" hint="mihomo 配置里的 secret，没设就留空">
+              <Input
+                value={proxyControllerSecret}
+                onChange={setProxyControllerSecret}
+                placeholder="未设置密钥就留空"
+                style={{ width: 260, maxWidth: "100%" }}
+              />
+            </SettingRow>
+            <SettingRow label="节点组名" hint="要切换的代理组名称，和代理面板里显示的组名一致（如「🚀 节点选择」）；自动切换时只在这个组内挑节点">
+              <Input
+                value={proxySwitchGroup}
+                onChange={setProxySwitchGroup}
+                placeholder="例如 节点选择"
+                style={{ width: 260, maxWidth: "100%" }}
+              />
             </SettingRow>
           </SettingsSection>
           <SettingsSection

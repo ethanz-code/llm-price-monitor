@@ -1,5 +1,5 @@
-"""站点发现接口：/api/discovery 以候选池为主表、探测档案联表，标注入库状态与空数据引导；
-管理操作（刷新任务、勾选导入）走 POST。"""
+"""站点发现接口：/api/discovery 直接下发候选池（站点、简介与监测源监控指标），
+监控判离线的站忽略；管理操作（刷新任务、勾选导入）走 POST。"""
 import json
 from pathlib import Path
 
@@ -10,19 +10,14 @@ from llm_price_monitor.webapi.app import create_app
 from tests.test_webapi import _config, workspace  # noqa: F401  workspace 为共享 fixture
 
 
-def _write_discovery(workspace: Path, results: list[dict], candidates: list[dict] | None = None) -> None:
-    """candidates 是候选池（主表，刷新只拉站点与简介），results 是探测档案（CLI probe 产出，联表）。"""
+def _write_pool(workspace: Path, candidates: list[dict]) -> None:
     out = workspace / "discovery"
     out.mkdir(parents=True, exist_ok=True)
     (out / "candidates.json").write_text(
         json.dumps(
-            {"generated_at": "2026-10-06 10:00:00", "count": len(candidates or []), "candidates": candidates or []},
+            {"generated_at": "2026-10-06 10:00:00", "count": len(candidates), "candidates": candidates},
             ensure_ascii=False,
         ),
-        encoding="utf-8",
-    )
-    (out / "probed.json").write_text(
-        json.dumps({"generated_at": "2026-10-06 10:00:00", "results": results}, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -33,24 +28,22 @@ def test_discovery_404_when_never_ran(workspace: Path, monkeypatch):
     assert client.get("/api/discovery").status_code == 404
 
 
-def test_discovery_lists_pool_and_joins_probe_archive(workspace: Path, monkeypatch):
+def test_discovery_lists_pool_with_monitor_stats(workspace: Path, monkeypatch):
     monkeypatch.setattr(discover, "OUT_DIR", workspace / "discovery")
-    # 池子里的站没探过也进列表（标 unknown）；探过但失联的不进列表只留计数；
-    # _config 种子里有站点 id=demo（demo.test），按归一化域名标已监控
-    _write_discovery(
+    # _config 种子里有站点 id=demo（demo.test），按归一化域名标已监控；
+    # 监控判离线的站直接忽略（计数不占列表），没监控数据的站照常展示
+    _write_pool(
         workspace,
         [
-            {"name": "公开站", "url": "https://demo.test", "sources": ["zuiquanapi"], "online": True, "new_api": True, "pricing_ok": True, "models": 42, "auth_required": False},
-            {"name": "要登录", "url": "https://auth.example.net", "sources": ["zuiquanapi"], "online": True, "new_api": True, "pricing_ok": False, "models": 0, "auth_required": True},
-            {"name": "没价格接口", "url": "https://noprice.example.org", "sources": ["zuiquanapi"], "online": True, "new_api": False, "pricing_ok": False, "models": 0, "auth_required": False},
-            {"name": "死站", "url": "https://dead.example.org", "sources": ["zuiquanapi"], "online": False, "new_api": False, "pricing_ok": False, "models": 0, "auth_required": False},
-        ],
-        candidates=[
-            {"host": "demo.test", "url": "https://demo.test", "name": "公开站", "sources": ["zuiquanapi"], "note": "", "meta": {"description": "老牌站"}},
-            {"host": "auth.example.net", "url": "https://auth.example.net", "name": "要登录", "sources": ["zuiquanapi"], "note": "", "meta": {}},
-            {"host": "noprice.example.org", "url": "https://noprice.example.org", "name": "没价格接口", "sources": ["zuiquanapi"], "note": "", "meta": {}},
-            {"host": "dead.example.org", "url": "https://dead.example.org", "name": "死站", "sources": ["zuiquanapi"], "note": "", "meta": {}},
-            {"host": "fresh.example.org", "url": "https://fresh.example.org", "name": "新收录", "sources": ["zuiquanapi"], "note": "", "meta": {"description": "刚收录还没探测"}},
+            {
+                "host": "demo.test", "url": "https://demo.test", "name": "老牌站", "sources": ["zuiquanapi"], "note": "",
+                "meta": {"description": "老牌中转站", "monitor_online": True, "uptime_7d": 99.5, "avg_ms": 1174, "last_ms": 900, "checked_at": "2026-10-06T07:37:04Z"},
+            },
+            {
+                "host": "offline.example.org", "url": "https://offline.example.org", "name": "挂了站", "sources": ["zuiquanapi"], "note": "",
+                "meta": {"monitor_online": False, "uptime_7d": 12.0, "avg_ms": None, "last_ms": None, "checked_at": "2026-10-06T07:40:00Z"},
+            },
+            {"host": "plain.example.com", "url": "https://plain.example.com", "name": "裸收录", "sources": ["zuiquanapi"], "note": "", "meta": {}},
         ],
     )
     client = TestClient(create_app(_config(workspace)))
@@ -58,19 +51,18 @@ def test_discovery_lists_pool_and_joins_probe_archive(workspace: Path, monkeypat
     assert resp.status_code == 200
     body = resp.json()
     assert body["generated_at"] == "2026-10-06 10:00:00"
-    assert body["summary"] == {
-        "total": 5, "online": 3, "unprobed": 1, "pricing_public": 1, "pricing_auth": 1, "dead": 1, "imported": 1,
-    }
+    assert body["summary"] == {"total": 3, "offline": 1, "imported": 1}
     by_host = {row["host"]: row for row in body["stations"]}
-    assert set(by_host) == {"demo.test", "auth.example.net", "noprice.example.org", "fresh.example.org"}
-    assert by_host["demo.test"]["pricing_state"] == "public"
-    assert by_host["demo.test"]["imported_id"] == "demo"  # 归一化域名比对标注已监控
-    assert by_host["demo.test"]["description"] == "老牌站"
-    assert by_host["noprice.example.org"]["pricing_state"] == "none"
-    assert by_host["auth.example.net"]["pricing_state"] == "auth"
-    assert by_host["fresh.example.org"]["pricing_state"] == "unknown"  # 没探过照常展示
-    # 未监控的排前面
-    assert body["stations"][0]["host"] != "demo.test"
+    assert set(by_host) == {"demo.test", "plain.example.com"}
+    demo = by_host["demo.test"]
+    assert demo["description"] == "老牌中转站"
+    assert demo["uptime_7d"] == 99.5
+    assert demo["avg_ms"] == 1174
+    assert demo["last_ms"] == 900
+    assert demo["imported_id"] == "demo"  # 归一化域名比对标注已监控
+    assert by_host["plain.example.com"]["uptime_7d"] is None
+    # 未监控的排前面；同组里可用率高的在前
+    assert body["stations"][-1]["host"] == "demo.test"
 
 
 def _admin_client(workspace: Path, monkeypatch) -> TestClient:
@@ -82,20 +74,18 @@ def _admin_client(workspace: Path, monkeypatch) -> TestClient:
 
 def test_discovery_import_writes_minimal_disabled_sites(workspace: Path, monkeypatch):
     monkeypatch.setattr(discover, "OUT_DIR", workspace / "discovery")
-    _write_discovery(
+    _write_pool(
         workspace,
-        [],
-        candidates=[
+        [
             {"host": "new.example.com", "url": "https://new.example.com", "name": "新站", "sources": ["zuiquanapi"], "note": "", "meta": {}},
             {"host": "www.demo.test", "url": "https://www.demo.test", "name": "库里已有", "sources": ["zuiquanapi"], "note": "", "meta": {}},
-            {"host": "plain.example.com", "url": "https://plain.example.com", "name": "非 new-api", "sources": ["zuiquanapi"], "note": "", "meta": {}},
         ],
     )
     client = _admin_client(workspace, monkeypatch)
-    resp = client.post("/api/discovery/import", json={"hosts": ["new.example.com", "www.demo.test", "ghost.example.io", "plain.example.com"], "enabled": False})
+    resp = client.post("/api/discovery/import", json={"hosts": ["new.example.com", "www.demo.test", "ghost.example.io"], "enabled": False})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["imported"] == ["new-example", "plain-example"]
+    assert body["imported"] == ["new-example"]
     assert body["skipped"] == ["www.demo.test"]  # www 前缀归一后与库内 demo.test 视为同站
     assert body["missing"] == ["ghost.example.io"]
     config = client.app.state.store.get_site_config("new-example")

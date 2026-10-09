@@ -17,14 +17,18 @@ const FILTERS: { key: LibraryFilter; label: string }[] = [
   { key: "pending", label: "未监控" },
 ];
 
-/** 站点简介：导航站收录的描述优先，其次站点自报站名（new-api 默认名没有信息量，不当简介） */
+/** 站点简介：导航收录的描述，没有就显示 —。 */
 function briefOf(row: DiscoveryStation): string {
-  if (row.description) return row.description;
-  const generic = /^(new[- ]?api|one[- ]?api|api|llm)$/i.test(row.system_name.trim());
-  return generic ? "" : row.system_name;
+  return row.description;
 }
 
-/** 新站发现表：price-discover 探测通过的中转站清单，标注是否已进入本站监控。 */
+/** 毫秒数 → 展示值：≥1s 显示秒（一位小数），否则原样毫秒；缺失显示 —。 */
+function msLabel(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+/** 新站发现表：自动收录的中转站清单，带监测源的可用率与响应指标，标注是否已进入本站监控。 */
 export function DiscoverTable({ data }: { data: DiscoveryData }) {
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState<LibraryFilter>("all");
@@ -67,9 +71,41 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
         ),
     },
     {
+      title: (
+        <span title="监测源自家探测的近 7 天在线比例；无数据表示该站不在监测范围">可用率 7 天</span>
+      ),
+      dataIndex: "uptime_7d",
+      width: 96,
+      align: "right",
+      render: (v: number | null) =>
+        v != null ? <span className="mono num">{v}%</span> : <span style={{ color: "var(--text-3)" }}>—</span>,
+    },
+    {
+      title: (
+        <span title="监测源自家探测的平均响应耗时">平均响应</span>
+      ),
+      dataIndex: "avg_ms",
+      width: 92,
+      align: "right",
+      render: (v: number | null) => <span className="mono num">{msLabel(v)}</span>,
+    },
+    {
+      title: (
+        <span title="监测源最近一次探测的响应耗时">最新响应</span>
+      ),
+      dataIndex: "last_ms",
+      width: 92,
+      align: "right",
+      render: (v: number | null, row) => (
+        <span className="mono num" title={row.checked_at ? `检查于 ${row.checked_at}` : undefined}>
+          {msLabel(v)}
+        </span>
+      ),
+    },
+    {
       title: "简介",
       dataIndex: "description",
-      width: 420,
+      width: 340,
       ellipsis: true,
       mobileHide: true,
       render: (_: string, row) => {
@@ -121,7 +157,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           })}
         </div>
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 「公开」= 价格页无需登录，未探测与失联站不占列表
+          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 可用率与响应是监测源自家数据；判离线的站点不占列表
         </span>
       </div>
       <div className="panel rise-in" style={{ overflow: "hidden" }}>
@@ -132,7 +168,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           paginated
           defaultPageSize={100}
           pageSizeStorageKey="discover-page-size"
-          scrollX={760}
+          scrollX={850}
           mobileScrollX={390}
           dense
           empty={

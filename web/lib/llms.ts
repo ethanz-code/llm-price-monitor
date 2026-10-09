@@ -11,8 +11,9 @@ const PAGES = [
   { path: "/catalog", name: "厂商定价", note: "AI 厂商官方目录价与全量渠道比价，可切换视图" },
   { path: "/rankings", name: "模型榜单", note: "第三方评测的智能指数排名" },
   { path: "/history", name: "事件追踪", note: "价格变动与站点公告的时间线事件流" },
-  { path: "/discover", name: "新站发现", note: "自动收录的中转站清单：站点简介、价格接口探测状态与是否已纳入监控" },
+  { path: "/discover", name: "新站发现", note: "自动收录的中转站清单：站点简介、7 天可用率与响应耗时、是否已纳入监控" },
   { path: "/calculator", name: "花费计算", note: "按单价与用量估算花费，支持缓存命中率与厂商官方价对比" },
+  { path: "/articles", name: "文章", note: "中转站避坑长文：低价从哪来、模型降智、计费倍率、隐私与跑路风险" },
 ] as const;
 
 /** 监控站点清单行：检测档案页链接 + 站点自身地址（对大模型是关键实体信息） */

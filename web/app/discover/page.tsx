@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata = pageMetadata(
   "新站发现",
-  "自动收录的公开中转站清单：站点简介与价格接口探测状态，找新中转站先看这里。",
+  "自动收录的公开中转站清单：站点简介、7 天可用率与响应耗时，找新中转站先看这里。",
   "/discover",
 );
 
@@ -40,7 +40,7 @@ export default async function DiscoverPage() {
             position: index + 1,
             name: row.host,
             url: row.url,
-            description: row.description || row.system_name || undefined,
+            description: row.description || undefined,
           })),
         }
       : null;

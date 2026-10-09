@@ -280,8 +280,50 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 | `network.params` / `network.headers` | 请求细节；header 值支持 `${ENV_VAR}` 展开 |
 | `networks` | 附加采集地址数组，每项 `{url, params, headers}`（url 必填），与 `network` 同构 |
 | `enabled` | `false` 跳过该站点；只写 `{"id": "..."}` 的站点自动禁用 |
+| `status` / `notice` | 可选渠道状态与公告地址，与价格同一次采集顺带执行；公告默认自动请求站点根地址 `GET /api/notice`（new-api 系标配），正文变化才存新版本并发事件 |
 
 配置只填标准模型名即可：命中站点 `model_name` 时先按名字精确匹配（含 AI 解析出的别名），名字对不上时再认"一侧省略了版本号"的写法——站点写 `deepseek-v4.1-flash`、配置里是目录 id `deepseek-flash`（该条目的显示名恰好是 "DeepSeek V4.1 Flash"）也能采到；两侧都带版本号（`deepseek-v4-flash` 与 `deepseek-v4.1-flash`）视为两个模型，站点同时挂着这两版而又没版本号可依时不做猜测，改在管理端站点列表提示该模型没采到价。模型的 `enable_groups` 分组全部展开输出（分组价来自接口，非配置）。
+
+### 检测清单与站点维护
+
+- 检测哪些模型在站点管理页顶部「检测模型」统一配置（`settings.monitor_models`），所有站点共用一份；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，AI 提取模式让 AI 抽取页面上每个模型——大站会超出 AI 输入上限，慎用）。清单平时不用手动追新：目录刷新自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭）；手动删掉的模型不会再被自动加回。
+- 存量站点配置想一次整理成当前结构（瘦身＋认证收口）：`uv run price-admin tidy-sites`。
+- 站点配置支持整份迁移：站点管理页可导出全部站点为 JSON 文件（含凭证，注意保管），导入时逐个确认同名冲突。
+
+### 站点认证与续签
+
+- `auth_token`：站点级认证凭证，实际怎么带进采集请求由 `auth_inject` 决定；没配时按老行为注入 `Authorization: Bearer <token>`（`auth_header` / `auth_prefix` 可改）。各接口 headers 里不用手写认证头——写死会覆盖注入的凭证且换新追不上，保存认证时会被自动移除。
+- `auth_inject`：凭证注入规则，决定 token 以什么头送到价格、渠道状态、公告三处请求（管理面板里是「认证与续签 → 凭证注入」三行）。值里可引用 `${access_token}` / `${refresh_token}`，续签换新后自动展开成新值；头名填 `cookie` 就是塞进 Cookie；没配的处不注入：
+
+  ```json
+  "auth_inject": {
+    "price":  { "header": "Authorization", "value": "Bearer ${access_token}" },
+    "status": { "header": "Authorization", "value": "Bearer ${access_token}" },
+    "notice": { "header": "cookie", "value": "new_api_refresh=${refresh_token}" }
+  }
+  ```
+
+  站点还没有 Access Token 时引用 `${access_token}` 的规则先不注入——请求照常发出、由 401 触发续签补上；引用了 `${refresh_token}` 但当前认证方式没有它（固定令牌）则明确报错，不静默发空值。
+- `token_refresh`：站点令牌短效时配一个续签接口，采集被拒时自动换新 token 并重试（价格按"需认证"占位判定，渠道状态与公告按接口返回 401/403 判定，三者都用换来的新 token 重试一次）。new-api 系站点是轮换凭据：refresh_token 放在 `new_api_refresh` Cookie 里、用一次就换新，新值只经响应 Set-Cookie 下发，配 `refresh_cookie_name` 后自动接力续签：
+
+  ```json
+  "token_refresh": {
+    "url": "https://example.com/api/user/auth/refresh",
+    "method": "POST",
+    "headers": { "cookie": "new_api_refresh=${refresh_token}" },
+    "refresh_cookie_name": "new_api_refresh",
+    "access_token_field": "data.access_token"
+  }
+  ```
+
+  续签拿到的 Access Token 写回站点级 `auth_token`；会话模式下的「Access Token」输入框是它的初值，留空则由首次续签补上。管理面板编辑站点时认证方式选「登录会话自动续签」会按采集地址自动带出这套模板，到「认证与续签」里贴上 Refresh Token、点「测试续签」验证即可。
+- new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 源码 `service/auth_token.go`、`model/user_session.go`）：Access Token 15 分钟有效；每个登录会话自创建起**最长 30 天**（绝对有效期，续签不延长）；refresh_token 一次一换，旧值在 30 秒宽限窗口外再被使用会触发防盗机制、整个会话立即注销。因此贴完凭据后浏览器里要重新登录一次（两边各用各的会话，互不影响）；会话到期后监控续签会失败，重新抓一次 Cookie 更新即可。
+- 凭证占位符：`ratio_url.headers` 与 headless 的 cookies/localStorage 值同样支持 `${access_token}` / `${refresh_token}`，展开成当前凭证，续签换新后自动跟着变；直采请求头（`network.headers`）不认凭证占位符——认证走 `auth_inject` 注入，或写死旧 token 由续签自动回写。
+
+### 无头浏览器与出口代理
+
+- `network.headless`：页面要在浏览器里执行 JS 才能看到价格（如单页应用，直接抓是空壳）时，启用无头浏览器（Playwright Chromium）渲染后再解析；打开网页前注入 cookies 和 localStorage 登录态（归属域自动取 `network.url`，不用填），普通请求抓不到数据时也会自动回退。`wait_seconds` 是页面渲染等待秒数（0~60，默认 3）。部署环境需安装：`pip install playwright && playwright install chromium`。
+- `settings.fallback_proxy`：部署在境内服务器、部分站点直连不了时，在管理面板「系统设置 → 采集出口」填一个 http(s) 备用代理地址（如 `http://172.17.0.1:7890`，要认证写成 `http://user:pass@host:port`；填完点「测试连通」可验证代理通不通并显示出口 IP）。采集始终先走直连，直连失败（超时/重置/被目标站拒收）的站点自动改走代理继续采，恢复后自动切回；国内能直连的站点永远不走代理。Docker 部署时代理客户端跑在宿主机的话，地址写 `http://172.17.0.1:7890`（容器里的 127.0.0.1 不是宿主机）。无头浏览器渲染同一站点时跟随同一出口选择。
 
 ## 工作原理
 

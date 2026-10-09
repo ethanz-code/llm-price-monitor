@@ -194,25 +194,26 @@ export interface RankingsData {
   models: RankingEntry[];
 }
 
-/** 新站发现：导航源收录的候选中转站清单（刷新只拉站点与简介）。
- *  pricing_state 是价格接口探明情况（来自探测档案）：public 公开可用 / auth 需登录 / none 没有 /
- *  unknown 还没探测过——只是展示字段，不作为筛站门槛。 */
+/** 新站发现：自动收录的候选中转站清单（站点、简介与监测站自家监控指标）。
+ *  监控判离线的站不进列表；uptime_7d/avg_ms/last_ms 缺失表示监测源没有该站数据。 */
 export interface DiscoveryStation {
   host: string;
   name: string;
   url: string;
   sources: string[];
-  new_api: boolean;
-  models: number;
-  pricing_state: "public" | "auth" | "none" | "unknown";
-  system_name: string;
   description: string;
+  /** 7 天可用率（%），监测源自家数据 */
+  uptime_7d: number | null;
+  /** 平均响应 / 最新响应（毫秒） */
+  avg_ms: number | null;
+  last_ms: number | null;
+  checked_at: string | null;
   imported_id: string | null;
 }
 
 export interface DiscoveryData {
   generated_at: string;
-  summary: { total: number; online: number; unprobed: number; pricing_public: number; pricing_auth: number; dead: number; imported: number };
+  summary: { total: number; offline: number; imported: number };
   stations: DiscoveryStation[];
 }
 

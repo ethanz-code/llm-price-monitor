@@ -18,6 +18,7 @@ from llm_price_monitor.discover import (
     harvest_welfare,
     harvest_zuiquan,
     host_to_id,
+    merge_zuiquan_status,
     normalize_host,
     origin_of,
     parse_fofa,
@@ -78,6 +79,27 @@ def test_harvest_zuiquan_parses_escaped_payload_entries():
     assert row.host == "aitokensflux.com"
     assert row.name == "aitokensflux"
     assert row.meta["description"] == 'aitokensflux 主打"稳定好用"，美元人民币 1:1 结算。'
+    assert row.meta["source_id"] == 204  # 监测源站点 id：拉监控快照时按它联表
+
+
+def test_merge_zuiquan_status_attaches_monitor_metrics():
+    """监控快照按 source_id 联表：可用率/响应进 meta，没 id 或快照没有的站跳过。"""
+    cands = [
+        Candidate("a.example.com", "https://a.example.com", "A", ["zuiquanapi"], meta={"source_id": 37}),
+        Candidate("b.example.com", "https://b.example.com", "B", ["zuiquanapi"], meta={}),
+        Candidate("c.example.com", "https://c.example.com", "C", ["zuiquanapi"], meta={"source_id": 999}),
+    ]
+    hit = merge_zuiquan_status(
+        cands,
+        {"37": {"online": True, "ms": 900, "uptime": 99.5, "avgMs": 1174, "checkedAt": "2026-10-06T07:37:04Z"}},
+    )
+    assert hit == 1
+    assert cands[0].meta["uptime_7d"] == 99.5
+    assert cands[0].meta["avg_ms"] == 1174
+    assert cands[0].meta["last_ms"] == 900
+    assert cands[0].meta["monitor_online"] is True
+    assert "uptime_7d" not in cands[1].meta
+    assert "uptime_7d" not in cands[2].meta
 
 
 def test_harvest_welfare_ignores_entries_without_url():

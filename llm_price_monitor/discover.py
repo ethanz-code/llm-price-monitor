@@ -235,6 +235,8 @@ WELFARE_SITES_URLS = (
 APISOU_BASE = "https://www.apisou.com"
 AIAPIPK_URL = "https://www.aiapipk.com"
 ZUIQUAN_URL = "https://zuiquanapi.com"
+# 站点监控快照（7 天可用率/平均响应/最新响应，按站点数字 id 索引），与首页条目联表
+ZUIQUAN_BOOTSTRAP_URL = "https://www.zuiquanapi.com/api/bootstrap"
 
 # 导航仓库：README 里的站点 markdown 链接，通用解析（2026-10 实测外链数：46/26/33）
 GITHUB_NAV_READMES: dict[str, tuple[str, ...]] = {
@@ -329,7 +331,7 @@ def harvest_zuiquan(text: str) -> list[Candidate]:
     out: list[Candidate] = []
     seen_urls: set[str] = set()
     pattern = re.compile(
-        r'\{\\"id\\":\d+,\\"subcategory_id\\":\d+,\\"name\\":\\"(?P<name>.*?)\\",\\"url\\":\\"(?P<url>.*?)\\"'
+        r'\{\\"id\\":(?P<sid>\d+),\\"subcategory_id\\":\d+,\\"name\\":\\"(?P<name>.*?)\\",\\"url\\":\\"(?P<url>.*?)\\"'
         r'(?P<body>.*?)\\"description\\":\\"(?P<desc>.*?)\\",\\"monitor_tier',
         re.S,
     )
@@ -344,7 +346,7 @@ def harvest_zuiquan(text: str) -> list[Candidate]:
                 origin,
                 _unesc(m["name"]).strip(),
                 ["zuiquanapi"],
-                meta={"description": clean_desc(_unesc(m["desc"]))},
+                meta={"description": clean_desc(_unesc(m["desc"])), "source_id": int(m["sid"])},
             )
         )
     if len(out) < 100:  # 结构解析失灵（站点改版）时退回裸链接模式，宁可少描述不可少站点
@@ -397,12 +399,13 @@ def merge_candidates(groups: list[list[Candidate]]) -> list[Candidate]:
                     existing.sources.append(source)
             if not existing.name:
                 existing.name = cand.name
-            for key in ("description", "status", "uptime7d", "rating"):
+            for key in ("description", "status", "uptime7d", "rating", "source_id", "monitor_online", "uptime_7d", "avg_ms", "last_ms", "checked_at"):
                 existing_val, cand_val = existing.meta.get(key), cand.meta.get(key)
                 if key == "description":
                     if not existing_val or (cand_val and len(str(cand_val)) > len(str(existing_val))):
                         existing.meta["description"] = cand_val
                 elif cand_val is not None and existing_val is None:
+                    # 监控指标也是缺了才补：fresh 组在前（本轮新值占位），源断供时保留旧值不闪空
                     existing.meta[key] = cand_val
     return sorted(by_host.values(), key=lambda c: c.host)
 
@@ -410,6 +413,35 @@ def merge_candidates(groups: list[list[Candidate]]) -> list[Candidate]:
 # harvest 源的开关名（--only 逗号分隔；缺省只用 zuiquanapi，all=全部）
 SOURCE_KEYS = ("zuiquanapi", "awesome-api-proxy", "apisou", "aiapipk", "ai-coding-welfare", "github-nav")
 DEFAULT_SOURCES = ("zuiquanapi",)
+
+
+async def fetch_zuiquan_status(client: httpx.AsyncClient) -> dict[str, dict]:
+    """拉 zuiquanapi 全量监控快照：站点数字 id → {online, ms, uptime, avgMs, checkedAt}。"""
+    response = await client.get(ZUIQUAN_BOOTSTRAP_URL)
+    response.raise_for_status()
+    status = response.json().get("status")
+    return status if isinstance(status, dict) else {}
+
+
+def merge_zuiquan_status(candidates: list[Candidate], status: dict[str, dict]) -> int:
+    """把监控快照并进带 source_id 的候选 meta（7 天可用率/平均响应/最新响应），返回命中条数。"""
+    hit = 0
+    for cand in candidates:
+        sid = cand.meta.get("source_id")
+        row = status.get(str(sid)) if isinstance(sid, int) else None
+        if not isinstance(row, dict):
+            continue
+        cand.meta.update(
+            {
+                "monitor_online": bool(row.get("online")),
+                "uptime_7d": row.get("uptime"),
+                "avg_ms": row.get("avgMs"),
+                "last_ms": row.get("ms"),
+                "checked_at": row.get("checkedAt"),
+            }
+        )
+        hit += 1
+    return hit
 
 
 async def harvest(proxy: str | None, only: set[str] | None = None) -> list[Candidate]:
@@ -468,6 +500,14 @@ async def harvest(proxy: str | None, only: set[str] | None = None) -> list[Candi
             simple(harvest_zuiquan, (ZUIQUAN_URL,), timeout=60.0) if "zuiquanapi" in only else noop(),
             nav_repos() if "github-nav" in only else noop(),
         )
+        if zuiquan:
+            # 站点监控指标（7 天可用率/平均响应/最新响应）是 zuiquanapi 自家监测数据，
+            # 顺手一起拿：拉失败只少这批加分字段，不挡站点清单
+            try:
+                hit = merge_zuiquan_status(zuiquan, await fetch_zuiquan_status(client))
+                print(f"  zuiquanapi 监控快照：{hit}/{len(zuiquan)} 个站点带可用率/响应数据")
+            except Exception as exc:
+                print(f"  zuiquanapi 监控快照拉取失败，本轮不带监控指标：{type(exc).__name__} {exc}")
         ran = [key for key in SOURCE_KEYS if key in only]
         print(
             f"  本次源 {('、'.join(ran))}：awesome-api-proxy {len(awesome)}、zuiquanapi {len(zuiquan)}、ai-coding-welfare {len(welfare)}、"

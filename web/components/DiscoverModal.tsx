@@ -17,11 +17,15 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "all", label: "全部" },
 ];
 
-/** 站点简介：导航站收录的描述优先，其次站点自报站名（new-api 默认名没有信息量，不当简介） */
+/** 站点简介：导航收录的描述，没有就显示 —。 */
 function briefOf(row: DiscoveryStation): string {
-  if (row.description) return row.description;
-  const generic = /^(new[- ]?api|one[- ]?api|api|llm)$/i.test(row.system_name.trim());
-  return generic ? "" : row.system_name;
+  return row.description;
+}
+
+/** 毫秒数 → 展示值：≥1s 显示秒（一位小数），否则原样毫秒；缺失显示 —。 */
+function msLabel(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
 /** 新站发现弹窗：从「导入站点」入口打开，发现/探测/导入全在弹窗里完成，不用再跑命令行脚本。
@@ -177,7 +181,7 @@ export function DiscoverModal({
     {
       key: "brief",
       title: "简介",
-      width: 490,
+      width: 300,
       ellipsis: true,
       mobileHide: true,
       render: (_v, row) => {
@@ -190,6 +194,32 @@ export function DiscoverModal({
           <span style={{ color: "var(--text-3)" }}>—</span>
         );
       },
+    },
+    {
+      key: "uptime",
+      title: <span title="监测源自家探测的近 7 天在线比例">可用率 7 天</span>,
+      width: 92,
+      align: "right",
+      render: (_v, row) =>
+        row.uptime_7d != null ? <span className="mono num">{row.uptime_7d}%</span> : <span style={{ color: "var(--text-3)" }}>—</span>,
+    },
+    {
+      key: "avg",
+      title: <span title="监测源自家探测的平均响应耗时">平均响应</span>,
+      width: 88,
+      align: "right",
+      render: (_v, row) => <span className="mono num">{msLabel(row.avg_ms)}</span>,
+    },
+    {
+      key: "last",
+      title: <span title="监测源最近一次探测的响应耗时">最新响应</span>,
+      width: 88,
+      align: "right",
+      render: (_v, row) => (
+        <span className="mono num" title={row.checked_at ? `检查于 ${row.checked_at}` : undefined}>
+          {msLabel(row.last_ms)}
+        </span>
+      ),
     },
     {
       key: "state",
@@ -213,7 +243,7 @@ export function DiscoverModal({
   const pendingCount = data ? data.summary.total - data.summary.imported : 0;
 
   return (
-    <Modal open={open} onClose={onClose} title="从新站发现导入" width={920}>
+    <Modal open={open} onClose={onClose} title="从新站发现导入" width={1120}>
       <div style={{ display: "grid", gap: 10 }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
           <div style={{ minWidth: 0, flex: "1 1 240px", fontSize: 12, color: "var(--text-3)" }}>
@@ -285,7 +315,7 @@ export function DiscoverModal({
               rowKey="host"
               columns={columns}
               rows={rows}
-              scrollX={740}
+              scrollX={1000}
               // 窄屏只剩 勾选44 + 站点216 + 操作120 ≈ 380
               mobileScrollX={390}
               dense

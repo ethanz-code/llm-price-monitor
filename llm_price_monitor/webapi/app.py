@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from llm_price_monitor.browser_setup import ensure_browser_ready
 from llm_price_monitor.catalog import jsonio, vendor_sources
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, MonitorSettings, config_from_store
-from llm_price_monitor import ai, egress
+from llm_price_monitor import ai, egress, proxy_switch
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth, routes, scheduler, tasks
 from llm_price_monitor.webapi.deps import is_admin
@@ -161,6 +161,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     tasks.attach_store(store)  # 历史任务连同日志落 SQLite，重启后仍可查看
     # 采集备用代理地址实时读系统设置：面板保存即生效，下一轮采集换用，无需重启
     egress.configure_provider(lambda: (store.get_document("settings") or {}).get("fallback_proxy"))
+    # 代理节点自动切换（proxy_switch）同样实时读系统设置，面板改动即时生效
+    proxy_switch.configure_settings(lambda: store.get_document("settings") or {})
     app.state.store = store
 
     app.add_middleware(
