@@ -1964,160 +1964,152 @@ html:not([data-theme="dark"]) .panel {
   z-index: 1;
 }
 
-/* tab 包裹层：hover 大弹窗的定位基准 */
-.nav-tab-wrap {
-  position: relative;
-}
-
-/* hover 大弹窗（mega dropdown）：一句话说明 + 核心看点 + 进入链接。
-   外层只做定位与间隙桥接（padding-top 让鼠标穿过间隙不丢失 hover），卡片承担动画 */
-.nav-dd {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  padding-top: 12px;
-  width: 500px;
+/* 全宽 mega 面板：铺满视口（两侧留边）、与 tabs 之间留间隙；hover 在 tabs 之间移动时
+   面板保持展开、内容平滑切换，不反复弹出收起（Stripe/Linear 手法）。
+   面板 portal 到 body，位置由 NavTabs 按 tabs 底缘实测注入 */
+.nav-mega {
+  position: fixed;
+  left: 20px;
+  right: 20px;
   z-index: var(--z-pop);
 }
 
-.nav-dd-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+/* 桥接 tabs 与面板之间的间隙：鼠标穿过不丢 hover */
+.nav-mega::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -14px;
+  height: 14px;
+}
+
+.nav-mega-card {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 22px 24px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.16);
-  transform-origin: top center;
-  animation: nav-pop-in 0.2s var(--ease);
+  border-radius: 16px;
+  padding: 28px 36px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.16);
+  animation: nav-mega-in 0.22s var(--ease);
 }
 
-/* Stripe 式：主链接栏（大标题 + 一句话 + 进入链接）与看点栏，竖发丝线分隔 */
-.nav-dd-main {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 14px;
-  padding-right: 24px;
-  border-right: 1px solid var(--border);
+[data-theme="dark"] .nav-mega-card {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
 }
 
-.nav-dd-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  color: inherit;
-  text-decoration: none;
+.nav-mega.leaving .nav-mega-card {
+  animation: nav-mega-out 0.16s var(--ease) forwards;
 }
 
-.nav-dd-entry-title {
-  font-size: 15.5px;
-  font-weight: 600;
-  color: var(--text);
-  transition: color var(--dur);
+@keyframes nav-mega-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.99);
+  }
 }
 
-.nav-dd-entry:hover .nav-dd-entry-title {
-  color: var(--accent-text);
+@keyframes nav-mega-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
 }
 
-.nav-dd-entry-desc {
-  font-size: 12.5px;
+/* 内容随 hover 的 tab 切换：swap 动画只动内容，面板本体不动 */
+.nav-mega-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
+  gap: 28px 56px;
+  align-items: start;
+  animation: nav-mega-swap 0.2s var(--ease);
+}
+
+@keyframes nav-mega-swap {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.nav-mega-label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.nav-mega-desc {
+  margin: 8px 0 0;
+  font-size: 13px;
   line-height: 1.7;
   color: var(--text-2);
 }
 
-.nav-dd-go {
-  margin-top: auto;
+.nav-mega-go {
+  display: inline-block;
+  margin-top: 16px;
   font-size: 13px;
   color: var(--accent-text);
   text-decoration: none;
 }
 
-.nav-dd-go:hover {
+.nav-mega-go:hover {
   text-decoration: underline;
 }
 
-.nav-dd-side {
+.nav-mega-side {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-left: 24px;
+  gap: 12px;
+  padding-left: 56px;
+  border-left: 1px solid var(--border);
+  min-height: 100%;
 }
 
-.nav-dd-side-title {
+.nav-mega-side-title {
   font-size: 11.5px;
   color: var(--text-3);
 }
 
-.nav-dd.leaving .nav-dd-card {
-  animation: nav-pop-out 0.16s var(--ease) forwards;
-}
-
-@keyframes nav-pop-out {
-  to {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.97);
-  }
-}
-
-.nav-dd-points {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.nav-mega-points {
   display: grid;
-  gap: 9px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
 }
 
-.nav-dd-points li {
-  position: relative;
-  padding-left: 15px;
+.nav-mega-point {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border-radius: 10px;
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--text-2);
 }
 
-.nav-dd-points li::before {
-  content: "";
-  position: absolute;
-  left: 1px;
-  top: 0.58em;
-  width: 4px;
-  height: 4px;
+.nav-mega-point-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 9999px;
   background: var(--accent);
-  opacity: 0.75;
+  opacity: 0.8;
+  margin-top: 6px;
+  flex-shrink: 0;
 }
 
-/* 最右两个 tab 的弹窗右对齐，防止溢出视口右缘 */
-.nav-tab-wrap:nth-last-child(-n + 2) .nav-dd {
-  left: auto;
-  right: 0;
-  transform: none;
-}
-
-@media (max-width: 1024px) {
-  .nav-dd {
-    width: 420px;
-  }
-
-  .nav-dd-card {
+@media (max-width: 1200px) {
+  .nav-mega-body {
     grid-template-columns: 1fr;
+    gap: 20px;
   }
 
-  .nav-dd-main {
-    border-right: 0;
-    padding-right: 0;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .nav-dd-side {
+  .nav-mega-side {
+    border-left: 0;
     padding-left: 0;
-    padding-top: 4px;
   }
 }
+
 
 /* 滚动后：保持悬浮胶囊形态，仅加一点软投影让胶囊从滚过的内容上浮起 */
 .site-header[data-scrolled] .nav-pill {
@@ -2691,15 +2683,15 @@ html:not([data-theme="dark"]) .panel {
   }
 }
 
-/* 星空层地图：全出血铺在首屏上半部（hero 主视觉）。宽度按视口高度封顶
-   （62vh × 投影纵横比 2.5），超宽屏不至于把星图顶到下半屏；
+/* 星空层地图：全出血铺在首屏上半部（hero 主视觉），宽度一律 100vw 贯穿整个屏幕；
    grid 同格叠放：地图居中、两侧自然出血到屏幕边界，hero 文案压在其上 */
 .hero-sky .pano-flatmap {
   grid-area: 1 / 1;
   justify-self: center;
   /* 网格 auto margin 会压过 justify-self 让地图贴左，这里显式清零交给 grid 居中出血 */
   margin-inline: 0;
-  width: min(100vw, calc(62vh * 2.5));
+  /* 一律 100vw 贯穿整个屏幕宽度（高度随投影纵横比走），两侧由 grid 居中对称出血 */
+  width: 100vw;
   max-width: none;
   /* 底缘渐隐融进页面，不出现一条硬切线 */
   -webkit-mask-image: linear-gradient(#000 76%, transparent);
@@ -6304,7 +6296,8 @@ a.event-card {
 
   .nav-pill-indicator,
   .nav-pop,
-  .nav-dd-card {
+  .nav-mega-card,
+  .nav-mega-body {
     animation: none;
   }
 
@@ -6312,7 +6305,7 @@ a.event-card {
     transition: none;
   }
 
-  .nav-dd.leaving .nav-dd-card {
+  .nav-mega.leaving .nav-mega-card {
     opacity: 0;
   }
 }

@@ -75,6 +75,7 @@
 | 常驻动画页走查深水区：IAB 截图通道跑一阵后整体卡死（surface preparation timed out / capture failed for guest），force click 也被拖超时；fullPage 整页截图对 Reveal 懒显页全空白（下方 opacity:0 不触发） | 读 DOM 的 evaluate 始终可用；截图降级 Chrome DevTools MCP（独立实例互不拖累）；懒显页逐段滚动触发后再截视口图；受控下拉（如主题菜单）点不开时按「环境准备」预置 localStorage 再 reload | 首页叙事三区走查实测 |
 | 用 python 按行号替换大 CSS 块，旧行号在多次编辑后失效，一刀把 globals.css 砍掉 3300 行（hero 平板列/导航汉堡/动画全套全没），390px 出现横向溢出才暴露 | 大文件删改必须用「锚定内容」定位（str.index 断言锚点存在），替换后立刻 `wc -l` 对账 + grep 被删类名确认零残留；走查见溢出先用 `git stash` 对照基线定位是否新引入 | 首页站点区 Statuspage 化实测 |
 | 参考站只抓文字结构不截页面，做出来的「同构」设计全是小灰字（被用户打回两次） | 参考站必须真开浏览器逐屏截图，量标题字号、卡片 padding、图标做法、分段节奏再动手；监控站点列表直接抄行业事实标准 Atlassian Statuspage（状态横幅 + 一行一组件 + 90 天可用率条），不要自创瓷贴 | 首页重设计返工实录 |
+| grid 子项超宽（全出血大图）把隐式轨道撑大，`justify-self: center` 的居中/两侧出血全失效（居中发生在被撑大的轨道里）；子项的 `margin-inline: auto` 又会压过 justify-self 让它贴左 | 轨道显式 `grid-template-columns: minmax(0, 1fr)` 锁到容器宽，子项清零 auto margin，居中溢出交给 grid | 首页星空 hero 改版实测 |
 
 ## 5. 部署与运维
 
@@ -93,6 +94,7 @@
 - 提交信息中文讲清"改了什么、为什么"，不写 `fix`/`update` 空话。
 - 测试用 HTTPX mock transport / 进程内替身，不请求真实站点；改口径前先跑全量。
 - 文案说人话、给下一步动作，不出现"接口/字段/渲染"这类实现词。
+- 并行会话同仓干活时，共享大文件（如 globals.css）的未提交改动会被对方的主题提交卷走：主题无关的布局改动改完即小步提交，别攒。
 
 ## 维护方式
 

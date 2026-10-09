@@ -32,7 +32,7 @@ import { SectionRail } from "@/components/SectionRail";
 import { Reveal } from "@/components/Reveal";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
-import type { GlobeSite, SiteGeo } from "@/components/SiteGlobe";
+import type { GlobeSite, SiteGeo } from "@/components/SiteMapFlat";
 import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";

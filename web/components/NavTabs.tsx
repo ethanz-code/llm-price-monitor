@@ -3,24 +3,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { createPortal } from "react-dom";
 import { nav } from "@/lib/copy";
 
-interface NavItem {
-  key: string;
-  label: string;
-}
-
-/** 大弹窗内容（copy.ts nav.popovers）：一句话说明 + 核心看点；没有配置的 tab 不出弹窗 */
-
-/** 桌面主导航 tabs：滑动选中指示器 + hover 大弹窗（一句话说明 + 核心看点 + 进入链接）。
- *  指示器在路由切换时丝滑滑到新位置；弹窗 hover 打开、移出淡出，触屏不受影响（点击直达）。 */
-export function NavTabs({ items, selected }: { items: NavItem[]; selected: string }) {
+/** 桌面主导航 tabs：滑动选中指示器 + 全宽 mega 面板。
+ *  面板铺满视口宽度（两侧留边、与 tabs 之间留间隙），hover 在不同 tabs 之间移动时
+ *  面板保持展开、内容平滑切换，不反复弹出收起；移出导航区短暂宽限后淡出，
+ *  滚动 / 路由变化 / Escape 立即收起。触屏不受影响（hover 不触发，点击直达）。 */
+export function NavTabs({
+  items,
+  selected,
+}: {
+  items: { key: string; label: string }[];
+  selected: string;
+}) {
   const pathname = usePathname();
   const pillRef = useRef<HTMLElement>(null);
   const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [open, setOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [panelTop, setPanelTop] = useState(76);
   const closeTimer = useRef(0);
+
+  useEffect(() => setMounted(true), []);
 
   // 滑动指示器：测量 active 项在胶囊内的位置，路由切换时滑过去
   useEffect(() => {
@@ -46,93 +53,128 @@ export function NavTabs({ items, selected }: { items: NavItem[]; selected: strin
     };
   }, [pathname, items.length]);
 
-  /** hover 打开弹窗；移出时先播淡出再卸载，快速滑过多个 tab 直接切换不闪 */
-  const openPop = useCallback((key: string) => {
-    if (!nav.popovers?.[key]) return;
+  const cancelClose = useCallback(() => window.clearTimeout(closeTimer.current), []);
+
+  const closeNow = useCallback(() => {
     window.clearTimeout(closeTimer.current);
+    setOpen(false);
     setLeaving(false);
-    setOpenKey(key);
   }, []);
 
-  const closePop = useCallback(() => {
-    if (!openKey) return;
+  /** 移出导航区：给 180ms 宽限（穿过 tab 与面板之间的间隙不丢），超时淡出 */
+  const scheduleClose = useCallback(() => {
     window.clearTimeout(closeTimer.current);
     setLeaving(true);
     closeTimer.current = window.setTimeout(() => {
-      setOpenKey(null);
+      setOpen(false);
       setLeaving(false);
-    }, 160);
-  }, [openKey]);
+    }, 180);
+  }, []);
 
-  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+  /** hover 到某个 tab：面板保持展开，内容切到该 tab */
+  const enterTab = useCallback(
+    (key: string) => {
+      window.clearTimeout(closeTimer.current);
+      setLeaving(false);
+      setActiveKey(key);
+      const pill = pillRef.current;
+      if (pill) setPanelTop(Math.round(pill.getBoundingClientRect().bottom) + 12);
+      setOpen(true);
+    },
+    [],
+  );
+
+  // 滚动 / Escape 立即收起；路由变化收起；resize 收起（面板位置失效）
+  useEffect(() => {
+    const onScroll = () => closeNow();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeNow();
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [closeNow]);
+
+  useEffect(() => {
+    closeNow();
+  }, [pathname, closeNow]);
+
+  useEffect(() => {
+    const onResize = () => closeNow();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.clearTimeout(closeTimer.current);
+    };
+  }, [closeNow]);
+
+  const activeItem = items.find((item) => item.key === activeKey) ?? null;
+  const activePop = activeKey ? (nav.popovers?.[activeKey] ?? null) : null;
 
   return (
-    <nav
-      className="nav-pill"
-      aria-label="主导航"
-      ref={pillRef}
-      onMouseLeave={closePop}
-    >
-      {indicator && (
-        <span
-          aria-hidden
-          className="nav-pill-indicator"
-          style={{ transform: `translateX(${indicator.left}px)`, width: indicator.width }}
-        />
-      )}
-      {items.map((item) => {
-        const pop = nav.popovers?.[item.key];
-        const showPop = openKey === item.key && !!pop;
-        return (
-          <div
+    <>
+      <nav className="nav-pill" aria-label="主导航" ref={pillRef} onMouseLeave={scheduleClose}>
+        {indicator && (
+          <span
+            aria-hidden
+            className="nav-pill-indicator"
+            style={{ transform: `translateX(${indicator.left}px)`, width: indicator.width }}
+          />
+        )}
+        {items.map((item) => (
+          <Link
             key={item.key}
-            className="nav-tab-wrap"
-            onMouseEnter={() => (pop ? openPop(item.key) : closePop())}
+            href={item.key}
+            className={`nav-pill-item${selected === item.key ? " active" : ""}`}
+            onMouseEnter={() => enterTab(item.key)}
+            onClick={closeNow}
           >
-            <Link
-              href={item.key}
-              className={`nav-pill-item${selected === item.key ? " active" : ""}`}
-            >
-              {item.label}
-            </Link>
-            {showPop && (
-              <div
-                className={`nav-dd${leaving ? " leaving" : ""}`}
-                onMouseEnter={() => openPop(item.key)}
-              >
-                <div className="nav-dd-card">
-                  {/* Stripe 式栏目行：主链接（大标题 + 一句话）与核心看点两栏，竖发丝线分隔 */}
-                  <div className="nav-dd-main">
-                    <Link
-                      href={item.key}
-                      className="nav-dd-entry"
-                      onClick={() => setOpenKey(null)}
-                    >
-                      <span className="nav-dd-entry-title">{item.label}</span>
-                      <span className="nav-dd-entry-desc">{pop.desc}</span>
-                    </Link>
-                    <Link
-                      href={item.key}
-                      className="nav-dd-go"
-                      onClick={() => setOpenKey(null)}
-                    >
-                      进入{item.label} →
-                    </Link>
-                  </div>
-                  <div className="nav-dd-side">
-                    <span className="nav-dd-side-title">核心看点</span>
-                    <ul className="nav-dd-points">
-                      {pop.points.map((point) => (
-                        <li key={point}>{point}</li>
-                      ))}
-                    </ul>
+            {item.label}
+          </Link>
+        ))}
+      </nav>
+      {mounted && (open || leaving) && activeItem && activePop && (
+        createPortal(
+          <div
+            className={`nav-mega${leaving ? " leaving" : ""}`}
+            style={{ top: panelTop }}
+            onMouseEnter={cancelClose}
+            onMouseLeave={scheduleClose}
+          >
+            <div className="nav-mega-card">
+              {/* 内容随 hover 的 tab 切换：key 变化触发 swap 动画，面板本体不动 */}
+              <div className="nav-mega-body" key={activeKey}>
+                <div className="nav-mega-main">
+                  <span className="nav-mega-label">{activeItem.label}</span>
+                  <p className="nav-mega-desc">{activePop.desc}</p>
+                  <Link
+                    href={activeItem.key}
+                    className="nav-mega-go"
+                    onClick={closeNow}
+                  >
+                    进入{activeItem.label} →
+                  </Link>
+                </div>
+                <div className="nav-mega-side">
+                  <span className="nav-mega-side-title">核心看点</span>
+                  <div className="nav-mega-points">
+                    {activePop.points.map((point) => (
+                      <div key={point} className="nav-mega-point">
+                        <span className="nav-mega-point-dot" aria-hidden />
+                        <span>{point}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
-            )}
-          </div>
-        );
-      })}
-    </nav>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+    </>
   );
 }

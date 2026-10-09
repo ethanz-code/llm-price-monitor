@@ -1,17 +1,45 @@
 "use client";
 
-/** 手机端 hero 平面点阵地图：cobe 3D 球在窄屏只看得见正面半球、拖转和 CSS anchor 标签
- *  都是给指针设备设计的，触屏上等于只展示一半节点。换成等距圆柱投影的 2D 点阵图，
- *  全部节点一屏尽收。底图数据来自 lib/flatmap-dots.json（scripts/gen-flatmap.mjs
- *  从 world-atlas 110m 离线采样，运行时零请求）；节点状态色、波纹、点击跳检测档案
- *  与球面版（SiteGlobe）同一套口径。 */
+/** hero 平面点阵地图（等距圆柱投影）：底图数据来自 lib/flatmap-dots.json（scripts/gen-flatmap.mjs
+ *  从 world-atlas 110m 离线采样，运行时零请求）；站点按 IP 归属地经纬度落点。
+ *  桌面与手机同一张图（HeroArea 只在断点处换布局）：PC 全出血铺在首屏上半部做星空主视觉，
+ *  窄屏收窄一屏放下。节点画成状态色亮星——亮核 + 光晕 + 四芒星闪，错峰弹入、缓慢闪烁；
+ *  悬停亮星浮现站名标签，并与站点轮播胶囊双向联动高亮；点击进检测档案。 */
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "@/app/providers";
 import { rateLevel } from "@/lib/channelStatus";
 import dotsData from "@/lib/flatmap-dots.json";
-import { statusHex, type GlobeSite, type SiteGeo } from "./SiteGlobe";
+
+export interface GlobeSite {
+  id: string;
+  name: string;
+  models: number;
+  enabled: boolean;
+  /** 最新时段区块平均正常率（0–100，与详情页时段色块同口径）；未接入渠道检测为 null */
+  availability: number | null;
+  down: number;
+  checks: number;
+}
+
+export interface SiteGeo {
+  ip: string;
+  lat: number;
+  lon: number;
+  country: string;
+  city: string;
+}
+
+/** 节点状态色：与站点清单的分档一致（绿=优秀 ≥80%、黄=60–80%、红=<60%、灰=无检测数据/停用），
+ *  星点、波纹、轮播胶囊共用同一套分档，保证地图与清单同色同义。 */
+export function statusHex(site: GlobeSite, dark: boolean): string {
+  if (site.availability == null || !site.enabled) return dark ? "#9DA3A6" : "#ADACA8";
+  const level = rateLevel(site.availability);
+  if (level === "warn") return dark ? "#E0B45C" : "#B45309";
+  if (level === "down") return dark ? "#E27B78" : "#DC2626";
+  return dark ? "#45D072" : "#34A853";
+}
 
 const { latMin, latMax, dots } = dotsData as { latMin: number; latMax: number; dots: number[] };
 
@@ -26,10 +54,16 @@ function project(lon: number, lat: number): { left: string; top: string } {
 export function SiteMapFlat({
   sites,
   geo,
+  activeId = null,
+  onHoverSite,
 }: {
   sites: GlobeSite[];
   /** 站点 IP 归属地（site_id → 经纬度）；没有定位数据的站点不上图 */
   geo: Record<string, SiteGeo>;
+  /** 外部高亮的站点（如悬停站点轮播）：对应亮星增亮并浮现站名标签 */
+  activeId?: string | null;
+  /** 地图亮星悬停变化时回报站点 id，供外部清单联动 */
+  onHoverSite?: (id: string | null) => void;
 }) {
   const { dark } = useTheme();
   const router = useRouter();
@@ -51,7 +85,8 @@ export function SiteMapFlat({
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, width, height);
       const px = width / 360;
-      const radius = Math.max(0.7, (px * dotsData.step) / 3.1);
+      // 半径随图幅放大，但封顶：全贯穿大图上底图点阵保持"远景星野"的细腻，不压过亮星节点
+      const radius = Math.min(2.4, Math.max(0.7, (px * dotsData.step) / 3.1));
       ctx.fillStyle = dark ? "rgba(255, 255, 255, 0.24)" : "rgba(31, 31, 31, 0.17)";
       ctx.beginPath();
       for (let i = 0; i < dots.length; i += 2) {
@@ -92,7 +127,7 @@ export function SiteMapFlat({
   return (
     <div className="pano-flatmap">
       <canvas ref={canvasRef} aria-hidden />
-      {located.map((item) => {
+      {located.map((item, order) => {
         if (!item) return null;
         const { site, loc, index } = item;
         const level = site.availability != null ? rateLevel(site.availability) : null;
@@ -103,14 +138,29 @@ export function SiteMapFlat({
         const left =
           siblings > 1 ? `calc(${pos.left} + ${(index - (siblings - 1) / 2) * 12}px)` : pos.left;
         const pct = site.availability != null ? `${site.availability}%` : "无检测数据";
+        // 弹入按落点顺序错峰（封顶避免站点多时等太久）；闪烁相位按序号错开，天上一片星不至于齐闪
+        const popDelay = Math.min(order * 65, 1100);
+        const twinkleDelay = `${(order % 6) * 0.55}s`;
         return (
           <button
             key={site.id}
             type="button"
-            className="flat-node"
-            style={{ left, top: pos.top, "--node-color": nodeColor } as React.CSSProperties}
+            className={`flat-node${activeId === site.id ? " on" : ""}`}
+            style={
+              {
+                left,
+                top: pos.top,
+                "--node-color": nodeColor,
+                "--pop-delay": `${popDelay}ms`,
+                "--twinkle-delay": twinkleDelay,
+              } as React.CSSProperties
+            }
             aria-label={`${site.name}，${pct}，查看检测档案`}
             title={`${site.name} · ${pct}`}
+            onMouseEnter={() => onHoverSite?.(site.id)}
+            onMouseLeave={() => onHoverSite?.(null)}
+            onFocus={() => onHoverSite?.(site.id)}
+            onBlur={() => onHoverSite?.(null)}
             onClick={() => router.push(`/overview/status/${encodeURIComponent(site.id)}`)}
           >
             {level != null && site.enabled && (
@@ -120,6 +170,9 @@ export function SiteMapFlat({
               </span>
             )}
             <span aria-hidden className="flat-node-dot" />
+            <span aria-hidden className={`flat-node-label${level === "down" ? " down" : level === "warn" ? " warn" : ""}`}>
+              {site.name}
+            </span>
           </button>
         );
       })}
