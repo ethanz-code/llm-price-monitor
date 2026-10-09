@@ -1,14 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { DataTable, type DColumn } from "./DataTable";
-import { Empty, Sel, Seg } from "./ui";
+import { Empty, Pick } from "./ui";
 import { IconSync } from "./icons";
 import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
-import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
-import { PriceTrendChart } from "./PriceTrendChart";
+import type { EventRow } from "@/lib/types";
 import {
   currencySymbol,
   eventMeta,
@@ -19,8 +17,7 @@ import {
   tieredPriceText,
   toCnyPrice,
 } from "@/lib/format";
-import { PriceCell } from "./PriceCell";
-import type { EventListData, EventRow, HistoryListData, NoticeEvent, PriceRecord } from "@/lib/types";
+import type { FeedEvent, HistoryListData, PriceRecord } from "@/lib/types";
 
 function KindTag({ kind }: { kind: string }) {
   const meta = eventMeta(kind);
@@ -48,12 +45,9 @@ function describeChange(event: ChangeLike, rate?: number | null): string {
   const suffix = unit ? ` · ${converted ? "CNY/1M tokens（折算）" : unit}` : "";
   const current = pair(event.current) ?? "无价格";
   const previous = pair(event.previous);
-  if (!previous) return `首次记录 ${current}${suffix}`;
+  if (!previous) return `新增 ${current}${suffix}`;
   return `${previous} → ${current}${suffix}`;
 }
-
-/** 事件流条目：价格事件（带模型与前后价格）或公告事件（带公告正文）。 */
-type FeedEvent = EventRow | NoticeEvent;
 
 // 同一轮扫描（检测时间相邻 120 秒内）同站点+模型+同类事件折成一组，多分组只显示一张卡；公告事件不折叠
 function foldEvents(events: FeedEvent[]): FeedEvent[][] {
@@ -197,145 +191,49 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
 }
 
 export function HistoryView({
-  events,
+  feed,
   history,
-  noticeEvents = [],
+  priceTotal,
   noticeTotal = 0,
 }: {
-  events: EventListData;
-  history: HistoryListData;
-  noticeEvents?: NoticeEvent[];
-  /** 公告事件全量总数（noticeEvents 可能被 limit 截断，计数用它才准确） */
+  /** 价格事件与公告事件已按时间合并、按新到旧排序的动态流 */
+  feed: FeedEvent[];
+  /** 价格事件全量总数（feed 可能被 limit 截断，计数用它才准确） */
+  priceTotal: number;
+  /** 公告事件全量总数 */
   noticeTotal?: number;
+  /** 历史接口数据，主要用于取汇率做价格折算 */
+  history: HistoryListData;
 }) {
-  const [view, setView] = useState<"events" | "records">("events");
-  // 站点价统一按 RMB 展示：汇率由事件/历史接口附带（厂商价快照口径）
-  const rate = events.rate ?? history.rate ?? null;
+  // 站点价统一按 RMB 展示：汇率由历史接口附带（厂商价快照口径）
+  const rate = history.rate ?? null;
 
-  // 价格事件与公告事件合并成一条时间线（公告事件带 content，渲染走独立分支）
-  const feed = useMemo(
-    () => [...events.events, ...noticeEvents].sort((a, b) => b.detected_at - a.detected_at),
-    [events, noticeEvents],
-  );
   const sites = useMemo(
     () =>
       Array.from(
         new Set([
-          ...events.events.map((e) => e.site_id),
-          ...noticeEvents.map((e) => e.site_id),
+          ...feed.map((e) => e.site_id),
           ...history.records.map((r) => r.site_id),
         ]),
       ),
-    [events, history, noticeEvents],
+    [feed, history],
   );
   const [site, setSite] = useState<string>("all");
 
   const filteredEvents = site === "all" ? feed : feed.filter((e) => e.site_id === site);
-  const filteredRecords = site === "all" ? history.records : history.records.filter((r) => r.site_id === site);
-
-  const columns: DColumn<PriceRecord>[] = [
-    {
-      title: "站点",
-      dataIndex: "site_id",
-      width: 130,
-      render: (v: string, row) => {
-        const info = getSiteInfo(v, row.source_url);
-        return (
-          <RiskLink href={info.homepage || row.source_url} variant="site">
-            <span className="mono">{info.name}</span>
-          </RiskLink>
-        );
-      },
-    },
-    { title: "模型", dataIndex: "model", width: 220, render: (v: string) => <span className="mono">{v}</span> },
-    {
-      title: (
-        <>
-          分组
-          <TermTip term="group" />
-        </>
-      ),
-      key: "group",
-      width: 110,
-      mobileHide: true,
-      render: (_v, row) => <span className="mono" style={{ color: "var(--text-2)" }}>{row.metadata?.group || "—"}</span>,
-    },
-    {
-      title: (
-        <>
-          输入价
-          <TermTip term="input_price" />
-        </>
-      ),
-      dataIndex: "input_price",
-      align: "right",
-      width: 130,
-      render: (_v: number | null, row) => <PriceCell row={row} field="input_price" rate={rate} />,
-    },
-    {
-      title: (
-        <>
-          输出价
-          <TermTip term="output_price" />
-        </>
-      ),
-      dataIndex: "output_price",
-      align: "right",
-      width: 130,
-      render: (_v: number | null, row) => <PriceCell row={row} field="output_price" rate={rate} />,
-    },
-    {
-      title: (
-        <>
-          单位
-          <TermTip term="unit" />
-        </>
-      ),
-      dataIndex: "unit",
-      width: 140,
-      mobileHide: true,
-      render: (v: string) => <span className="mono" style={{ fontSize: 12, color: "var(--text-2)" }}>{v}</span>,
-    },
-    { title: "采集时间", dataIndex: "captured_at", width: 160, mobileHide: true, render: (v: number) => <span className="mono" style={{ color: "var(--text-2)", fontSize: 13, whiteSpace: "nowrap" }}>{formatTime(v)}</span> },
-  ];
 
   return (
     <div className="section-gap rise-in" style={{ display: "grid", gap: 24 }}>
-      <div className="panel" style={{ padding: "18px 22px 12px" }}>
-        <PriceTrendChart records={history.records} rate={rate} />
-      </div>
-
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <Seg
-          value={view}
-          onChange={(value) => setView(value as "events" | "records")}
-          options={[
-            { value: "events", label: `事件（${events.total + noticeTotal}）` },
-            { value: "records", label: `采集记录（${history.total}）` },
-          ]}
-        />
-        <Sel
+        <span style={{ fontWeight: 550, fontSize: 15 }}>事件（{priceTotal + noticeTotal}）</span>
+        <Pick
           value={site}
           onChange={setSite}
           options={[{ value: "all", label: "全部站点" }, ...sites.map((s) => ({ value: s, label: getSiteInfo(s).name || s }))]}
         />
       </div>
 
-      {view === "events" ? (
-        <EventFeed events={filteredEvents} rate={rate} />
-      ) : (
-        <div className="panel" style={{ overflow: "hidden" }}>
-          <DataTable<PriceRecord>
-            rowKey={(row) => `${row.site_id}:${row.model}:${row.captured_at}`}
-            columns={columns}
-            rows={filteredRecords}
-            paginated
-            scrollX={1020}
-            mobileScrollX={610}
-            empty="暂无记录"
-          />
-        </div>
-      )}
+      <EventFeed events={filteredEvents} rate={rate} />
     </div>
   );
 }

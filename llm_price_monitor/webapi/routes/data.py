@@ -44,9 +44,22 @@ def build_router(store: Store) -> APIRouter:
             notice = store.latest_notice(site_id)
             if isinstance(notice, dict) and notice.get("content"):
                 notices[site_id] = {"content": str(notice["content"]), "captured_at": notice.get("captured_at")}
+        # 站点信息完整度：监控模型、认证凭证、附加采集地址各 1 分（0–3），给前端智能排序用；
+        # network.ratio_url（倍率接口）与价格接口同地址、token_refresh（续签）均不计分
+        site_completeness = {
+            site.id: sum(
+                (
+                    bool(site.models),
+                    bool(site.auth_token or site.cookie or site.cookies),
+                    bool(site.networks),
+                )
+            )
+            for site in load_config(store).sites
+        }
         return {
             "records": records,
             "notices": notices,
+            "site_completeness": site_completeness,
             # 汇率口径与折扣页一致：优先实时值（拉取失败回落官方价目录缓存并标注）
             "catalog": {
                 **meta,
@@ -72,10 +85,16 @@ def build_router(store: Store) -> APIRouter:
         records, total = store.read_history(limit=limit, site_id=site_id, model=model)
         return {"records": records, "total": total, **display_rate()}
 
-    @router.get("/api/events")
-    def events(limit: int = 200, site_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
-        events, total = store.read_events(limit=limit, site_id=site_id, kind=kind)
-        return {"events": events, "total": total, **display_rate()}
+    @router.get("/api/feed")
+    def feed(events_limit: int = 200, notice_limit: int = 200) -> dict[str, Any]:
+        """统一事件流：价格事件与站点公告事件按时间合并排序，各自的全量总数单独给出。"""
+        price_events, price_total = store.read_events(limit=events_limit)
+        notice_events, notice_total = store.read_notice_events(limit=notice_limit)
+        return {
+            "events": sorted([*price_events, *notice_events], key=lambda e: e["detected_at"], reverse=True),
+            "price_total": price_total,
+            "notice_total": notice_total,
+        }
 
     @router.get("/api/meta")
     def meta(request: Request) -> dict[str, Any]:

@@ -9,11 +9,13 @@ from pydantic import BaseModel
 
 from llm_price_monitor import wxpusher
 from llm_price_monitor.config import config_from_store
+from llm_price_monitor import visitor_geo
 from llm_price_monitor.store import Store
 from llm_price_monitor.ua import parse_user_agent
+from llm_price_monitor.webapi.deps import client_ip
 
-# 访问记录自动保留 90 天，每小时顺带清一次过期数据
-VISIT_RETENTION_DAYS = 90
+# 单 IP 每分钟最多写入的访问记录数：超量静默丢弃，防伪造来源刷库
+TRACK_MAX_PER_MINUTE = 60
 
 
 class FeedbackBody(BaseModel):
@@ -30,6 +32,7 @@ def build_router(store: Store) -> APIRouter:
 
     # 进程内限速/去重状态：随应用生命周期存续，重启即重置
     feedback_hits: dict[str, list[float]] = {}
+    track_hits: dict[str, list[float]] = {}
     visit_purge_state = {"last": 0.0}
     # 同 IP + 路径 30 秒内只记一次，避免刷新与重复预取虚高 PV
     visit_hits: dict[tuple[str, str], float] = {}
@@ -46,7 +49,7 @@ def build_router(store: Store) -> APIRouter:
         if contact and len(contact) > 100:
             raise HTTPException(status_code=400, detail="联系方式最长 100 字")
         now = time.time()
-        ip = request.client.host if request.client else ""
+        ip = client_ip(request)
         recent = [t for t in feedback_hits.get(ip, []) if now - t < 60]
         if len(recent) >= 3:
             raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
@@ -72,14 +75,19 @@ def build_router(store: Store) -> APIRouter:
         path = body.path.split("?", 1)[0].split("#", 1)[0]
         if not path.startswith("/") or path.startswith("/api") or len(path) > 200:
             raise HTTPException(status_code=400, detail="非法路径")
-        forwarded = (request.headers.get("x-forwarded-for") or request.headers.get("x-client-ip") or "").split(",")[0].strip()
-        ip = forwarded or (request.client.host if request.client else "")
+        ip = client_ip(request)
         user_agent = (request.headers.get("user-agent") or "")[:500]
         now = time.time()
         key = (ip, path)
         if now - visit_hits.get(key, 0.0) < 30:
             return {"ok": True}
         visit_hits[key] = now
+        recent = [t for t in track_hits.get(ip, []) if now - t < 60]
+        if len(recent) >= TRACK_MAX_PER_MINUTE:
+            track_hits[ip] = recent
+            return {"ok": True}  # 超量静默丢弃：响应不区分，避免给刷库者探测信号
+        recent.append(now)
+        track_hits[ip] = recent
         for stale_key, stale_ts in list(visit_hits.items()):
             if now - stale_ts > 300:
                 visit_hits.pop(stale_key, None)
@@ -87,13 +95,28 @@ def build_router(store: Store) -> APIRouter:
         store.add_visit(path=path, ip=ip, user_agent=user_agent, browser=ua.browser, os=ua.os, device=ua.device)
         if now - visit_purge_state["last"] > 3600:
             visit_purge_state["last"] = now
-            store.purge_visits(now - VISIT_RETENTION_DAYS * 86400)
+            retention_days = config_from_store(store).settings.retention_visit_days
+            store.purge_visits(now - retention_days * 86400)
         return {"ok": True}
 
     @router.get("/api/analytics/summary")
     def analytics_summary() -> dict[str, Any]:
-        """访问统计聚合（管理员）：KPI、按天趋势、设备/浏览器/系统分布与热门榜单。"""
-        return {**store.visit_summary(), "retained_days": VISIT_RETENTION_DAYS}
+        """访问统计聚合（管理员）：KPI、按天趋势、设备/浏览器/系统分布、省份分布与热门榜单。
+
+        先补齐尚未解析归属地的访客 IP（批量解析 + 持久缓存），解析失败不影响返回。
+        """
+        cutoff = time.time() - 30 * 86400
+        try:
+            ips = store.pending_geo_ips(cutoff=cutoff, limit=200)
+            if ips:
+                resolved = visitor_geo.resolve_regions(ips)
+                failed = [ip for ip in ips if ip not in resolved]
+                store.save_ip_geo(resolved, failed)
+        except Exception:
+            pass  # 归属地解析只影响地图，失败时照常返回统计
+        summary = store.visit_summary()
+        summary["regions"] = store.region_dist(cutoff=cutoff)
+        return {**summary, "retained_days": config_from_store(store).settings.retention_visit_days}
 
     @router.get("/api/analytics/logs")
     def analytics_logs(limit: int = 100, offset: int = 0) -> dict[str, Any]:

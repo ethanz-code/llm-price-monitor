@@ -189,6 +189,18 @@ export function DataTable<T extends object>({
                   className={`${column.mobileHide ? "col-hide-m" : ""}${column.sorter ? " sortable" : ""}`.trim() || undefined}
                   aria-sort={active ? (sort!.dir === "ascend" ? "ascending" : "descending") : undefined}
                   onClick={() => toggleSort(column)}
+                  {...(column.sorter
+                    ? {
+                        tabIndex: 0,
+                        role: "button",
+                        onKeyDown: (event: React.KeyboardEvent) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleSort(column);
+                          }
+                        },
+                      }
+                    : null)}
                 >
                   {column.title}
                   {column.sorter && (

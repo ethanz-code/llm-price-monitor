@@ -3,7 +3,7 @@
 /** 自研基础组件集：替代 antd 的按钮/弹窗/开关/复选/下拉/输入/进度/时间线/
  *  空状态/分段控制/提示条/骨架屏与全局 toast。视觉全部由 CSS 变量驱动。 */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import { IconAlertCircle, IconCheck, IconChevronDown, IconClose } from "./icons";
@@ -101,6 +101,7 @@ export function Modal({
   const [rendered, setRendered] = useState(open);
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     if (open) {
@@ -165,9 +166,10 @@ export function Modal({
         style={{ maxWidth: `min(${width}px, 100%)` }}
         role="dialog"
         aria-modal
+        aria-labelledby={titleId}
       >
         <div className="modal-head">
-          <div className="modal-title">{title}</div>
+          <h2 id={titleId} className="modal-title">{title}</h2>
           <button ref={closeRef} className="modal-x" aria-label="关闭" onClick={onClose}>
             <IconClose size={15} />
           </button>
@@ -320,6 +322,91 @@ export function Sel({
   );
 }
 
+/* ---------- 下拉（限高滚动，选项多时列表不会撑满整屏） ---------- */
+
+export function Pick({
+  value,
+  onChange,
+  options,
+  style,
+  title,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+  style?: React.CSSProperties;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const current = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    // pointerdown 覆盖触屏长按/滚动等 mousedown 缺席的场景
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // 打开时把选中项滚进可视区
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [open]);
+
+  return (
+    <span className="sel-wrap" ref={rootRef} style={style}>
+      <button
+        type="button"
+        className="sel pick-trigger"
+        title={title}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {current?.label ?? "请选择"}
+      </button>
+      <IconChevronDown size={13} className={`chev${open ? " is-flip" : ""}`} />
+      {open && (
+        <div className="pick-menu" ref={menuRef} role="listbox">
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                data-active={active}
+                className={`pick-item${active ? " on" : ""}`}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </span>
+  );
+}
+
 /* ---------- 输入框 ---------- */
 
 export function Input({
@@ -333,6 +420,7 @@ export function Input({
   suffix,
   type,
   autoComplete,
+  ariaLabel,
 }: {
   value?: string;
   defaultValue?: string;
@@ -344,6 +432,7 @@ export function Input({
   suffix?: ReactNode;
   type?: string;
   autoComplete?: string;
+  ariaLabel?: string;
 }) {
   return (
     <span className="input-wrap" style={style}>
@@ -356,6 +445,7 @@ export function Input({
         disabled={disabled}
         type={type}
         autoComplete={autoComplete}
+        aria-label={ariaLabel}
         onChange={(event) => onChange?.(event.target.value)}
       />
       {suffix}

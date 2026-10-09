@@ -47,11 +47,12 @@ export function FeedbackModal({ open, onClose }: { open: boolean; onClose: () =>
           className="input textarea"
           rows={5}
           maxLength={MAX_CONTENT}
+          aria-label="建议内容"
           placeholder="功能建议、数据纠错、想监控的站点…"
           value={content}
           onChange={(event) => setContent(event.target.value)}
         />
-        <Input value={contact} onChange={setContact} placeholder="联系方式（选填，方便我们回复你）" />
+        <Input value={contact} onChange={setContact} placeholder="联系方式（选填，方便我们回复你）" ariaLabel="联系方式" />
       </div>
     </Modal>
   );

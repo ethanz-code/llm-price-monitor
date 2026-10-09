@@ -1,8 +1,9 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
-import { eventMeta, formatDiscount, formatTime } from "@/lib/format";
+import { eventMeta, formatDiscount, formatTime, isNoticeEvent } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import type { EventListData, OverviewData } from "@/lib/types";
+import type { FeedData, OverviewData } from "@/lib/types";
 import { SiteAlert } from "@/components/SiteAlert";
 import {
   IconAim,
@@ -22,16 +23,21 @@ export const dynamic = "force-dynamic";
 
 export const metadata = { title: "管理面板 · 概览" };
 
+// collect_status（需要关注的站点）仅管理员可见：与 overview 页同样带上会话 cookie
+const SESSION_COOKIE = "ppm_session";
+
 /** 概览：双栏仪表盘 —— 主栏 KPI + 最近事件面板，右栏快捷入口与公开页面；尚无站点时显示入门清单。 */
 export default async function AdminOverviewPage() {
+  const session = (await cookies()).get(SESSION_COOKIE)?.value;
+  const headers = session ? { Cookie: `${SESSION_COOKIE}=${session}` } : undefined;
   let overview: OverviewData | null = null;
-  let events: EventListData | null = null;
+  let events: FeedData | null = null;
   let error: string | null = null;
   try {
     [overview, events] = await Promise.all([
-      apiGet<OverviewData>("/api/overview"),
+      apiGet<OverviewData>("/api/overview", headers),
       // 事件总数给 KPI 用，events 列表给「最近事件」面板用
-      apiGet<EventListData>("/api/events?limit=8"),
+      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8"),
     ]);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -39,14 +45,14 @@ export default async function AdminOverviewPage() {
 
   const records = overview?.records ?? [];
   const siteIds = new Set(records.map((row) => row.site_id));
-  const latestEvents = events?.events.slice(-8).reverse() ?? [];
+  const latestEvents = events?.events.slice(0, 8) ?? [];
   const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
   const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
 
   const kpis: { label: string; value: string; hint: string; tip?: TermKey }[] = [
     { label: "监控站点", value: String(siteIds.size), hint: "来自站点配置" },
     { label: "价格记录", value: String(records.length), hint: "自首次采集累计" },
-    { label: "事件总数", value: String(events?.total ?? 0), hint: "新增与变化合计" },
+      { label: "事件总数", value: String((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "新增与变化合计" },
     {
       label: "平均输入折扣",
       tip: "discount_input",
@@ -57,6 +63,8 @@ export default async function AdminOverviewPage() {
 
   return (
     <>
+      {/* 后台各页均为面板式布局，页首标题只保留给读屏软件 */}
+      <h1 className="sr-only">控制台</h1>
       {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="稍后再试，或检查服务是否已启动。" />}
       <div className="dash-grid">
         <div className="dash-main">
@@ -84,10 +92,10 @@ export default async function AdminOverviewPage() {
               {latestEvents.length > 0 ? (
                 latestEvents.map((event, index) => {
                   const meta = eventMeta(event.kind);
-                  const site = getSiteInfo(event.site_id, event.current?.source_url ?? event.previous?.source_url);
+                  const site = getSiteInfo(event.site_id, isNoticeEvent(event) ? undefined : event.current?.source_url ?? event.previous?.source_url);
                   return (
                     <Link
-                      key={`${event.site_id}:${event.model}:${event.detected_at}:${index}`}
+                      key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
                       href="/history"
                       className="event-card"
                     >
@@ -97,7 +105,7 @@ export default async function AdminOverviewPage() {
                           {site.name} · {meta.label}
                         </span>
                         <span style={{ display: "block", fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>
-                          <span className="mono">{event.model}</span> · {formatTime(event.detected_at)}
+                          {isNoticeEvent(event) ? "站点公告" : <span className="mono">{event.model}</span>} · {formatTime(event.detected_at)}
                         </span>
                       </span>
                     </Link>
@@ -119,7 +127,7 @@ export default async function AdminOverviewPage() {
             </div>
             <div className="dash-quick">
               <Link href="/admin/tasks" className="dash-quick-item">
-                <IconBolt size={15} /> 立即采集
+                <IconBolt size={15} /> 采集任务
               </Link>
               <Link href="/admin/sites" className="dash-quick-item">
                 <IconPlus size={15} /> 新增站点
@@ -179,10 +187,10 @@ export default async function AdminOverviewPage() {
             <li>
               <span className="guide-icon"><IconBolt size={15} /></span>
               <div>
-                <div className="guide-title">3 · 触发首次采集</div>
-                <p>先预览一轮确认解析结果，再勾选写入历史；之后每次采集都会自动积累事件与曲线。</p>
+                <div className="guide-title">3 · 等待自动采集</div>
+                <p>保存站点后，系统会按「系统设置」里的频率自动采集，事件与曲线随之积累；进度在采集任务页可见。</p>
               </div>
-              <Link href="/admin/tasks" className="guide-link">去采集 →</Link>
+              <Link href="/admin/tasks" className="guide-link">看进度 →</Link>
             </li>
           </ol>
           <p className="guide-foot">

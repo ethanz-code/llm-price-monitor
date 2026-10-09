@@ -1,94 +1,44 @@
 "use client";
 
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as ReTooltip, XAxis, YAxis } from "recharts";
-import { ChartBubble, useChartTheme } from "./chartTheme";
-import { formatTime } from "@/lib/format";
-import type { AvailabilityPoint } from "@/lib/channelStatus";
+import { useMemo } from "react";
+import { rateLevel, type AvailabilityPoint, type RateLevel } from "@/lib/channelStatus";
+import { TimeSeriesChart, type TimeSeries } from "./TimeSeriesChart";
 
-interface ChartPoint {
-  label: string;
-  pct: number;
-  tip: string;
-}
+/** 三档图例文案：与分段着色、KPI 阈值一致。 */
+const RATE_LEVEL_LABELS: Record<RateLevel, string> = {
+  ok: "≥80% 优秀",
+  warn: "60–80% 警告",
+  down: "<60% 不及格",
+};
 
-interface TooltipPayloadItem {
-  payload: ChartPoint;
-}
+/** 整站可用率趋势（原来的口径）：每个检测点一个样本，Y = 正常渠道占比（0–100%），
+ *  线与填充按三档着色，值越低颜色越警示；图下有色档说明。 */
+export function StatusTrendChart({
+  times,
+  values,
+  window: windowProp,
+  onWindowChange,
+}: {
+  times: number[];
+  values: number[];
+  window?: [number, number] | null;
+  onWindowChange?: (value: [number, number] | null) => void;
+}) {
+  const series: TimeSeries[] = useMemo(() => [{ name: "渠道正常率", values }], [values]);
+  const levelOf = useMemo(() => (index: number) => rateLevel(values[index] ?? 100), [values]);
 
-/** 悬停气泡：时间 + 当次正常率，异常时点名异常渠道。 */
-function RateTooltip({ active, payload }: { active?: boolean; payload?: TooltipPayloadItem[] }) {
-  const lineColor = useChartTheme().lineColor;
-  if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload;
   return (
-    <ChartBubble
-      label={point.label}
-      rows={[{ color: lineColor, name: "渠道正常率", value: point.tip }]}
+    <TimeSeriesChart
+      times={times}
+      series={series}
+      step
+      yDomain={[0, 100]}
+      yFormat={(v) => `${Math.round(v)}%`}
+      height={220}
+      levelOf={levelOf}
+      levelLabels={RATE_LEVEL_LABELS}
+      window={windowProp}
+      onWindowChange={onWindowChange}
     />
-  );
-}
-
-/** 渠道可用率阶梯图：每个检测点一个样本，Y = 正常渠道占比（0–100%）。 */
-export function StatusTrendChart({ points }: { points: AvailabilityPoint[] }) {
-  const { dark, lineColor, axisColor, gridColor } = useChartTheme();
-
-  const data: ChartPoint[] = points.map((point) => ({
-    label: formatTime(point.at),
-    pct: point.pct,
-    tip: `${point.pct}% 正常${
-      point.down.length ? `（${point.down.slice(0, 3).join("、")}${point.down.length > 3 ? " 等" : ""}）` : ""
-    }`,
-  }));
-
-  if (data.length < 2) {
-    return (
-      <p style={{ color: "var(--text-3)", fontSize: 13, margin: 0 }}>
-        至少两个检测点后这里会出现可用率趋势图；当前 {data.length} 个。
-      </p>
-    );
-  }
-
-  return (
-    <div style={{ height: 220 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
-          <CartesianGrid stroke={gridColor} vertical={false} />
-          <XAxis
-            dataKey="label"
-            tick={{ fill: axisColor, fontSize: 11 }}
-            tickLine={false}
-            axisLine={{ stroke: gridColor }}
-            tickMargin={8}
-            minTickGap={40}
-            interval="preserveStartEnd"
-          />
-          <YAxis
-            domain={[0, 100]}
-            width={42}
-            tick={{ fill: axisColor, fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v: number) => `${v}%`}
-          />
-          <ReTooltip content={<RateTooltip />} cursor={{ stroke: gridColor }} />
-          <defs>
-            <linearGradient id="status-rate-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={lineColor} stopOpacity={dark ? 0.25 : 0.16} />
-              <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <Area
-            type="stepAfter"
-            dataKey="pct"
-            name="渠道正常率"
-            stroke={lineColor}
-            strokeWidth={2}
-            fill="url(#status-rate-fill)"
-            dot={{ r: 2.5, strokeWidth: 0, fill: lineColor }}
-            activeDot={{ r: 4 }}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
   );
 }

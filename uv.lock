@@ -138,7 +138,6 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "python-dotenvx" },
     { name = "uvicorn" },
 ]
 
@@ -151,7 +150,6 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "python-dotenvx", specifier = ">=2,<3" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
 
@@ -259,18 +257,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a3/5c/00a0e072241553e1a7496d638deababa67c5058571567b92a7eaa258397c/pytest-8.4.2.tar.gz", hash = "sha256:86c0d0b93306b961d58d62a4db4879f27fe25513d4b969df351abdddb3c30e01", size = 1519618, upload-time = "2025-09-04T14:34:22.711Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/a4/20da314d277121d6534b3a980b29035dcd51e6744bd79075a6ce8fa4eb8d/pytest-8.4.2-py3-none-any.whl", hash = "sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79", size = 365750, upload-time = "2025-09-04T14:34:20.226Z" },
-]
-
-[[package]]
-name = "python-dotenvx"
-version = "2.0.0"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/5b/a1ff90d119491ce429f45d068c30944847228fc5ea757393cf5867c7c31a/python_dotenvx-2.0.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:93bdfb5d61020ffaab87d0c4badc8d6ed06b1f94cefedc89ee77bb45520d379a", size = 986740, upload-time = "2026-07-29T20:40:56.536Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/eb/7ff111ab803b77f8dd3f1b4085a54df4102510aef9ec9f3c8fc83f77e3e9/python_dotenvx-2.0.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:86607f3e19157658980fd1d73d775681450458477ef3288ecb9ebba2a5941aac", size = 953152, upload-time = "2026-07-29T20:40:57.895Z" },
-    { url = "https://files.pythonhosted.org/packages/00/58/ca496e0ed87d0e3bbfc4e57a48fd576a784bcc2bc6888936f9cb3592d4c0/python_dotenvx-2.0.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2d5581229ba632e46d3e2c30302b0dbfdb50771b99f94775642f54a2ee107fe6", size = 1081379, upload-time = "2026-07-29T20:40:59.095Z" },
-    { url = "https://files.pythonhosted.org/packages/9f/09/87d37d8cce03373b2a30a5752a66a7ada79605ab7d7e1bf0f29685c9087a/python_dotenvx-2.0.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9e8cd30b658abaf59cae8553a461c702657db8badac1ccf5ea97144fc9b4159e", size = 1095509, upload-time = "2026-07-29T20:41:00.248Z" },
-    { url = "https://files.pythonhosted.org/packages/55/e6/b09ea13fb59ccee15fc720c4fa2794eca5374b3598d47b49f8affb074fcf/python_dotenvx-2.0.0-cp38-abi3-win_amd64.whl", hash = "sha256:5b7fe10be032fe8973ddd1f92b404c5ae0a8b1db53776a73eb3e5920f960bd79", size = 885902, upload-time = "2026-07-29T20:41:01.499Z" },
 ]
 
 [[package]]

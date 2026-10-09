@@ -8,7 +8,7 @@ from llm_price_monitor.catalog import modelsdev
 from llm_price_monitor.catalog.classify import BATCH_SIZE, attach_ai_tiers
 from llm_price_monitor.catalog.discount import build_discount, compute_discounts, summarize
 from llm_price_monitor.catalog.modelsdev import fetch_catalog
-from llm_price_monitor.catalog.translate import attach_zh_descriptions
+from llm_price_monitor.catalog.translate import attach_zh_descriptions, description_fingerprint
 from llm_price_monitor.config import AIConfig
 from llm_price_monitor.report import attach_catalog_discounts
 
@@ -369,6 +369,49 @@ def test_attach_ai_tiers_batches_large_vendors():
     assert calls["n"] == 2  # 超过单批上限分两次请求
 
 
+def test_attach_ai_tiers_demotes_stale_models_when_newer_generation_exists():
+    from datetime import date, timedelta
+
+    old_date = (date.today() - timedelta(days=800)).isoformat()
+    recent_date = (date.today() - timedelta(days=30)).isoformat()
+    models = {
+        "old": {
+            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
+        },
+        "recent": {
+            "found": True, "model": "m-new", "name": "M New", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": recent_date, "modalities": {"output": ["text"]},
+        },
+    }
+    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}, {"model": "m-new", "tier": "flagship"}]])
+    output = {"models": models}
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
+    assert output["models"]["old"]["tier"] is None  # 新一代在售，旧代硬降为 null
+    assert output["models"]["recent"]["tier"] == "flagship"
+
+
+def test_attach_ai_tiers_keeps_old_mainstream_without_newer_generation():
+    from datetime import date, timedelta
+
+    old_date = (date.today() - timedelta(days=800)).isoformat()
+    models = {
+        "old": {
+            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
+        },
+    }
+    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}]])
+    output = {"models": models}
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_tiers(output, None, _ai_config(), client) == 1
+    assert output["models"]["old"]["tier"] == "mainstream"  # 厂商无新一代在售，保留 AI 判定
+
+
 # ---------- catalog.translate（简介中译）----------
 
 
@@ -451,3 +494,48 @@ def test_attach_zh_descriptions_silent_when_unavailable_or_failing():
     with httpx.Client(transport=broken) as client:
         assert attach_zh_descriptions(output, None, _ai_config(), client) == 0
     assert "description_zh" not in output["models"]["m1"]
+
+
+def test_attach_zh_descriptions_dedupes_same_description():
+    transport, calls = _zh_recorder([
+        [{"model": "m1", "zh": "面向对话的快速模型。"}, {"model": "m2", "zh": "旗舰推理模型。"}],
+    ])
+    output = _desc_output()
+    output["models"]["m4"] = {"found": True, "model": "m-4", "vendor": "W", "description": "Fast model for chat."}
+    with httpx.Client(transport=transport) as client:
+        # 同简介的 m1/m4 只翻一次，计数按新翻译的指纹算 2
+        assert attach_zh_descriptions(output, None, _ai_config(), client) == 2
+    assert calls["n"] == 1
+    assert output["models"]["m4"]["description_zh"] == "面向对话的快速模型。"
+    assert output["models"]["m4"]["desc_fp"] == output["models"]["m1"]["desc_fp"]
+
+
+def test_attach_zh_descriptions_seed_reuses_other_catalog():
+    transport, calls = _zh_recorder([[{"model": "m2", "zh": "旗舰推理模型。"}]])
+    output = _desc_output()
+    seed = {"x" * 16: "面向对话的快速模型。"}
+    seed[description_fingerprint(output["models"]["m1"])] = "面向对话的快速模型。"
+    with httpx.Client(transport=transport) as client:
+        assert attach_zh_descriptions(output, None, _ai_config(), client, seed=seed) == 1
+    assert calls["n"] == 1  # m1 命中 seed 不发请求，只有 m2 需要翻
+    assert output["models"]["m1"]["description_zh"] == "面向对话的快速模型。"
+
+
+def test_attach_zh_descriptions_continues_after_batch_failure():
+    output = _desc_output()
+    for i in range(2, 62):  # 60 条待翻，两批
+        output["models"][f"x{i}"] = {"found": True, "model": f"x-{i}", "vendor": "V", "description": f"Model {i}."}
+    # 第一批失败，第二批成功：其余批次不受影响
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(500)
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"translations": [{"model": "x31", "zh": "第三十一个。"}]})}}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        # 第二批翻出 x31；第三批虽成功但响应里没有它的条目，不计新翻译
+        assert attach_zh_descriptions(output, None, _ai_config(), client) == 1
+    assert calls["n"] == 3
+    assert output["models"]["x31"]["description_zh"] == "第三十一个。"

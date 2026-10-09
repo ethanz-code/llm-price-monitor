@@ -24,6 +24,7 @@ import type { AnalyticsSummary, VisitLog, VisitLogsData } from "@/lib/types";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
 import { SiteAlert } from "./SiteAlert";
+import { VisitorMap } from "./VisitorMap";
 import { Btn, toast } from "./ui";
 
 const DEVICE_LABELS: Record<string, string> = {
@@ -195,32 +196,35 @@ export function AdminAnalytics() {
     return <p className="empty" style={{ padding: "40px 0" }}>加载中…</p>;
   }
 
-  const kpis = [
-    { label: "今日访问量", value: String(summary.today_pv), hint: "今日页面打开次数" },
-    { label: "今日访客", value: String(summary.today_uv), hint: "今日独立 IP 数" },
-    { label: "累计访问量", value: String(summary.total_pv), hint: "启用统计以来合计" },
-    { label: "独立 IP", value: String(summary.total_ip), hint: "启用统计以来去重" },
-  ];
+  const mapRegions = summary.regions.filter((item) => !["未知"].includes(item.name));
+  const otherRegions = summary.regions.filter((item) => ["未知"].includes(item.name));
 
   return (
-    <div>
-      <div className="stat-grid">
-        {kpis.map((card) => (
-          <div key={card.label} className="stat-card">
-            <div className="stat-label">{card.label}</div>
-            <div className="stat-value">{card.value}</div>
-            <div className="stat-hint">{card.hint}</div>
+    <div style={{ display: "grid", gap: 32 }}>
+      {mapRegions.length > 0 && (
+        <section>
+          <h3 className="section-title">访客来自哪里</h3>
+          <p className="section-sub">近 30 天访问按国家着色；亮色主题勾线、暗色主题填色，越亮访问越多</p>
+          <div style={{ border: "1px solid var(--border, rgba(127,127,127,0.2))", borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ height: "min(52vh, 480px)", minHeight: 320 }}>
+              <VisitorMap regions={mapRegions} />
+            </div>
           </div>
-        ))}
-      </div>
+          {otherRegions.length > 0 && (
+            <p style={{ color: "var(--text-3)", fontSize: 12, margin: "6px 0 0" }}>
+              {otherRegions.map((item) => `${item.name} ${item.pv}`).join(" · ")}
+            </p>
+          )}
+        </section>
+      )}
 
       {summary.total_pv === 0 ? (
-        <p className="empty section-gap" style={{ padding: "40px 0" }}>
+        <p className="empty" style={{ padding: "40px 0" }}>
           还没有访问记录；有人打开页面后就会开始累计，稍后再回来看看。
         </p>
       ) : (
         <>
-          <section className="section-gap">
+          <section>
             <h3 className="section-title">近 30 天访问趋势</h3>
             <div style={{ height: 240, marginTop: 10 }}>
               <ResponsiveContainer width="100%" height="100%">
@@ -247,7 +251,7 @@ export function AdminAnalytics() {
             </p>
           </section>
 
-          <section className="section-gap">
+          <section>
             <h3 className="section-title">设备与终端分布</h3>
             <p className="section-sub">近 30 天访问</p>
             <div style={{ display: "grid", gap: 28, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
@@ -266,7 +270,7 @@ export function AdminAnalytics() {
             </div>
           </section>
 
-          <section className="section-gap">
+          <section>
             <h3 className="section-title">热门页面</h3>
             <p className="section-sub">近 30 天访问量最高的页面</p>
             <NamedBars data={summary.top_paths.map((item) => ({ name: item.path, pv: item.pv }))} color={lineColor} axisColor={axisColor} />
@@ -274,7 +278,7 @@ export function AdminAnalytics() {
         </>
       )}
 
-      <section className="section-gap">
+      <section>
         <h3 className="section-title">最近访问明细</h3>
         <p className="section-sub">
           同一 IP 30 秒内重复打开同一页面只计一次；记录自动保留 {summary.retained_days} 天
@@ -282,7 +286,7 @@ export function AdminAnalytics() {
         <DataTable columns={VisitColumns()} rows={visits} rowKey={(row) => `${row.ts}:${row.path}:${row.ip}`} paginated empty="暂无访问记录" />
       </section>
 
-      <div className="section-gap" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div  style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <Btn variant="ghost" size="sm" onClick={clearVisits}>
           {confirmClear ? "再点一次确认清空" : "清空访问记录"}
         </Btn>

@@ -27,7 +27,7 @@ llm_price_monitor/
 ├── store.py              # SQLite 存储层（站点配置、历史/快照/事件/文档的唯一真相源）
 ├── ai.py                 # AI 价格抽取与结果校验
 ├── config.py             # 强类型配置（JSON/数据库 → MonitorConfig）
-├── evidence.py / matching.py / units.py / useragent.py / env.py
+├── evidence.py / matching.py / units.py / useragent.py
 ├── webapi/
 │   ├── app.py            # 应用组装：种子导入、鉴权中间件、按域挂载 APIRouter、CLI 入口
 │   ├── deps.py           # 路由共享小工具（配置加载、登录态、目录读取、汇率取值）
@@ -225,12 +225,11 @@ curl http://127.0.0.1:8000/api/discount
   "enabled": true,
   "base_url": "https://.../compatible-mode/v1",
   "model": "qwen3.8-flash",
-  "api_key_env": "PRICE_MONITOR_AI_API_KEY",
   "max_tokens": 4000
 }
 ```
 
-- API key 也可以直接写在 `api_key`，推荐 `api_key_env` 从环境变量读取。
+- API key 在管理面板「系统设置」里填写（存数据库）；种子配置也可以直接写 `api_key`，首次导入时生效。
 - `models` 可配置多个候选模型，每次请求随机选用一个。
 - AI 原始结果按证据哈希缓存在数据库中，同一接口证据不变时不重复调用。
 

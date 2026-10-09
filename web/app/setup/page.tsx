@@ -196,8 +196,7 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
 
 const NEXT_STEPS = [
   { title: "添加监控站点", text: "在「站点管理」里新增中转站的价格接口地址与目标模型。", href: "/admin/sites", label: "去添加站点" },
-  { title: "触发首次采集", text: "在「采集任务」里点「立即采集」，完成第一次价格采集。", href: "/admin/tasks", label: "去采集" },
-  { title: "刷新厂商定价", text: "厂商价数据来自 models.dev，无需任何密钥，一键同步后折扣对比才有基准。", href: "/catalog", label: "去刷新" },
+  { title: "等待自动采集", text: "系统会按「系统设置」里的频率自动采集，第一次价格数据很快就有。", href: "/admin/tasks", label: "看采集任务" },
 ];
 
 function StepDone() {

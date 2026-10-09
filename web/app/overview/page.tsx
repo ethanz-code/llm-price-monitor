@@ -3,6 +3,7 @@ import { apiGet } from "@/lib/api";
 import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
 import type { OverviewData, StatusSnapshot } from "@/lib/types";
 import { PageHeader } from "@/components/PageHeader";
+import { alerts, subtitles } from "@/lib/copy";
 import { OverviewTable } from "@/components/OverviewTable";
 import { SiteAlert } from "@/components/SiteAlert";
 
@@ -39,9 +40,9 @@ export default async function OverviewPage() {
       <PageHeader
         eyebrow="OVERVIEW"
         title="中转站定价"
-        subtitle="各中转站最新的模型单价，折扣为站点价相对厂商原价的比值——越低越便宜。"
+        subtitle={subtitles.overview}
       />
-      {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。" />}
+      {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}
       {data && <OverviewTable data={data} statusDots={statusDots} />}
     </div>
   );

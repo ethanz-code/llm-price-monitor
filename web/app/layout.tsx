@@ -4,8 +4,12 @@ import { Providers } from "./providers";
 import { Toaster } from "@/components/ui";
 import { SiteNav } from "@/components/SiteNav";
 import { SiteFooter } from "@/components/SiteFooter";
+import { HeroBackdrop } from "@/components/HeroBackdrop";
 import { SideFab } from "@/components/SideFab";
+import { ScrollToTop } from "@/components/ScrollToTop";
+import { AssistantDock } from "@/components/AssistantDock";
 import { themeInitScript } from "@/theme";
+import { site } from "@/lib/copy";
 import "./globals.css";
 
 /* 字体真正落地：CSS 里声明的 Geist Sans/Mono 由此注入，缺字回退到系统栈 */
@@ -14,17 +18,16 @@ const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono"
 
 export const metadata: Metadata = {
   title: {
-    default: "LLM 价格监控 — 中转站价格逐条可溯源",
+    default: site.title,
     template: "%s · LLM 价格监控",
   },
-  description:
-    "把各家 API 中转站的价格、折扣、渠道状态和公告放在一起，对照厂商价，买之前先查一查。",
+  description: site.description,
   openGraph: {
-    title: "LLM 价格监控",
-    description: "各家 API 中转站的价格、折扣、渠道状态和公告，对照厂商价，买之前先查一查。",
+    title: site.name,
+    description: site.description,
     type: "website",
     locale: "zh_CN",
-    siteName: "LLM 价格监控",
+    siteName: site.name,
   },
 };
 
@@ -52,10 +55,13 @@ export default function RootLayout({ children }: React.PropsWithChildren) {
       </head>
       <body>
         <Providers>
+          <HeroBackdrop />
           <SiteNav />
+          <ScrollToTop />
           <main>{children}</main>
           <SiteFooter />
           <SideFab />
+          <AssistantDock />
           <Toaster />
         </Providers>
       </body>

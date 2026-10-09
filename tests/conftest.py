@@ -6,6 +6,7 @@
 """
 import pytest
 
+from llm_price_monitor import visitor_geo
 from llm_price_monitor.webapi import scheduler
 
 
@@ -13,5 +14,14 @@ from llm_price_monitor.webapi import scheduler
 def _isolated_runtime(tmp_path, monkeypatch):
     # 路径与 workspace fixture 的约定一致（tmp_path/var/…），测试里直接打开 sqlite 断言的用例才能看到同一张库
     monkeypatch.setenv("PRICE_MONITOR_DB", str(tmp_path / "var" / "monitor.db"))
+    # 访问统计会顺带解析访客 IP 归属地（外网请求），测试一律离线替代
+    monkeypatch.setattr(
+        visitor_geo,
+        "resolve_regions",
+        lambda ips: {
+            ip: {"country": "中国", "region": "广东省", "province": "广东", "city": "深圳", "lat": 22.5, "lon": 114.0}
+            for ip in ips
+        },
+    )
     yield
     scheduler.stop_scheduler()

@@ -23,7 +23,10 @@ export function useTheme() {
 /** 主题上下文：免闪烁引导（themeInitScript）先行，这里只负责运行时切换。 */
 export function Providers({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>("system");
-  const [dark, setDark] = useState(true);
+  // 初值直接跟随 themeInitScript 已写入的 data-theme，避免浅色用户挂载后 dark 翻转触发下游重建
+  const [dark, setDark] = useState(
+    () => typeof document === "undefined" || document.documentElement.dataset.theme !== "light",
+  );
 
   const apply = useCallback(() => {
     const stored = (localStorage.getItem("theme-mode") as ThemeMode | null) ?? "system";

@@ -109,6 +109,21 @@ def test_store_history_and_events_filters(tmp_path: Path):
     assert total == 1 and events[0]["kind"] == "new"
 
 
+def test_read_rows_clamps_limit(tmp_path: Path, monkeypatch):
+    """公开读接口的 limit 统一钳制到 _MAX_ROW_LIMIT：超大入参不会一次拖全表。"""
+    import llm_price_monitor.store as store_module
+
+    monkeypatch.setattr(store_module, "_MAX_ROW_LIMIT", 2)
+    store = Store(tmp_path / "monitor.db")
+    store.append_history([
+        {"site_id": "a", "model": "m1", "captured_at": 1.0},
+        {"site_id": "a", "model": "m2", "captured_at": 2.0},
+        {"site_id": "a", "model": "m3", "captured_at": 3.0},
+    ])
+    rows, total = store.read_history(limit=10**9)
+    assert total == 3 and len(rows) == 2  # COUNT 反映全量，返回行数被钳制
+
+
 def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     """首启种子：配置文件 + var/ 存量全部入库；二次启动不重复导入。"""
     monkeypatch.chdir(tmp_path)
@@ -148,3 +163,54 @@ def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     store2: Store = second.state.store
     assert store2.count_history() == 1
     assert store2.count_events() == 1
+
+
+def test_price_records_migrates_to_price_trend(tmp_path: Path):
+    """旧库升级：price_records 整行 JSON 压平成 price_trend 精简列，旧表删除。"""
+    import sqlite3
+
+    db = tmp_path / "monitor.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE price_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            captured_at REAL NOT NULL,
+            record TEXT NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO price_records (site_id, model, captured_at, record) VALUES (?, ?, ?, ?)",
+        ("a", "m1", 1.0, json.dumps({"site_id": "a", "model": "m1", "input_price": 1, "output_price": 2,
+                                     "unit": "USD/1M tokens", "metadata": {"group": "vip"}})),
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db)
+    rows, total = store.read_history(limit=10)
+    assert total == 1
+    assert rows[0]["group"] == "vip"
+    assert rows[0]["input_price"] == 1 and rows[0]["output_price"] == 2
+    with sqlite3.connect(db) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "price_records" not in tables and "price_trend" in tables
+
+
+def test_purge_history_and_events(tmp_path: Path):
+    """保留清理：只删截止时间之前的数据，之后的保留。"""
+    store = Store(tmp_path / "monitor.db")
+    store.append_history([
+        {"site_id": "a", "model": "m1", "captured_at": 1.0},
+        {"site_id": "a", "model": "m1", "captured_at": 2.0},
+    ])
+    store.append_events([
+        {"site_id": "a", "model": "m1", "kind": "new", "detected_at": 1.0},
+        {"site_id": "a", "model": "m1", "kind": "new", "detected_at": 2.0},
+    ])
+    assert store.purge_history(1.5) == 1
+    # 价格事件属于变更记录：不参与保留清理，全量保留
+    assert store.read_events(limit=10)[0][0]["detected_at"] == 1.0
+    assert store.count_history() == 1
+    assert store.read_history(limit=10)[0][0]["captured_at"] == 2.0

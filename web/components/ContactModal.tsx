@@ -36,21 +36,32 @@ export function ContactModal({
   onClose: () => void;
 }) {
   return (
-    <Modal open={open} onClose={onClose} title="企业微信联系">
+    <Modal open={open} onClose={onClose} title="联系我们">
       <div
         style={{
           display: "grid",
           justifyItems: "center",
-          gap: 12,
+          gap: 14,
           padding: "4px 0 6px",
         }}
       >
         <WecomQr size={220} />
-        <span
-          style={{ fontSize: 13, color: "var(--text-3)", textAlign: "center" }}
-        >
-          有任何产品建议、开发需求、数据纠错都可以直接加企微沟通。
-        </span>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>
+            扫码加我们企业微信
+          </div>
+          <div
+            style={{
+              fontSize: 13,
+              color: "var(--text-3)",
+              marginTop: 4,
+              lineHeight: 1.6,
+            }}
+          >
+            有问题欢迎咨询，无需拘谨。我们是一家由多名腾讯前员工成立的有限公司，拥有
+            10 年+的开发经验，欢迎对接各类软件开发需求。
+          </div>
+        </div>
       </div>
     </Modal>
   );

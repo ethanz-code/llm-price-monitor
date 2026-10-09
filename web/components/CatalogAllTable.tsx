@@ -2,12 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { Empty, Input, Sel } from "./ui";
+import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { ToneTag } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
-import { formatPrice, formatTokens, isFreePrice } from "@/lib/format";
+import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
 interface Row extends CatalogEntry {
@@ -30,7 +30,8 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? `${row.model} ${row.vendor} ${row.name ?? ""}`.toLowerCase().includes(lower) : true));
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true));
+    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3
   }, [data, keyword, vendor]);
 
   const columns: DColumn<Row>[] = [
@@ -38,9 +39,9 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       title: "渠道 / 厂商",
       dataIndex: "vendor",
       width: 190,
-      render: (v: string) => (
+      render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
-          <VendorBadge vendor={v} />
+          <VendorBadge vendor={v} logo={row.logo} />
           {v}
         </span>
       ),
@@ -180,7 +181,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
           onChange={setKeyword}
           prefix={<IconSearch size={14} />}
         />
-        <Sel
+        <Pick
           value={vendor}
           onChange={setVendor}
           style={{ width: 200, maxWidth: "100%" }}

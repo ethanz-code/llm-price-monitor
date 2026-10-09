@@ -23,6 +23,23 @@ def load_config(store: Store) -> MonitorConfig:
         raise HTTPException(status_code=500, detail=f"加载数据库配置失败: {exc}") from exc
 
 
+_LOOPBACK_PEERS = {"127.0.0.1", "::1"}
+
+
+def client_ip(request: Request) -> str:
+    """访客 IP：仅当直连方是本机回环（Nginx/Next 反代同机转发）时才信任转发头——
+    优先 x-real-ip（部署文档的 Nginx 写入真实 IP），否则取 X-Forwarded-For 最后一跳
+    （追加链的末端由可信代理写入）；直连访问一律用 socket 地址，防止伪造头冒充他人 IP。"""
+    peer = request.client.host if request.client else ""
+    if peer not in _LOOPBACK_PEERS:
+        return peer
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")
+    return forwarded[-1].strip() or peer
+
+
 def is_admin(store: Store, request: Request) -> bool:
     """会话 cookie 有效即为管理员；首次启动（无管理员账号）时人人未登录。"""
     return auth.session_username(store, request.cookies.get(auth.SESSION_COOKIE)) is not None
