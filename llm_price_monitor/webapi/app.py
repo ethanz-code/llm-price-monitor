@@ -173,7 +173,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     # 一律 401——访客照常看页面，但拿不到可直接抓取的 JSON API。
     # 令牌未设置时（本地开发）不启用封锁。健康检查、登录态探测与 AI 助手状态
     # 属于访客功能本身，保持公开。
-    public_get_paths = {"/api/health", "/api/auth/state", "/api/assistant/status", "/api/rankings"}
+    public_get_paths = {"/api/health", "/api/auth/state", "/api/assistant/status", "/api/rankings", "/api/discovery"}
     internal_token = os.environ.get("PRICE_WEB_INTERNAL_TOKEN", "")
 
     @app.middleware("http")
@@ -224,6 +224,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.ai_logs.build_router(store))
     app.include_router(routes.vendor_sources.build_router(store))
     app.include_router(routes.rankings.build_router(store))
+    app.include_router(routes.discovery.build_router(store))
     ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志
     ai.model_limits_loader = store.get_model_limits  # 已学 max_tokens 上限的存取：重启后不再白发降额 400
     ai.model_limits_saver = store.save_model_limit

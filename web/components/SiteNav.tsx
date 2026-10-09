@@ -13,6 +13,7 @@ import {
   IconSun,
 } from "./icons";
 import { LogoMark } from "./LogoMark";
+import { NavTabs } from "./NavTabs";
 import { useTheme } from "@/app/providers";
 import { fetchAuthState } from "@/lib/api";
 import { nav, site } from "@/lib/copy";
@@ -200,17 +201,7 @@ export function SiteNav() {
           <span className="brand-name">{site.name}</span>
         </Link>
 
-        <nav className="nav-pill" aria-label="主导航">
-          {items.map((item) => (
-            <Link
-              key={item.key}
-              href={item.key}
-              className={`nav-pill-item${selected === item.key ? " active" : ""}`}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+        <NavTabs items={items} selected={selected} />
 
         <span className="nav-mobile-wrap">
           <Btn

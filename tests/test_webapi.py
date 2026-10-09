@@ -1965,7 +1965,7 @@ def test_admin_get_routes_denied_to_anonymous_by_default(workspace: Path, monkey
         "/api/health", "/api/auth/state", "/api/assistant/status",
         "/api/meta", "/api/overview", "/api/latest", "/api/feed", "/api/history",
         "/api/status", "/api/status/latest", "/api/status/events", "/api/notice",
-        "/api/rankings", "/api/catalog", "/api/catalog/all", "/api/geo",
+        "/api/rankings", "/api/catalog", "/api/catalog/all", "/api/geo", "/api/discovery",
     }
 
     def all_api_routes() -> list[APIRoute]:

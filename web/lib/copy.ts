@@ -13,6 +13,12 @@ export const site = {
     "哪个中转站价格更低、服务更稳？每条数据都附来源链接，点开就能核对。",
 };
 
+/** hover 大弹窗内容：一句话说明 + 核心看点 */
+export interface NavPopover {
+  desc: string;
+  points: string[];
+}
+
 /** 顶部导航 */
 export const nav = {
   items: [
@@ -21,8 +27,52 @@ export const nav = {
     { key: "/calculator", label: "花费计算" },
     { key: "/catalog", label: "厂商定价" },
     { key: "/history", label: "事件追踪" },
+    { key: "/discover", label: "新站发现" },
   ],
   adminLabel: "工作台",
+  /** 桌面主导航 hover 大弹窗：一句话说明 + 核心看点（全部为真实功能）；没配置的 tab 不出弹窗 */
+  popovers: {
+    "/overview": {
+      desc: "每个模型只展示检测站点里的最低价，每条都附来源链接，点开就能核对。",
+      points: [
+        "站点检测档案：可用率、延迟逐轮留档",
+        "厂商官方价对照，折扣一眼看清",
+        "按厂商分组、发布日期排序",
+      ],
+    },
+    "/calculator": {
+      desc: "填好单价和用量，按缓存命中率估算这笔花费。",
+      points: [
+        "输入/输出/缓存命中三档分开算",
+        "10M/100M/1B 总用量快捷档位",
+        "复制分享链接，打开就是你算的这笔账",
+      ],
+    },
+    "/catalog": {
+      desc: "厂商官方定价目录，站点折扣的对照基准。",
+      points: [
+        "国际价来自 models.dev 开源目录",
+        "国内厂商定价页逐家抓取",
+        "按发布日期看最新模型",
+      ],
+    },
+    "/history": {
+      desc: "价格与公告的变化流，变化全部留档可回查。",
+      points: [
+        "降价/涨价/新增/公告分类徽章",
+        "按站点与模型筛选定位",
+        "同模型多分组折叠成一张卡",
+      ],
+    },
+    "/discover": {
+      desc: "从多个来源聚合发现新的中转站，补全检测清单。",
+      points: [
+        "四路来源聚合找站，去重合并",
+        "探测可用性后生成可导入清单",
+        "自动排除库内已有站点",
+      ],
+    },
+  } as Record<string, NavPopover>,
   theme: {
     light: { label: "浅色", title: "浅色模式" },
     dark: { label: "深色", title: "深色模式" },
@@ -184,6 +234,10 @@ export const alerts = {
   rankings: {
     title: "暂时读不到模型榜单",
     fix: "请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。",
+  },
+  discovery: {
+    title: "新站清单还没生成",
+    fix: "管理员在服务器上执行 price-discover harvest + probe 后，这里会列出发现的中转站。",
   },
 };
 

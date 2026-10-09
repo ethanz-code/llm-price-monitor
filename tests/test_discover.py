@@ -16,6 +16,7 @@ from llm_price_monitor.discover import (
     harvest_awesome_api_proxy,
     harvest_markdown_links,
     harvest_welfare,
+    harvest_zuiquan,
     host_to_id,
     normalize_host,
     origin_of,
@@ -46,7 +47,7 @@ def test_harvest_awesome_api_proxy_parses_table_rows():
             "# 最全 AI API 中转站导航",
             "| # | 站点 | 域名 | 描述 | 状态 | 7天可用率 | 评价净值 |",
             "| ---: | --- | --- | --- | :---: | ---: | ---: |",
-            "| 1 | [瓦瓦AI](http://wawapii.com/) | wawapii.com | 主打稳定 | 在线 | 99.7% | +167 |",
+            "| 1 | [瓦瓦AI](http://wawapii.com/) | wawapii.com | 🎁 主打稳定<br>长期在线 | 在线 | 99.7% | +167 |",
             "| 2 | [可乐AI](https://code28.ccwu.cc/sign-up?aff=oqw4) | code28.ccwu.cc | 低倍率 | 离线 | 100% | -4 |",
             "| 3 | 导航本身 [最全API导航](https://zuiquanapi.com/) | - | 不是站点行 | 在线 | 100% | +1 |",
         ]
@@ -54,8 +55,26 @@ def test_harvest_awesome_api_proxy_parses_table_rows():
     rows = harvest_awesome_api_proxy(readme)
     assert [r.host for r in rows] == ["wawapii.com", "code28.ccwu.cc"]
     assert rows[0].name == "瓦瓦AI"
-    assert rows[0].meta == {"status": "在线", "uptime7d": "99.7%", "rating": 167}
+    assert rows[0].meta["description"] == "主打稳定 长期在线"  # 描述列清洗进 meta
+    assert rows[0].meta["rating"] == 167
     assert rows[1].meta["rating"] == -4
+
+
+def test_harvest_zuiquan_parses_escaped_payload_entries():
+    """zuiquanapi RSC payload 是双层 JSON 转义的结构化条目，解开转义拿 name/description。"""
+    payload = (
+        r'前缀[]{\"id\":204,\"subcategory_id\":5,\"name\":\"aitokensflux\",\"url\":\"https://aitokensflux.com/register?aff=INx2\",'
+        r'\"domain\":\"\",\"logo\":\"?\",\"tag\":\"第三方\",\"description\":\"aitokensflux 主打\\\"稳定好用\\\"，美元人民币 1:1 结算。\",'
+        r'\"monitor_tier\":\"basic\",\"is_promoted\":0,\"rank_score\":\"0.438846\",\"sort_order\":30,'
+        r'\"active_subcategory_id\":null,\"has_active_sponsorship\":0,\"created_at\":\"2026-06-14 16:06:23\"}'
+        r',[{\"other\":1}]'
+    )
+    rows = harvest_zuiquan(payload)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.host == "aitokensflux.com"
+    assert row.name == "aitokensflux"
+    assert row.meta["description"] == 'aitokensflux 主打"稳定好用"，美元人民币 1:1 结算。'
 
 
 def test_harvest_welfare_ignores_entries_without_url():

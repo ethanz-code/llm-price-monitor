@@ -1701,7 +1701,16 @@ html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
   padding: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   z-index: var(--z-pop);
-  animation: fade-up var(--dur) var(--ease);
+  /* 丝滑弹出：从触发角缩放长出，替代大位移 fade-up */
+  transform-origin: top right;
+  animation: nav-pop-in 0.2s var(--ease);
+}
+
+@keyframes nav-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
 }
 
 .nav-pop-item {
@@ -1914,6 +1923,7 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .nav-pill {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -1926,6 +1936,187 @@ html:not([data-theme="dark"]) .panel {
   transition:
     background-color var(--dur-slow),
     box-shadow var(--dur-slow);
+}
+
+/* 滑动选中指示器：独立白底 pill，路由切换时丝滑滑到新位置（Linear/AA 手法） */
+.nav-pill-indicator {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+  animation: nav-indicator-in 0.25s var(--ease);
+  transition:
+    transform 0.28s var(--ease),
+    width 0.28s var(--ease);
+}
+
+@keyframes nav-indicator-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.nav-pill-item {
+  position: relative;
+  z-index: 1;
+}
+
+/* tab 包裹层：hover 大弹窗的定位基准 */
+.nav-tab-wrap {
+  position: relative;
+}
+
+/* hover 大弹窗（mega dropdown）：一句话说明 + 核心看点 + 进入链接。
+   外层只做定位与间隙桥接（padding-top 让鼠标穿过间隙不丢失 hover），卡片承担动画 */
+.nav-dd {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding-top: 12px;
+  width: 500px;
+  z-index: var(--z-pop);
+}
+
+.nav-dd-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 24px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.16);
+  transform-origin: top center;
+  animation: nav-pop-in 0.2s var(--ease);
+}
+
+/* Stripe 式：主链接栏（大标题 + 一句话 + 进入链接）与看点栏，竖发丝线分隔 */
+.nav-dd-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding-right: 24px;
+  border-right: 1px solid var(--border);
+}
+
+.nav-dd-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.nav-dd-entry-title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--text);
+  transition: color var(--dur);
+}
+
+.nav-dd-entry:hover .nav-dd-entry-title {
+  color: var(--accent-text);
+}
+
+.nav-dd-entry-desc {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.nav-dd-go {
+  margin-top: auto;
+  font-size: 13px;
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+.nav-dd-go:hover {
+  text-decoration: underline;
+}
+
+.nav-dd-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 24px;
+}
+
+.nav-dd-side-title {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.nav-dd.leaving .nav-dd-card {
+  animation: nav-pop-out 0.16s var(--ease) forwards;
+}
+
+@keyframes nav-pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+
+.nav-dd-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.nav-dd-points li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.nav-dd-points li::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 0.58em;
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+/* 最右两个 tab 的弹窗右对齐，防止溢出视口右缘 */
+.nav-tab-wrap:nth-last-child(-n + 2) .nav-dd {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+@media (max-width: 1024px) {
+  .nav-dd {
+    width: 420px;
+  }
+
+  .nav-dd-card {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-dd-main {
+    border-right: 0;
+    padding-right: 0;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-dd-side {
+    padding-left: 0;
+    padding-top: 4px;
+  }
 }
 
 /* 滚动后：保持悬浮胶囊形态，仅加一点软投影让胶囊从滚过的内容上浮起 */
@@ -1951,10 +2142,8 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .nav-pill-item.active {
-  background: var(--panel);
   color: var(--text);
   font-weight: 550;
-  box-shadow: var(--shadow-pop);
 }
 
 /* 汉堡菜单仅移动端：提升特异性，避免被 AntD .ant-btn 的 display 覆盖 */
@@ -1977,16 +2166,13 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero {
-  display: grid;
-  /* 球在左、文字在右：窄列给球，宽列给文字；节点轮播独占第二行跨两列 */
-  grid-template-columns: minmax(340px, 540px) minmax(0, 1.05fr);
-  gap: 40px 48px;
-  align-items: center;
-  padding: 56px 0 72px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0 64px;
   position: relative;
 }
 
-/* Vercel 式首屏氛围：品牌色低浓度径向光晕 + 极淡点阵网格，全部压在内容层之下。
+/* Vercel 式首屏氛围：品牌色低浓度径向光晕，压在星图与文案之下。
    浅色 5%、暗色 9%——只做单色氛围，不搞彩虹渐变（design-guide 红线） */
 .hero::before {
   content: "";
@@ -1999,19 +2185,6 @@ html:not([data-theme="dark"]) .panel {
     radial-gradient(circle at 50% 0, color-mix(in srgb, var(--accent) 3%, transparent), transparent 55%);
 }
 
-.hero::after {
-  content: "";
-  position: absolute;
-  inset: 0 0 30%;
-  z-index: -1;
-  pointer-events: none;
-  background-image: radial-gradient(color-mix(in srgb, var(--text) 9%, transparent) 1px, transparent 1px);
-  background-size: 26px 26px;
-  -webkit-mask-image: radial-gradient(70% 90% at 40% 30%, #000, transparent 78%);
-  mask-image: radial-gradient(70% 90% at 40% 30%, #000, transparent 78%);
-  opacity: 0.55;
-}
-
 [data-theme="dark"] .hero::before {
   /* 近黑底上带色相的光晕会糊成脏色（062fa0a 同一教训），暗色改中性冷光只留亮度层次 */
   background:
@@ -2019,14 +2192,8 @@ html:not([data-theme="dark"]) .panel {
     radial-gradient(circle at 50% 0, rgba(255, 255, 255, 0.03), transparent 55%);
 }
 
-[data-theme="dark"] .hero::after {
-  background-image: radial-gradient(color-mix(in srgb, #fff 7%, transparent) 1px, transparent 1px);
-  opacity: 0.5;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .hero::before,
-  .hero::after {
+  .hero::before {
     display: none;
   }
 }
@@ -2077,9 +2244,14 @@ html:not([data-theme="dark"]) .panel {
   color: var(--text-3);
 }
 
-/* 首屏右侧：监控全景球做主视觉；面板对 hero 网格透明，让球与跑马灯直接成为网格项 */
-.hero-globe {
-  display: contents;
+/* 首屏星空层：pano-flatmap 与 hero-main 同格叠放，对 hero 布局透明。
+   轨道锁 minmax(0,1fr)：否则隐式轨道被大图撑宽，地图的居中/出血都发生在轨道里不生效 */
+.hero-sky {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  padding: 12px 0 40px;
+  position: relative;
 }
 
 .side-note {
@@ -2452,7 +2624,6 @@ html:not([data-theme="dark"]) .panel {
 
 /* 首屏底部站点节点区：两排反向无缝轮播（HeroArea），通到屏幕左右边界，两端渐隐，悬停暂停 */
 .hero > .marquee-row {
-  grid-column: 1 / -1;
   /* 出血到屏幕左右边界（.page 左右留白 32px / 窄屏 16px，随视口自适应） */
   margin-inline: calc((100vw - 100%) / -2);
   overflow: hidden;
@@ -2520,199 +2691,41 @@ html:not([data-theme="dark"]) .panel {
   }
 }
 
-/* 球入场：淡入 + 从 86% 放大归位 */
-@keyframes globe-in {
-  from {
-    opacity: 0;
-    transform: scale(0.86);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* 球入场：画布等 WebGL 首帧画完（SiteGlobe 加 is-ready）才淡入 + 从 86% 放大归位，
-   避免空白画布在初始化期间露出一块白底 */
-.pano-globe canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-}
-
-.pano-globe canvas.is-ready {
-  animation: globe-in 1.1s var(--ease) both;
-}
-
-/* 进场第二段：整球从左侧屏外滑入落位（mask 在球层上，随层一起移动不会被裁）；
-   绑 canvas 的 is-ready，WebGL 首帧就绪才开始——加载骨架层没有 canvas，不会触发 */
-@keyframes globe-arrive {
-  from {
-    opacity: 0;
-    transform: translateX(-72px) scale(0.96);
-  }
-}
-
-.pano-globe-layer:has(canvas.is-ready) {
-  animation: globe-arrive 1.15s var(--ease) both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pano-globe canvas,
-  .pano-globe canvas.is-ready {
-    animation: none;
-    opacity: 1;
-  }
-
-  .pano-globe-layer:has(canvas.is-ready) {
-    animation: none;
-  }
-}
-
-.pano-globe-layer {
-  position: relative;
-  /* 球层贴满 hero 球列（桌面 540 / ≥1441 大屏 620），球随列放大成首屏主视觉 */
-  width: min(100%, 580px);
+/* 星空层地图：全出血铺在首屏上半部（hero 主视觉）。宽度按视口高度封顶
+   （62vh × 投影纵横比 2.5），超宽屏不至于把星图顶到下半屏；
+   grid 同格叠放：地图居中、两侧自然出血到屏幕边界，hero 文案压在其上 */
+.hero-sky .pano-flatmap {
+  grid-area: 1 / 1;
   justify-self: center;
-  aspect-ratio: 1;
-  -webkit-mask-image: radial-gradient(
-    circle at center,
-    #000 55%,
-    transparent 97%
-  );
-  mask-image: radial-gradient(circle at center, #000 55%, transparent 97%);
+  /* 网格 auto margin 会压过 justify-self 让地图贴左，这里显式清零交给 grid 居中出血 */
+  margin-inline: 0;
+  width: min(100vw, calc(62vh * 2.5));
+  max-width: none;
+  /* 底缘渐隐融进页面，不出现一条硬切线 */
+  -webkit-mask-image: linear-gradient(#000 76%, transparent);
+  mask-image: linear-gradient(#000 76%, transparent);
 }
 
-/* 球体托底氛围光：Vercel 大 logo 同款手法，品牌色极低浓度径向光托住球的分量 */
-.pano-globe-layer::before {
-  content: "";
-  position: absolute;
-  inset: -12%;
-  border-radius: 50%;
-  pointer-events: none;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--accent) 10%, transparent),
-    transparent 68%
-  );
-}
-
-[data-theme="dark"] .pano-globe-layer::before {
-  background: radial-gradient(
-    circle,
-    rgba(255, 255, 255, 0.06),
-    transparent 68%
-  );
-}
-
-.pano-globe {
+/* 文案叠层：左缘对齐 .page 内容区（宽屏按 1440 容器补偿居中差值），压在星图上 */
+.hero-sky .hero-main {
+  grid-area: 1 / 1;
   position: relative;
-  aspect-ratio: 1;
-  width: 100%;
+  z-index: 1;
+  justify-self: start;
+  max-width: 680px;
+  padding-left: max(32px, calc(50vw - 688px));
 }
 
-/* cobe 球面站点标签：钉在标记点上（CSS anchor positioning），转到背面随 --cobe-visible-* 淡出。
-   不支持 anchor 的浏览器自动隐藏，站点清单仍是完整入口。 */
-.cobe-label {
-  display: none;
+/* 右侧事件侧栏位（预留）：贴内容区右缘 */
+.hero-sky .hero-side {
+  grid-area: 1 / 1;
+  z-index: 1;
+  justify-self: end;
+  padding-right: max(32px, calc(50vw - 688px));
 }
 
-@supports (anchor-name: --cobe-x) {
-  .cobe-label {
-    display: inline-flex;
-    align-items: center;
-    position: absolute;
-    bottom: anchor(top);
-    left: anchor(center);
-    translate: -50% calc(-100% - 8px);
-    pointer-events: auto;
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    color: var(--text-2);
-    background: color-mix(in srgb, var(--bg) 80%, transparent);
-    border: 1px solid var(--border);
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      opacity 200ms linear,
-      color 140ms linear,
-      border-color 140ms linear;
-  }
-
-  /* 亮色下球面是白底，11px 小字压在 80% 半透底上会发虚：文字加深一档、底色压到近实心 */
-  html:not([data-theme="dark"]) .cobe-label {
-    color: var(--text);
-    background: color-mix(in srgb, var(--bg) 92%, transparent);
-    border-color: var(--border-strong);
-  }
-
-  .cobe-label:hover {
-    color: var(--text);
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  }
-
-  .cobe-label.warn {
-    color: var(--tone-yellow-text);
-  }
-
-  .cobe-label.down {
-    color: var(--tone-red-text);
-  }
-
-  /* 节点波纹环：钉在标记点上向外扩散（呼吸感），背面随 --cobe-visible-* 隐藏 */
-  .cobe-pulse {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: absolute;
-    left: anchor(center);
-    top: anchor(center);
-    width: 0;
-    height: 0;
-    pointer-events: none;
-    transition: opacity 200ms linear;
-  }
-
-  .cobe-pulse i {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border-radius: 9999px;
-    border: 1.5px solid var(--pulse-color, var(--accent));
-    opacity: 0;
-    animation: cobe-pulse 2.6s ease-out infinite;
-  }
-
-  .cobe-pulse i:last-child {
-    animation-delay: 1.3s;
-  }
-}
-
-@keyframes cobe-pulse {
-  /* 只动 transform：width/height 版本会在首页常驻触发布局 */
-  0% {
-    transform: scale(1);
-    opacity: 0.65;
-  }
-
-  70%,
-  100% {
-    transform: scale(4.25);
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cobe-pulse i {
-    animation: none;
-  }
-}
-
-/* 手机端平面点阵地图：窄屏替代 3D 球，底图 canvas + 状态色节点按钮（28px 命中区）。
-   只在手机档由 HeroArea 渲染，桌面样式不受影响；波纹复用 cobe-pulse keyframes。 */
+/* hero 平面点阵星图：底图 canvas + 状态色亮星节点（30px 命中区）。
+   桌面全出血铺首屏上半部（.hero-sky 接管宽度），窄屏收窄一屏放下。 */
 .pano-flatmap {
   position: relative;
   width: min(440px, 100%);
@@ -2724,8 +2737,17 @@ html:not([data-theme="dark"]) .panel {
   display: block;
   width: 100%;
   height: 100%;
+  animation: map-in 0.8s var(--ease) both;
 }
 
+@keyframes map-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 亮星节点：状态色亮核 + 双层光晕 + 四芒星闪；弹入按 --pop-delay 错峰，
+   闪烁按 --twinkle-delay 错峰——天上一片星不齐闪，reduced-motion 下全部静止 */
 .flat-node {
   appearance: none;
   background: none;
@@ -2736,10 +2758,19 @@ html:not([data-theme="dark"]) .panel {
   justify-content: center;
   position: absolute;
   translate: -50% -50%;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 9999px;
   cursor: pointer;
+  animation: star-pop 0.55s var(--ease) both;
+  animation-delay: var(--pop-delay, 0ms);
+}
+
+@keyframes star-pop {
+  from {
+    opacity: 0;
+    scale: 0.3;
+  }
 }
 
 .flat-node:focus-visible {
@@ -2748,14 +2779,115 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .flat-node-dot {
+  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 9999px;
   background: var(--node-color, var(--accent));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--node-color, var(--accent)) 20%, transparent);
+  box-shadow:
+    0 0 5px 1px color-mix(in srgb, var(--node-color, var(--accent)) 75%, transparent),
+    0 0 14px 4px color-mix(in srgb, var(--node-color, var(--accent)) 30%, transparent);
+  transition: scale 0.15s var(--ease);
 }
 
-/* 波纹：结构与 .cobe-pulse 相同（0×0 容器 + 两个 <i>），用百分比定位代替 CSS anchor */
+/* 四芒星闪：两条交叉细针做缓慢明暗呼吸，亮星感 */
+.flat-node-dot::before,
+.flat-node-dot::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: 24px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--node-color, var(--accent)) 80%, transparent),
+    transparent
+  );
+  animation: star-twinkle 3.6s ease-in-out infinite;
+  animation-delay: var(--twinkle-delay, 0s);
+}
+
+.flat-node-dot::after {
+  rotate: 90deg;
+}
+
+@keyframes star-twinkle {
+  0%,
+  100% {
+    opacity: 0.35;
+    scale: 0.8;
+  }
+
+  50% {
+    opacity: 0.95;
+    scale: 1.05;
+  }
+}
+
+/* 悬停/聚焦/清单联动：亮星增亮放大 */
+.flat-node:hover .flat-node-dot,
+.flat-node:focus-visible .flat-node-dot,
+.flat-node.on .flat-node-dot {
+  scale: 1.3;
+  box-shadow:
+    0 0 7px 2px color-mix(in srgb, var(--node-color, var(--accent)) 85%, transparent),
+    0 0 20px 7px color-mix(in srgb, var(--node-color, var(--accent)) 40%, transparent);
+}
+
+/* 站名标签：悬停/聚焦/联动时浮现在亮星上方（替代退役球面标签的信息位） */
+.flat-node-label {
+  position: absolute;
+  bottom: calc(50% + 10px);
+  left: 50%;
+  translate: -50% 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  border: 1px solid var(--border);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms linear;
+}
+
+.flat-node:hover .flat-node-label,
+.flat-node:focus-visible .flat-node-label,
+.flat-node.on .flat-node-label {
+  opacity: 1;
+}
+
+.flat-node-label.warn {
+  color: var(--tone-yellow-text);
+}
+
+.flat-node-label.down {
+  color: var(--tone-red-text);
+}
+
+/* hero 大图档：亮星与光晕放大一号，压得住大画幅 */
+.hero-sky .flat-node {
+  width: 34px;
+  height: 34px;
+}
+
+.hero-sky .flat-node-dot {
+  width: 9px;
+  height: 9px;
+}
+
+.hero-sky .flat-node-dot::before,
+.hero-sky .flat-node-dot::after {
+  width: 32px;
+}
+
+/* 波纹：0×0 容器 + 两个 <i>，从亮星中心向外扩散（状态心跳） */
 .flat-pulse {
   display: flex;
   align-items: center;
@@ -2773,14 +2905,42 @@ html:not([data-theme="dark"]) .panel {
   border-radius: 9999px;
   border: 1.5px solid var(--pulse-color, var(--accent));
   opacity: 0;
-  animation: cobe-pulse 2.6s ease-out infinite;
+  animation: pulse-ring 2.6s ease-out infinite;
 }
 
 .flat-pulse i:last-child {
   animation-delay: 1.3s;
 }
 
+@keyframes pulse-ring {
+  /* 只动 transform：width/height 版本会在首页常驻触发布局 */
+  0% {
+    transform: scale(1);
+    opacity: 0.65;
+  }
+
+  70%,
+  100% {
+    transform: scale(4.25);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .pano-flatmap canvas {
+    animation: none;
+  }
+
+  .flat-node {
+    animation: none;
+  }
+
+  .flat-node-dot::before,
+  .flat-node-dot::after {
+    animation: none;
+    opacity: 0.8;
+  }
+
   .flat-pulse i {
     animation: none;
   }
@@ -4002,11 +4162,9 @@ a.event-card {
   }
 
 
-  /* hero 平板紧凑列：球列收窄给文字让位，其余结构不变 */
+  /* hero 平板档收紧行距，星空层结构不变 */
   .hero {
-    grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
-    gap: 32px 40px;
-    padding: 40px 0 56px;
+    padding: 8px 0 48px;
   }
 
   .site-footer-inner {
@@ -4075,11 +4233,6 @@ a.event-card {
   .landing-stat {
     border-left: none;
     padding-left: 2px;
-  }
-
-  /* 监控全景窄屏改上下叠放：球居中做主视觉，内容全宽 */
-  .pano-globe-layer {
-    width: min(360px, 82vw);
   }
 
   .guide {
@@ -4162,15 +4315,27 @@ a.event-card {
   }
 
   .hero {
-    grid-template-columns: 1fr;
-    gap: 20px;
-    padding: 8px 0 24px;
-    align-items: start;
+    padding: 0 0 24px;
   }
 
-  /* 手机档球收窄到 240px：标题、副文与 CTA 不被球挤出首屏 */
-  .pano-globe-layer {
-    width: min(240px, 76vw);
+  /* 手机档星空层退化为上下堆叠：星图全出血通到屏幕两缘，文案接在图下 */
+  .hero-sky {
+    display: block;
+    padding: 0 0 4px;
+  }
+
+  .hero-sky .pano-flatmap {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+  }
+
+  .hero-sky .hero-main {
+    padding: 20px 16px 0;
+    max-width: none;
+  }
+
+  .hero-sky .hero-side {
+    padding-right: 0;
   }
 
   .hero-side {
@@ -6135,6 +6300,20 @@ a.event-card {
   .site-card::before,
   .site-card::after {
     transition: none;
+  }
+
+  .nav-pill-indicator,
+  .nav-pop,
+  .nav-dd-card {
+    animation: none;
+  }
+
+  .nav-pill-indicator {
+    transition: none;
+  }
+
+  .nav-dd.leaving .nav-dd-card {
+    opacity: 0;
   }
 }
 

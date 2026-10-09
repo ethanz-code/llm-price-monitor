@@ -143,19 +143,19 @@ _AWESOME_TAIL = re.compile(r"\|\s*(在线|离线|未知)\s*\|\s*([\d.]+%)\s*\|\s
 
 
 def harvest_awesome_api_proxy(text: str) -> list[Candidate]:
-    """解析 awesome-api-proxy README 的站点表格。"""
+    """解析 awesome-api-proxy README 的站点表格（名称/URL/描述/状态/可用率/口碑分）。"""
     out: list[Candidate] = []
     for line in text.splitlines():
-        link = re.match(r"^\|\s*\d+\s*\|\s*\[([^\]]+)\]\((https?://[^)\s]+)\)", line)
+        link = re.match(r"^\|\s*\d+\s*\|\s*\[([^\]]+)\]\((https?://[^)\s]+)\)\s*\|\s*[^|]*\|\s*([^|]*)\|", line)
         if not link:
             continue
         origin = origin_of(link.group(2))
         if origin is None:
             continue
         tail = _AWESOME_TAIL.search(line)
-        meta: dict = {}
+        meta: dict = {"description": clean_desc(link.group(3))}
         if tail:
-            meta = {"status": tail.group(1), "uptime7d": tail.group(2), "rating": int(tail.group(3))}
+            meta.update({"status": tail.group(1), "uptime7d": tail.group(2), "rating": int(tail.group(3))})
         out.append(Candidate(urlsplit(origin).hostname or "", origin, link.group(1).strip(), ["awesome-api-proxy"], meta=meta))
     return out
 
@@ -189,9 +189,53 @@ def harvest_html_links(text: str, *, source: str, own_host: str) -> list[Candida
     return out
 
 
+def _unesc(s: str) -> str:
+    """解开 RSC payload 的双层 JSON 转义（outer \\\" → 内层 \" → 字符），解不动就原样返回。"""
+    for _ in range(2):
+        try:
+            s = json.loads(f'"{s}"')
+        except Exception:
+            break
+    return s
+
+
+def clean_desc(text: str, limit: int = 200) -> str:
+    """描述清洗：去 HTML 标签/markdown 痕迹、压空白、截断。"""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("**", "").replace("🎁", "").replace("✨", "").replace("🚀", "").replace("💰", "")
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
 def harvest_zuiquan(text: str) -> list[Candidate]:
-    """解析 zuiquanapi.com（awesome-api-proxy 的在线版，596+ 站实时状态）。"""
-    return harvest_html_links(text, source="zuiquanapi", own_host="zuiquanapi.com")
+    """解析 zuiquanapi.com（awesome-api-proxy 的在线版）。
+
+    页面 RSC payload 里有结构化站点条目（name/url/description/tag），优先按结构解；
+    结构没命中的再用裸链接兜底，保证覆盖不缩水。
+    """
+    out: list[Candidate] = []
+    seen_urls: set[str] = set()
+    pattern = re.compile(
+        r'\{\\"id\\":\d+,\\"subcategory_id\\":\d+,\\"name\\":\\"(?P<name>.*?)\\",\\"url\\":\\"(?P<url>.*?)\\"'
+        r'(?P<body>.*?)\\"description\\":\\"(?P<desc>.*?)\\",\\"monitor_tier',
+        re.S,
+    )
+    for m in pattern.finditer(text):
+        origin = origin_of(_unesc(m["url"]))
+        if origin is None:
+            continue
+        seen_urls.add(origin)
+        out.append(
+            Candidate(
+                urlsplit(origin).hostname or "",
+                origin,
+                _unesc(m["name"]).strip(),
+                ["zuiquanapi"],
+                meta={"description": clean_desc(_unesc(m["desc"]))},
+            )
+        )
+    if len(out) < 100:  # 结构解析失灵（站点改版）时退回裸链接模式，宁可少描述不可少站点
+        out.extend(cand for cand in harvest_html_links(text, source="zuiquanapi", own_host="zuiquanapi.com") if cand.url not in seen_urls)
+    return out
 
 
 def harvest_markdown_links(text: str, *, source: str) -> list[Candidate]:
@@ -226,7 +270,7 @@ def harvest_apisou(html: str) -> Candidate | None:
 
 
 def merge_candidates(groups: list[list[Candidate]]) -> list[Candidate]:
-    """按 host 合并去重：多源收录的合并 sources，保留信息最全的一条。"""
+    """按 host 合并去重：多源收录的合并 sources，名字取先出现的非空值，描述取最长的一份。"""
     by_host: dict[str, Candidate] = {}
     for group in groups:
         for cand in group:
@@ -239,8 +283,13 @@ def merge_candidates(groups: list[list[Candidate]]) -> list[Candidate]:
                     existing.sources.append(source)
             if not existing.name:
                 existing.name = cand.name
-            if not existing.meta:
-                existing.meta = cand.meta
+            for key in ("description", "status", "uptime7d", "rating"):
+                existing_val, cand_val = existing.meta.get(key), cand.meta.get(key)
+                if key == "description":
+                    if not existing_val or (cand_val and len(str(cand_val)) > len(str(existing_val))):
+                        existing.meta["description"] = cand_val
+                elif cand_val is not None and existing_val is None:
+                    existing.meta[key] = cand_val
     return sorted(by_host.values(), key=lambda c: c.host)
 
 

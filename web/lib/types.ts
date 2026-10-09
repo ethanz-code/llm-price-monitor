@@ -194,6 +194,26 @@ export interface RankingsData {
   models: RankingEntry[];
 }
 
+/** 新站发现：price-discover 探测通过的候选中转站（available 才会出现在 stations 里） */
+export interface DiscoveryStation {
+  host: string;
+  name: string;
+  url: string;
+  sources: string[];
+  new_api: boolean;
+  models: number;
+  state: "available" | "auth" | "dead";
+  system_name: string;
+  description: string;
+  imported_id: string | null;
+}
+
+export interface DiscoveryData {
+  generated_at: string;
+  summary: { total: number; available: number; auth: number; dead: number; imported: number };
+  stations: DiscoveryStation[];
+}
+
 export interface SiteMeta {
   id: string;
   adapter: string;
