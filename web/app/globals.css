@@ -3201,44 +3201,41 @@ html:not([data-theme="dark"]) .panel {
   }
 }
 
-/* 站点墙软底舞台：一整块浅底托住均匀卡片阵列，页面白/灰节奏换口气 */
-.landing-band {
-  padding: 18px;
-  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-/* 监控站点小卡：一卡一站（状态点 + 可用率色块 + 最近检测），普通卡片网格不做状态页 */
+/* 监控站点小卡：一卡一站（状态点 + 可用率色块 + 最近检测），直接落页面与 bento 区同节奏 */
 .site-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
 }
 
 .site-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 18px;
+  gap: 10px;
+  padding: 20px 22px;
   background: var(--panel);
   border: var(--card-border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow:
     var(--shadow-panel),
-    inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
+    inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent);
   color: inherit;
   text-decoration: none;
   transition:
     background var(--dur) linear,
-    border-color var(--dur) linear,
-    transform var(--dur) var(--ease);
+    border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
 }
 
 .site-card:hover {
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
   transform: translateY(-2px);
+  box-shadow:
+    var(--shadow-panel),
+    inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent),
+    0 12px 40px color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
 .site-card--off {
@@ -3302,13 +3299,9 @@ html:not([data-theme="dark"]) .panel {
     grid-template-columns: 1fr;
   }
 
-  .landing-band {
-    padding: 10px;
-  }
-
   .site-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 10px;
   }
 
   .faq-list {

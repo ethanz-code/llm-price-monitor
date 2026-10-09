@@ -312,3 +312,25 @@ def test_parse_hunter_uses_url_field():
     ]}}
     rows = parse_hunter(payload)
     assert [(r.host, r.url, r.name) for r in rows] == [("h.example.com", "https://h.example.com", "中转站"), ("p.example.org", "http://p.example.org:8443", "")]
+
+
+def test_refresh_online_reports_progress(tmp_path: Path, monkeypatch):
+    """整轮刷新分批上报进度：开工一行、每批一行——探测要跑几千个候选，不能从头到尾只有开始一行。"""
+    monkeypatch.setattr(discover_mod, "OUT_DIR", tmp_path)
+
+    async def fake_harvest(proxy, only=None):
+        return [Candidate(f"demo-{i}.example.com", f"https://demo-{i}.example.com", f"站{i}", ["zuiquanapi"]) for i in range(201)]
+
+    async def fake_probe(candidates, concurrency, timeout, proxy):
+        return [
+            {"name": c.name, "url": c.url, "sources": c.sources, "online": True, "new_api": True, "pricing_ok": True, "models": 1, "auth_required": False, "error": ""}
+            for c in candidates
+        ]
+
+    monkeypatch.setattr(discover_mod, "harvest", fake_harvest)
+    monkeypatch.setattr(discover_mod, "probe", fake_probe)
+    messages: list[str] = []
+    stats = asyncio.run(discover_mod.refresh_online(progress=messages.append))
+    assert stats["online_total"] == 201
+    assert any("开始探测 201 个候选" in message for message in messages)
+    assert any("探测进度 200/201" in message for message in messages)

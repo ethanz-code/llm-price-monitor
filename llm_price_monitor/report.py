@@ -414,6 +414,33 @@ def _run_network_phase(
     return [], ["采集线程未返回有效结果"]
 
 
+def _run_site_fetch(fetch: Callable[[], Any], site_id: str) -> Any:
+    """单站状态/公告请求的硬上限兜底：与价格腿同因，半死代理连接上 per-request
+    超时可能不触发，此前这两条腿没有保护，单站挂死会把整轮任务无限拖住。
+    超时按 PriceMonitorError 抛出，走各扫描段已有的失败落账路径。"""
+    sink = tasklog.current_sink()
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        if sink is not None:
+            tasklog.bind(sink)
+        try:
+            box["result"] = fetch()
+        except BaseException as exc:  # 采集线程的异常转交主线程按原语义处理
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, name=f"site-fetch-{site_id}", daemon=True)
+    worker.start()
+    worker.join(SITE_HARD_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        raise PriceMonitorError(
+            f"采集超过 {SITE_HARD_TIMEOUT_SECONDS:g}s 硬上限仍未返回，本轮放弃（连接可能卡死在代理隧道上）"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 def _scan_prices(
     config: MonitorConfig,
     client: httpx.Client,
@@ -791,8 +818,12 @@ def _scan_statuses(
     for spec in config.sites:
         if not spec.enabled or not spec.status.get("url"):
             continue
+        # 逐站留痕：整轮拖长时能直接看出卡在哪个站的哪条腿
+        tasklog.emit(f"[{spec.id}] 开始渠道状态采集")
         try:
-            status_record = fetch_site_status(spec, client, config.settings.timeout, user_agent, config.ai)
+            status_record = _run_site_fetch(
+                lambda: fetch_site_status(spec, client, config.settings.timeout, user_agent, config.ai), spec.id
+            )
         except AuthRequiredError as exc:
             # 站点配了续签就换一次新 token 重试；没配续签的按普通失败处理
             if not spec.token_refresh:
@@ -805,7 +836,9 @@ def _scan_statuses(
                 timeout=config.settings.timeout,
                 user_agent=user_agent,
                 store=store,
-                attempt=lambda fresh: fetch_site_status(fresh, client, config.settings.timeout, user_agent, config.ai),
+                attempt=lambda fresh: _run_site_fetch(
+                    lambda: fetch_site_status(fresh, client, config.settings.timeout, user_agent, config.ai), spec.id
+                ),
             )
             if retry_error is not None:
                 _record_status_failure(spec.id, str(retry_error))
@@ -854,8 +887,11 @@ def _scan_notices(
     for spec in config.sites:
         if not spec.enabled:
             continue
+        tasklog.emit(f"[{spec.id}] 开始站点公告采集")
         try:
-            notice_record = fetch_site_notice(spec, client, config.settings.timeout, user_agent, ai=config.ai)
+            notice_record = _run_site_fetch(
+                lambda: fetch_site_notice(spec, client, config.settings.timeout, user_agent, ai=config.ai), spec.id
+            )
         except AuthRequiredError as exc:
             # 同渠道状态：配了续签就换新 token 重试一次，否则照常记错误
             if not spec.token_refresh:
@@ -870,8 +906,10 @@ def _scan_notices(
                 timeout=config.settings.timeout,
                 user_agent=user_agent,
                 store=store,
-                attempt=lambda fresh: fetch_site_notice(
-                    fresh, client, config.settings.timeout, user_agent, ai=config.ai
+                attempt=lambda fresh: _run_site_fetch(
+                    lambda: fetch_site_notice(
+                        fresh, client, config.settings.timeout, user_agent, ai=config.ai
+                    ), spec.id
                 ),
             )
             if retry_error is not None:

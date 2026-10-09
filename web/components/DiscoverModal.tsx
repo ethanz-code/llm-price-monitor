@@ -43,6 +43,7 @@ export function DiscoverModal({
   const [tab, setTab] = useState<Tab>("pending");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState("");
   const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
@@ -67,14 +68,35 @@ export function DiscoverModal({
     );
   }, [data, tab, keyword]);
 
-  /** 后台执行刷新（拉源 + 探测新候选），轮询数据时间变化后自动刷新列表。 */
+  /** 后台探测任务快照：/api/tasks/{id} 的状态与日志，用来在弹窗里摆进度。 */
+  type DiscoveryTask = { status: string; error?: string | null; logs?: { time: number; message: string; level: string }[] };
+
+  /** 后台执行刷新（拉源 + 探测新候选）：整轮以十分钟计，轮询任务日志把进度摆出来，完成或失败立即收场。 */
   async function refresh() {
     setRefreshing(true);
+    setRefreshProgress("已提交探测任务…");
     try {
       const before = data?.generated_at ?? "";
-      await apiSend("/api/discovery/refresh", "POST");
-      for (let tries = 0; tries < 120; tries += 1) {
+      const { task_id: taskId } = await apiSend<{ task_id: string }>("/api/discovery/refresh", "POST");
+      for (let tries = 0; tries < 900; tries += 1) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+          const task = await apiSend<DiscoveryTask>(`/api/tasks/${taskId}`, "GET");
+          if (task.status === "done") {
+            await load();
+            toast("探测完成，列表已更新");
+            return;
+          }
+          if (task.status === "failed") {
+            toast(`探测失败：${task.error || "未知错误"}`);
+            return;
+          }
+          const last = task.logs?.filter((log) => log.level === "info").at(-1)?.message ?? "";
+          if (last && !last.startsWith("开始刷新")) setRefreshProgress(last);
+        } catch {
+          // 单次轮询失败继续等（服务重启会把任务标为失败，下一轮轮询能看到）
+        }
+        // 任务接口不可用时的兜底：数据时间变了也算完成
         try {
           const next = await apiSend<DiscoveryData>("/api/discovery", "GET");
           if (next.generated_at && next.generated_at !== before) {
@@ -91,6 +113,7 @@ export function DiscoverModal({
       toast(`刷新失败: ${errorText(error)}`);
     } finally {
       setRefreshing(false);
+      setRefreshProgress("");
     }
   }
 
@@ -216,6 +239,11 @@ export function DiscoverModal({
             刷新发现
           </Btn>
         </div>
+        {refreshing && (
+          <div className="mono" style={{ fontSize: 12, color: "var(--text-3)" }} role="status">
+            {refreshProgress || "后台探测中…"}
+          </div>
+        )}
 
       {data && (
         <>

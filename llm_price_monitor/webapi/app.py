@@ -119,11 +119,17 @@ def _seed_store(store: Store, config_path: Path) -> None:
 
 
 def _ensure_schedule_defaults(store: Store) -> None:
-    """settings 里缺 schedule（从未在设置页保存过调度间隔）时补默认值，让设置页能显示数字；已有则不动。"""
+    """settings.schedule 缺失项补默认值：整体缺失补全套；保存过的只补后来新增的键（如 discovery），
+    用户自定义的间隔原样保留——设置页每一项都有数可显，不会拿老库缺新键当「没配」。"""
     settings = store.get_document("settings") or {}
-    if "schedule" in settings:
-        return
-    settings["schedule"] = dict(DEFAULT_SCHEDULE_MINUTES)
+    schedule = settings.get("schedule")
+    if not isinstance(schedule, dict):
+        settings["schedule"] = dict(DEFAULT_SCHEDULE_MINUTES)
+    else:
+        filled = {key: value for key, value in DEFAULT_SCHEDULE_MINUTES.items() if key not in schedule}
+        if not filled:
+            return
+        settings["schedule"] = {**schedule, **filled}
     store.set_document("settings", settings)
 
 

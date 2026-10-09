@@ -2,7 +2,6 @@ import Link from "next/link";
 import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { DiscoveryData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
-import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { DiscoverTable } from "@/components/DiscoverTable";
 import { JsonLd } from "@/components/JsonLd";
@@ -48,7 +47,7 @@ export default async function DiscoverPage() {
 
   return (
     <div className="page">
-      <PageHeader title="新站发现" subtitle="自动探测的公开中转站清单：价格接口可用性与模型数量，找新中转站先看这里。" />
+      <h1 className="sr-only">新站发现</h1>
       {jsonLd && <JsonLd data={jsonLd} />}
       {data && (
         <PageDigest

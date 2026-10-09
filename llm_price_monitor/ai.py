@@ -1383,6 +1383,40 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
             client.close()
 
 
+# 缓存键里的逐请求噪声字段：值随机、与模型名/价格无关（如 cun 每次请求把随机哈希
+# pricing_version 挂在随机模型上），只从缓存键里剔除，发给 AI 的证据原文不动
+_CACHE_KEY_NOISE_KEYS = frozenset({"pricing_version"})
+
+
+def canonical_cache_evidence(value: Any) -> Any:
+    """缓存键专用的证据规范化：dict 按键名排序、数组按内容排序、整数值浮点归一、
+    恰好是完整 JSON 的字符串引文递归规范化。new-api 系接口的模型数组与分组列表
+    逐请求洗牌（内容相同、顺序不同），原序哈希会让缓存永不命中；数组顺序对抽取
+    结果无影响（模型按名字读取、分组按名字匹配），排序只让键稳定。位置型价格
+    数组出现在页面打包 JS 里，走的是不可解析的字符串引文，不会被这里重排。"""
+    if isinstance(value, dict):
+        return {
+            key: canonical_cache_evidence(item)
+            for key, item in sorted(value.items())
+            if key not in _CACHE_KEY_NOISE_KEYS
+        }
+    if isinstance(value, list):
+        items = [canonical_cache_evidence(item) for item in value]
+        return sorted(items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] in "{[":
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return value
+            if isinstance(parsed, (dict, list)):
+                return json.dumps(canonical_cache_evidence(parsed), ensure_ascii=False, sort_keys=True)
+    return value
+
+
 class AIPriceExtractor:
     def __init__(self, config: AIConfig) -> None:
         self.config = config
@@ -1391,7 +1425,14 @@ class AIPriceExtractor:
         # version=8：位置型数组与分组倍率规则上线后旧缓存结果不可信，整体失效重抽。
         # version=12：价格合理性校验上线，旧缓存结果未过检（含 hao 站 OCR 模型提取的百万级错价），整体失效重抽。
         # version=13：提取模型固定化（price_model）+ 输出预算 16000，随机模型时代的缓存结果读法不可信，整体失效重抽。
-        return payload_hash({"version": 13, "site": spec.id, "models": expected_models, "evidence": evidence})
+        # version=14：键改用顺序规范化证据（canonical_cache_evidence）。new-api 系接口的模型数组与
+        # 分组列表逐请求洗牌（cun 实测两次响应字节数相同、顺序不同），原序哈希让缓存永不命中，
+        # 每轮采集都全额重跑全部批次；旧键整体失效一次。
+        try:
+            canonical = json.dumps(canonical_cache_evidence(json.loads(evidence)), ensure_ascii=False, sort_keys=True)
+        except ValueError:
+            canonical = evidence
+        return payload_hash({"version": 14, "site": spec.id, "models": expected_models, "evidence": canonical})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -1618,6 +1659,11 @@ expected_models：
                             f"AI 提取超出单站 {budget_seconds} 秒预算（共 {batch_count} 批），剩余批次不再发起"
                         )
                     batch = expected[start:start + AI_EXTRACT_BATCH_SIZE]
+                    # 逐批留痕：单批十几秒到两分钟，成功路径无日志时测试弹窗只能干等，
+                    # 任务列表也看不出整轮是卡死还是在正常推进
+                    tasklog.emit(
+                        f"[{spec.id}] AI 解析模型名：第 {start // AI_EXTRACT_BATCH_SIZE + 1}/{batch_count} 批（{len(batch)} 个模型）"
+                    )
                     records.extend(self._extract_batch(spec, page_text, responses, batch, page_sources, client, deadline))
             except AIBudgetExhaustedError:
                 if not records:

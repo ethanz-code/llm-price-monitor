@@ -61,7 +61,7 @@
 ## 4. 布局与间距
 
 - 内容容器 `.page`：`padding: 76px 32px 96px`（顶部留白大于吸顶导航高度），`overflow-x: clip`。
-- 页头 `PageHeader`：标题 + 副标题，底部发丝线（`padding-bottom: 28px; margin-bottom: 32px`）。**不加 eyebrow/面包屑装饰**，当前页由顶部导航标识。
+- 页头：数据列表页**不设可见页头**（当前页由顶部导航标识），仅放 `<h1 className="sr-only">页名</h1>` 给搜索引擎与读屏；详情/文档类页面需要可见标题时用 `PageHeader`（标题 + 副标题，底部发丝线，`padding-bottom: 28px; margin-bottom: 32px`），**不加 eyebrow/面包屑装饰**。
 - 区块间距 `.section-gap`：32px；提示条自带 `margin-bottom: 20px`，不与内容贴死。
 - 卡片内边距 18–28px（统计卡 20px 22px、站点卡 20px、入门清单 28px 32px）。
 - 层级 z-index 标尺：悬浮球 90 < 吸顶导航 100 < 弹出层 200 < 弹窗 1000 < 全局顶层 1100。
@@ -104,7 +104,7 @@
 
 ## 9. 新页面上手清单
 
-- [ ] `PageHeader` + `.page` 容器起步，不传 eyebrow。
+- [ ] `.page` 容器起步；列表页配 `<h1 className="sr-only">`，可见标题只在详情/文档页用 `PageHeader`。
 - [ ] 卡片用 `.panel`，提示用 `Alert`，表格用 `.dtable`，数字加 `.mono.num`。
 - [ ] 颜色、字号、圆角、动效全部引用 token；需要新值先在 `:root` 加 token。
 - [ ] grid / flex 子项记得 `min-width: 0`，长模型名、长 URL 要能截断。

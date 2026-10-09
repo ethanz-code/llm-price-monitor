@@ -547,8 +547,7 @@ export default async function LandingPage() {
             </div>
             <p className="landing-section-sub">{home.sectionSubs.sites}</p>
             {sites.length > 0 ? (
-              <div className="landing-band">
-                <div className="site-grid">
+              <div className="site-grid">
                   {wallSites.map((site) => {
                     const info = getSiteInfo(site.id, site.sourceUrl);
                     const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
@@ -601,7 +600,6 @@ export default async function LandingPage() {
                     </Link>
                   )}
                 </div>
-              </div>
             ) : (
               <div className="landing-empty">
                 <DajuNap width={150} />

@@ -1093,6 +1093,28 @@ def test_settings_validates_schedule(workspace: Path):
     assert ok.json()["settings"]["schedule"] == {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0}
 
 
+def test_settings_schedule_defaults_backfill_per_key(tmp_path: Path):
+    """老库 schedule 缺新增键（如 discovery）时启动按默认值补上，自定义值原样保留。
+
+    直接测 _ensure_schedule_defaults 而非 create_app：测试里放行 price/discovery 间隔，
+    调度线程首轮就把它们当到期提交，任务体会真的发起外网请求。
+    """
+    from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi.app import _ensure_schedule_defaults
+
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("settings", {"schedule": {"price": 123, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}})
+    _ensure_schedule_defaults(store)
+    schedule = store.get_document("settings")["schedule"]
+    assert schedule["price"] == 123  # 用户自定义值不动
+    assert schedule["discovery"] == 1440  # 后来新增的键补默认值
+    # 整个 schedule 缺失（从未保存过）时补全套默认
+    other = Store(tmp_path / "other.db")
+    _ensure_schedule_defaults(other)
+    assert other.get_document("settings")["schedule"] == dict(DEFAULT_SCHEDULE_MINUTES)
+
+
 def test_scheduler_run_due_submits_due_jobs_and_persists_state(tmp_path: Path, monkeypatch):
     """到期项提交任务并记入 schedule_state；未到期与关闭项跳过。"""
     import llm_price_monitor.webapi.jobs as jobs

@@ -1,7 +1,6 @@
 import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { FeedData, HistoryListData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
-import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { HistoryView } from "@/components/HistoryView";
 import { alerts } from "@/lib/copy";
@@ -32,7 +31,7 @@ export default async function HistoryPage() {
 
   return (
     <div className="page">
-      <PageHeader title="事件追踪" subtitle="价格调整与公告变动的时间线：什么模型、什么时候、涨了还是降了，都有存档。" />
+      <h1 className="sr-only">事件追踪</h1>
       {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}
       {feed && (
         <PageDigest

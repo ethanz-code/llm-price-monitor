@@ -7,7 +7,6 @@ import type { CatalogData, OverviewData, RankingsData, StatusSnapshot } from "@/
 import { alerts } from "@/lib/copy";
 import { formatCount } from "@/lib/format";
 import { PageDigest } from "@/components/PageDigest";
-import { PageHeader } from "@/components/PageHeader";
 import { OverviewTable } from "@/components/OverviewTable";
 import { SiteAlert } from "@/components/SiteAlert";
 import { pageMetadata } from "@/lib/seo";
@@ -59,7 +58,8 @@ export default async function OverviewPage() {
 
   return (
     <div className="page">
-      <PageHeader title="中转站定价" subtitle="各家中转站的输入输出价格与折扣对照，每条价格都附来源链接，点开就能核对。" />
+      {/* 数据页不设可见页头（当前页由导航标识），仅给搜索引擎与读屏留隐藏 h1 */}
+      <h1 className="sr-only">中转站定价</h1>
       {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}
       {data && (
         <PageDigest

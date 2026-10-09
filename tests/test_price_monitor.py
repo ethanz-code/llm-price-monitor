@@ -3628,6 +3628,31 @@ def test_ai_extract_batch_failure_fails_whole_round():
     assert len(seen_batches) == 1
 
 
+def test_ai_cache_key_ignores_order_and_noise_fields():
+    """new-api 系接口逐请求洗牌模型数组/分组列表、随机挂 pricing_version（cun 实测），
+    缓存键必须只看内容：顺序无关、噪声字段剔除、整数浮点归一；内容真变键必须变。"""
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    url = "https://demo.test/api/pricing"
+
+    def evidence(models: list[dict]) -> str:
+        return json.dumps({"page": [], "network": [{"source": "model_list", "url": url, "quote": json.dumps(models)}]})
+
+    first = [
+        {"model_name": "m-1", "enable_groups": ["dev", "nrm"], "model_ratio": "0.5"},
+        {"model_name": "m-2", "enable_groups": ["default"], "model_ratio": 1.0},
+    ]
+    # 同内容不同序：模型数组倒序、分组列表倒序、1.0 写成 1、多挂一个随机 pricing_version
+    second = [
+        {"model_name": "m-2", "enable_groups": ["default"], "model_ratio": 1, "pricing_version": "5a90f2b8"},
+        {"model_name": "m-1", "enable_groups": ["nrm", "dev"], "model_ratio": "0.5"},
+    ]
+    changed = [dict(first[0], model_ratio="0.6"), first[1]]
+    key = extractor._cache_key(spec, ["m-1"], evidence(first))
+    assert key == extractor._cache_key(spec, ["m-1"], evidence(second))
+    assert key != extractor._cache_key(spec, ["m-1"], evidence(changed))
+
+
 def test_ai_config_rejects_max_tokens_below_4000():
     from llm_price_monitor.config import ai_from_raw
 

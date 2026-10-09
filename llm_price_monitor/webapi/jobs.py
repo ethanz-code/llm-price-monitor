@@ -407,7 +407,7 @@ def discovery_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
     """新站发现任务体：拉默认聚合源更新候选池，探测没测过的候选，与上轮在线结果合并落盘。"""
     def _run() -> dict[str, Any]:
         tasklog.emit("开始刷新新站发现：拉取 zuiquanapi 源并探测新候选…")
-        stats = asyncio.run(discover.refresh_online())
+        stats = asyncio.run(discover.refresh_online(progress=tasklog.emit))
         tasklog.emit(
             f"新站发现完成：池子 {stats['pool']}（新增 {stats['pool_added']}），"
             f"本轮探测 {stats['probed_now']} 个、在线 {stats['online_now']}，累计在线 {stats['online_total']}，"

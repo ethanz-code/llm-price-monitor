@@ -2,7 +2,6 @@ import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { CatalogData, RankingsData } from "@/lib/types";
 import { buildRankingIndex } from "@/lib/rankings";
 import { PageDigest } from "@/components/PageDigest";
-import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { CatalogView } from "@/components/CatalogView";
 import { alerts } from "@/lib/copy";
@@ -41,7 +40,7 @@ export default async function CatalogPage({
 
   return (
     <div className="page">
-      <PageHeader title="厂商定价" subtitle="各家模型厂商的官方定价速查，官方价与全量渠道价并列对照，随官方页面同步更新。" />
+      <h1 className="sr-only">厂商定价</h1>
       {official && (
         <PageDigest
           items={[

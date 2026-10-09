@@ -98,7 +98,7 @@ def test_discovery_refresh_submits_task(workspace: Path, monkeypatch):
 
     stats = {"pool": 10, "pool_added": 2, "probed_now": 5, "online_now": 3, "online_total": 8, "importable": 6}
 
-    async def fake_refresh(concurrency=16, timeout=8.0, proxy=None):
+    async def fake_refresh(concurrency=16, timeout=8.0, proxy=None, progress=None):
         return stats
 
     monkeypatch.setattr(discover, "refresh_online", fake_refresh)

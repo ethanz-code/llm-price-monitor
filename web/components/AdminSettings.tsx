@@ -211,7 +211,8 @@ export function AdminSettings() {
         const nextSchedule: Record<string, string> = {};
         for (const item of SCHEDULE_ITEMS) {
           const value = rawSchedule[item.key];
-          nextSchedule[item.key] = typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+          // 库里没存过的项直接显示默认值（新增调度项老库没这个键），不再是空输入框
+          nextSchedule[item.key] = typeof value === "number" && Number.isFinite(value) ? String(value) : String(DEFAULT_SCHEDULE_MINUTES[item.key]);
         }
         setSchedule(nextSchedule);
         const nextRetention: Record<string, string> = {};
@@ -480,18 +481,24 @@ export function AdminSettings() {
         <div style={{ display: "grid" }}>
           <SettingsSection
             title="采集调度"
-            description="各项采集多久自动跑一次（分钟），保存后立即生效；填 0 表示关闭定时，只手动采集"
+            description="各项采集的定时间隔（分钟），保存后立即生效；0 = 关闭定时只手动跑，鼠标悬停各项看用途"
           >
-            {SCHEDULE_ITEMS.map((item) => (
-              <SettingRow key={item.key} label={`${item.label}间隔（分钟）`} hint={item.hint}>
-                <Input
-                  value={schedule[item.key] ?? ""}
-                  onChange={(value) => setSchedule((prev) => ({ ...prev, [item.key]: value }))}
-                  placeholder={`默认 ${DEFAULT_SCHEDULE_MINUTES[item.key]}`}
-                  style={{ width: 120, maxWidth: "100%" }}
-                />
-              </SettingRow>
-            ))}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "10px 18px" }}>
+              {SCHEDULE_ITEMS.map((item) => (
+                <label
+                  key={item.key}
+                  title={item.hint}
+                  style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, fontSize: 13, color: "var(--text-2)" }}
+                >
+                  <span style={{ whiteSpace: "nowrap" }}>{item.label}</span>
+                  <Input
+                    value={schedule[item.key] ?? ""}
+                    onChange={(value) => setSchedule((prev) => ({ ...prev, [item.key]: value }))}
+                    style={{ width: 80 }}
+                  />
+                </label>
+              ))}
+            </div>
           </SettingsSection>
           <SettingsSection
             title="采集出口"
