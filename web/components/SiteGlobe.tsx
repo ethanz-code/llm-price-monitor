@@ -48,8 +48,9 @@ const REST_SPEED = 0.0016;
 const POP_MS = 480;
 const POP_STAGGER_MS = 90;
 
-/** 节点状态色：与站点清单的分档一致（绿=优秀 ≥80%、黄=60–80%、红=<60%、灰=无检测数据/停用）。 */
-function statusHex(site: GlobeSite, dark: boolean): string {
+/** 节点状态色：与站点清单的分档一致（绿=优秀 ≥80%、黄=60–80%、红=<60%、灰=无检测数据/停用）。
+ *  手机端平面地图（SiteMapFlat）复用同一套分档，保证球面与平面节点同色同义。 */
+export function statusHex(site: GlobeSite, dark: boolean): string {
   if (site.availability == null || !site.enabled) return dark ? "#9DA3A6" : "#ADACA8";
   const level = rateLevel(site.availability);
   if (level === "warn") return dark ? "#E0B45C" : "#B45309";

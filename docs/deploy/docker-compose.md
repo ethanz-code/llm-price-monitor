@@ -52,8 +52,9 @@ docker compose logs -f
 默认情况下，浏览器可以直接访问 `http://站点/api/overview` 这类读接口拿走整份 JSON 数据。设置内网令牌后，这些读接口只对 Next 服务端渲染请求和管理员会话开放——访客照常看页面，但别人调不到你的数据 API：
 
 ```bash
-# 在 docker-compose.yml 同目录生成 .env（compose 会自动读取）
-echo "PRICE_WEB_INTERNAL_TOKEN=$(openssl rand -hex 32)" > .env
+# 在 docker-compose.yml 同目录准备 .env（compose 会自动读取；变量说明见 .env.example）
+cp .env.example .env
+nano .env   # PRICE_WEB_INTERNAL_TOKEN 填入 openssl rand -hex 32 的输出
 docker compose up -d
 ```
 
@@ -96,10 +97,15 @@ server {
 ## 日常运维
 
 ```bash
-# 更新到最新代码
+# 更新到最新代码（APP_TAG=镜像标签=线上版本号，见 .env）
 cd /opt/llm-price-monitor
 git pull
+echo "APP_TAG=$(git rev-parse --short HEAD)" >> .env
 docker compose up -d --build
+
+# 回滚到上一版：数据在 var/，改回上一版 APP_TAG 即可（旧镜像仍在本地），不动数据
+echo "APP_TAG=<上一版短 SHA>" >> .env
+docker compose up -d --no-build
 
 # 日志
 docker compose logs -f api    # 或 web
@@ -156,7 +162,7 @@ docker compose start api
 cp mihomo.example.yaml mihomo/config.yaml && nano mihomo/config.yaml
 chmod 600 mihomo/config.yaml   # 链接自带 token，别让别的用户读到
 
-# 2. .env 里加一行启用 profile（没有 .env 就创建）
+# 2. .env 里加一行启用 profile（没有 .env 就先 cp .env.example .env，模板里也有这行可取消注释）
 echo "COMPOSE_PROFILES=default,proxy" >> .env
 
 # 3. 拉起（已在跑的部署重新 up 一次即可）

@@ -1,6 +1,6 @@
 "use client";
 
-/** 智能分析助手（大橘）：右下角猫脸悬浮球 + 右侧全高抽屉对话；AI 未配置时整个入口不出现。 */
+/** 智能分析助手：右下角猫脸悬浮球 + 右侧全高抽屉对话；AI 未配置时整个入口不出现。 */
 
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
@@ -19,7 +19,7 @@ const FAB_EDGE = 12;
 /** 气泡尚未渲染时的兜底尺寸（首次夹取用），实际以量到的渲染尺寸为准 */
 const FAB_FALLBACK_SIZE = { width: 42, height: 42 };
 
-/** 空态建议问题：大橘按能力准备的三类示范，每批展示 3 条，可换一批 */
+/** 空态建议问题：按能力准备的三类示范，每批展示 3 条，可换一批 */
 const SUGGESTED_QUESTIONS = [
   "最近一周哪些模型降价了？",
   "哪些站点或渠道现在有异常？",
@@ -394,7 +394,7 @@ export function AssistantDock() {
         className={`ai-fab${pos ? " ai-fab-moved" : ""}`}
         style={pos ? { left: pos.x, top: pos.y } : undefined}
         aria-label="智能分析助手"
-        title="问大橘"
+        title="问 AI 助手"
         onPointerDown={onFabPointerDown}
         onPointerMove={onFabPointerMove}
         onPointerUp={onFabPointerUp}
@@ -417,7 +417,7 @@ export function AssistantDock() {
               </svg>
             </span>
             <div className="ai-drawer-title">
-              <strong>大橘 · 智能分析助手</strong>
+              <strong>智能分析助手</strong>
               <span>{model ?? "盯价格、查渠道，随时问"}</span>
             </div>
             <button
@@ -446,7 +446,7 @@ export function AssistantDock() {
           {view === "history" ? (
             <div className="ai-drawer-list ai-history">
               {sessions.length === 0 ? (
-                <div className="ai-history-empty">还没有历史会话，问大橘一句就有了。</div>
+                <div className="ai-history-empty">还没有历史会话，问一句就有了。</div>
               ) : (
                 <>
                   <p className="ai-history-tip">会话只保存在这台设备上，清除浏览器数据会一并清掉。</p>
@@ -485,7 +485,7 @@ export function AssistantDock() {
                   <svg width={44} height={44} viewBox="0 0 64 64" aria-hidden>
                     <DajuPeek shape="circle" />
                   </svg>
-                  <p>喵，我是大橘，帮你盯价格。</p>
+                  <p>喵，我是智能分析助手，帮你盯价格。</p>
                   <span>比价、看走势、查渠道状态，从这些问题开始：</span>
                 </div>
                 {visibleSuggestions.map((question) => (
@@ -512,7 +512,7 @@ export function AssistantDock() {
                         <i>🐾</i>
                         <i>🐾</i>
                       </span>
-                      {statusText ?? "大橘在想…"}
+                      {statusText ?? "思考中…"}
                     </span>
                   ) : null
                 ) : (
@@ -532,7 +532,7 @@ export function AssistantDock() {
           >
             <input
               value={input}
-              placeholder="问问大橘：比价、走势、渠道状态…"
+              placeholder="问问 AI：比价、走势、渠道状态…"
               onChange={(event) => setInput(event.target.value)}
               disabled={pending}
             />

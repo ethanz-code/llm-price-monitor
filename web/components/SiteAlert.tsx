@@ -1,7 +1,7 @@
 import { Alert } from "@/components/ui";
 import { DajuFace } from "@/components/DajuArt";
 
-/** 数据读取失败的警示条：左侧换成大橘猫脸——出问题时它也盯到了。 */
+/** 数据读取失败的警示条：左侧换成猫脸——出问题时它也盯到了。 */
 export function SiteAlert({ title, detail, fix }: { title: string; detail: string; fix?: string }) {
   return (
     <Alert

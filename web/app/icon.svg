@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- 探头的大橘（品牌 Logo），与 components/DajuArt.tsx DajuPeek square 完全同款：底色 var logo-bg 奶油 #FFF3E4（暗色也不变，favicon 静态文件）/ coat #F0913C / stripe #D4741E / ink #43290F（XML 注释内不允许双连字符） -->
+  <!-- 探头的橘猫（品牌 Logo），与 components/DajuArt.tsx DajuPeek square 完全同款：底色 var logo-bg 奶油 #FFF3E4（暗色也不变，favicon 静态文件）/ coat #F0913C / stripe #D4741E / ink #43290F（XML 注释内不允许双连字符） -->
   <defs>
     <clipPath id="peekClip"><rect width="64" height="64" rx="14"/></clipPath>
   </defs>

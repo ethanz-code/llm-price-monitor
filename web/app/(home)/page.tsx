@@ -37,7 +37,9 @@ import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
 import { DajuChartNap, DajuNap, DajuYarn } from "@/components/DajuArt";
 import { FaqList } from "@/components/FaqList";
-import { alerts, home } from "@/lib/copy";
+import { JsonLd } from "@/components/JsonLd";
+import { alerts, home, site } from "@/lib/copy";
+import { siteOrigin } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
@@ -150,6 +152,8 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 
 export default async function LandingPage() {
   const { overview, meta, feed, history, status, geo, rankings, error } = await loadLanding();
+  // JSON-LD 里的站点地址要绝对 URL，与 metadataBase 同一推导口径
+  const origin = await siteOrigin();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
   // 首页榜单速览：基础模型去重后的 Top 5；数值条按榜首归一
@@ -230,6 +234,29 @@ export default async function LandingPage() {
 
   return (
     <>
+      {/* 结构化数据：站点身份 + 首页常见问题（内容与页面上 FaqList 同源，满足 FAQPage 可见性要求） */}
+      <JsonLd
+        data={{
+          "@context": "https://schema.org",
+          "@graph": [
+            {
+              "@type": "WebSite",
+              name: site.name,
+              url: origin,
+              description: site.description,
+              inLanguage: "zh-CN",
+            },
+            {
+              "@type": "FAQPage",
+              mainEntity: home.faq.map((item) => ({
+                "@type": "Question",
+                name: item.q,
+                acceptedAnswer: { "@type": "Answer", text: item.a },
+              })),
+            },
+          ],
+        }}
+      />
       <div className="page landing">
         <SectionRail />
         <HeroArea

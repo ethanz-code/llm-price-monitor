@@ -224,6 +224,9 @@ class MonitorSettings:
     monitor_models: tuple[str, ...] = ()
     # 从监控清单里被手动移除过的模型：目录刷新自动补模型时跳过，避免删掉又被加回
     monitor_models_dismissed: tuple[str, ...] = ()
+    # 监控清单按发布日期自动清理的时限（月）：官方目录里发布超过时限的模型自动移出清单；
+    # 国内定价源条目没有发布日期不参与；0 表示不自动清理
+    monitor_model_max_age_months: int = 3
     # 采集备用代理（http(s) 代理 URL，如 http://172.17.0.1:7890）：直连优先，
     # 直连失败的域名经失败记忆（egress.py）自动改走它兜底；留空不启用
     fallback_proxy: str | None = None
@@ -282,6 +285,12 @@ def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSetti
     for key in ("retention_price_days", "retention_visit_days", "retention_status_days", "retention_ai_log_days"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
             raise ValueError(f"settings.{key} 必须是不小于 1 的整数（天）")
+    if "monitor_model_max_age_months" in values and (
+        not isinstance(values["monitor_model_max_age_months"], int)
+        or isinstance(values["monitor_model_max_age_months"], bool)
+        or values["monitor_model_max_age_months"] < 0
+    ):
+        raise ValueError("settings.monitor_model_max_age_months 必须是不小于 0 的整数（月，0 表示不自动清理）")
     for key in ("max_task_runs", "max_task_log_lines"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
             raise ValueError(f"settings.{key} 必须是不小于 1 的整数")

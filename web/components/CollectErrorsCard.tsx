@@ -1,15 +1,16 @@
 "use client";
 
 /** 概览页「采集异常」卡片：仅管理员可见。汇总最近采集任务的警告/错误日志，
- *  支持逐条移除与一键清空（清除标记持久保存，任务详情里的完整日志不受影响）。 */
+ *  支持逐条移除与一键清空（清除标记持久保存，任务详情里的完整日志不受影响）。
+ *  没有异常时不占版面：读取中和无异常都不渲染，只有读失败时保留卡片供重试。 */
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiSend, fetchAuthState } from "@/lib/api";
 import { formatTime, taskKindLabel } from "@/lib/format";
 import type { TaskErrorEntry, TaskErrorsData } from "@/lib/types";
-import { Btn, Empty, toast } from "./ui";
-import { IconCheck, IconClose } from "./icons";
+import { Btn, toast } from "./ui";
+import { IconClose } from "./icons";
 
 function LevelTag({ level }: { level: TaskErrorEntry["level"] }) {
   return level === "error" ? <span className="tag tone-red">错误</span> : <span className="tag tone-yellow">警告</span>;
@@ -59,6 +60,8 @@ export function CollectErrorsCard() {
   };
 
   if (!visible) return null;
+  // 无异常不显示：读取中先不渲染，读完没有异常也不渲染；读失败才保留卡片给「刷新」重试
+  if (!loadError && (entries === null || entries.length === 0)) return null;
   const list = entries ?? [];
 
   return (
@@ -81,20 +84,10 @@ export function CollectErrorsCard() {
       </div>
 
       <div style={{ marginTop: 10 }}>
-        {entries === null && !loadError && (
-          <p style={{ color: "var(--text-3)", fontSize: 13, padding: "12px 0" }}>正在读取…</p>
-        )}
         {loadError && entries === null && (
           <p style={{ color: "var(--text-3)", fontSize: 13, padding: "12px 0" }}>
             暂时读不到采集记录，点「刷新」再试一次。
           </p>
-        )}
-        {entries !== null && list.length === 0 && (
-          <Empty
-            icon={<IconCheck size={18} />}
-            title="最近的采集都很顺利"
-            description="采集出现警告或错误时会显示在这里。"
-          />
         )}
         {list.length > 0 && (
           <div style={{ maxHeight: 340, overflowY: "auto", display: "grid", alignContent: "start" }}>

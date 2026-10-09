@@ -15,7 +15,8 @@ export interface TimeSeries {
   values: (number | null)[];
 }
 
-const PAD = { left: 46, right: 12, top: 10, bottom: 22 };
+// left 60：Y 轴标签右对齐画在 left-6 处，5 位数延迟「16322ms」实测 ~47px，再窄左缘就裁字
+const PAD = { left: 60, right: 12, top: 10, bottom: 22 };
 const MINI_HEIGHT = 34;
 const EDGE_GRAB_PX = 8;
 /** 概览条绘图区的上下留白：同样 34px 高度下让折线尽量占满。 */
@@ -290,14 +291,31 @@ export function TimeSeriesChart({
           ctx.textBaseline = "middle";
           ctx.fillText(yFormat(v), PAD.left - 6, y);
         }
-        const ticks = Math.min(5, count);
-        for (let k = 0; k < ticks; k += 1) {
-          const i = i0 + Math.round(((i1 - i0) * k) / (ticks - 1));
+        // X 轴刻度：全格式时间标签很宽，窄屏塞 5 个必然叠成一团。
+        // 先实测每个标签的占位，从 5 个往下稀释到互不重叠（最少保首尾两个）。
+        const xTickRects = (n: number) =>
+          Array.from({ length: n }, (_, k) => {
+            const i = i0 + Math.round(((i1 - i0) * k) / (n - 1));
+            const w = ctx.measureText(formatTime(times[i])).width;
+            const x = xOf(i);
+            const align: CanvasTextAlign = k === 0 ? "left" : k === n - 1 ? "right" : "center";
+            const left = align === "left" ? x : align === "right" ? x - w : x - w / 2;
+            return { i, align, left, right: left + w };
+          });
+        const overlaps = (rects: { left: number; right: number }[]) =>
+          rects.some((r, idx) => idx > 0 && r.left - rects[idx - 1].right < 8);
+        let ticks = Math.min(5, count);
+        let rects = xTickRects(ticks);
+        while (ticks > 2 && overlaps(rects)) {
+          ticks -= 1;
+          rects = xTickRects(ticks);
+        }
+        rects.forEach(({ i, align }) => {
           ctx.fillStyle = axisColor;
           ctx.textBaseline = "top";
-          ctx.textAlign = k === 0 ? "left" : k === ticks - 1 ? "right" : "center";
+          ctx.textAlign = align;
           ctx.fillText(formatTime(times[i]), xOf(i), height - PAD.bottom + 6);
-        }
+        });
         ctx.save();
         ctx.beginPath();
         ctx.rect(PAD.left - 4, 0, Math.max((plotW + 8) * reveal, 0), height);

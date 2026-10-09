@@ -1826,21 +1826,77 @@ def test_auto_append_latest_models(tmp_path: Path):
     store.set_document("settings", {"monitor_models": ["m-old"], "monitor_models_dismissed": ["m-gone"]})
     # 目录键是匹配用归一化形式，条目的 model 字段才是标准显示名：自动补必须取显示名
     catalog = {"models": {
-        "aold": {"vendor": "A", "release_date": "2026-08-01", "model": "m-old"},
-        "anew": {"vendor": "A", "release_date": "2026-09-30", "model": "m-new"},
-        "anew2": {"vendor": "A", "release_date": "2026-09-30", "model": "m-new-2"},
-        "aolder": {"vendor": "A", "release_date": "2026-07-01", "model": "m-older"},
-        "bold": {"vendor": "B", "release_date": "2025-01-01", "model": "m-gone"},
-        "bnodate": {"vendor": "B", "model": "m-nodate"},
-        "cmonth": {"vendor": "C", "release_date": "2026-09", "model": "m-c"},
+        # 白名单厂商（models.dev 官方 lab）：按发布日期取最新一批，同日并列全收
+        "aold": {"vendor": "OpenAI", "release_date": "2026-08-01", "model": "m-old"},
+        "anew": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-new"},
+        "anew2": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-new-2"},
+        # 同日发布的特殊领域模型不进清单：音乐生成（音频输出）、生图（图像输出）、
+        # 纯音频输入的 ASR、与对话模型同标注的 embedding、全模态生成系列（h3 段）
+        "alyric": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-lyric",
+                   "modalities": {"input": ["text", "image"], "output": ["text", "audio"]}},
+        "aimage": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-image",
+                   "modalities": {"input": ["text", "image"], "output": ["image"]}},
+        "aasr": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-asr",
+                 "modalities": {"input": ["audio"], "output": ["text"]}},
+        "aembed": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-embedding",
+                   "modalities": {"input": ["text"], "output": ["text"]}},
+        "ah3": {"vendor": "OpenAI", "release_date": "2026-09-30", "model": "m-h3"},
+        "aolder": {"vendor": "OpenAI", "release_date": "2026-07-01", "model": "m-older"},
+        "bold": {"vendor": "Anthropic", "release_date": "2025-01-01", "model": "m-gone"},
+        "cmonth": {"vendor": "Google", "release_date": "2026-09", "model": "m-c"},
+        # 国内定价源厂商（非白名单）：条目无发布日期，按目录插入序每家取前 N 滚动；
+        # 名字黑名单挡特殊领域（vl 视觉/翻译专用），黑名单条目不占前 N 名额
+        "d1": {"vendor": "DeepSeek", "model": "d-first"},
+        "dvl": {"vendor": "DeepSeek", "model": "d-vl"},
+        "d2": {"vendor": "DeepSeek", "model": "d-second"},
+        "d3": {"vendor": "DeepSeek", "model": "d-third"},
+        "d4": {"vendor": "DeepSeek", "model": "d-fourth"},
+        "d5": {"vendor": "DeepSeek", "model": "d-fifth"},
+        "b1": {"vendor": "Baidu", "model": "b-first"},
     }}
 
-    # 每厂商取发布日期最新的一批：A 家 9-30 两个都进、旧日期不进；B 家最新是被移除的 m-gone，
-    # 跳过且无日期的也不进；C 家月粒度日期照常参与
-    assert auto_append_latest_models(store, catalog) == ["m-c", "m-new", "m-new-2"]
-    assert store.get_document("settings")["monitor_models"] == ["m-old", "m-c", "m-new", "m-new-2"]
+    # 白名单线：OpenAI 家 9-30 两个通用模型都进、特殊领域同日发布不进、旧日期不进；
+    # Anthropic 家最新是被移除的 m-gone，跳过；Google 家月粒度日期照常参与。
+    # 国内线：DeepSeek 取插入序前 4（vl 被名字黑名单挡掉且不占名额，d-fifth 排第 5 滚出）、
+    # Baidu 取 1。清单落库按厂商分组排序：OpenAI 在前（发布倒序），Google、DeepSeek（目录序）、
+    # Baidu 依次随后。
+    assert auto_append_latest_models(store, catalog) == [
+        "b-first", "d-first", "d-fourth", "d-second", "d-third", "m-c", "m-new", "m-new-2",
+    ]
+    assert store.get_document("settings")["monitor_models"] == [
+        "m-new", "m-new-2", "m-old", "m-c", "d-first", "d-second", "d-third", "d-fourth", "b-first",
+    ]
     # 下一轮：没有新模型就不再写库
     assert auto_append_latest_models(store, catalog) == []
+
+
+def test_prune_stale_monitor_models(tmp_path: Path):
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi.jobs import prune_stale_monitor_models
+
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("settings", {
+        "monitor_models": ["fresh", "stale", "monthly-old", "no-date", "custom", "cn-1", "cn-5"],
+    })
+    catalog = {"models": {
+        "fresh": {"model": "fresh", "release_date": "2026-09-30"},
+        "stale": {"model": "stale", "release_date": "2024-01-01"},
+        "monthlyold": {"model": "monthly-old", "release_date": "2025-01"},
+        "nodate": {"model": "no-date"},
+        # 国内厂商条目：cn-1 在前 4 内保留，cn-5 排第 5 滚出
+        "cn1": {"model": "cn-1", "vendor": "DeepSeek"},
+        "cn2": {"model": "cn-2", "vendor": "DeepSeek"},
+        "cn3": {"model": "cn-3", "vendor": "DeepSeek"},
+        "cn4": {"model": "cn-4", "vendor": "DeepSeek"},
+        "cn5": {"model": "cn-5", "vendor": "DeepSeek"},
+    }}
+
+    # 超期的按发布日期清；国内厂商条目滚出前 N 的清；无日期无归属（自定义）与白名单厂商的不动
+    assert prune_stale_monitor_models(store, catalog, 12) == ["stale", "monthly-old", "cn-5"]
+    # 保留项落库按厂商分组排序：DeepSeek 在前，无厂商归属的按目录序垫底，自定义最后
+    assert store.get_document("settings")["monitor_models"] == ["cn-1", "fresh", "no-date", "custom"]
+    # 时限设 0 表示关闭自动清理
+    assert prune_stale_monitor_models(store, catalog, 0) == []
 
 
 def test_canonicalize_monitor_models(tmp_path: Path):

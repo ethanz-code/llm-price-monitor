@@ -54,6 +54,8 @@ export function TrafficPanel() {
   }, []);
 
   if (!summary) return null;
+  // 还没有访问记录时整块不显示，等有数据了再出现
+  if (summary.total_pv === 0) return null;
 
   const kpis = [
     { value: summary.today_pv, label: "今日访问" },
@@ -69,43 +71,35 @@ export function TrafficPanel() {
           完整统计 →
         </Link>
       </div>
-      {summary.total_pv > 0 ? (
-        <>
-          <div style={{ display: "flex", gap: 28, flexWrap: "wrap", padding: "14px 20px 0" }}>
-            {kpis.map((kpi) => (
-              <div key={kpi.label}>
-                <div className="mono" style={{ fontSize: 19, fontWeight: 600 }}>
-                  {kpi.value}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>{kpi.label}</div>
-              </div>
-            ))}
+      <div style={{ display: "flex", gap: 28, flexWrap: "wrap", padding: "14px 20px 0" }}>
+        {kpis.map((kpi) => (
+          <div key={kpi.label}>
+            <div className="mono" style={{ fontSize: 19, fontWeight: 600 }}>
+              {kpi.value}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>{kpi.label}</div>
           </div>
-          <div style={{ height: 120, padding: "4px 12px 6px 0", marginTop: 6 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={summary.daily} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
-                <CartesianGrid stroke={gridColor} vertical={false} />
-                <XAxis
-                  dataKey="day"
-                  tick={{ fill: axisColor, fontSize: 11 }}
-                  tickLine={false}
-                  axisLine={{ stroke: gridColor }}
-                  tickMargin={6}
-                  minTickGap={48}
-                  interval="preserveStartEnd"
-                />
-                <ReTooltip content={<TrendTooltip />} cursor={{ fill: "rgba(127,127,127,0.12)" }} />
-                <Bar dataKey="pv" name="访问量" fill={lineColor} radius={[2, 2, 0, 0]} maxBarSize={10} />
-                <Bar dataKey="uv" name="访客数" fill={secondaryColor} radius={[2, 2, 0, 0]} maxBarSize={10} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </>
-      ) : (
-        <p className="empty" style={{ padding: "24px 20px" }}>
-          还没有访问记录，有人打开页面后就会开始统计。
-        </p>
-      )}
+        ))}
+      </div>
+      <div style={{ height: 120, padding: "4px 12px 6px 0", marginTop: 6 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={summary.daily} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+            <CartesianGrid stroke={gridColor} vertical={false} />
+            <XAxis
+              dataKey="day"
+              tick={{ fill: axisColor, fontSize: 11 }}
+              tickLine={false}
+              axisLine={{ stroke: gridColor }}
+              tickMargin={6}
+              minTickGap={48}
+              interval="preserveStartEnd"
+            />
+            <ReTooltip content={<TrendTooltip />} cursor={{ fill: "rgba(127,127,127,0.12)" }} />
+            <Bar dataKey="pv" name="访问量" fill={lineColor} radius={[2, 2, 0, 0]} maxBarSize={10} />
+            <Bar dataKey="uv" name="访客数" fill={secondaryColor} radius={[2, 2, 0, 0]} maxBarSize={10} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

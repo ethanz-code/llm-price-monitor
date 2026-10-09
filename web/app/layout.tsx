@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: {
       default: site.title,
-      template: "%s · 大橘",
+      template: `%s · ${site.name}`,
     },
     description: site.description,
     alternates: { canonical: "/" },
@@ -52,6 +52,8 @@ export default function RootLayout({ children }: React.PropsWithChildren) {
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {/* 给 AI 代理指路：本页说明文件在 /llms.txt（llmstxt.org 的 rel=describedby 约定） */}
+        <link rel="describedby" href="/llms.txt" />
       </head>
       <body>
         <Providers>

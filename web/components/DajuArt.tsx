@@ -1,12 +1,12 @@
 /**
- * 大橘品牌插画层：吉祥物橘猫的场景图 + 爪印装饰。
+ * 橘猫品牌插画层：吉祥物橘猫的场景图 + 爪印装饰。
  * 手绘 inline SVG（无版权风险），猫毛色走 --cat-* 主题变量，明暗主题自动适配；
  * 环境元素（曲线、面板、阴影）沿用既有语义变量。全部纯装饰 aria-hidden。
  * 猫的形象语言与 LogoMark 一致：眯眼笑、ω 嘴、额头条纹。
  */
 
 /**
- * 探头的大橘：猫头从底色块的下缘探出来，下半身被裁掉——品牌主形象（logo 与助手球同源）。
+ * 探头的橘猫：猫头从底色块的下缘探出来，下半身被裁掉——品牌主形象（logo 与助手球同源）。
  * shape=square 用于 LogoMark：奶油暖白圆角方块底（--logo-bg，2026-09-28 拍板，favicon 同底；
  * 橙底与猫毛色相近弃用）；circle 用于助手悬浮球/抽屉头像：品牌橙圆底。
  * 探头好奇表情（睁眼），带 .daju-peek-head 类供悬停探更高。
@@ -62,7 +62,7 @@ export function PawPrint({ size = 16, className }: { size?: number; className?: 
   );
 }
 
-/** 尾部 CTA：大橘趴在价格曲线的高原上打盹，曲线在它身下继续走向最新一个点。 */
+/** 尾部 CTA：橘猫趴在价格曲线的高原上打盹，曲线在它身下继续走向最新一个点。 */
 export function DajuChartNap({ width = 300 }: { width?: number }) {
   return (
     <svg
@@ -73,7 +73,7 @@ export function DajuChartNap({ width = 300 }: { width?: number }) {
       aria-hidden
       style={{ maxWidth: "100%" }}
     >
-      {/* 价格曲线：爬升 → 高原（大橘趴着） → 回落 → 最新一个点 */}
+      {/* 价格曲线：爬升 → 高原（橘猫趴着） → 回落 → 最新一个点 */}
       <path
         d="M8 112 C48 112 66 100 96 98 C116 96.5 124 78 148 78 L196 78 C222 78 232 102 258 110 C272 114 284 115 292 115"
         style={{ stroke: "var(--accent-text)" }}
@@ -113,7 +113,7 @@ export function DajuChartNap({ width = 300 }: { width?: number }) {
   );
 }
 
-/** 趋势/事件空态：大橘玩毛线球，毛线一路拉成一条价格曲线，末端是最新的绿点。 */
+/** 趋势/事件空态：橘猫玩毛线球，毛线一路拉成一条价格曲线，末端是最新的绿点。 */
 export function DajuYarn({ width = 190 }: { width?: number }) {
   return (
     <svg
@@ -155,7 +155,7 @@ export function DajuYarn({ width = 190 }: { width?: number }) {
   );
 }
 
-/** 通用空态：大橘蜷在垫子上睡觉，等数据自己长出来。 */
+/** 通用空态：橘猫蜷在垫子上睡觉，等数据自己长出来。 */
 export function DajuNap({ width = 160 }: { width?: number }) {
   return (
     <svg
@@ -185,7 +185,7 @@ export function DajuNap({ width = 160 }: { width?: number }) {
   );
 }
 
-/** 醒着的大橘：睁眼坐直、尾巴翘起——算出结果时它也精神了（计算器结果头）。 */
+/** 醒着的橘猫：睁眼坐直、尾巴翘起——算出结果时它也精神了（计算器结果头）。 */
 export function DajuAwake({ width = 22 }: { width?: number }) {
   return (
     <svg
@@ -210,7 +210,7 @@ export function DajuAwake({ width = 22 }: { width?: number }) {
   );
 }
 
-/** 迷你坐姿大橘（空态/加载页装饰）：侧脸朝左盯着数据。 */
+/** 迷你坐姿橘猫（空态/加载页装饰）：侧脸朝左盯着数据。 */
 export function DajuSit({ width = 17 }: { width?: number }) {
   return (
     <svg
@@ -235,7 +235,7 @@ export function DajuSit({ width = 17 }: { width?: number }) {
   );
 }
 
-/** 警示条里的小猫脸：出问题时大橘也盯到了，眯眼表情与 LogoMark 同语言。 */
+/** 警示条里的小猫脸：出问题时橘猫也盯到了，眯眼表情与 LogoMark 同语言。 */
 export function DajuFace({ size = 14, className }: { size?: number; className?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden>

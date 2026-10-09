@@ -121,8 +121,6 @@ export interface ShareLatencyModel {
  *  族名是构建期 hash，分享卡挂载后从 html 变量里取真实值垫到栈首（useSiteFontFamilies）。 */
 const SANS_FALLBACK = `"SF Pro Text", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`;
 const MONO_FALLBACK = `"SF Mono", "JetBrains Mono", ui-monospace, monospace`;
-/** 品牌名专用圆体：与站内 .brand-name 同栈，只两个字，不为它加载中文 webfont */
-export const BRAND_FONT = `"Yuanti SC", "STYuanti", "YouYuan", "Hiragino Maru Gothic ProN", "PingFang SC", sans-serif`;
 
 /** 站内 Geist 字体族名：next/font 的族名带 hash，从 html 上的 CSS 变量读真实值。
  *  SSR 初值为空（走兜底栈），挂载后补齐——离屏卡片平时不可见，无闪烁。 */
@@ -482,7 +480,7 @@ export function ShareSiteCard({
   const hiddenCount = Math.max(channels.length - shown.length, 0);
   // 最近 15 次整站检测色点：与站点卡片上的色点条同口径
   const recent = availability.slice(-15);
-  const brandName = "大橘";
+  const brandName = "llmprices.cn";
   const brandDesc = share.brandDesc;
   // 域名去掉协议，按钮和胶囊里只放可读的 host
   let host = domain;
@@ -506,14 +504,14 @@ export function ShareSiteCard({
         gap: 26,
       }}
     >
-      {/* 品牌头：与站内导航同款——奶油底橘猫探头 logo + 圆体品牌名 */}
+      {/* 品牌头：与站内导航同款——奶油底橘猫探头 logo + 等宽域名 */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <svg width={40} height={40} viewBox="0 0 64 64" role="img" aria-label="大橘" style={{ flexShrink: 0 }}>
+            <svg width={40} height={40} viewBox="0 0 64 64" role="img" aria-label="llmprices.cn" style={{ flexShrink: 0 }}>
               <DajuPeek shape="square" />
             </svg>
-            <span style={{ fontFamily: BRAND_FONT, fontSize: 20, fontWeight: 600, letterSpacing: "0.02em" }}>{brandName}</span>
+            <span style={{ fontFamily: monoStack, fontSize: 20, fontWeight: 600, lineHeight: 1, letterSpacing: "0.02em" }}>{brandName}</span>
           </div>
           <span style={{ fontSize: 13.5, color: c.muted, maxWidth: 560, lineHeight: 1.6 }}>{brandDesc}</span>
         </div>

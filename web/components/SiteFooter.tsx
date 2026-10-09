@@ -20,7 +20,7 @@ export function SiteFooter() {
         <div className="site-footer-brand">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <LogoMark size={20} />
-            <span style={{ fontWeight: 600, color: "var(--text)" }}>{site.name}</span>
+            <span style={{ fontFamily: "var(--mono)", fontWeight: 600, lineHeight: 1, translate: "0 1px", color: "var(--text)" }}>{site.name}</span>
           </div>
           <p>{footer.brandLine}</p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

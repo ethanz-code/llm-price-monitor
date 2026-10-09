@@ -236,11 +236,12 @@ function TagMultiSelect({
 }
 
 /** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加；
- *  已选清单与下拉同序（发布日期倒序、同日期按名称），目录外自定义的当没日期垫底。 */
+ *  已选清单与下拉同序（同厂商的模型挨在一起，厂商内发布日期倒序、同日期按名称），
+ *  目录外自定义的垫底。 */
 function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
   const [options, setOptions] = useState<MultiOption[] | null>(null);
-  // 模型名 → 发布日期：已选清单按与下拉同款规则排序时查用
-  const [releaseById, setReleaseById] = useState<ReadonlyMap<string, string>>(new Map());
+  // 模型 id → 厂商顺序号与发布日期：已选清单按与下拉同款规则排序时查用
+  const [orderById, setOrderById] = useState<ReadonlyMap<string, { vendorRank: number; release: string }> | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -248,18 +249,32 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     apiSend<CatalogData>("/api/catalog", "GET")
       .then((data) => {
         if (cancelled) return;
-        const dated = Object.values(data.models ?? {})
+        const rows = Object.values(data.models ?? {})
           .filter((entry) => typeof entry.model === "string" && entry.model)
           .map((entry) => ({
             id: entry.model,
-            // 发布日期倒序：新模型排前面；没标日期的按字母垫底
+            vendor: typeof entry.vendor === "string" ? entry.vendor : "",
+            // 发布日期倒序：新模型排前面；没标日期的垫在本厂商后部
             release: typeof entry.release_date === "string" ? entry.release_date : "",
             note: [entry.name ?? "", entry.vendor ?? ""].filter(Boolean).join(" · ") || undefined,
           }));
-        setReleaseById(new Map(dated.map(({ id, release }): [string, string] => [id, release])));
+        // 厂商顺序 = 目录里厂商首次出现的顺序：同一家的模型天然挨着
+        const rankByVendor = new Map<string, number>();
+        const orderById = new Map<string, { vendorRank: number; release: string }>();
+        for (const row of rows) {
+          if (row.vendor && !rankByVendor.has(row.vendor)) rankByVendor.set(row.vendor, rankByVendor.size);
+          orderById.set(row.id, { vendorRank: rankByVendor.get(row.vendor) ?? Number.MAX_SAFE_INTEGER, release: row.release });
+        }
+        setOrderById(orderById);
+        const byGroup = (a: { id: string; release: string }, b: { id: string; release: string }) => {
+          const va = orderById.get(a.id)?.vendorRank ?? Number.MAX_SAFE_INTEGER;
+          const vb = orderById.get(b.id)?.vendorRank ?? Number.MAX_SAFE_INTEGER;
+          return va - vb || b.release.localeCompare(a.release) || a.id.localeCompare(b.id);
+        };
         setOptions(
-          dated
-            .sort((a, b) => b.release.localeCompare(a.release) || a.id.localeCompare(b.id))
+          rows
+            .map(({ id, release, note }) => ({ id, release, note }))
+            .sort(byGroup)
             .map(({ id, note }) => ({ id, note })),
         );
       })
@@ -273,15 +288,20 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     };
   }, []);
 
-  /** 已选清单按目录同款规则排序：发布日期倒序、同日期按名称，目录外的当没日期垫底。
-   *  显示与保存都过它：存量乱序打开页面即归位，编辑保存落库的也是同一套顺序。 */
+  /** 已选清单按目录同款规则排序：同厂商挨在一起、厂商内发布日期倒序、同日期按名称，
+   *  目录外的自定义模型垫底。显示与保存都过它：存量乱序打开页面即归位，编辑保存落库的也是同一套顺序。 */
   const sortModels = useCallback(
-    (list: string[]) =>
-      list
-        .map((id) => ({ id, release: releaseById.get(id) ?? "" }))
-        .sort((a, b) => b.release.localeCompare(a.release) || a.id.localeCompare(b.id))
-        .map(({ id }) => id),
-    [releaseById],
+    (list: string[]) => {
+      if (!orderById) return list;
+      return list
+        .map((id) => ({ id, ...(orderById.get(id) ?? { vendorRank: Number.MAX_SAFE_INTEGER, release: "" }) }))
+        .sort(
+          (a, b) =>
+            a.vendorRank - b.vendorRank || b.release.localeCompare(a.release) || a.id.localeCompare(b.id),
+        )
+        .map(({ id }) => id);
+    },
+    [orderById],
   );
   const sortedValue = useMemo(() => sortModels(value), [sortModels, value]);
 

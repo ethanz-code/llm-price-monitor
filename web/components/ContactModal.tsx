@@ -4,7 +4,7 @@
 
 import { Modal } from "./ui";
 
-export const CONTACT_EMAIL = "service@htlabs.com.cn";
+export const CONTACT_EMAIL = "service@llmprices.cn";
 
 /** 企业微信二维码图片路径：替换 web/public/wecom-qr.png 即可生效。 */
 export const WECOM_QR_SRC = "/wecom-qr.png";

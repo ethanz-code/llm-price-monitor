@@ -121,16 +121,17 @@ export default async function AdminOverviewPage() {
 
           <CollectErrorsCard />
 
-          <div className="panel">
-            <div className="dash-panel-head">
-              <span className="dash-panel-title">最近事件</span>
-              <Link href="/history" className="landing-more">
-                全部事件 →
-              </Link>
-            </div>
-            <div className="dash-events">
-              {latestEvents.length > 0 ? (
-                latestEvents.map((event, index) => {
+          {/* 还没有事件时不占版面：新站引导清单在页尾，完成一轮采集后这里自然出现 */}
+          {latestEvents.length > 0 && (
+            <div className="panel">
+              <div className="dash-panel-head">
+                <span className="dash-panel-title">最近事件</span>
+                <Link href="/history" className="landing-more">
+                  全部事件 →
+                </Link>
+              </div>
+              <div className="dash-events">
+                {latestEvents.map((event, index) => {
                   const meta = eventMeta(event.kind);
                   const site = getSiteInfo(event.site_id, isNoticeEvent(event) ? undefined : event.current?.source_url ?? event.previous?.source_url);
                   return (
@@ -150,14 +151,10 @@ export default async function AdminOverviewPage() {
                       </span>
                     </Link>
                   );
-                })
-              ) : (
-                <p className="empty" style={{ padding: "28px 0" }}>
-                  还没有事件，完成一轮采集后会显示在这里。
-                </p>
-              )}
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="dash-side">

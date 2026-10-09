@@ -12,7 +12,7 @@ export const SITE_OG_BASE: NonNullable<Metadata["openGraph"]> = {
   images: [{ url: "/og-image.png", width: 1200, height: 630 }],
 };
 
-/** 公开页统一元数据：title 走 layout 的 "%s · 大橘" 模板，OG 标题补全品牌后缀；
+/** 公开页统一元数据：title 走 layout 的 title.template 模板，OG 标题补全品牌后缀；
  *  canonical 指向本页规范地址，带参数的变体（如 /catalog?view=all）一并归一。 */
 export function pageMetadata(title: string, description: string, path: string): Metadata {
   return {

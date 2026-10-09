@@ -3,13 +3,16 @@
 # 交给 AI 助手部署时，让它先读 docs/deploy/ai-runbook.md。
 name: llm-price-monitor
 
+# 镜像标签即版本号：.env 里设 APP_TAG=<git 短 SHA>（如 b5ef682）后 up -d --build，
+# 构建产物带版本标签，回滚=改回上一版 APP_TAG 再 up -d。不设置则默认 local。全部变量模板见 .env.example
+
 services:
   api:
     # 单实例设计：定时调度与任务状态都在进程内存里，多副本会重复采集，禁止 scale
     build:
       context: .
       target: api
-    image: llm-price-monitor/api:local
+    image: llm-price-monitor/api:${APP_TAG:-local}
     container_name: price-monitor-api
     restart: unless-stopped
     volumes:
@@ -30,7 +33,7 @@ services:
     build:
       context: .
       target: web
-    image: llm-price-monitor/web:local
+    image: llm-price-monitor/web:${APP_TAG:-local}
     container_name: price-monitor-web
     restart: unless-stopped
     depends_on:
@@ -50,7 +53,7 @@ services:
       start_period: 20s
 
   # 采集兜底代理（可选，默认不启动）：mihomo 内核吃机场订阅，供「系统设置 → 采集出口」使用。
-  # 启用：.env 里加一行 COMPOSE_PROFILES=default,proxy（机场配置见 deploy/mihomo-config.example.yaml，
+  # 启用：.env 里加一行 COMPOSE_PROFILES=default,proxy（机场配置见仓库根目录 mihomo.example.yaml，
   # 复制为 mihomo/config.yaml 并填订阅链接），用法详见 docs/deploy/docker-compose.md「采集兜底代理」。
   # 端口不发布，仅在 compose 容器网络内可达，公网摸不到；面板地址填 http://proxy:7890。
   proxy:

@@ -6,8 +6,9 @@
 
 /** 品牌与站点级描述（浏览器标签、搜索结果、分享摘要） */
 export const site = {
-  name: "大橘",
-  title: "大橘 Daju — 中转站价格逐条可溯源",
+  /** 品牌展示名即域名，全站统一用英文字体呈现 */
+  name: "llmprices.cn",
+  title: "llmprices.cn — 中转站价格逐条可溯源",
   description:
     "哪个中转站价格更低、服务更稳？每条数据都附来源链接，点开就能核对。",
 };

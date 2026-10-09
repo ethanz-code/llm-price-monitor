@@ -48,7 +48,7 @@ export function Illustration404() {
       <rect x="170" y="14" width="10" height="10" fill="url(#il-tile-0)" opacity="0.7" />
       <rect x="158" y="6" width="7" height="7" fill="url(#il-tile-0)" opacity="0.45" />
 
-      {/* 大橘：蹲在左下角，抬头看着掉出画面的曲线 */}
+      {/* 橘猫：蹲在左下角，抬头看着掉出画面的曲线 */}
       <g>
         <path d="M42 150 Q34 148 36 140" style={{ stroke: "var(--cat-coat)" }} strokeWidth="5" strokeLinecap="round" fill="none" />
         <path d="M40 152 C38 132 46 122 56 122 C66 122 71 132 70 152 Z" style={{ fill: "var(--cat-coat)" }} />

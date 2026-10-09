@@ -1,10 +1,10 @@
-# 大橘 Daju
+# llmprices.cn
 
 <p align="left">
-  <img src="web/app/icon.svg" width="72" alt="大橘 Logo" />
+  <img src="web/app/icon.svg" width="72" alt="llmprices.cn Logo" />
 </p>
 
-**大橘（Daju）— LLM（AI 大模型）价格监控器**：盯住各中转站（API 中转服务）的模型价格，记录每一次变化，并用厂商官方价校准它贵不贵。
+**llmprices.cn — LLM（AI 大模型）价格监控器**：盯住各中转站（API 中转服务）的模型价格，记录每一次变化，并用厂商官方价校准它贵不贵。
 
 价格事实只来自直接请求得到的 HTTP 响应（JSON、页面内嵌价格表及其引用的 JS），不启动浏览器、不从页面文字猜价格；AI 只做兜底解析，无法确认时返回 `candidate` / `unavailable`，绝不编造。
 
@@ -52,7 +52,7 @@ uv run price-web --with-frontend
 
 请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）支持 `${access_token}`/`${refresh_token}` 凭证占位符，展开成「认证与续签」的当前凭证，续签换新后自动跟着变；其余文本原样保留，不做环境变量注入。注意直采请求头不认凭证占位符——认证走「认证与续签」的凭证注入配置，或写死旧 token 由续签自动回写。
 
-要监控哪些模型在站点管理页顶部「监控模型」统一配置（`settings.monitor_models`），所有站点共用一份，不再按站点单独配置；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，网页/AI 提取模式让 AI 抽取页面上的每一个模型——大站会超出 AI 输入上限，慎用）。
+要监控哪些模型在站点管理页顶部「监控模型」统一配置（`settings.monitor_models`），所有站点共用一份，不再按站点单独配置；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，网页/AI 提取模式让 AI 抽取页面上的每一个模型——大站会超出 AI 输入上限，慎用）。清单平时不用手动追新：目录刷新会自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭自动维护）；手动删掉的模型不会再被自动加回。
 
 部署在境内服务器、部分站点直连不了时，在管理面板「系统设置 → 采集出口」填一个 http(s) 备用代理地址（`settings.fallback_proxy`，如 `http://172.17.0.1:7890`，要认证写成 `http://user:pass@host:port`；填完点「测试连通」可验证代理通不通并显示出口 IP）：采集始终先走直连，直连失败（超时/重置/被目标站拒收）的站点自动改走代理继续采，恢复后自动切回；国内能直连的站点永远不走代理。Docker 部署时代理客户端跑在宿主机的话，地址写 `http://172.17.0.1:7890`（容器里的 127.0.0.1 不是宿主机）。无头浏览器渲染同一站点时跟随同一出口选择。
 
@@ -105,7 +105,7 @@ cookies 和 localStorage 的归属域自动取 `network.url`，不用填；`wait
 
 续签拿到的 Access Token 会写回站点级 `auth_token`，也就是采集请求头里实际带的那份；会话模式下的「Access Token」输入框是它的初值，留空则由首次采集的续签补上。
 
-管理面板编辑站点时认证方式选「登录会话自动续签」会按采集地址自动带出这套模板，到「认证与续签」里贴上 Refresh Token（Access Token 可留空）、点「测试续签」验证即可。存量站点配置想一次整理成当前结构（瘦身＋认证收口），跑 `uv run price-admin tidy-sites`。
+管理面板编辑站点时认证方式选「登录会话自动续签」会按采集地址自动带出这套模板，到「认证与续签」里贴上 Refresh Token（Access Token 可留空）、点「测试续签」验证即可。存量站点配置想一次整理成当前结构（瘦身＋认证收口），跑 `uv run price-admin tidy-sites`。站点配置支持整份迁移：站点管理页可导出全部站点为 JSON 文件（含凭证，注意保管），导入时逐个确认同名冲突。
 
 new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 源码 `service/auth_token.go`、`model/user_session.go`）：Access Token 15 分钟有效；每个登录会话自创建起**最长 30 天**（绝对有效期，续签不延长）；Refresh Token 一次一换，旧值在 30 秒宽限窗口外再被使用会触发防盗机制、整个会话立即注销。因此贴完凭据后浏览器里要重新登录一次（两边各用各的会话，互不影响）；会话到期后监控续签会失败，重新抓一次 Cookie 更新即可。
 
@@ -124,7 +124,7 @@ new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/
 | `POST /api/auth/login` / `POST /api/auth/logout` | 公开 | 登录签发 30 天会话 cookie / 登出清除 |
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
 | `POST /api/collect` | 管理员 | 触发采集（AI 兜底始终启用），结果附带官方价折扣 |
-| `POST /api/catalog/refresh` | 管理员 | 从 models.dev 同步官方价目录（免密钥，秒级） |
+| `POST /api/catalog/refresh` | 管理员 | 同步官方价目录并一条龙维护：models.dev 快照 + 已配置厂商定价源合并 + 中文简介 + 监控清单自动补新与超期清理（免密钥） |
 | `POST /api/rankings/refresh` | 管理员 | 抓取 Artificial Analysis 榜单页并解析落库 |
 | `GET /api/vendor-sources`（含 `/detection`）、`POST /api/vendor-sources`、`PUT/DELETE /api/vendor-sources/{vendor}`、`POST /api/vendor-sources/{vendor}/refresh` | 管理员 | 厂商定价源：国内价覆盖检测、配置厂商国内定价页并抓取合并进官方目录 |
 | `GET /api/settings` / `PUT /api/settings` | 管理员 | 系统设置（AI、WxPusher 通知） |
@@ -136,7 +136,7 @@ Next.js 16（App Router）+ React 19 服务端渲染，自研轻量 UI kit，支
 
 | 页面 | 内容 |
 | ---- | ---- |
-| `/` | 品牌首页：实时统计条、监控地球、最新事件流与快照预览 |
+| `/` | 品牌首页：实时统计条、监控地球（手机端为全节点平面点阵图）、最新事件流与快照预览 |
 | 右下角 AI 助手 | 全站悬浮球：用自然语言问价格、比价、折扣与渠道状态（需在管理面板配置 AI，流式输出） |
 | `/overview` | 中转站检测：全部站点 × 模型的最新单价；`/overview/status/{siteId}` 看单站渠道状态、公告与访问统计 |
 | `/calculator` | 花费计算：选站点价或厂商官方价，按输入/输出/缓存命中单价估算 token 总花费，可复制分享链接 |

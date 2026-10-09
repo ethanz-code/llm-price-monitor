@@ -3391,6 +3391,19 @@ def test_monitor_models_wildcard_rejected():
         settings_from_raw({"monitor_models": ["*", "demo-model"]}, resolve_env=False)
 
 
+def test_monitor_model_max_age_validation():
+    from llm_price_monitor.config import settings_from_raw
+
+    # 缺省 3 个月；合法输入原样保留，非法输入报错
+    assert settings_from_raw({}, resolve_env=False).monitor_model_max_age_months == 3
+    assert settings_from_raw({"monitor_model_max_age_months": 0}, resolve_env=False).monitor_model_max_age_months == 0
+    assert settings_from_raw({"monitor_model_max_age_months": 6}, resolve_env=False).monitor_model_max_age_months == 6
+    with pytest.raises(ValueError, match="monitor_model_max_age_months"):
+        settings_from_raw({"monitor_model_max_age_months": -1}, resolve_env=False)
+    with pytest.raises(ValueError, match="monitor_model_max_age_months"):
+        settings_from_raw({"monitor_model_max_age_months": "半年"}, resolve_env=False)
+
+
 def test_settings_fallback_proxy_validation():
     from llm_price_monitor.config import settings_from_raw
 

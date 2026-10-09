@@ -6,7 +6,7 @@ import { calculator, share } from "@/lib/copy";
 import type { CalcPrices, CalcResult, PriceKey } from "@/lib/calculator";
 import { DajuPeek } from "./DajuArt";
 import { IconAlertCircle } from "./icons";
-import { BRAND_FONT, chartPanelStyle, SHARE_PALETTES, useShareFontStacks, type ShareTheme } from "./ShareSiteCard";
+import { chartPanelStyle, SHARE_PALETTES, useShareFontStacks, type ShareTheme } from "./ShareSiteCard";
 
 const BUCKET_LABEL = calculator.buckets;
 const BUCKET_ORDER: PriceKey[] = ["input", "output", "cacheRead"];
@@ -110,14 +110,14 @@ export function ShareCalcCard({
         gap: 26,
       }}
     >
-      {/* 品牌头：与站点状况分享卡同款——奶油底橘猫探头 logo + 圆体品牌名 */}
+      {/* 品牌头：与站点状况分享卡同款——奶油底橘猫探头 logo + 等宽域名 */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <svg width={40} height={40} viewBox="0 0 64 64" role="img" aria-label="大橘" style={{ flexShrink: 0 }}>
+            <svg width={40} height={40} viewBox="0 0 64 64" role="img" aria-label="llmprices.cn" style={{ flexShrink: 0 }}>
               <DajuPeek shape="square" />
             </svg>
-            <span style={{ fontFamily: BRAND_FONT, fontSize: 20, fontWeight: 600, letterSpacing: "0.02em" }}>大橘</span>
+            <span style={{ fontFamily: monoStack, fontSize: 20, fontWeight: 600, lineHeight: 1, letterSpacing: "0.02em" }}>llmprices.cn</span>
           </div>
           <span style={{ fontSize: 13.5, color: c.muted, maxWidth: 560, lineHeight: 1.6 }}>{share.brandDesc}</span>
         </div>

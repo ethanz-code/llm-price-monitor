@@ -202,7 +202,7 @@ def build_router(store: Store) -> APIRouter:
                 raise ValueError("请先填写 WxPusher App Token")
             wxpusher.send_wxpusher(
                 app_token=token,
-                content="【大橘】这是一条测试推送，收到即表示通知配置有效。",
+                content="【llmprices.cn】这是一条测试推送，收到即表示通知配置有效。",
                 summary="测试推送",
                 uid=str(merged_settings.get("wxpusher_uid") or "").strip() or None,
             )

@@ -1,14 +1,38 @@
 "use client";
 
 /** 首屏监控区：左侧 cobe 大球 + 右侧文案列 + 底部跨整行的站点节点轮播；
+ *  手机档（≤768px，与 globals.css 手机档同断点）球换成 SiteMapFlat 平面点阵地图，
+ *  触屏上看不到球背面、也没有悬停联动，平面图能把全部节点一屏摆开；
  *  站点按 IP 归属地落点（geo 由服务端页取好传入，浏览器不再直接调数据接口）；
  *  悬停轮播里的站点，球会转过去把它送到面前高亮，球上标签也会反向点亮轮播项；
  *  两排恒滚动：半条轨道不足一屏宽时自动复制节点补满，实现无缝循环，悬停暂停。 */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { rateLevel } from "@/lib/channelStatus";
 import { SiteGlobe, type GlobeSite, type SiteGeo } from "./SiteGlobe";
+import { SiteMapFlat } from "./SiteMapFlat";
+
+/** 与 globals.css 手机档同断点：球在这个宽度以下换成平面点阵地图 */
+const PHONE_QUERY = "(max-width: 768px)";
+
+/** SSR 期间按桌面渲染（保持既有服务端标记），挂载后手机档换成平面地图。
+ *  resize 兜底：部分内嵌 WebView 对断点跨越只发 resize 不发 matchMedia change。 */
+function useIsPhone(): boolean {
+  const [isPhone, setIsPhone] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(PHONE_QUERY);
+    const update = () => setIsPhone(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    window.addEventListener("resize", update);
+    return () => {
+      mq.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  return isPhone;
+}
 
 const TONE_TEXT: Record<"ok" | "warn" | "down", string> = {
   ok: "var(--tone-green-text)",
@@ -36,6 +60,7 @@ export function HeroArea({
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const router = useRouter();
+  const isPhone = useIsPhone();
 
   const sorted = [...sites].sort((a, b) => sortWeight(a) - sortWeight(b));
 
@@ -85,14 +110,18 @@ export function HeroArea({
   return (
     <section className="hero">
       <aside className="hero-globe">
-        <div className="pano-globe-layer">
-          <SiteGlobe
-            sites={sites}
-            geo={geo}
-            activeId={activeId}
-            onHoverSite={setActiveId}
-          />
-        </div>
+        {isPhone ? (
+          <SiteMapFlat sites={sites} geo={geo} />
+        ) : (
+          <div className="pano-globe-layer">
+            <SiteGlobe
+              sites={sites}
+              geo={geo}
+              activeId={activeId}
+              onHoverSite={setActiveId}
+            />
+          </div>
+        )}
       </aside>
       <div className="hero-main">{main}</div>
       {rows.map((row, rowIndex) => {

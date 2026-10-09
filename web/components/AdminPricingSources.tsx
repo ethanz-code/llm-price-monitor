@@ -118,6 +118,33 @@ export function AdminPricingSources() {
     }
   }
 
+  // 整目录刷新：models.dev 快照 + 全部厂商定价源 + 翻译 + 监控清单自动维护，一条龙跑完
+  async function refreshCatalog() {
+    if (refreshing) return;
+    setRefreshing("__catalog__");
+    try {
+      const { task_id } = await apiSend<{ task_id: string }>("/api/catalog/refresh", "POST");
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const detail: TaskDetail = await apiSend<TaskDetail>(`/api/tasks/${task_id}`, "GET");
+        if (detail.status !== "running") {
+          if (detail.status === "done") {
+            const total = Number(detail.result?.models_total ?? 0);
+            toast(total > 0 ? `厂商定价目录已更新：官方目录 ${total} 个模型` : "目录刷新完成");
+          } else {
+            toast(`目录刷新失败：${detail.error ?? "未知错误"}`);
+          }
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    } catch (error) {
+      toast(`目录刷新失败: ${errorText(error)}`);
+    } finally {
+      setRefreshing(null);
+      reload();
+    }
+  }
+
   async function remove(vendor: string) {
     try {
       await apiSend(`/api/vendor-sources/${encodeURIComponent(vendor)}`, "DELETE");
@@ -338,9 +365,14 @@ export function AdminPricingSources() {
           }}
         >
           <span style={{ fontSize: 14, fontWeight: 600 }}>已配置的定价源</span>
-          <Btn variant="primary" onClick={() => setEditing({ source: sourceSkeleton(), isNew: true })}>
-            <IconPlus size={14} /> 新增定价源
-          </Btn>
+          <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 12 }}>
+            <Btn loading={refreshing === "__catalog__"} onClick={refreshCatalog}>
+              刷新整个目录
+            </Btn>
+            <Btn variant="primary" onClick={() => setEditing({ source: sourceSkeleton(), isNew: true })}>
+              <IconPlus size={14} /> 新增定价源
+            </Btn>
+          </span>
         </div>
         {sources === null ? (
           <div style={{ padding: "16px 20px" }}>

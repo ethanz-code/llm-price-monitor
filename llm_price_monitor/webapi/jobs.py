@@ -1,13 +1,14 @@
 """采集任务体工厂：手动触发端点与后台调度器共用同一套任务实现与结果摘要。"""
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from typing import Any
 
 from llm_price_monitor.catalog import vendor_sources
 from llm_price_monitor.catalog.intros import attach_ai_intros
-from llm_price_monitor.catalog.modelsdev import fetch_catalogs
+from llm_price_monitor.catalog.modelsdev import DEFAULT_PROVIDERS, fetch_catalogs
 from llm_price_monitor.catalog.normalize import model_key
 from llm_price_monitor.catalog.rankings import fetch_rankings
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, fingerprint_translations
@@ -19,6 +20,99 @@ from llm_price_monitor.store import Store
 
 # 全量渠道目录每轮新增翻译的简介条数上限：条目数以千计，随每日刷新逐步补齐
 ALL_CATALOG_TRANSLATE_BUDGET = 300
+
+# 自动补模型的国内厂商每家保留数：国内定价页不标发布日期，按页面顺序（靠前即较新）
+# 取前 N 个滚动，厂商发新模型时最旧的自动挤出
+DOMESTIC_APPEND_LIMIT = 4
+
+# 特殊领域模型的名字黑名单：只自动监控通用对话大模型
+# - 子串匹配：向量/重排/识别/语音/文档解析类，以及知名生成产品线（海螺视频）与
+#   国内定价页的中文名条目（图生视频等）；models.dev 对 embedding 等常有与对话
+#   模型相同的 modalities 标注，只能按名识别
+# - 整段匹配（按 -_. 空格切段）：视觉（vl/vision）、语音（asr/tts）、实时
+#   （realtime）、翻译/角色扮演等专用模型与全模态生成系列（h3）
+_NAME_BLOCK_SUBSTR = (
+    "embed", "rerank", "ocr", "audio", "hailuo", "character", "structure",
+    "seedance", "图生视频", "文生图", "视频生成", "语音合成", "数字人",
+)
+_NAME_BLOCK_TOKENS = frozenset({
+    "role", "translation", "vision", "vl", "asr", "tts", "speech",
+    "video", "image", "realtime", "voice", "live", "h3",
+})
+
+
+def _auto_appendable(entry: dict[str, Any]) -> bool:
+    """条目是否为通用对话大模型，只收这类进监控清单；特殊领域模型跳过。
+
+    - 名字命中黑名单：向量、重排、OCR、角色扮演、翻译、生图等，跳过；
+    - 输出非纯文本（含 image/audio/video）：生图、音乐、TTS、视频生成，跳过；
+    - 输入不含 text（纯音频/纯图输入）：ASR 语音识别、OCR，跳过；
+    - 未标 modalities 的条目（目录里多数）没法按形态判断，按名字过一遍黑名单后照常参与。
+    """
+    name = str(entry.get("model") or "").casefold()
+    if any(tag in name for tag in _NAME_BLOCK_SUBSTR):
+        return False
+    tokens = {token for token in re.split(r"[-_. ]+", name) if token}
+    if tokens & _NAME_BLOCK_TOKENS:
+        return False
+    modalities = entry.get("modalities")
+    if not isinstance(modalities, dict):
+        return True
+    if set(modalities.get("output") or []) != {"text"}:
+        return False
+    return "text" in (modalities.get("input") or [])
+
+
+def auto_append_latest_models(store: Store, catalog: dict[str, Any]) -> list[str]:
+    """目录刷新后把各厂商最新的通用模型补进 settings.monitor_models。
+
+    白名单厂商（models.dev 官方 lab）按发布日期取最新一批（同日并列全收）；国内定价源
+    厂商的条目没有发布日期，按目录插入序（即定价页顺序，靠前即较新）每家取前
+    DOMESTIC_APPEND_LIMIT 个滚动。特殊领域模型（生图/音频/OCR 等）一律跳过
+    （_auto_appendable）；没标日期的 models.dev 条目不参与白名单线。
+    手动移除过的模型记在 monitor_models_dismissed（settings 保存路由负责记录），这里跳过。
+    模型名取条目的 model 字段（标准显示名）：dict 键是匹配用的归一化形式（去横线、
+    casefold），拿键进清单界面上就丢横线。返回本次追加的模型名。
+    """
+    settings = store.get_document("settings") or {}
+    monitor = [str(item) for item in settings.get("monitor_models") or [] if str(item).strip()]
+    dismissed = {str(item) for item in settings.get("monitor_models_dismissed") or []}
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    official_vendors = {vendor for _, vendor, _ in DEFAULT_PROVIDERS}
+    latest: dict[str, str] = {}
+    domestic_ranked: list[tuple[str, str]] = []  # 国内厂商 (vendor, model)，保持目录插入序
+    for entry in (entries or {}).values():
+        if not isinstance(entry, dict) or not _auto_appendable(entry):
+            continue
+        vendor = str(entry.get("vendor") or "")
+        model = str(entry.get("model") or "").strip()
+        if not vendor or not model:
+            continue
+        released = str(entry.get("release_date") or "")
+        if vendor in official_vendors:
+            if released and (vendor not in latest or released > latest[vendor]):
+                latest[vendor] = released
+        elif not released:
+            domestic_ranked.append((vendor, model))
+    newest: set[str] = set()
+    for entry in (entries or {}).values():
+        if not isinstance(entry, dict) or not _auto_appendable(entry):
+            continue
+        vendor = str(entry.get("vendor") or "")
+        model = str(entry.get("model") or "").strip()
+        if vendor in official_vendors and model and str(entry.get("release_date") or "") == latest.get(vendor):
+            newest.add(model)
+    per_vendor: dict[str, int] = {}  # 国内厂商已取个数：每家独立计数，互不挤占
+    for vendor, model in domestic_ranked:
+        if per_vendor.get(vendor, 0) >= DOMESTIC_APPEND_LIMIT:
+            continue
+        per_vendor[vendor] = per_vendor.get(vendor, 0) + 1
+        newest.add(model)
+    missing = sorted(newest - set(monitor) - dismissed)
+    if not missing:
+        return []
+    store.set_document("settings", {**settings, "monitor_models": ordered_monitor_models([*monitor, *missing], catalog)})
+    return missing
 
 
 def price_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[str, Any]]:
@@ -78,39 +172,108 @@ def notice_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
     return _run
 
 
-def auto_append_latest_models(store: Store, catalog: dict[str, Any]) -> list[str]:
-    """目录刷新后把各厂商最新发布的模型补进 settings.monitor_models。
+def _release_timestamp(released: str) -> float | None:
+    """目录发布日期（YYYY-MM-DD 或 YYYY-MM 月粒度）→ 时间戳；解析不了返回 None。"""
+    for fmt in ("%Y-%m-%d", "%Y-%m"):
+        try:
+            return time.mktime(time.strptime(released, fmt))
+        except ValueError:
+            continue
+    return None
 
-    每个厂商取发布日期最新的一批（同日并列全收），没标日期的条目不参与；
-    手动移除过的模型记在 monitor_models_dismissed（settings 保存路由负责记录），这里跳过。
-    模型名取条目的 model 字段（标准显示名）：dict 键是匹配用的归一化形式（去横线、
-    casefold），拿键进清单界面上就丢横线。返回本次追加的模型名。
+
+def ordered_monitor_models(monitor: list[str], catalog: dict[str, Any]) -> list[str]:
+    """监控清单按厂商分组排序：同厂商的模型挨在一起，不隔几家插一个。
+
+    厂商顺序用目录里厂商首次出现的顺序（与前端下拉同一数据源）；厂商内发布日期
+    倒序、同日期按名称，没日期的国内条目按目录插入序垫在该厂商后部，
+    目录外自定义模型垫底。写清单的三处（自动补、清理、名字归正）统一走它。
     """
-    settings = store.get_document("settings") or {}
-    monitor = [str(item) for item in settings.get("monitor_models") or [] if str(item).strip()]
-    dismissed = {str(item) for item in settings.get("monitor_models_dismissed") or []}
     entries = catalog.get("models") if isinstance(catalog, dict) else None
-    latest: dict[str, str] = {}
-    for entry in (entries or {}).values():
+    if not isinstance(entries, dict) or not entries:
+        return list(monitor)
+    vendor_rank: dict[str, int] = {}
+    catalog_index: dict[str, int] = {}
+    # 显示名 → (目录键, 条目)：目录键是归一化形式，清单里存的是标准显示名，两边都要能查
+    by_model: dict[str, tuple[str, dict[str, Any]]] = {}
+    for i, (key, entry) in enumerate(entries.items()):
+        catalog_index[key] = i
         if not isinstance(entry, dict):
             continue
+        by_model[str(entry.get("model") or "")] = (key, entry)
+        vendor = str(entry.get("vendor") or "")
+        if vendor and vendor not in vendor_rank:
+            vendor_rank[vendor] = len(vendor_rank)
+
+    def sort_key(name: str):
+        found = by_model.get(name)
+        entry = (found or (None, None))[1] or entries.get(model_key(name))
+        if not isinstance(entry, dict):
+            return (1 << 30, 2, name)  # 目录外自定义模型垫底
         vendor = str(entry.get("vendor") or "")
         released = str(entry.get("release_date") or "")
-        if vendor and released and (vendor not in latest or released > latest[vendor]):
-            latest[vendor] = released
-    newest: set[str] = set()
-    for entry in (entries or {}).values():
-        if not isinstance(entry, dict):
+        released_at = _release_timestamp(released) if released else None
+        if released_at is not None:
+            return (vendor_rank.get(vendor, 1 << 29), 0, -released_at, name)
+        key = found[0] if found else model_key(name)
+        return (vendor_rank.get(vendor, 1 << 29), 1, catalog_index.get(key, 1 << 30), name)
+
+    return sorted(monitor, key=sort_key)
+
+
+def prune_stale_monitor_models(store: Store, catalog: dict[str, Any], max_age_months: int) -> list[str]:
+    """监控清单自动清理，两条规则：
+
+    - 超期：官方目录里发布超过 max_age_months 的模型移出（只动有发布日期的条目，
+      自定义模型不参与）；
+    - 国内滚动：国内定价源厂商的条目没有发布日期，清单里滚出该厂商前
+      DOMESTIC_APPEND_LIMIT 名的模型随之移出，与 auto_append 的「前 N 滚动」对称。
+
+    移除不记 dismissed：超期模型不会是厂商最新发布、滚出模型不在前 N，自动补模型
+    都不会再加回；用户想继续监控，在界面上手动加回即可。返回移除的模型名。
+    """
+    if max_age_months <= 0:
+        return []
+    settings = store.get_document("settings") or {}
+    monitor = [str(item) for item in settings.get("monitor_models") or []]
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(entries, dict) or not entries or not monitor:
+        return []
+    official_vendors = {vendor for _, vendor, _ in DEFAULT_PROVIDERS}
+    # 国内厂商的前 N 集合：按目录插入序（即定价页顺序，靠前即较新）数出来
+    domestic_top: set[str] = set()
+    per_vendor: dict[str, int] = {}
+    for entry in entries.values():
+        if not isinstance(entry, dict) or not _auto_appendable(entry):
             continue
         vendor = str(entry.get("vendor") or "")
+        if not vendor or vendor in official_vendors or str(entry.get("release_date") or ""):
+            continue
         model = str(entry.get("model") or "").strip()
-        if vendor and model and str(entry.get("release_date") or "") == latest.get(vendor):
-            newest.add(model)
-    missing = sorted(newest - set(monitor) - dismissed)
-    if not missing:
+        if not model:
+            continue
+        if per_vendor.get(vendor, 0) >= DOMESTIC_APPEND_LIMIT:
+            continue
+        per_vendor[vendor] = per_vendor.get(vendor, 0) + 1
+        domestic_top.add(model)
+    cutoff = time.time() - max_age_months * 30 * 86400  # 时限按每月 30 天近似
+    kept: list[str] = []
+    removed: list[str] = []
+    for name in monitor:
+        entry = entries.get(model_key(name))
+        released = str(entry.get("release_date") or "") if isinstance(entry, dict) else ""
+        released_at = _release_timestamp(released) if released else None
+        vendor = str(entry.get("vendor") or "") if isinstance(entry, dict) else ""
+        if released_at is not None and released_at < cutoff:
+            removed.append(name)  # 发布超过时限
+        elif vendor and vendor not in official_vendors and released_at is None and name not in domestic_top:
+            removed.append(name)  # 国内厂商条目滚出前 N
+        else:
+            kept.append(name)
+    if not removed:
         return []
-    store.set_document("settings", {**settings, "monitor_models": [*monitor, *missing]})
-    return missing
+    store.set_document("settings", {**settings, "monitor_models": ordered_monitor_models(kept, catalog)})
+    return removed
 
 
 def canonicalize_monitor_models(store: Store, catalog: dict[str, Any]) -> list[str]:
@@ -150,7 +313,7 @@ def canonicalize_monitor_models(store: Store, catalog: dict[str, Any]) -> list[s
         return renamed
     store.set_document(
         "settings",
-        {**settings, "monitor_models": monitor_new, "monitor_models_dismissed": dismissed_new},
+        {**settings, "monitor_models": ordered_monitor_models(monitor_new, catalog), "monitor_models_dismissed": dismissed_new},
     )
     return renamed
 
@@ -162,9 +325,11 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             monitor_config = config_from_store(store)
             ai_config = monitor_config.ai
             fetch_timeout = float(monitor_config.settings.timeout)
+            max_age_months = int(monitor_config.settings.monitor_model_max_age_months)
         except ValueError:
             ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有中文简介
             fetch_timeout = PAGE_FETCH_TIMEOUT
+            max_age_months = 12
         tasklog.emit("开始刷新厂商定价：抓取 models.dev 快照")
         output, full = fetch_catalogs()
         providers = len({entry["vendor"] for entry in full["models"].values()})
@@ -219,10 +384,14 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
         store.set_document("catalog", output)
         store.set_document("catalog_all", full)
         tasklog.emit(f"厂商定价已更新：官方目录 {len(output['models'])} 个模型")
-        # 先归正历史遗留的坏名字（旧版自动补模型存过归一化键），再按标准名补最新模型
+        # 先归正历史遗留的坏名字（旧版自动补模型存过归一化键），再按标准名补最新模型；
+        # 清理在补模型之前跑：本轮刚补进来的新模型不会被同一轮的老化清理误伤
         renamed = canonicalize_monitor_models(store, output)
         if renamed:
             tasklog.emit("监控清单名字按目录修正：" + "；".join(renamed))
+        stale_removed = prune_stale_monitor_models(store, output, max_age_months)
+        if stale_removed:
+            tasklog.emit(f"监控清单超期清理（发布超过 {max_age_months} 个月）：{'、'.join(stale_removed)}")
         auto_appended = auto_append_latest_models(store, output)
         if auto_appended:
             tasklog.emit(f"自动新增监控模型（各厂商最新发布）：{'、'.join(auto_appended)}")

@@ -1,6 +1,6 @@
 :root {
   /* 亮色对齐 Artificial Analysis：纯白页底、纯中性灰（不带色温）、发丝边框分层卡片；
-     全站唯一强调色 AA 橙 #ff7018（与大橘猫毛同族），只出现在交互与关键数据上 */
+     全站唯一强调色 AA 橙 #ff7018（与橘猫毛色同族），只出现在交互与关键数据上 */
   --bg: #ffffff;
   --panel: #ffffff;
   --panel-2: #f5f5f5;
@@ -1500,6 +1500,15 @@ html:not([data-theme="dark"]) .btn-ghost:hover:not(:disabled) {
   opacity: 0.5;
 }
 
+/* iOS Safari：表单控件字号 <16px 时聚焦输入会自动放大整个页面。
+   手机档统一提到 16px 保住视口；放在 .input/.sel 基类之后，同特异性靠后生效。 */
+@media (max-width: 768px) {
+  .input,
+  .sel {
+    font-size: 16px;
+  }
+}
+
 .tline {
   margin: 0;
   padding: 0 0 0 6px;
@@ -1910,12 +1919,15 @@ html:not([data-theme="dark"]) .panel {
   opacity: 0.88;
 }
 
-/* 品牌名专用圆体：兜底走苹方/雅黑，只两个字，不值得为它加载中文 webfont */
+/* 品牌名即域名：走站点英文等宽字体（Geist Mono）；translate 做光学对齐——
+   猫脸画在 tile 下半部（着墨中心 ≈14.5/24），字形墨迹中心比它高约 1.5px */
 .brand-name {
-  font-family: "Yuanti SC", "STYuanti", "YouYuan", "Hiragino Maru Gothic ProN", "PingFang SC", sans-serif;
+  font-family: var(--mono);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  line-height: 1;
+  translate: 0 1.5px;
   color: var(--text);
   white-space: nowrap;
 }
@@ -2627,6 +2639,81 @@ html:not([data-theme="dark"]) .panel {
 
 @media (prefers-reduced-motion: reduce) {
   .cobe-pulse i {
+    animation: none;
+  }
+}
+
+/* 手机端平面点阵地图：窄屏替代 3D 球，底图 canvas + 状态色节点按钮（28px 命中区）。
+   只在手机档由 HeroArea 渲染，桌面样式不受影响；波纹复用 cobe-pulse keyframes。 */
+.pano-flatmap {
+  position: relative;
+  width: min(440px, 100%);
+  margin-inline: auto;
+  aspect-ratio: 2.5;
+}
+
+.pano-flatmap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.flat-node {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  translate: -50% -50%;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+.flat-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.flat-node-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--node-color, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--node-color, var(--accent)) 20%, transparent);
+}
+
+/* 波纹：结构与 .cobe-pulse 相同（0×0 容器 + 两个 <i>），用百分比定位代替 CSS anchor */
+.flat-pulse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.flat-pulse i {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--pulse-color, var(--accent));
+  opacity: 0;
+  animation: cobe-pulse 2.6s ease-out infinite;
+}
+
+.flat-pulse i:last-child {
+  animation-delay: 1.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flat-pulse i {
     animation: none;
   }
 }
@@ -4966,7 +5053,7 @@ a.event-card {
   }
 }
 
-/* 智能分析助手（大橘）：右下角猫脸悬浮球 + 右侧全高抽屉对话（配色只用语义变量，深浅主题自适应） */
+/* 智能分析助手：右下角猫脸悬浮球 + 右侧全高抽屉对话（配色只用语义变量，深浅主题自适应） */
 /* 打开动画：从悬浮球的点击位置缩放长出来，transform-origin 由组件按悬浮球实时位置注入 */
 @keyframes ai-drawer-in {
   from {
@@ -5166,7 +5253,7 @@ a.event-card {
   padding: 4px 2px;
 }
 
-/* 空态问候块：大橘猫脸 + 一句自我介绍 */
+/* 空态问候块：猫脸 + 一句自我介绍 */
 .ai-greet {
   display: grid;
   justify-items: center;
@@ -5829,7 +5916,7 @@ a.event-card {
   }
 }
 
-/* ---------- 大橘品牌插画层 ----------
+/* ---------- 橘猫品牌插画层 ----------
  * 吉祥物场景见 components/DajuArt.tsx；这里放纯 CSS 的装饰：
  * 猫毛色变量、区块标题爪印、列表爪印符号、站点卡猫耳角标。 */
 
@@ -5954,7 +6041,7 @@ a.event-card {
   }
 }
 
-/* 大橘微动效：zzz 缓飘、尾巴轻摆、毛线球缓转、最新点脉动；系统"减少动态"时全部静止 */
+/* 橘猫微动效：zzz 缓飘、尾巴轻摆、毛线球缓转、最新点脉动；系统"减少动态"时全部静止 */
 @media (prefers-reduced-motion: no-preference) {
   .daju-z1,
   .daju-z2 {
