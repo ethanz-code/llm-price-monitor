@@ -3450,7 +3450,7 @@ button.footer-icon {
   width: 84px;
   height: 84px;
   padding: 6px;
-  border-radius: 8px;
+  border-radius: 4px;
   border: 1px solid var(--border);
   background: #fff;
 }

@@ -145,7 +145,7 @@ def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({
         # timeout 断言种子导入；schedule 全 0 关闭后台调度，测试环境不触网
-        "settings": {"timeout": 15.0, "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}},
+        "settings": {"timeout": 15.0, "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0}},
         "ai": {"enabled": False},
         "sites": [_site_config("demo", "https://demo.test/api")],
     }), encoding="utf-8")

@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,9 +15,10 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from llm_price_monitor import discover, tasklog
+from llm_price_monitor import discover
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import tasks
+from llm_price_monitor.webapi.jobs import discovery_refresh_job
 
 
 class DiscoveryImportBody(BaseModel):
@@ -106,18 +106,9 @@ def build_router(store: Store) -> APIRouter:
 
     @router.post("/api/discovery/refresh")
     def discovery_refresh() -> dict[str, str]:
-        def job() -> dict[str, Any]:
-            tasklog.emit("开始刷新新站发现：拉取 zuiquanapi 源并探测新候选…")
-            stats = asyncio.run(discover.refresh_online())
-            tasklog.emit(
-                f"新站发现完成：池子 {stats['pool']}（新增 {stats['pool_added']}），"
-                f"本轮探测 {stats['probed_now']} 个、在线 {stats['online_now']}，累计在线 {stats['online_total']}，"
-                f"待导入 {stats['importable']}"
-            )
-            return stats
-
+        # 任务体与后台调度共用（jobs.discovery_refresh_job）：手动点「刷新发现」与定时项同路
         try:
-            return {"task_id": tasks.submit("discovery-refresh", job)}
+            return {"task_id": tasks.submit("discovery-refresh", discovery_refresh_job(store))}
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

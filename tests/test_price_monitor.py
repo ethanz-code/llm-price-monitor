@@ -893,6 +893,45 @@ def test_ai_extractor_discards_prices_for_models_missing_from_evidence():
     assert "已作废" in (by_model["ghost-model"].metadata or {}).get("notes", "")
 
 
+def test_ai_extractor_discards_prices_whose_digits_are_absent_from_evidence():
+    """价格数字不在证据文本里时作废：模型名会被残留文案误判存在（DaiTuAI 已下线的 Kimi
+    分组描述仍写着 kimi-k3），AI 还会张冠李戴（把 gpt-5.4-mini 的 ¥0.11/¥0.68 安给
+    页面上不存在的 step-3.5-flash）。名字+数字双闸兜底。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "kimi-k3",
+                "observed_model": "kimi-k3",
+                "input_price": 0.11,
+                "output_price": 0.68,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "confirmed",
+                "confidence": 0.9,
+                "network_evidence": [{"url": "https://demo.test/api/price", "quote": "kimi-k3 输入=0.11 输出=0.68"}],
+                "page_evidence": ["kimi-k3 输入=0.11 输出=0.68"],
+            },
+        ], "cross_validation": {"status": "matched", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("kimi-k3"),))
+    records = extractor.extract(
+        spec,
+        # 证据里只有 kimi-k3 的名字（残留文案），没有任何价格数字
+        "Kimi 模型价格，支持 kimi-k3、kimi-k2.7-code。real-model ¥1.00 ¥5.00",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    record = records[0]
+    # AI 自己补写的引用（quote 里有 0.11/0.68）不算证据：数字必须来自系统侧证据原文
+    assert record.price_status == "unavailable"
+    assert record.input_price is None
+    assert record.output_price is None
+    assert "未在证据文本中出现" in (record.metadata or {}).get("notes", "")
+
+
 _ASSISTANT_TOOLS = [
     {"type": "function", "function": {"name": "get_prices", "description": "查询模型最新价格", "parameters": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}}
 ]

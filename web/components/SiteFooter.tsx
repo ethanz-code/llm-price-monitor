@@ -38,7 +38,7 @@ export function SiteFooter() {
           </div>
         </div>
         <div className="site-footer-qr">
-          {/* 白底内衬是二维码的 quiet zone，被页脚深底包住也能扫 */}
+          {/* 白底内衬是二维码的 quiet zone，被页脚底色包住也能扫 */}
           <img src={footer.wecomQrSrc} alt="企业微信二维码" width={84} height={84} loading="lazy" />
           <div className="site-footer-qr-text">
             <span className="qr-title">扫码加我们企业微信</span>

@@ -14,6 +14,12 @@ export function Reveal({ children }: { children: ReactNode }) {
       setInView(true);
       return;
     }
+    // 挂载时已在视口内（刷新恢复滚动位、快速下滚）就直接显示，不等 IO 回调
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight && rect.bottom > 0) {
+      setInView(true);
+      return;
+    }
     const io = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -24,7 +30,12 @@ export function Reveal({ children }: { children: ReactNode }) {
       { threshold: 0.1, rootMargin: "0px 0px -48px" },
     );
     io.observe(el);
-    return () => io.disconnect();
+    // 兜底：水合慢或 IO 迟迟不回调时强制显示——暗色下区块隐着就是整片黑，不能空太久
+    const failsafe = setTimeout(() => setInView(true), 2500);
+    return () => {
+      io.disconnect();
+      clearTimeout(failsafe);
+    };
   }, []);
 
   return (

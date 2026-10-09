@@ -154,7 +154,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           })}
         </div>
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 自动探测公开价格接口所得
+          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 自动探测公开导航源；「公开」= 价格页无需登录，失联站只留计数不占列表
         </span>
       </div>
       <div className="panel rise-in" style={{ overflow: "hidden" }}>

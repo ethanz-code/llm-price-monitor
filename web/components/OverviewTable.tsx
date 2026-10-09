@@ -11,7 +11,7 @@ import { ToneTag, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
-import { effectiveCnyCachePrice, effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
+import { effectiveCnyCachePrice, effectiveCnyPrice, formatDiscount, formatIsoMinute, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
 import { canonicalModel, hasUsablePrice, smartOrderRows } from "@/lib/priceRows";
 import { compareByReleaseDesc } from "@/lib/modelOrder";
 import { rankingHit, type RankingHit } from "@/lib/rankings";
@@ -133,6 +133,19 @@ export function OverviewTable({
       .filter(([, status]) => status.status === "error" || status.status === "auth_required")
       .map(([siteId, status]) => ({ siteId, ...status }) satisfies { siteId: string } & SiteStatus);
   }, [data.collect_status]);
+
+  // 公告按站点只在首行展示：同站点多分组行贴的是同一份公告，逐行重复只会制造噪音
+  const noticeRowKeys = useMemo(() => {
+    const seenSites = new Set<string>();
+    const firstRowKeys = new Set<string>();
+    for (const row of parentRows) {
+      if (!seenSites.has(row.site_id)) {
+        seenSites.add(row.site_id);
+        firstRowKeys.add(rowKeyOf(row));
+      }
+    }
+    return firstRowKeys;
+  }, [parentRows]);
 
   const columns: DColumn<OverviewRecord>[] = [
     {
@@ -269,7 +282,7 @@ export function OverviewTable({
       mobileHide: true,
       render: (_v: unknown, row) => {
         const notice = data.notices?.[row.site_id];
-        if (!notice?.content) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        if (!notice?.content || !noticeRowKeys.has(rowKeyOf(row))) return <span style={{ color: "var(--text-3)" }}>—</span>;
         const tip = [
           noticeExcerpt(notice.content, 6),
           notice.captured_at ? `发布于 ${formatTime(notice.captured_at)}` : null,
@@ -354,7 +367,7 @@ export function OverviewTable({
           </span>
           {data.catalog.enabled && (
             <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-              数据时间 <span className="mono">{data.catalog.generated_at_iso ?? "—"}</span> · 汇率{" "}
+              数据时间 <span className="mono" title={data.catalog.generated_at_iso ?? undefined}>{formatIsoMinute(data.catalog.generated_at_iso)}</span> · 汇率{" "}
               <span className="mono">{data.catalog.usd_cny_rate ?? "—"}</span>
             </span>
           )}

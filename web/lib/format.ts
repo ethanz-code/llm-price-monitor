@@ -50,6 +50,15 @@ export function formatPrice(value: number | null | undefined): string {
 
 /** 相对时间三档：分钟/小时/天前（检测新鲜度等场景）；未来时间或超 30 天回落绝对日期。
  *  at 兼容秒级时间戳（项目 captured_at 口径）与毫秒级。 */
+/** ISO 时间串 → "YYYY-MM-DD HH:mm"（本机时区）；空值/解析失败原样回落，不让脏数据变空白。 */
+export function formatIsoMinute(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
 export function formatTimeAgo(at: number, now = Date.now()): string {
   const ms = at < 1e12 ? at * 1000 : at;
   const diff = now - ms;

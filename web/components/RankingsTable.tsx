@@ -8,7 +8,7 @@ import { IconSearch } from "./icons";
 import { DajuSit } from "./DajuArt";
 import { TermTip } from "./TermTip";
 import { apiSend } from "@/lib/api";
-import { formatCount, looseIncludes } from "@/lib/format";
+import { formatCount, formatIsoMinute, looseIncludes } from "@/lib/format";
 import type { RankingEntry, RankingsData } from "@/lib/types";
 
 /** AA 榜单表：Artificial Analysis 的模型自测排名，独立于站点折扣口径，仅供选型参考。 */
@@ -191,7 +191,7 @@ export function RankingsTable({ data }: { data: RankingsData | null }) {
           prefix={<IconSearch size={14} />}
         />
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-          数据时间 <span className="mono">{data.generated_at_iso}</span> · 来自{" "}
+          数据时间 <span className="mono" title={data.generated_at_iso}>{formatIsoMinute(data.generated_at_iso)}</span> · 来自{" "}
           <a href={data.source_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
             artificialanalysis.ai
           </a>

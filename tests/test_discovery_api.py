@@ -110,3 +110,26 @@ def test_discovery_refresh_submits_task(workspace: Path, monkeypatch):
     resp = client.post("/api/discovery/refresh")
     assert resp.status_code == 200
     assert resp.json()["task_id"] == "sync-discovery-refresh"
+
+
+def test_scheduler_submits_discovery_job_when_due(tmp_path: Path, monkeypatch):
+    """discovery 间隔到期时调度器提交 discovery-refresh；置 0 关闭不提交。"""
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi import scheduler as scheduler_mod, tasks
+
+    submitted: list[str] = []
+    monkeypatch.setattr(tasks, "submit", lambda kind, fn: submitted.append(kind) or "t")
+    store = Store(tmp_path / "monitor.db")
+    store.set_document(
+        "settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0.001}}
+    )
+    scheduler_mod._run_due(store)
+    assert "discovery-refresh" in submitted
+    # discovery 单独关闭时不提交
+    submitted.clear()
+    store.set_document(
+        "settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0}}
+    )
+    store.set_document("schedule_state", {})
+    scheduler_mod._run_due(store)
+    assert submitted == []

@@ -142,7 +142,8 @@ export function DiscoverModal({
     {
       key: "host",
       title: "站点",
-      width: 260,
+      // 大多数域名 ≤23 字符（mono 13px 约 180px）；更长的靠 ellipsis + title 兜底，宽度让给简介
+      width: 216,
       ellipsis: true,
       render: (_v, row) => (
         <a href={row.url} target="_blank" rel="noreferrer" className="mono" title={row.url} style={{ color: "inherit", textDecorationColor: "var(--border-strong)" }}>
@@ -153,7 +154,7 @@ export function DiscoverModal({
     {
       key: "brief",
       title: "简介",
-      width: 300,
+      width: 366,
       ellipsis: true,
       mobileHide: true,
       render: (_v, row) => {
@@ -194,7 +195,8 @@ export function DiscoverModal({
             </Btn>
           </span>
         ) : (
-          <span style={{ color: "var(--text-3)" }}>未监控</span>
+          // 未监控行不再复述状态（tab 筛选已表达），留空让勾选列当主角
+          <span style={{ color: "var(--text-3)" }}>—</span>
         ),
     },
   ];
@@ -207,8 +209,8 @@ export function DiscoverModal({
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
           <div style={{ minWidth: 0, flex: "1 1 240px", fontSize: 12, color: "var(--text-3)" }}>
             {data
-              ? `在线候选 ${data.summary.online} · 价格接口公开 ${data.summary.pricing_public} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}`
-              : "从公开导航源发现中转站，探测在线后可直接勾选导入（默认停用）"}
+              ? `在线候选 ${data.summary.online} · 价格接口公开 ${data.summary.pricing_public} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（默认每日自动刷新，也可点右侧手动探）`
+              : "从公开导航源发现中转站，探测在线后可直接勾选导入（默认停用）；数据默认每日自动刷新"}
           </div>
           <Btn size="sm" loading={refreshing} onClick={refresh}>
             刷新发现
@@ -270,7 +272,8 @@ export function DiscoverModal({
               columns={columns}
               rows={rows}
               scrollX={720}
-              mobileScrollX={460}
+              // 窄屏只剩 勾选44 + 站点216 + 价格接口124 + 操作120 ≈ 504
+              mobileScrollX={510}
               dense
               paginated
               defaultPageSize={20}

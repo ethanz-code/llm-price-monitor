@@ -20,6 +20,7 @@
 | --- | --- | --- |
 | headless 渲染出登录墙（DaiTuAI 缺 `auth_user` 跳登录页），据此断定"价格采不到/吃老本"——实际价格全在前端打包 JS（不需要登录），采集靠引用链爬 JS 照常拿到，登录态对该站结果零影响；AI 抽取有随机性，把条数波动归因给修复纯属错判 | 纯壳 SPA 站先确认数据源在渲染页面还是打包 JS 里再谈登录态影响；归因差异要用受控对比，别拿单次 AI 输出当证据；补登录态无害可留（防站点改成接口动态下发价） | 提交见 git log |
 | AI 对证据里没有的模型照样编价格（notes 自认"证据未出现具体数值，仅通过 JS 结构推断"仍给出具体数字），旧代码发现模型名不在证据只降状态不清价，幻觉价以 candidate 身份混进快照、再被合理性校验每轮作废刷异常卡片 | `ai.py _records` 里模型名不在证据 → 价格与 pricing_rules 一并清空（幻觉价无从落地）；异常卡片再出现"价格异常作废"先查该站页面是否真有此模型 | 提交见 git log |
+| AI 张冠李戴：给页面上不存在的模型安上别的模型的真价（DaiTuAI 把 gpt-5.4-mini 的 ¥0.11/¥0.68 安给 step-3.5-flash，还过了 confirmed 校验）；模型名匹配也会被残留文案误判（已下线 Kimi 分组的 i18n 描述仍写着 kimi-k3，名字在证据但价格不存在） | 名字在证据 + 价格数字在证据双闸（数字以系统侧证据原文为准，AI 事后补写的引用不算自证）；数字形态补 JS 省前导零写法（.7）避免误杀；本轮没采到的价由快照沿用机制兜底，页面价格不闪没 | 提交见 git log |
 | 传输错误正则漏了 DNS 解析失败（`[Errno 8] nodename nor servname` 不含 connection/timeout 字样），本机网络瞬断的 warn 刷进异常卡片 | `_TRANSPORT_ERROR_RE` 补 nodename/getaddrinfo/name or service not known | 提交见 git log |
 | httpx 直采没有浏览器环境，DOM 页必须免登录；认证要显式配 headers/token_refresh | 无头浏览器是例外分支（`network.headless.enabled`），注入 Cookie/localStorage 后渲染再解析 | Serena 记忆；`browser_fetch.py` |
 | new-api 系站点 401：光有 Cookie 不够，还要 `New-Api-User` 头；Cookie 只挂公告 headers 时全站采不到 | Cookie 提升到站点级 `network.headers` 共享 | Serena 记忆 |

@@ -108,7 +108,7 @@ export function CatalogView({
           模型榜单 →
         </Link>
         <Btn
-          variant="primary"
+          variant="ghost"
           loading={refreshing}
           onClick={refreshCatalog}
           title="需管理员登录：重新抓取 models.dev 和全部厂商的定价，更新官方价与全量渠道价目录"

@@ -9,7 +9,7 @@ import { TermTip } from "./TermTip";
 import { ToneTag, ToneNum } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { useNarrow } from "@/lib/useNarrow";
-import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { formatCount, formatIsoMinute, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 import { rankingHit, type RankingHit } from "@/lib/rankings";
@@ -394,7 +394,7 @@ export function CatalogTable({
           <span style={{ fontWeight: 550, fontSize: 15 }}>厂商定价</span>
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
             共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 · 截至{" "}
-            <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
+            <span className="mono" title={data.generated_at_iso}>{formatIsoMinute(data.generated_at_iso)}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>
         </div>

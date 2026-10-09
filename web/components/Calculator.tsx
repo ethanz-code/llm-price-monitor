@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Btn, Input, Seg, toast } from "./ui";
 import { IconCheck } from "./icons";
 import { DajuAwake, DajuNap } from "./DajuArt";
@@ -207,6 +207,19 @@ export function Calculator({
     setPrices(textsOf(EMPTY_PRICES));
   }
 
+  // 进页面没带模型深链时，默认代选厂商官方价的首条并展开其厂商组：单价带出、结果立算，
+  // 不用再点两下才能看到第一笔账；每次挂载只代选一次，之后切来源留空由用户自己挑
+  const autoPicked = useRef(false);
+  useEffect(() => {
+    if (autoPicked.current || model || source !== "official" || options.length === 0) return;
+    autoPicked.current = true;
+    const first = options[0];
+    setModel(first.value);
+    setPrices(textsOf(first.prices));
+    setCurrency(first.currency);
+    setExpanded((prev) => (prev.has(first.sub) ? prev : new Set(prev).add(first.sub)));
+  }, [model, source, options]);
+
   function toggleVendor(vendor: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -412,7 +425,7 @@ export function Calculator({
               missingCacheRead={missingCacheRead}
               disabled={!anyPriced}
             />
-            <Btn variant="ghost" size="sm" onClick={copyLink}>
+            <Btn variant="ghost" size="sm" onClick={copyLink} disabled={!anyPriced}>
               {calculator.copyLink}
             </Btn>
           </span>

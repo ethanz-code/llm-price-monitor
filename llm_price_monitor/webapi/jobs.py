@@ -1,10 +1,12 @@
 """采集任务体工厂：手动触发端点与后台调度器共用同一套任务实现与结果摘要。"""
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from typing import Any
 
+from llm_price_monitor import discover, tasklog
 from llm_price_monitor.catalog import vendor_sources
 from llm_price_monitor.catalog.general import is_general_llm
 from llm_price_monitor.catalog.intros import attach_ai_intros
@@ -13,7 +15,6 @@ from llm_price_monitor.catalog.normalize import model_key
 from llm_price_monitor.catalog.rankings import fetch_rankings
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, fingerprint_translations
 from llm_price_monitor.config import MonitorConfig, config_from_store
-from llm_price_monitor import tasklog
 from llm_price_monitor.page_price import DEFAULT_TIMEOUT as PAGE_FETCH_TIMEOUT
 from llm_price_monitor.report import scan_notices, scan_prices, scan_statuses, summary_row
 from llm_price_monitor.store import Store
@@ -398,6 +399,21 @@ def vendor_source_refresh_job(store: Store, vendor: str) -> Callable[[], dict[st
             + (f"（{summary.get('error')}）" if summary.get("error") else "")
         )
         return summary
+
+    return _run
+
+
+def discovery_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
+    """新站发现任务体：拉默认聚合源更新候选池，探测没测过的候选，与上轮在线结果合并落盘。"""
+    def _run() -> dict[str, Any]:
+        tasklog.emit("开始刷新新站发现：拉取 zuiquanapi 源并探测新候选…")
+        stats = asyncio.run(discover.refresh_online())
+        tasklog.emit(
+            f"新站发现完成：池子 {stats['pool']}（新增 {stats['pool_added']}），"
+            f"本轮探测 {stats['probed_now']} 个、在线 {stats['online_now']}，累计在线 {stats['online_total']}，"
+            f"待导入 {stats['importable']}"
+        )
+        return stats
 
     return _run
 

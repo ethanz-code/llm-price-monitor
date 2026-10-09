@@ -1,6 +1,7 @@
 import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { RankingsData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
+import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { RankingsTable } from "@/components/RankingsTable";
 import { alerts } from "@/lib/copy";
@@ -26,6 +27,7 @@ export default async function RankingsPage() {
 
   return (
     <div className="page">
+      <PageHeader title="模型榜单" subtitle="第三方评测机构 Artificial Analysis 的智能指数排名，判断模型能力档位时拿它做参考。" />
       {data && (
         <PageDigest
           items={[

@@ -23,7 +23,7 @@ def _config(tmp_path: Path) -> Path:
             "event_file": str(tmp_path / "var" / "events.jsonl"),
             # 测试默认关闭后台调度，避免定时线程在用例间隙发起真实采集；
             # 调度行为由 test_scheduler_* 用例单独打开验证
-            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0},
+            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0},
             "monitor_models": ["demo-model"],
         },
         "ai": {"enabled": False},
@@ -157,7 +157,7 @@ def test_scheduler_submits_due_jobs_periodically(workspace: Path, monkeypatch):
     monkeypatch.setattr(scheduler_mod, "CHECK_INTERVAL_SECONDS", 0.05)
     config_path = _config(workspace)
     doc = json.loads(config_path.read_text(encoding="utf-8"))
-    doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 0.001, "rankings": 0}
+    doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 0.001, "rankings": 0, "discovery": 0}
     config_path.write_text(json.dumps(doc), encoding="utf-8")
 
     # 等上一个测试留下的 catalog-refresh 线程退出，避免计数被在途任务干扰
@@ -205,7 +205,7 @@ def test_catalog_auto_syncs_on_first_start(workspace: Path, monkeypatch):
     # 只打开厂商定价调度（首轮 schedule_state 为空即视为到期，立即补一次），其余保持关闭
     config_path = _config(workspace)
     config_doc = json.loads(config_path.read_text(encoding="utf-8"))
-    config_doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 1440, "rankings": 0}
+    config_doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 1440, "rankings": 0, "discovery": 0}
     config_path.write_text(json.dumps(config_doc), encoding="utf-8")
     client = TestClient(create_app(config_path))
     catalog_status = 0
@@ -1103,7 +1103,7 @@ def test_scheduler_run_due_submits_due_jobs_and_persists_state(tmp_path: Path, m
     tasks.reset()  # 任务注册表进程内共享，先清场再用精确计数断言
     monkeypatch.setattr(jobs, "fetch_catalogs", lambda **_kwargs: ({"models": {}}, {"models": {}}))
     store = Store(tmp_path / "monitor.db")
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 60, "rankings": 0}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 60, "rankings": 0, "discovery": 0}})
 
     scheduler_mod._run_due(store)
     kinds = [task["kind"] for task in tasks.recent(100)]
@@ -1124,7 +1124,7 @@ def test_scheduler_run_due_disabled_all_and_invalid_config(tmp_path: Path):
 
     tasks.reset()
     store = Store(tmp_path / "monitor.db")
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0}})
     scheduler_mod._run_due(store)
     assert tasks.recent(100) == []
 

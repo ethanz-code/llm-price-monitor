@@ -2,6 +2,7 @@ import Link from "next/link";
 import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { DiscoveryData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
+import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { DiscoverTable } from "@/components/DiscoverTable";
 import { JsonLd } from "@/components/JsonLd";
@@ -47,14 +48,15 @@ export default async function DiscoverPage() {
 
   return (
     <div className="page">
+      <PageHeader title="新站发现" subtitle="自动探测的公开中转站清单：价格接口可用性与模型数量，找新中转站先看这里。" />
       {jsonLd && <JsonLd data={jsonLd} />}
       {data && (
         <PageDigest
           items={[
-            { label: "在线候选站", value: formatCount(data.summary.online) },
-            { label: "价格接口公开", value: formatCount(data.summary.pricing_public) },
-            { label: "已在监控", value: formatCount(data.summary.imported) },
-            { label: "失联", value: formatCount(data.summary.dead) },
+            { label: "在线候选站", value: formatCount(data.summary.online), title: "探测时站点接口可连通的中转站数量" },
+            { label: "价格接口公开", value: formatCount(data.summary.pricing_public), title: "价格页无需登录、能解析出模型数的中转站数量" },
+            { label: "已在监控", value: formatCount(data.summary.imported), title: "已导入本站监控的站点数量" },
+            { label: "失联", value: formatCount(data.summary.dead), title: "历史累积的不可达站，只留计数，不占下方列表" },
           ]}
         />
       )}

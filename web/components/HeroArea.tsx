@@ -73,7 +73,7 @@ export function HeroArea({
             className="pano-site-pct mono"
             style={tone ? { color: TONE_TEXT[tone] } : undefined}
           >
-            {site.availability != null ? `${site.availability}%` : "—"}
+            {site.availability != null ? `${site.availability}%` : "待检测"}
           </span>
         </button>
       </li>

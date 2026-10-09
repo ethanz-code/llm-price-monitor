@@ -9,8 +9,8 @@ import { IconEye, IconEyeOff } from "./icons";
 import { apiSend } from "@/lib/api";
 import type { SettingsData, SiteConfig } from "@/lib/types";
 
-/** 五类采集任务的后台定时间隔（分钟），与后端 settings.schedule 默认值保持一致；0 = 关闭定时。 */
-const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5, notice: 30, catalog: 1440, rankings: 1440 };
+/** 六类采集任务的后台定时间隔（分钟），与后端 settings.schedule 默认值保持一致；0 = 关闭定时。 */
+const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5, notice: 30, catalog: 1440, rankings: 1440, discovery: 1440 };
 
 const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "price", label: "价格采集", hint: "定时去各站点看价格，有变化就记下来" },
@@ -18,6 +18,7 @@ const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来" },
   { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录，并重新抓取所有已启用的厂商定价源（默认 24 小时一次）" },
   { key: "rankings", label: "模型榜单", hint: "定时更新 Artificial Analysis 模型榜单（默认 24 小时一次）" },
+  { key: "discovery", label: "新站发现", hint: "定时从公开导航源发现中转站并探测价格接口，结果进「从新站发现导入」弹窗（默认 24 小时一次）" },
 ];
 
 /** 数据保留天数配置项：与后端 settings 的 retention_*_days 字段一一对应；价格/状态事件与公告永不清理。 */

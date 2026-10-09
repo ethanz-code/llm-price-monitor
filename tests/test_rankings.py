@@ -101,12 +101,12 @@ def test_scheduler_submits_rankings_job_when_due(tmp_path: Path, monkeypatch):
     submitted: list[str] = []
     monkeypatch.setattr(tasks, "submit", lambda kind, job, **kwargs: submitted.append(kind) or "t")
     store = Store(tmp_path / "monitor.db")
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0.001}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0.001, "discovery": 0}})
     _run_due(store)
     assert "rankings-refresh" in submitted
     # rankings 单独关闭时不提交
     submitted.clear()
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0}})
     store.set_document("schedule_state", {})
     _run_due(store)
     assert submitted == []
@@ -137,7 +137,7 @@ def _minimal_config(tmp_path: Path) -> Path:
             "history_file": str(tmp_path / "var" / "history.jsonl"),
             "latest_file": str(tmp_path / "var" / "latest.json"),
             "event_file": str(tmp_path / "var" / "events.jsonl"),
-            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0},
+            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0},
         },
         "ai": {"enabled": False},
         "sites": [],

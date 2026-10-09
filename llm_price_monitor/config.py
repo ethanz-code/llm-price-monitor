@@ -152,7 +152,7 @@ def canonical_site_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[
     return config, notes
 
 # 五类采集任务的定时间隔（分钟），存 settings.schedule；0 = 关闭该项定时、只保留手动触发
-DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440, "rankings": 1440}
+DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440, "rankings": 1440, "discovery": 1440}
 SCHEDULE_KEYS = tuple(DEFAULT_SCHEDULE_MINUTES)
 
 

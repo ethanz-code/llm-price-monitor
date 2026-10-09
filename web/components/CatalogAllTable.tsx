@@ -7,7 +7,7 @@ import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { ToneNum } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
-import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { formatCount, formatIsoMinute, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import { useNarrow } from "@/lib/useNarrow";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
@@ -231,7 +231,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
             共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 ·{" "}
             <span className="mono">{vendors.length}</span> 个渠道 · 截至{" "}
-            <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
+            <span className="mono" title={data.generated_at_iso}>{formatIsoMinute(data.generated_at_iso)}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>
         </div>

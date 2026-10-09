@@ -420,7 +420,7 @@ def test_webapi_notice_endpoints(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({
         # 关闭后台调度：测试环境不发起任何定时采集与官方价同步
-        "settings": {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}},
+        "settings": {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0, "discovery": 0}},
         "ai": {"enabled": False},
         "sites": [_site_raw_config(None)],
     }), encoding="utf-8")

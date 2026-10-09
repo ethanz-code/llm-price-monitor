@@ -1751,6 +1751,12 @@ expected_models：
             output_price = number_or_none(item.get("output_price"))
             input_forms = {str(input_price), f"{input_price:g}"} if input_price is not None else set()
             output_forms = {str(output_price), f"{output_price:g}"} if output_price is not None else set()
+            for forms in (input_forms, output_forms):
+                # JS 里小于 1 的小数常省略前导零（.7）：补无前导零形态，数字存在性校验不误杀
+                for form in tuple(forms):
+                    stripped = form.lstrip("0")
+                    if stripped.startswith(".") and len(stripped) > 1:
+                        forms.add(stripped)
             network_price_evidence = False
             for entry in network_evidence:
                 if not isinstance(entry, dict):
@@ -1782,6 +1788,23 @@ expected_models：
                 ):
                     page_price_evidence = True
                     break
+            if input_price is not None or output_price is not None:
+                # 价格数字必须在证据文本中真实出现过：名字校验会被残留文案绕过（DaiTuAI 已下线的
+                # Kimi 分组描述里仍写着 kimi-k3），AI 还会张冠李戴（实测把 gpt-5.4-mini 的
+                # ¥0.11/¥0.68 安给页面上不存在的 step-3.5-flash）。证据里没有的数字一律作废；
+                # searchable 是系统侧证据原文（AI 事后补写的引用不算），编 quote 无法自证
+                searchable_cf = searchable.casefold()
+                missing = [
+                    label
+                    for label, forms in (("输入", input_forms), ("输出", output_forms))
+                    if forms and not any(form.casefold() in searchable_cf for form in forms)
+                ]
+                if missing:
+                    status = "unavailable"
+                    input_price = None
+                    output_price = None
+                    item.pop("pricing_rules", None)
+                    item["notes"] = f"AI 给出的{'、'.join(missing)}价数字未在证据文本中出现，已作废；{item.get('notes', '')}".strip()
             if not model_in_evidence:
                 status = "unavailable"
                 # 模型名都不在证据里，价格必然是模型按常识编造的（实测 DaiTuAI 页面无 MiniMax

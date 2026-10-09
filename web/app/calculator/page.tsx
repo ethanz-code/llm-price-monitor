@@ -2,6 +2,7 @@ import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import { decodeCalcState, EMPTY_STATE } from "@/lib/calculator";
 import { Calculator } from "@/components/Calculator";
 import { PageDigest } from "@/components/PageDigest";
+import { PageHeader } from "@/components/PageHeader";
 import { SiteAlert } from "@/components/SiteAlert";
 import { calculator } from "@/lib/copy";
 import { formatCount } from "@/lib/format";
@@ -33,6 +34,7 @@ export default async function CalculatorPage({
 
   return (
     <div className="page page-calc">
+      <PageHeader title="花费计算" subtitle="按 token 用量算一笔账：同一次使用，厂商官方价和各家中转站价分别要花多少钱。" />
       {!catalog && !overview && (
         <SiteAlert
           title={calculator.loadFailed.title}
