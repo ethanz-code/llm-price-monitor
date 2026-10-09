@@ -4948,6 +4948,11 @@ a.event-card {
 }
 
 /* 05 FAQ 手风琴：限宽且真正居中（此前只有 max-width，整列吊在左边），靠间距与 +/− 组织 */
+/* FAQ：区头标题与居中列表同轴，不再吊在页面左缘 */
+#sec-faq .landing-section-head {
+  justify-content: center;
+}
+
 .faq-list {
   max-width: 860px;
   margin: 0 auto;
@@ -5024,22 +5029,22 @@ a.event-card {
 .landing-cta::after {
   content: "";
   position: absolute;
-  inset: auto -10% 0;
-  height: 70%;
+  /* 光晕中心落在插画/标题一带且四周渐隐，不贴区块边缘，避免被底边生硬截断 */
+  inset: 4% -14% 10%;
   z-index: -1;
   pointer-events: none;
   background: radial-gradient(
-    52% 90% at 50% 100%,
+    46% 58% at 50% 50%,
     color-mix(in srgb, var(--accent) 6%, transparent),
-    transparent 75%
+    transparent 74%
   );
 }
 
 [data-theme="dark"] .landing-cta::after {
   background: radial-gradient(
-    52% 90% at 50% 100%,
+    46% 58% at 50% 50%,
     color-mix(in srgb, var(--accent) 9%, transparent),
-    transparent 75%
+    transparent 74%
   );
 }
 

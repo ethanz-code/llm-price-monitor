@@ -2,15 +2,18 @@
 
 三个命令组成一条管线（只请求公开 JSON 端点，与采集主链路无关）：
 
-    uv run price-discover harvest                  # 聚合源 → var/discovery/candidates.json
+    uv run price-discover harvest                  # zuiquanapi（默认单源）→ var/discovery/candidates.json
+    uv run price-discover harvest --only all       # 全部 6 个源一起跑（隔一两周补一次独家站）
     uv run price-discover probe [--take N]         # 候选 → var/discovery/{probed,importable}.json
     uv run price-admin import-sites var/discovery/importable.json [--apply --take 30]
 
 聚合源（新增源在 SOURCES 里加一个返回 list[Candidate] 的函数即可）：
-    - daheiai/awesome-api-proxy   GitHub README 表格，596+ 站点，带在线状态/可用率/口碑分
+    - zuiquanapi.com              默认单源：awesome 导航的在线实时版，单页 4400+ 域名，覆盖可用站 96%
+    - daheiai/awesome-api-proxy   GitHub README 表格，596+ 站点，带在线状态/可用率/口碑分（快照易死站）
     - apisou.com                  竞品导航站，sitemap 全量 129 个站点详情页（h1=站名、首个外链=站点地址）
     - panxunying/ai-coding-welfare  福利站导航仓库的 data/sites.json，机器可读
     - aiapipk.com                 中转站竞技场首页静态链接（约 39 站）
+    - GitHub 导航仓库             三个网友维护的中转站导航项目 README（bubblevv/ai-api-gongyi-nav 等）
 """
 from __future__ import annotations
 
@@ -76,8 +79,8 @@ def normalize_host(host: str) -> str:
 def origin_of(url: str) -> str | None:
     """候选链接归一到 scheme://host（去掉 /register?aff=xxx 之类的推广路径）。
 
-    先剥掉转义 payload 里的反斜杠（zuiquanapi 页面是 JSON 转义存储，https://x.y\/path），
-    否则 urlsplit 会把尾部 \\ 当进 netloc，生成 https://x.y\/api/pricing 这类废链。
+    先剥掉转义 payload 里的反斜杠（zuiquanapi 页面是 JSON 转义存储，斜杠写成反斜杠加斜杠），
+    否则 urlsplit 会把尾部反斜杠当进 netloc，生成 https://x.y\\/api/pricing 这类废链。
     """
     parts = urlsplit(url.replace("\\", "").strip())
     if parts.scheme not in {"http", "https"} or not parts.hostname:
@@ -241,7 +244,13 @@ def merge_candidates(groups: list[list[Candidate]]) -> list[Candidate]:
     return sorted(by_host.values(), key=lambda c: c.host)
 
 
-async def harvest(proxy: str | None) -> list[Candidate]:
+# harvest 源的开关名（--only 逗号分隔；缺省只用 zuiquanapi，all=全部）
+SOURCE_KEYS = ("zuiquanapi", "awesome-api-proxy", "apisou", "aiapipk", "ai-coding-welfare", "github-nav")
+DEFAULT_SOURCES = ("zuiquanapi",)
+
+
+async def harvest(proxy: str | None, only: set[str] | None = None) -> list[Candidate]:
+    only = only or set(DEFAULT_SOURCES)
     headers = {"User-Agent": USER_AGENT}
     async with httpx.AsyncClient(
         headers=headers, timeout=httpx.Timeout(20.0), follow_redirects=True, trust_env=False, proxy=proxy, limits=httpx.Limits(max_connections=8)
@@ -285,16 +294,20 @@ async def harvest(proxy: str | None) -> list[Candidate]:
             groups = await asyncio.gather(*(one(source, urls) for source, urls in GITHUB_NAV_READMES.items()))
             return [cand for group in groups for cand in group]
 
+        async def noop() -> list[Candidate]:
+            return []
+
         awesome, welfare, aiapipk, apisou, zuiquan, repos = await asyncio.gather(
-            simple(harvest_awesome_api_proxy, AWESOME_README_URLS, timeout=60.0),
-            simple(harvest_welfare, WELFARE_SITES_URLS),
-            simple(harvest_aiapipk, (AIAPIPK_URL,)),
-            apisou_all(),
-            simple(harvest_zuiquan, (ZUIQUAN_URL,), timeout=60.0),
-            nav_repos(),
+            simple(harvest_awesome_api_proxy, AWESOME_README_URLS, timeout=60.0) if "awesome-api-proxy" in only else noop(),
+            simple(harvest_welfare, WELFARE_SITES_URLS) if "ai-coding-welfare" in only else noop(),
+            simple(harvest_aiapipk, (AIAPIPK_URL,)) if "aiapipk" in only else noop(),
+            apisou_all() if "apisou" in only else noop(),
+            simple(harvest_zuiquan, (ZUIQUAN_URL,), timeout=60.0) if "zuiquanapi" in only else noop(),
+            nav_repos() if "github-nav" in only else noop(),
         )
+        ran = [key for key in SOURCE_KEYS if key in only]
         print(
-            f"  awesome-api-proxy {len(awesome)}、zuiquanapi {len(zuiquan)}、ai-coding-welfare {len(welfare)}、"
+            f"  本次源 {('、'.join(ran))}：awesome-api-proxy {len(awesome)}、zuiquanapi {len(zuiquan)}、ai-coding-welfare {len(welfare)}、"
             f"aiapipk {len(aiapipk)}、apisou {len(apisou)}、GitHub 导航仓库 {len(repos)}"
         )
     return merge_candidates([awesome, zuiquan, welfare, aiapipk, apisou, repos])
@@ -413,9 +426,18 @@ def existing_site_hosts() -> dict[str, str]:
     return hosts
 
 
-async def run_harvest(proxy: str | None) -> None:
-    print("正在拉取聚合源…")
-    fresh = await harvest(proxy)
+async def run_harvest(proxy: str | None, only: str | None) -> None:
+    if only is None:
+        only_set = set(DEFAULT_SOURCES)
+    elif only.strip().lower() == "all":
+        only_set = set(SOURCE_KEYS)
+    else:
+        only_set = {key.strip() for key in only.split(",")}
+    bad = only_set - set(SOURCE_KEYS)
+    if bad:
+        raise SystemExit(f"未知源：{'、'.join(sorted(bad))}（可选：{'、'.join(SOURCE_KEYS)}、all）")
+    print("正在拉取聚合源…" + (f"（源：{'、'.join(sorted(only_set))}）" if only_set != set(SOURCE_KEYS) else "（全部）"))
+    fresh = await harvest(proxy, only=only_set)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = OUT_DIR / "candidates.json"
     # 与已有候选池增量合并：某源拉挂只影响本轮新拉到的站，不会把上轮的站从池子里挤掉
@@ -502,6 +524,13 @@ async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | No
     if retry_failed:
         print(f"重测捞回 {recovered} 个（累计可用 {len(stale_by_url) + recovered}）")
 
+    # --take 部分探测只预览：别拿 20 个站的结果覆盖全量 probed.json/importable.json
+    if take > 0 and not retry_failed:
+        print(f"部分探测只预览，不落盘；全量结果文件原样保留（{OUT_DIR / 'probed.json'}）")
+        for row in sorted(ok, key=lambda r: -r["models"])[:10]:
+            print(f"  {urlsplit(row['url']).hostname:32} new-api={row['new_api']} 模型数={row['models']}")
+        return
+
     cands_by_host = {cand.host: cand for cand in all_candidates.values()}
     in_library = existing_site_hosts()
     importable = build_importable(cands_by_host, merged, exclude_hosts=set(in_library))
@@ -537,6 +566,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     p_harvest = sub.add_parser("harvest", help="从聚合源拉取候选站点清单")
     p_harvest.add_argument("--proxy", help="可选代理，如 http://127.0.0.1:7890")
+    p_harvest.add_argument("--only", help="只用指定源（逗号分隔），缺省只用 zuiquanapi；all=全部源")
     p_probe = sub.add_parser("probe", help="探测候选站点的 /api/pricing 可用性")
     p_probe.add_argument("--take", type=int, default=0, help="只探测前 N 个（0=全部）")
     p_probe.add_argument("--concurrency", type=int, default=12)
@@ -546,7 +576,7 @@ def main() -> None:
     sub.add_parser("diff", help="只比对不探测：候选池里哪些站库里已有、哪些是新增")
     args = parser.parse_args()
     if args.command == "harvest":
-        asyncio.run(run_harvest(args.proxy))
+        asyncio.run(run_harvest(args.proxy, args.only))
     elif args.command == "diff":
         run_diff()
     else:

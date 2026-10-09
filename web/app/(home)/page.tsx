@@ -5,6 +5,7 @@ import {
   eventMeta,
   formatPrice,
   formatTime,
+  formatTimeAgo,
   isNoticeEvent,
   noticeExcerpt,
   toCnyPrice,
@@ -470,8 +471,11 @@ export default async function LandingPage() {
                         </span>
                       </span>
                       <span className="site-card-meta">
-                        {site.models} 模型
-                        {site.enabled ? "" : ` · ${home.empty.siteDisabled}`}
+                        {latest
+                          ? `${formatTimeAgo(latest.at)}检测`
+                          : site.enabled
+                            ? home.empty.siteNoCheckRecord
+                            : home.empty.siteDisabled}
                       </span>
                     </Link>
                   );

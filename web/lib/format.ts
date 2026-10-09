@@ -48,6 +48,22 @@ export function formatPrice(value: number | null | undefined): string {
   return text;
 }
 
+/** 相对时间三档：分钟/小时/天前（检测新鲜度等场景）；未来时间或超 30 天回落绝对日期。
+ *  at 兼容秒级时间戳（项目 captured_at 口径）与毫秒级。 */
+export function formatTimeAgo(at: number, now = Date.now()): string {
+  const ms = at < 1e12 ? at * 1000 : at;
+  const diff = now - ms;
+  if (diff < 0) return new Date(ms).toLocaleDateString("zh-CN");
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days <= 30) return `${days} 天前`;
+  return new Date(ms).toLocaleDateString("zh-CN");
+}
+
 /** 渠道免费档：输入输出标价都为 0（如 OpenRouter 的 :free 模型）。 */
 export function isFreePrice(list?: { input?: number | null; output?: number | null } | null): boolean {
   return list?.input === 0 && list?.output === 0;
