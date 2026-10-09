@@ -1,4 +1,4 @@
-"""统一后台调度器：价格 / 渠道状态 / 站点公告 / 厂商定价四项定时采集。
+"""统一后台调度器：价格 / 渠道状态 / 站点公告 / 厂商定价 / 模型榜单五项定时采集。
 
 间隔读自设置文档 settings.schedule（分钟，0 = 关闭该项定时），常驻线程每
 CHECK_INTERVAL_SECONDS 检查一轮：改配置下一轮即生效；到点且对应任务无运行中
@@ -15,7 +15,7 @@ from llm_price_monitor.config import schedule_from_raw
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import tasks
 from llm_price_monitor.webapi.deps import load_config
-from llm_price_monitor.webapi.jobs import catalog_refresh_job, notice_scan_job, price_scan_job, status_scan_job
+from llm_price_monitor.webapi.jobs import catalog_refresh_job, notice_scan_job, price_scan_job, rankings_refresh_job, status_scan_job
 
 CHECK_INTERVAL_SECONDS = 30
 
@@ -33,6 +33,7 @@ _KIND_BY_KEY = {
     "status": "collect-status",
     "notice": "collect-notice",
     "catalog": "catalog-refresh",
+    "rankings": "rankings-refresh",
 }
 
 
@@ -43,6 +44,8 @@ def _job_for(key: str, store: Store):
         return status_scan_job(load_config(store), store)
     if key == "notice":
         return notice_scan_job(load_config(store), store)
+    if key == "rankings":
+        return rankings_refresh_job(store)
     return catalog_refresh_job(store)
 
 

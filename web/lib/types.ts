@@ -12,6 +12,21 @@ export interface DiscountInfo {
   region?: "cn" | "global" | null;
 }
 
+/** 站点价记录的采集元数据：后端 metadata JSON 的已知字段（其余自由键原样透传）。 */
+export interface PriceMetadata {
+  group?: string;
+  confidence?: number;
+  notes?: string;
+  /** base_times_rate 记录：实售价 = 基准价(USD) × rate */
+  rate?: number;
+  rate_source?: string;
+  /** 缓存读/写价（写1h 为 1 小时有效期档）：与 input/output 同币种同计价单位，站点未提供时缺省 */
+  cache_read_price?: number | null;
+  cache_create_price?: number | null;
+  cache_create_1h_price?: number | null;
+  [key: string]: unknown;
+}
+
 export interface PriceRecord {
   site_id: string;
   model: string;
@@ -26,15 +41,7 @@ export interface PriceRecord {
   source_url: string;
   captured_at: number;
   fingerprint: string;
-  metadata?: {
-    group?: string;
-    confidence?: number;
-    notes?: string;
-    /** base_times_rate 记录：实售价 = 基准价(USD) × rate */
-    rate?: number;
-    rate_source?: string;
-    [key: string]: unknown;
-  };
+  metadata?: PriceMetadata;
 }
 
 export interface OverviewRecord extends PriceRecord {
@@ -129,16 +136,14 @@ export interface CatalogEntry {
   description?: string;
   /** 简介的中文翻译（AI 随目录同步翻译；AI 未配置或未轮到时为空，回落英文原文） */
   description_zh?: string | null;
-  /** models.dev 的产品线家族（如 gpt-astra / claude-opus），旗舰高亮的分组依据 */
+  /** models.dev 的产品线家族（如 gpt-astra / claude-opus） */
   family?: string;
-  /** 模态（models.dev 原始结构）；旗舰判定只认有文本输出的模型 */
+  /** 模态（models.dev 原始结构） */
   modalities?: { input?: string[]; output?: string[] };
   /** 厂商标称的 token 上限：上下文窗口与其中输入/输出的上限 */
   limit?: { context?: number; input?: number; output?: number };
-  /** models.dev 的发布日期（YYYY-MM-DD，可能为 null）：全量表展示，也参与旗舰档位判定 */
+  /** models.dev 的发布日期（YYYY-MM-DD，可能为 null）：全量表展示，监控清单选项按它新→旧排 */
   release_date?: string | null;
-  /** AI 档位判定：flagship 顶级（整行高亮）/ null 其他；AI 不可用时缺省 */
-  tier?: "flagship" | null;
   /** 官方价基准口径：cn=国内站官方价（厂商定价源或 -cn 渠道），global=国际站官方价 */
   region?: "cn" | "global";
   /** 同厂商国际站的列表价参考（国内基准确立后保留），口径同 list */
@@ -155,6 +160,36 @@ export interface CatalogData {
   usd_cny_rate: number;
   rate_source: string;
   models: Record<string, CatalogEntry>;
+}
+
+/** AA 榜单单行（Artificial Analysis /leaderboards/models 的一行数据）。 */
+export interface RankingEntry {
+  /** 行序即排名（按智能指数降序，变体行各占一行） */
+  rank: number;
+  /** AA 的模型 slug（如 gpt-6-5-sol），变体带 -xhigh/-low 后缀 */
+  slug: string;
+  /** slug 与展示名归一化后的匹配键；后端 rankings_key 同口径 */
+  key: string;
+  name: string;
+  creator: string | null;
+  /** 厂商标称写法（1M / 872k），保留 AA 原文 */
+  context_window: string | null;
+  /** Artificial Analysis Intelligence Index；榜单未测为 null */
+  intelligence_index: number | null;
+  /** AA 的复合任务成本（USD），口径与每百万 token 价不同，仅展示 */
+  cost_per_task_usd: number | null;
+  median_output_tokens_per_second: number | null;
+  latency_first_chunk_seconds: number | null;
+  total_response_seconds: number | null;
+  url: string;
+}
+
+export interface RankingsData {
+  generated_at: number;
+  generated_at_iso: string;
+  source: string;
+  source_url: string;
+  models: RankingEntry[];
 }
 
 export interface SiteMeta {
@@ -183,7 +218,8 @@ export interface NetworkEndpoint {
 export interface SiteConfig {
   id: string;
   adapter?: string;
-  models: string[];
+  /** 已废弃：目标模型统一在 settings.monitor_models（站点管理页顶部）配置 */
+  models?: string[];
   auth_token?: string | null;
   auth_header?: string | null;
   auth_prefix?: string | null;
@@ -296,6 +332,8 @@ export interface VendorPricingSource {
   /** 抓取方式：static-md / static-html / static-json / headless-* / ai */
   last_method?: string | null;
   model_count?: number | null;
+  /** 源描述：覆盖检测行与源表格展示用（种子/新增时写入） */
+  note?: string | null;
   /** 仅详情接口返回；列表接口不带 */
   models?: VendorSourceModel[] | null;
 }
@@ -311,6 +349,8 @@ export interface VendorSourceDetection {
   /** 推荐采集地址（人工核验过），kind=web 网页页 / json 价格接口；一键添加时预填 */
   suggestions?: { kind: "web" | "json"; url: string }[];
   note?: string;
+  /** 已配置源自己的描述（种子/新增时写入）；空则回落到 note */
+  source_note?: string | null;
   source_added: boolean;
   source_enabled?: boolean | null;
 }

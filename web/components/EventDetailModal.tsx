@@ -8,6 +8,8 @@ import { RiskLink } from "./RiskLink";
 import { NoticeBody } from "./NoticeBody";
 import { getSiteInfo } from "@/lib/sites";
 import {
+  CACHE_PRICE_LABELS,
+  cachePriceText,
   currencySymbol,
   eventMeta,
   formatPrice,
@@ -17,12 +19,33 @@ import {
   statusMeta,
   tieredPriceText,
   toCnyPrice,
+  type CachePriceField,
 } from "@/lib/format";
 import type { FeedEvent, PriceRecord } from "@/lib/types";
 
 interface ChangeLike {
   current?: { input_price: number | null; output_price: number | null; unit?: string; metadata?: PriceRecord["metadata"] } | null;
   previous?: { input_price: number | null; output_price: number | null; unit?: string; metadata?: PriceRecord["metadata"] } | null;
+}
+
+/** 参与变化比对的价格字段：输入/输出价 + 缓存读/写价。 */
+type PricedField = "input_price" | "output_price" | CachePriceField;
+
+const PRICED_FIELDS = ["input_price", "output_price", "cache_read_price", "cache_create_price", "cache_create_1h_price"] as const satisfies readonly PricedField[];
+
+function pricedValue(record: PriceRecord, field: PricedField): number | null {
+  if (field === "input_price" || field === "output_price") return record[field];
+  return record.metadata?.[field] ?? null;
+}
+
+/** 前后记录都在时，列出价格口径上有差异的字段；任一侧缺记录（新增/下线）无从比对，返回空集。 */
+function changedPriceFields(previous?: PriceRecord | null, current?: PriceRecord | null): Set<PricedField> {
+  const changed = new Set<PricedField>();
+  if (!previous || !current) return changed;
+  for (const field of PRICED_FIELDS) {
+    if (pricedValue(previous, field) !== pricedValue(current, field)) changed.add(field);
+  }
+  return changed;
 }
 
 /** 事件摘要（前后价格一行带出），卡片与详情弹窗共用。 */
@@ -40,32 +63,48 @@ export function describeChange(event: ChangeLike, rate?: number | null): string 
   const pair = (record: ChangeLike["current"]) =>
     record ? `${price(record, "input_price")} / ${price(record, "output_price")}` : null;
   const suffix = unit ? ` · ${converted ? "CNY/1M tokens（折算）" : unit}` : "";
+  // 输入/输出没变而缓存价变了时，摘要在价对后面补上变化项（如"缓存读 ¥0.25 → ¥1"），一眼看出差异
+  const cacheSummary = event.previous
+    ? (Object.keys(CACHE_PRICE_LABELS) as CachePriceField[])
+        .map((field) => {
+          const before = cachePriceText(event.previous, field, rate);
+          const after = cachePriceText(event.current, field, rate);
+          return before === after ? null : `${CACHE_PRICE_LABELS[field]} ${before ?? "—"} → ${after ?? "—"}`;
+        })
+        .filter((segment): segment is string => segment !== null)
+        .join("、")
+    : "";
   const current = pair(event.current) ?? "无价格";
   const previous = pair(event.previous);
   if (!previous) return `新增 ${current}${suffix}`;
-  return `${previous} → ${current}${suffix}`;
+  return `${previous} → ${current}${cacheSummary ? ` · ${cacheSummary}` : ""}${suffix}`;
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, highlight, children }: { label: string; highlight?: boolean; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
       <span style={{ color: "var(--text-3)", fontSize: 12, flexShrink: 0, width: 64 }}>{label}</span>
-      <span className="mono" style={{ color: "var(--text-1)", fontSize: 13, minWidth: 0, wordBreak: "break-all" }}>
+      <span
+        className="mono"
+        style={{ color: highlight ? "var(--tone-red-text)" : "var(--text-1)", fontSize: 13, minWidth: 0, wordBreak: "break-all" }}
+      >
         {children}
       </span>
     </div>
   );
 }
 
-/** 单条价格记录的完整信息：价格 + 采集来源等上下文。empty 为该侧无记录时的说明文案。 */
+/** 单条价格记录的完整信息：价格 + 采集来源等上下文。changes 是与另一侧记录比对出的变化字段，命中标红。 */
 function RecordBlock({
   title,
   record,
+  changes,
   rate,
   empty,
 }: {
   title: string;
   record: PriceRecord | null | undefined;
+  changes: Set<PricedField>;
   rate?: number | null;
   empty: string;
 }) {
@@ -90,11 +129,28 @@ function RecordBlock({
   const group = record.metadata?.group;
   const confidence = record.metadata?.confidence;
   const notes = record.metadata?.notes;
+  // 1h 写价极少有站点提供：本侧有值或本次有变化才出该行，其余两侧都省
+  const show1hWrite = record.metadata?.cache_create_1h_price != null || changes.has("cache_create_1h_price");
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-2)" }}>{title}</div>
-      <Row label="输入价">{price("input_price")}</Row>
-      <Row label="输出价">{price("output_price")}</Row>
+      <Row label="输入价" highlight={changes.has("input_price")}>
+        {price("input_price")}
+      </Row>
+      <Row label="输出价" highlight={changes.has("output_price")}>
+        {price("output_price")}
+      </Row>
+      <Row label="缓存读" highlight={changes.has("cache_read_price")}>
+        {cachePriceText(record, "cache_read_price", rate) ?? "—"}
+      </Row>
+      <Row label="缓存写" highlight={changes.has("cache_create_price")}>
+        {cachePriceText(record, "cache_create_price", rate) ?? "—"}
+      </Row>
+      {show1hWrite && (
+        <Row label="缓存写(1h)" highlight={changes.has("cache_create_1h_price")}>
+          {cachePriceText(record, "cache_create_1h_price", rate) ?? "—"}
+        </Row>
+      )}
       {unit && <Row label="计价单位">{unit}</Row>}
       <Row label="价格状态">
         <ToneTag tone={status.tone}>{status.label}</ToneTag>
@@ -154,6 +210,7 @@ export function EventDetailModal({
       </Modal>
     );
   }
+  const changes = changedPriceFields(event.previous, event.current);
   return (
     <Modal open onClose={onClose} title="事件详情" width={520}>
       <div style={{ display: "grid", gap: 14 }}>
@@ -171,8 +228,8 @@ export function EventDetailModal({
           {describeChange(event, rate)}
         </div>
         <div style={{ display: "grid", gap: 14 }}>
-          <RecordBlock title="变化前" record={event.previous} rate={rate} empty="无前值（首次建档）" />
-          <RecordBlock title="变化后" record={event.current} rate={rate} empty="无记录（模型可能已下线或未取到价）" />
+          <RecordBlock title="变化前" record={event.previous} changes={changes} rate={rate} empty="无前值（首次建档）" />
+          <RecordBlock title="变化后" record={event.current} changes={changes} rate={rate} empty="无记录（模型可能已下线或未取到价）" />
         </div>
       </div>
     </Modal>

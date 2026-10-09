@@ -1,34 +1,36 @@
 :root {
-  /* 亮色对齐控制台式信息密度：浅蓝页底 #F7FAFF，白卡无边框轻投影分层；品牌绿只做点缀。
-     中性色全部带蓝调（hairline/边框/次级底色），与页底的蓝保持同一色温 */
-  --bg: #f7faff;
+  /* 亮色对齐 Artificial Analysis：纯白页底、纯中性灰（不带色温）、发丝边框分层卡片；
+     全站唯一强调色 AA 橙 #ff7018（与大橘猫毛同族），只出现在交互与关键数据上 */
+  --bg: #ffffff;
   --panel: #ffffff;
-  --panel-2: #eef3f9;
-  --border: rgba(20, 45, 80, 0.08);
-  --border-strong: rgba(20, 45, 80, 0.17);
-  --text: #212a33;
-  --text-2: #5d6a77;
-  --text-3: #6b7480;
-  /* 品牌绿（大橘主题）：--accent 是填充色（按钮/品牌块底），--accent-text 是可读文本色 */
-  --accent: #c8ff00;
-  --accent-text: #3f5600;
-  --accent-contrast: #101418;
-  --header-bg: rgba(255, 255, 255, 0.8);
-  /* 卡片：无边框无投影，白卡在浅灰页底上靠底色分层 */
+  --panel-2: #f5f5f5;
+  --border: #d9d9d9;
+  --border-strong: #a3a3a3;
+  --text: #1f1f1f;
+  --text-2: #595959;
+  --text-3: #8c8c8c;
+  /* 强调橙：--accent 是填充色（按钮/助手球底，白字），--accent-text 是白底可读文本色（加深一档） */
+  --accent: #ff7018;
+  --accent-text: #d95600;
+  --accent-contrast: #ffffff;
+  /* 品牌 logo 底：奶油暖白（favicon 同值；刻意不随主题切换——favicon 是静态文件，站内与其保持一致） */
+  --logo-bg: #fff3e4;
+  --header-bg: rgba(255, 255, 255, 0.85);
+  /* 卡片：白底上靠发丝边框分层（AA 式），无投影 */
   --shadow-panel: none;
-  --card-border: none;
+  --card-border: 1px solid var(--border);
   /* 光晕与镀铬马赛克用色：首页顶部光束、页脚右下角马赛克共用 */
-  --glow-accent: rgba(200, 255, 0, 0.3);
-  --chrome-hi: #e3e9ee;
-  --chrome-md: #b3bdc7;
-  --chrome-lo: #89939d;
-  --chrome-glint: rgba(120, 170, 0, 0.5);
-  --chrome-opacity: 0.42;
+  --glow-accent: rgba(255, 112, 24, 0.18);
+  --chrome-hi: #ececec;
+  --chrome-md: #c9c9c9;
+  --chrome-lo: #9a9a9a;
+  --chrome-glint: rgba(255, 112, 24, 0.45);
+  --chrome-opacity: 0.4;
   /* 输入类控件（.sel/.input）：无边框填充底，静态只靠底色分层，聚焦才换强调描边+光晕 */
   --field-bg: var(--panel-2);
-  --field-bg-hover: #e2eaf2;
+  --field-bg-hover: #ececec;
   /* 激活 tab / 分段控件的轻投影（卡片不用，仅导航与 seg 的激活态） */
-  --shadow-pop: 0 1px 6px rgba(15, 26, 38, 0.12);
+  --shadow-pop: 0 1px 6px rgba(0, 0, 0, 0.1);
   /* 亮色彩色 tone：饱和度优先（徽标文字/折扣条/渠道点共用），对比度 ≥4.5:1 */
   --tone-green-bg: #dcf5e2;
   --tone-green-text: #166534;
@@ -38,16 +40,16 @@
   --tone-yellow-text: #92400e;
   --tone-red-bg: #fde3e3;
   --tone-red-text: #b91c1c;
-  --tone-gray-bg: #ebf0f7;
-  --tone-gray-text: #5d6a77;
+  --tone-gray-bg: #f0f0f0;
+  --tone-gray-text: #595959;
   /* 图表三档状态色：与 components/chartTheme 的 statusColors 同值（可用率 80/60 与延迟 1000/3000ms 共用），
      供服务端组件（首页站点卡片）在不便用 hook 时复用同一套色 */
-  --chart-ok: #86c200;
+  --chart-ok: #34a853;
   --chart-warn: #d9a013;
   --chart-down: #d95653;
   /* 骨架屏：亮色下 base/hi 拉开两档灰度，shimmer 流动才看得见（暗色另有定义） */
-  --skel-base: #e7edf2;
-  --skel-hi: #fbfdfe;
+  --skel-base: #ececec;
+  --skel-hi: #fafafa;
   /* tooltip 深色气泡：两个主题刻意同色（反色悬浮层），图表与 CSS 共用 */
   --tooltip-bg: #171a1f;
   --mono:
@@ -88,18 +90,18 @@
   --text: #e6e8ec;
   --text-2: #9aa0a8;
   --text-3: #858c94;
-  --accent: #c8ff00;
-  --accent-text: #c8ff00;
-  --accent-contrast: #0b0d0f;
+  --accent: #ff8534;
+  --accent-text: #ff8534;
+  --accent-contrast: #ffffff;
   --header-bg: rgba(10, 12, 14, 0.72);
   /* 暗色卡片同样无边框无投影，靠底色分层 */
   --shadow-panel: none;
   --card-border: none;
-  --glow-accent: rgba(200, 255, 0, 0.1);
+  --glow-accent: rgba(255, 112, 24, 0.12);
   --chrome-hi: #cbd5df;
   --chrome-md: #828c96;
   --chrome-lo: #4a545e;
-  --chrome-glint: rgba(200, 255, 0, 0.4);
+  --chrome-glint: rgba(255, 133, 52, 0.4);
   --chrome-opacity: 0.5;
   /* 暗色下激活态阴影整体加深 */
   --shadow-pop: 0 1px 10px rgba(0, 0, 0, 0.55);
@@ -111,7 +113,7 @@
   --tone-yellow-text: #e0b45c;
   --tone-red-bg: rgba(214, 92, 90, 0.16);
   --tone-red-text: #e27b78;
-  --chart-ok: #c8ff00;
+  --chart-ok: #45d072;
   --chart-warn: #e0b45c;
   --chart-down: #e27b78;
   --tone-gray-bg: rgba(255, 255, 255, 0.06);
@@ -271,19 +273,89 @@ body > main {
 
 .page-digest-item {
   display: inline-flex;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .page-digest-label {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
 }
 
 .page-digest-value {
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 17px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 首页榜单速览卡：素底 + 发丝边框，大 mono 指数立视觉重心，整卡点击进完整榜单 */
+.rank-cards {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.rank-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  text-decoration: none;
+  transition: border-color 0.15s var(--ease);
+}
+
+.rank-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.rank-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+
+.rank-card-name {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rank-card-index {
+  margin-top: 8px;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.rank-card-label {
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 1024px) {
+  .rank-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .rank-cards {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 小节标题：只靠字号字重分层，不加装饰件（避免模板感） */
@@ -449,7 +521,8 @@ body > main {
 .dtable {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13.5px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .dtable thead th {
@@ -493,7 +566,7 @@ body > main {
 }
 
 .dtable td {
-  padding: 12px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -811,15 +884,6 @@ body > main {
 }
 
 .dtable tbody tr.row-best td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-/* 各 lab 旗舰模型行：品牌色微底 + 左缘色条（与最低价行同款视觉） */
-.dtable tbody tr.row-flagship td {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-}
-
-.dtable tbody tr.row-flagship td:first-child {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
@@ -2639,16 +2703,6 @@ html:not([data-theme="dark"]) .panel {
   margin: 10px 0 14px;
 }
 
-/* 大橘蹲守一句话：弱化的品牌色小字，猫脸小图标同行
-   （与上面 .site-footer-brand p 同优先级、靠源码顺序覆盖间距与颜色） */
-.site-footer-brand p.footer-watch-line {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: -6px 0 14px;
-  color: var(--text-3);
-}
-
 .footer-icon {
   display: inline-flex;
   color: var(--text-3);
@@ -3576,6 +3630,14 @@ a.event-card {
   }
 }
 
+/* 右下角助手悬浮球默认停在视口右下（42px 宽 + 12px 边距）：视口窄于 1500px 时
+   页脚右缘会进入悬浮球区域，底行链接（管理）会被盖住点不到，这里让出一条通道 */
+@media (max-width: 1500px) {
+  .site-footer-meta {
+    padding-right: 76px;
+  }
+}
+
 @media (max-width: 480px) {
   .brand-pill .brand-name {
     display: none;
@@ -4456,10 +4518,14 @@ a.event-card {
   gap: 2px;
 }
 
-.faq-item summary {
+.faq-item .faq-question {
   cursor: pointer;
-  list-style: none;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
   padding: 20px 4px;
+  font-family: inherit;
   font-size: 15.5px;
   font-weight: 600;
   color: var(--text);
@@ -4470,15 +4536,7 @@ a.event-card {
   transition: color var(--dur);
 }
 
-.faq-item summary:hover {
-  color: var(--accent-text);
-}
-
-.faq-item summary::-webkit-details-marker {
-  display: none;
-}
-
-.faq-item summary::after {
+.faq-item .faq-question::after {
   content: "+";
   font-family: var(--mono);
   font-size: 16px;
@@ -4486,23 +4544,27 @@ a.event-card {
   flex-shrink: 0;
 }
 
-.faq-item[open] summary::after {
+.faq-item.open .faq-question::after {
   content: "−";
 }
 
-.faq-item[open] p {
-  animation: faq-open 0.32s var(--ease);
+.faq-item .faq-question:hover {
+  color: var(--accent-text);
 }
 
-@keyframes faq-open {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+.faq-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.32s var(--ease);
+}
+
+.faq-item.open .faq-body {
+  grid-template-rows: 1fr;
+}
+
+.faq-body-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .faq-item p {
@@ -4564,7 +4626,7 @@ a.event-card {
     font-size: 30px;
   }
 
-  .faq-item summary {
+  .faq-item .faq-question {
     font-size: 16.5px;
   }
 }
@@ -4573,7 +4635,8 @@ a.event-card {
   .reveal,
   .landing-section::before,
   .landing-cta::before,
-  .term-cursor {
+  .term-cursor,
+  .faq-body {
     transition: none;
     animation: none;
   }

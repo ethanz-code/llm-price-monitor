@@ -1,5 +1,5 @@
 """模型名匹配：版本号省略关系的边界与歧义取舍。"""
-from llm_price_monitor.matching import resolve_site_names, version_omitted_match
+from llm_price_monitor.matching import canonical_target, resolve_site_names, version_omitted_match
 
 
 def test_version_omitted_match_accepts_name_without_version():
@@ -58,3 +58,18 @@ def test_resolve_site_names_ignores_duplicate_records():
     )
 
     assert resolved == {"deepseek-flash": "deepseek-v4.1-flash"}
+
+
+def test_canonical_target_maps_separator_free_variants_to_standard_names():
+    """站点把分隔符整个去掉的写法（glm5.3 / claudefable51）要归到标准名入库，
+    且同名不同型号（flash 后缀）不得被误并。"""
+    expected = ["glm-5.3", "glm-5.3-flash", "claude-fable-5", "claude-fable-5-1", "qwen3.8-max"]
+
+    assert canonical_target("glm5.3", expected) == "glm-5.3"
+    assert canonical_target("claudefable51", expected) == "claude-fable-5-1"
+    assert canonical_target("qwen3.8max", expected) == "qwen3.8-max"
+    assert canonical_target("glm53flash", expected) == "glm-5.3-flash"
+    # 标准名自身必须原样返回，不能被相似名吞掉
+    assert canonical_target("glm-5.3-flash", expected) == "glm-5.3-flash"
+    # 完全对不上的名字不硬猜
+    assert canonical_target("glm-9.9", expected) is None

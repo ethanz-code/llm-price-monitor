@@ -19,13 +19,13 @@ from llm_price_monitor.page_price import (
     unit_scale,
 )
 
-# 仿 docs.bigmodel.cn/cn/guide/start/pricing.md 的真实结构：旗舰模型表多一列「输入模态」、
+# 仿 docs.bigmodel.cn/cn/guide/start/pricing.md 的真实结构：首个模型表多一列「输入模态」、
 # 「免费」单元格、同一模型多上下文档、Accordion 内嵌第二张表
 BIGMODEL_MD = """# API 定价
 
 除特别说明外，模型价格统一按照“元/百万 Tokens”展示。
 
-## 旗舰模型
+## 主力模型
 
 | 模型名称           | 上下文 | 输入单价（元/百万 Tokens） | 输出单价（元/百万 Tokens） | 缓存存储（元/百万 Tokens/小时） | 缓存命中（元/百万 Tokens） | 输入模态        |
 | ------------------ | ---- | --------- | --------- | ---------- | --------- | ----------- |
@@ -98,14 +98,14 @@ def test_parse_markdown_bigmodel_structure() -> None:
     keys = {record["model_key"] for record in records}
     assert keys == {"glm5.3", "glm5.3flash", "glm5.1", "glm4.7flash", "glmz1air"}
 
-    flagship = by_key(records, "glm5.3")
-    assert flagship["input_price"] == 8.0
-    assert flagship["output_price"] == 28.0
-    assert flagship["cache_read_price"] == 2.0
-    assert flagship["currency"] == "CNY"
-    assert flagship["unit"] == "CNY/1M tokens"
+    top = by_key(records, "glm5.3")
+    assert top["input_price"] == 8.0
+    assert top["output_price"] == 28.0
+    assert top["cache_read_price"] == 2.0
+    assert top["currency"] == "CNY"
+    assert top["unit"] == "CNY/1M tokens"
     # 「输入模态」列不该混进价格；缓存存储列（按小时计费）不参与
-    assert flagship["quote"] == "GLM-5.3 | 1M | 8 | 28 | 限时免费 | 2 | 文本"
+    assert top["quote"] == "GLM-5.3 | 1M | 8 | 28 | 限时免费 | 2 | 文本"
 
     flash = by_key(records, "glm5.3flash")
     assert (flash["input_price"], flash["output_price"], flash["cache_read_price"]) == (0.8, 2.8, 0.23)
@@ -389,7 +389,7 @@ def test_fetch_page_prices_ai_fallback_uses_rendered_text(monkeypatch):
     monkeypatch.setattr(page_price, "fetch_page_html", lambda url, headers, user_agent: "<html>claude-x 渲染后价格 $3.00</html>")
     captured: dict[str, str] = {}
 
-    def fake_ai_extract(text: str, source_url: str, ai_config: AIConfig, client: httpx.Client):
+    def fake_ai_extract(text: str, source_url: str, ai_config: AIConfig, client: httpx.Client, deadline=None):
         captured["text"] = text
         return [], []
 
@@ -404,3 +404,127 @@ def test_fetch_page_prices_ai_fallback_uses_rendered_text(monkeypatch):
     assert "渲染后价格" in captured["text"]
     assert "<html>loading…</html>" not in captured["text"]
     assert result["method"] == "none"  # 假抽取不产出记录，只验证喂给 AI 的文本来源
+
+
+# ---------- 可疑解析的 AI 复核与降级 ----------
+
+
+def test_records_suspicious_flags_annotations_and_duplicates() -> None:
+    assert page_price._records_suspicious([
+        {"model": "MiniMax-M3≤ 512k 输入 tokens 永久五折", "model_key": "m3", "input_price": 4.2, "output_price": 16.8},
+    ])
+    assert page_price._records_suspicious([
+        {"model": "mimo-v2.6-pro、mimo-v2.5-pro", "model_key": "mimo", "input_price": None, "output_price": 6.0},
+    ])
+    assert page_price._records_suspicious([
+        {"model": "demo", "model_key": "demo", "input_price": 1.0, "output_price": 2.0},
+        {"model": "demo", "model_key": "demo", "input_price": 2.0, "output_price": 4.0},
+    ])
+    # 正常记录不误报：embedding 只有输入价是合法形态
+    assert not page_price._records_suspicious([
+        {"model": "glm-5.3", "model_key": "glm53", "input_price": 8.0, "output_price": 28.0},
+        {"model": "glm-embedding", "model_key": "glmemb", "input_price": 0.5, "output_price": None},
+    ])
+
+
+SUSPICIOUS_PAGE = """<html><body><table>
+  <tr><th>模型名称</th><th>输入单价（元/百万 Tokens）</th><th>输出单价（元/百万 Tokens）</th></tr>
+  <tr><td>demo-a、demo-b</td><td>1</td><td>4</td></tr>
+  <tr><td>demo-c</td><td>2</td><td>8</td></tr>
+</table></body></html>"""
+
+
+def test_fetch_suspect_parse_prefers_ai_records() -> None:
+    """静态解析出合并行（可疑）时交给 AI 复核：AI 有产出就以 AI 为准（标待复核）。"""
+    transport = _transport_with_ai(SUSPICIOUS_PAGE, [
+        {"model": "demo-a", "input": 1, "output": 4, "currency": "CNY", "quote": "demo-a 输入 1 元"},
+        {"model": "demo-b", "input": 2, "output": 8, "currency": "CNY", "quote": "demo-b 输入 2 元"},
+    ])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    assert result["method"] == "ai"
+    assert [record["model"] for record in result["models"]] == ["demo-a", "demo-b"]
+    assert all(record["price_status"] == "candidate" for record in result["models"])
+
+
+def test_fetch_suspect_parse_demoted_without_ai() -> None:
+    """AI 禁用时可疑静态结果保留但整页降级为待复核，不当可信基准。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=SUSPICIOUS_PAGE)
+
+    result = fetch_page_prices(
+        "https://example.com/pricing",
+        ai_config=page_price.AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", enabled=False),
+        transport=httpx.MockTransport(handler),
+    )
+    assert result["method"] == "static-html"
+    assert all(record["price_status"] == "candidate" for record in result["models"])
+    assert any("待复核" in warning for warning in result["warnings"])
+
+
+def test_fetch_big_page_slims_and_chunks_ai() -> None:
+    """超长页剥标签分块逐段提取，再按模型键合并。"""
+    filler = "<div>导航菜单占位文字</div>" * 40
+    # 价格写成纯文本行：静态三种解析都吃不下，强制走分块 AI
+    page = (
+        "<html><body>" + filler
+        + "<p>model-one：输入 1 元/百万 tokens，输出 4 元/百万 tokens</p>" + filler
+        + "<p>model-two：输入 2 元/百万 tokens，输出 8 元/百万 tokens</p></body></html>"
+    )
+    assert len(page) > 200  # 确保超过测试用的 max_input_chars
+
+    seen_chunks: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            body = json.loads(request.content.decode())["messages"][1]["content"]
+            seen_chunks.append(body)
+            models = []
+            if "model-one" in body:
+                models.append({"model": "model-one", "input": 1, "output": 4, "currency": "CNY", "quote": "输入 1 元"})
+            if "model-two" in body:
+                models.append({"model": "model-two", "input": 2, "output": 8, "currency": "CNY", "quote": "输入 2 元"})
+            return httpx.Response(200, json=_ai_response(models))
+        return httpx.Response(200, text=page)
+
+    config = page_price.AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", max_input_chars=200)
+    result = fetch_page_prices("https://example.com/pricing", ai_config=config, transport=httpx.MockTransport(handler))
+    assert result["method"] == "ai"
+    assert [record["model"] for record in result["models"]] == ["model-one", "model-two"]
+    assert len(seen_chunks) >= 2
+    assert all("<div>" not in chunk for chunk in seen_chunks)  # 超长页先剥标签再喂 AI
+
+
+def test_fetch_unseen_vendor_full_pipeline(monkeypatch: pytest.MonkeyPatch):
+    """通用性契约：从没见过的虚构厂商页面走完整流水线——JS 空壳→渲染→可疑解析→AI 复核出档位，
+    全程不依赖任何厂商名，只认内容特征（注释字符、表头语义、价格证据）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(200, json=_ai_response([
+                {"model": "acme-large",
+                 "tiers": [
+                     {"name": "高峰时段", "standard": True, "input": 2, "output": 8},
+                     {"name": "空闲时段", "input": 1, "output": 4},
+                 ],
+                 "currency": "CNY", "quote": "acme-large"},
+            ]))
+        return httpx.Response(200, text=JS_SHELL_PAGE)
+
+    monkeypatch.setattr(page_price, "fetch_page_html", lambda url, headers, user_agent: (
+        "<html><body><table>"
+        "<tr><th>模型名称</th><th>输入单价（元/百万 Tokens）</th><th>输出单价（元/百万 Tokens）</th></tr>"
+        "<tr><td>acme-small、acme-mini</td><td>1</td><td>4</td></tr></table>"
+        "<p>acme-large 高峰时段 输入 2 元/百万 tokens、输出 8 元；空闲时段 输入 1 元、输出 4 元。</p>"
+        "</body></html>"
+    ))
+
+    result = fetch_page_prices(
+        "https://acme.test/pricing", ai_config=AI_CONFIG,
+        transport=httpx.MockTransport(handler), headless=True,
+    )
+    assert result["method"] == "ai"
+    assert [record["model"] for record in result["models"]] == ["acme-large"]
+    record = result["models"][0]
+    assert record["price_status"] == "candidate"
+    # 可疑静态结果被 AI 复核替换：基准取高峰标准档，空闲档进 tiers
+    assert (record["input_price"], record["output_price"]) == (2.0, 8.0)
+    assert [tier["name"] for tier in record["tiers"]] == ["高峰时段", "空闲时段"]

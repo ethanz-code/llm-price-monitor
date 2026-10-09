@@ -46,12 +46,14 @@ export const home = {
     trend: "价格走势",
     events: "最新事件",
     sites: "监控中的站点",
+    rankings: "模型榜单速览",
     dataSource: "数据从哪来",
     faq: "常见问题",
   },
   sectionSubs: {
     latestPrice: "站点标多少记多少，每条价格都附来源链接，点开就能核对",
     sites: "每个站点的渠道检测与公告都自动存档，点站点名进检测档案",
+    rankings: "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位用；点卡片看完整榜单",
   },
   viewAll: "查看全部 →",
   viewAllEvents: "全部事件 →",
@@ -77,6 +79,7 @@ export const home = {
     checkSuffix: "次渠道检测 · 最新正常",
     latencySuffix: "延迟",
   },
+
   faq: [
     {
       q: "价格数据准确吗？",
@@ -153,14 +156,16 @@ export const alerts = {
     title: "无法读取厂商定价",
     fix: "请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。",
   },
+  rankings: {
+    title: "暂时读不到模型榜单",
+    fix: "请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。",
+  },
 };
 
 /** 页脚 */
 export const footer = {
   brandLine:
     "盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成对任何站点的使用推荐。",
-  /** 品牌猫大橘的一句话：交代它在干嘛，顺带呼应「盯价格」 */
-  watchLine: "大橘蹲守中，价格一动就知道。",
   links: {
     catalog: "厂商定价",
     feedback: "提建议",

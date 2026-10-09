@@ -6,29 +6,29 @@
  */
 
 /**
- * 探头的大橘：猫头从品牌绿底的下缘探出来，下半身被裁掉——品牌主形象（logo 与助手球同源）。
- * shape=square 用于 LogoMark（绿底圆角方块），circle 用于助手悬浮球/抽屉头像（绿圆）；
+ * 探头的大橘：猫头从底色块的下缘探出来，下半身被裁掉——品牌主形象（logo 与助手球同源）。
+ * shape=square 用于 LogoMark：奶油暖白圆角方块底（--logo-bg，2026-09-28 拍板，favicon 同底；
+ * 橙底与猫毛色相近弃用）；circle 用于助手悬浮球/抽屉头像：品牌橙圆底。
  * 探头好奇表情（睁眼），带 .daju-peek-head 类供悬停探更高。
+ * 裁剪用嵌套 svg 的视口裁切（默认 overflow hidden），不用 clipPath id——
+ * 同页多实例共用写死的 id 会让 url(#) 引用解析到空裁剪，整组猫被裁没。
  */
 export function DajuPeek({ shape }: { shape: "square" | "circle" }) {
   return (
     <>
-      <defs>
-        <clipPath id={`daju-peek-clip-${shape}`}>
-          {shape === "square" ? (
-            <rect width="64" height="64" rx="14" />
-          ) : (
-            <circle cx="32" cy="32" r="32" />
-          )}
-        </clipPath>
-      </defs>
-      {/* 荧光绿底 */}
       {shape === "square" ? (
-        <rect width="64" height="64" rx="14" fill="var(--accent)" />
+        <rect width="64" height="64" rx="14" fill="var(--logo-bg)" />
       ) : (
         <circle cx="32" cy="32" r="32" fill="var(--accent)" />
       )}
-      <g clipPath={`url(#daju-peek-clip-${shape})`}>
+      <svg
+        x="0"
+        y="0"
+        width="64"
+        height="64"
+        viewBox="0 0 64 64"
+        style={{ overflow: "hidden", borderRadius: shape === "square" ? 14 : "50%" }}
+      >
         {/* 猫头：圆心沉到画面外下方，只露出头顶到眼睛的一段，被底缘裁掉形成探头感 */}
         <circle cx="32" cy="50" r="24" fill="var(--cat-coat)" stroke="var(--cat-ink)" strokeWidth="2.6" />
         {/* 圆润曲线耳（后画盖住脸弧描边） */}
@@ -44,7 +44,7 @@ export function DajuPeek({ shape }: { shape: "square" | "circle" }) {
           <circle cx="40.5" cy="44" r="3" fill="var(--cat-ink)" />
           <path d="M26.5 50.5 Q29.5 53.6 32 50.5 Q34.5 53.6 37.5 50.5" fill="none" stroke="var(--cat-ink)" strokeWidth="2.6" strokeLinecap="round" />
         </g>
-      </g>
+      </svg>
     </>
   );
 }
@@ -210,7 +210,7 @@ export function DajuAwake({ width = 22 }: { width?: number }) {
   );
 }
 
-/** 迷你坐姿大橘（页脚「蹲守」一句旁）：侧脸朝左盯着数据。 */
+/** 迷你坐姿大橘（空态/加载页装饰）：侧脸朝左盯着数据。 */
 export function DajuSit({ width = 17 }: { width?: number }) {
   return (
     <svg

@@ -307,3 +307,25 @@ def test_upsert_source_resets_result_on_url_change(tmp_path: Path):
     # 同 URL 再保存：结果保留
     record = upsert_source(store, "Zhipu AI", "https://new.cn/pricing", enabled=False)
     assert record["enabled"] is False and record["last_status"] is None
+
+
+def test_upsert_source_note_and_detection_source_note(tmp_path: Path):
+    """note 写进源记录、随检测记录回传；不传时保留原值。"""
+    store = Store(tmp_path / "monitor.db")
+    record = upsert_source(store, "DeepSeek", "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+                           note="官方中文定价页，人民币标价")
+    assert record["note"] == "官方中文定价页，人民币标价"
+    # 同 URL 再保存不传 note：保留；传空串：清空
+    assert upsert_source(store, "DeepSeek", "https://api-docs.deepseek.com/zh-cn/quick_start/pricing")["note"] == "官方中文定价页，人民币标价"
+    assert upsert_source(store, "DeepSeek", "https://api-docs.deepseek.com/zh-cn/quick_start/pricing", note="  ")["note"] is None
+
+    providers = [_provider("deepseek", name="DeepSeek", doc="https://api-docs.deepseek.com")]
+    upsert_source(store, "DeepSeek", "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+                  note="官方中文定价页，人民币标价")
+    record = next(r for r in detect_vendor_coverage(providers, vs.load_sources(store)) if r["vendor"] == "DeepSeek")
+    assert record["source_added"] is True and record["source_note"] == "官方中文定价页，人民币标价"
+    # 未配置的厂商：source_note 为空、source_added 为 False，note 仍是品牌提示
+    pending = {r["vendor"]: r for r in detect_vendor_coverage(
+        [_provider("zhipuai", name="Zhipu", doc="https://docs.z.ai")], vs.load_sources(store))}
+    assert pending["Zhipu AI"]["source_note"] is None and pending["Zhipu AI"]["source_added"] is False
+    assert pending["Zhipu AI"]["note"]

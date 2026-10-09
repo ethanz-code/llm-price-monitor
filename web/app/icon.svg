@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- 探头的大橘（品牌 Logo），与 components/DajuArt.tsx DajuPeek square 同款：accent #C8FF00 / coat #F0913C / stripe #D4741E / ink #43290F（XML 注释内不允许双连字符） -->
+  <!-- 探头的大橘（品牌 Logo），与 components/DajuArt.tsx DajuPeek square 完全同款：底色 var logo-bg 奶油 #FFF3E4（暗色也不变，favicon 静态文件）/ coat #F0913C / stripe #D4741E / ink #43290F（XML 注释内不允许双连字符） -->
   <defs>
     <clipPath id="peekClip"><rect width="64" height="64" rx="14"/></clipPath>
   </defs>
-  <rect width="64" height="64" rx="14" fill="#C8FF00"/>
+  <rect width="64" height="64" rx="14" fill="#FFF3E4"/>
   <g clip-path="url(#peekClip)">
     <circle cx="32" cy="50" r="24" fill="#F0913C" stroke="#43290F" stroke-width="2.6"/>
     <path d="M17.5 31 Q12.5 16 14.5 15 Q16.5 14.5 26.5 28.5 Z" fill="#F0913C" stroke="#43290F" stroke-width="2.6" stroke-linejoin="round"/>

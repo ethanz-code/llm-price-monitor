@@ -1,12 +1,13 @@
 "use client";
 
-import { currencySymbol, formatPrice, tieredPrices, toCnyPrice, TIERED_PRICE_TIP } from "@/lib/format";
+import { CACHE_PRICE_LABELS, cachePriceText, currencySymbol, formatPrice, tieredPrices, toCnyPrice, TIERED_PRICE_TIP, type CachePriceField } from "@/lib/format";
+import type { PriceMetadata } from "@/lib/types";
 
 interface PriceLike {
   input_price: number | null;
   output_price: number | null;
   unit: string;
-  metadata?: { pricing_rules?: unknown; [key: string]: unknown } | null;
+  metadata?: PriceMetadata | null;
 }
 
 /** 价格格：普通价单行数字；阶梯价逐档一行（上下文范围 + 单价），单档视为唯一价不标范围。
@@ -46,6 +47,27 @@ export function PriceCell({
             {symbol}
             {formatPrice(display[index])}
           </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** 缓存价格：读/写（及 1h 写）逐行展示，折算口径与输入/输出价一致；站点未提供任何缓存价显示 —。 */
+export function CachePriceCell({ row, rate }: { row: PriceLike; rate?: number | null }) {
+  const fields = Object.keys(CACHE_PRICE_LABELS) as CachePriceField[];
+  const lines = fields
+    .map((field) => ({ field, text: cachePriceText(row, field, rate) }))
+    .filter((line) => line.text !== null);
+  if (lines.length === 0) {
+    return <span style={{ color: "var(--text-3)" }}>—</span>;
+  }
+  return (
+    <span className="tier-price">
+      {lines.map(({ field, text }) => (
+        <span key={field} className="tier-line">
+          <span className="tier-label">{CACHE_PRICE_LABELS[field]}</span>
+          <span className="mono num">{text}</span>
         </span>
       ))}
     </span>

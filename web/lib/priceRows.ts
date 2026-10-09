@@ -30,12 +30,52 @@ export function blendedCnyPrice(row: OverviewRecord, rate: number | null): numbe
   return input ?? output;
 }
 
-/** 智能排序（总览表默认行序）：有价在前 → 综合价低的在前（输入 3 : 输出 1 加权）→
- *  扣分少的在前（调用方按渠道成功率、缺渠道/缺公告、信息完整度扣分）；
+/** 首页精选行：每个模型（canonicalModel 归一分组）只保留一行——组内有可用价的行里综合价最低的那条
+ *  （输入 3 : 输出 1 折 RMB，同价取采集更新的），展示名取组内出现最多的写法（与总览表口径一致）；
+ *  全组没有可用价的模型整个不出现，首页精选只放拿得到真实价格的模型。 */
+export function lowestPriceRowPerModel(records: OverviewRecord[], rate: number | null): OverviewRecord[] {
+  const groups = new Map<string, OverviewRecord[]>();
+  for (const row of records) {
+    const key = canonicalModel(row.model);
+    const list = groups.get(key);
+    if (list) list.push(row);
+    else groups.set(key, [row]);
+  }
+  const picked: OverviewRecord[] = [];
+  for (const rows of groups.values()) {
+    const priced = rows.filter(hasUsablePrice);
+    if (priced.length === 0) continue;
+    const blendOf = (row: OverviewRecord) => blendedCnyPrice(row, rate) ?? Number.POSITIVE_INFINITY;
+    const best = [...priced].sort((a, b) => blendOf(a) - blendOf(b) || b.captured_at - a.captured_at)[0];
+    const names = new Map<string, number>();
+    for (const row of rows) names.set(row.model, (names.get(row.model) ?? 0) + 1);
+    const displayName = [...names.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+    picked.push({ ...best, model: displayName });
+  }
+  return picked;
+}
+
+/** 可靠性扣分对综合价的最大影响：满档扣分让排序价虚增 20%，可靠性与价格信号的权衡上限。 */
+export const RELIABILITY_CAP = 0.2;
+
+/** 可靠性加权综合价（智能排序主键）：综合价 × (1 + 20% × 归一化扣分)；缺综合价按 +∞ 沉底。 */
+function reliabilityWeightedPrice(
+  row: OverviewRecord,
+  reliabilityDeficit: number,
+  rate: number | null,
+): number {
+  const blend = blendedCnyPrice(row, rate);
+  if (blend == null) return Number.POSITIVE_INFINITY;
+  return blend * (1 + RELIABILITY_CAP * reliabilityDeficit);
+}
+
+/** 智能排序（总览表默认行序）：有价在前 → 可靠性加权综合价低的在前
+ *  （综合价 × (1 + 20% × 归一化扣分)，扣分由调用方按渠道健康与数据滞后计算、0–1 归一，
+ *  让渠道挂掉/数据过期的站点真实下沉，但最多让位 20% 不淹没价格信号）→
  *  折扣与抓取时间破平。规则价与确认价同等对待；点表头单列排序循环回"无排序"即回到此序。 */
 export function smartOrderRows(
   rows: OverviewRecord[],
-  penaltyOf: (row: OverviewRecord) => number,
+  reliabilityDeficitOf: (row: OverviewRecord) => number,
   rate: number | null,
 ): OverviewRecord[] {
   return [...rows].sort((a, b) => {
@@ -43,12 +83,9 @@ export function smartOrderRows(
     const pricedB = hasUsablePrice(b);
     if (pricedA !== pricedB) return pricedA ? -1 : 1;
     if (pricedA) {
-      const blendA = blendedCnyPrice(a, rate) ?? Number.POSITIVE_INFINITY;
-      const blendB = blendedCnyPrice(b, rate) ?? Number.POSITIVE_INFINITY;
-      if (blendA !== blendB) return blendA - blendB;
-      const penaltyA = penaltyOf(a);
-      const penaltyB = penaltyOf(b);
-      if (penaltyA !== penaltyB) return penaltyA - penaltyB;
+      const keyA = reliabilityWeightedPrice(a, reliabilityDeficitOf(a), rate);
+      const keyB = reliabilityWeightedPrice(b, reliabilityDeficitOf(b), rate);
+      if (keyA !== keyB) return keyA - keyB;
       const discountA = a.discount?.input ?? 9;
       const discountB = b.discount?.input ?? 9;
       if (discountA !== discountB) return discountA - discountB;

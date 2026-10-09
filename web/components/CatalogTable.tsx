@@ -9,8 +9,9 @@ import { TermTip } from "./TermTip";
 import { ToneTag, ToneNum } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { useNarrow } from "@/lib/useNarrow";
-import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
+import { rankingHit, type RankingHit } from "@/lib/rankings";
 
 interface Row extends CatalogEntry {
   key: string;
@@ -133,10 +134,13 @@ export function CatalogTable({
   data,
   keyword,
   vendor,
+  rankingsIndex = {},
 }: {
   data: CatalogData;
   keyword: string;
   vendor: string;
+  /** AA 榜单匹配索引：给模型条目挂排名徽标；榜单未生成时缺省不显示 */
+  rankingsIndex?: Record<string, RankingHit>;
 }) {
   // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：厂商并入模型列，价格一列，避免横滑藏住最后一列
   const phone = useNarrow(560);
@@ -167,18 +171,34 @@ export function CatalogTable({
     {
       title: "模型",
       dataIndex: "model",
-      width: 220,
-      render: (v: string, row: Row) => (
-        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <span
-            className="mono"
-            title={v}
-            style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          >
-            {v}
+      // 248：给下方 Artificial Analysis 全称徽标留足一行宽度，避免"指数"数值被省略号吃掉
+      width: 248,
+      render: (v: string, row: Row) => {
+        const hit = rankingHit(rankingsIndex, row.model);
+        return (
+          <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span
+                className="mono"
+                title={v}
+                style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {v}
+              </span>
+            </span>
+            {hit && (
+              <span
+                className="mono"
+                title="Artificial Analysis 榜单排名与智能指数（自测口径，非本站评测）"
+                style={{ fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+              >
+                Artificial Analysis #{hit.rank}
+                {hit.intelligence_index != null && ` · 指数 ${hit.intelligence_index}`}
+              </span>
+            )}
           </span>
-        </span>
-      ),
+        );
+      },
     },
     {
       title: (
@@ -249,11 +269,11 @@ export function CatalogTable({
         const limit = row.limit;
         if (!limit?.context) return <span style={{ color: "var(--text-3)" }}>—</span>;
         const part = (value: number | undefined) => (value ? formatTokens(value) : "—");
-        const full = (value: number | undefined) => (value ? value.toLocaleString() : "—");
+        const full = (value: number | undefined) => (value ? formatCount(value) : "—");
         return (
           <span
             className="mono num"
-            title={`上下文 ${limit.context.toLocaleString()} · 最大输出 ${full(limit.output)}`}
+            title={`上下文 ${formatCount(limit.context)} · 最大输出 ${full(limit.output)}`}
           >
             {formatTokens(limit.context)} / {part(limit.output)}
           </span>
@@ -351,7 +371,7 @@ export function CatalogTable({
         >
           <span style={{ fontWeight: 550, fontSize: 15 }}>厂商定价快照</span>
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-            共 <span className="mono">{Object.values(data.models).filter((entry) => entry.found).length}</span> 条 · 快照{" "}
+            共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 · 快照{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）· 来源{" "}
             <RiskLink href={data.source_url || "https://models.dev"}>models.dev</RiskLink>
@@ -368,7 +388,6 @@ export function CatalogTable({
             scrollX={1220}
             mobileScrollX={phone ? 340 : 600}
             dense
-            rowClassName={(row) => (row.tier === "flagship" ? "row-flagship" : undefined)}
           />
         )}
       </div>

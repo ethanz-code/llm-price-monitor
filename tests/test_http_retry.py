@@ -37,7 +37,18 @@ def test_retry_exhausts_and_raises_with_backoff(monkeypatch):
     with _client(_flaky_handler(99, calls)) as client, pytest.raises(httpx.ConnectError):
         client.get("https://demo.test/api/status")
     assert len(calls) == 1 + RETRY_ATTEMPTS
-    assert sleeps == [1.0, 2.0]
+    assert sleeps == [1.0, 3.0, 6.0]
+
+
+def test_retry_recovers_on_second_attempt_with_ladder_backoff(monkeypatch):
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr("llm_price_monitor.http_retry.time.sleep", sleeps.append)
+    with _client(_flaky_handler(2, calls)) as client:
+        response = client.get("https://demo.test/api/status")
+    assert response.status_code == 200
+    assert len(calls) == 3
+    assert sleeps == [1.0, 3.0]
 
 
 def test_post_is_not_retried(monkeypatch):
@@ -73,7 +84,7 @@ def test_retry_emits_warn_log(monkeypatch):
             client.get("https://demo.test/api/status")
     finally:
         tasklog.unbind()
-    assert logs == [("传输层抖动（SSL: UNEXPECTED_EOF_WHILE_READING），1s 后重试（1/2）", "warn")]
+    assert logs == [("传输层抖动（SSL: UNEXPECTED_EOF_WHILE_READING），1s 后重试（1/3）", "warn")]
 
 
 _PROXY_ENV_VARS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")

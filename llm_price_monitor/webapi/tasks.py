@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 import uuid
@@ -13,6 +14,9 @@ from collections.abc import Callable
 from typing import Any
 
 from llm_price_monitor import tasklog
+from llm_price_monitor.report import is_transport_error
+
+_log = logging.getLogger("llm_price_monitor.webapi.tasks")
 
 # 持久化的任务条数与单任务日志行数默认上限：可在系统设置里用 max_task_runs / max_task_log_lines 覆盖；
 # max_task_runs 是清理界限，超出即淘汰最旧任务
@@ -37,8 +41,10 @@ def _limits() -> tuple[int, int]:
     logs = max_logs if isinstance(max_logs, int) and not isinstance(max_logs, bool) and max_logs >= 1 else DEFAULT_MAX_LOG_LINES
     return runs, logs
 
-# 全量采集与三类拆分采集写同一份价格快照/状态时序，彼此互斥（读-改-写不能并发）
-COLLECT_KINDS = frozenset({"collect", "collect-test", "collect-price", "collect-status", "collect-notice"})
+# 全量采集与三类拆分采集写同一份价格快照/状态时序，彼此互斥（读-改-写不能并发）；
+# 单站测试采集（collect-test）不进组：只写本站数据行，允许与全局采集并行（共享文档
+# 的读-改-写竞态由 report 的合并锁兜住），同类测试之间仍靠同 kind 去重一次只跑一个
+COLLECT_KINDS = frozenset({"collect", "collect-price", "collect-status", "collect-notice"})
 # 目录刷新与单厂商源刷新都读-改-写同一份 catalog 文档，二者同样互斥（但不与价格/状态采集互斥）
 CATALOG_KINDS = frozenset({"catalog-refresh", "vendor-source-refresh"})
 
@@ -81,8 +87,8 @@ def _persist() -> None:
         snapshot = [dict(item, logs=list(item["logs"])) for item in items[:max_runs]]
     try:
         store.set_document("tasks", {"runs": snapshot})
-    except Exception:  # 落盘失败不阻断采集：日志属辅助信息，任务状态仍在内存可用
-        pass
+    except Exception as exc:  # 落盘失败不阻断采集：日志属辅助信息，任务状态仍在内存可用
+        _log.warning("任务记录落盘失败：%s", exc)
 
 
 def _append_log(task_id: str, message: str, level: str) -> None:
@@ -107,6 +113,12 @@ def submit(kind: str, fn: Callable[[], Any]) -> str:
     with _lock:
         conflict = _conflict_of(kind)
         if conflict:
+            # 占用方与请求方是两个任务：报错要报占用方的 kind 与开始时间，
+            # 否则用户会误以为是上一次同类操作没结束
+            entry = _tasks.get(conflict)
+            if entry is not None:
+                started = time.strftime("%m-%d %H:%M", time.localtime(entry["started_at"]))
+                raise RuntimeError(f"已有运行中的 {entry['kind']} 任务（{started} 开始，id {conflict[:8]}），等它结束再试")
             raise RuntimeError(f"已有运行中的 {kind} 任务: {conflict}")
         task_id = uuid.uuid4().hex
         _tasks[task_id] = {
@@ -204,7 +216,8 @@ def _dismiss_state() -> dict[str, Any]:
         return {}
     try:
         return store.get_document(_DISMISS_DOC) or {}
-    except Exception:
+    except Exception as exc:
+        _log.warning("读取异常卡片清除标记失败，按未清除处理：%s", exc)
         return {}
 
 
@@ -214,7 +227,11 @@ def _error_key(task_id: str, log: dict[str, Any]) -> str:
 
 
 def error_stream(limit: int = 200) -> list[dict[str, Any]]:
-    """跨任务汇总 warn/error 日志（新在前），滤掉已移除/清空时间点之前的条目，供概览页异常卡片展示。"""
+    """跨任务汇总 warn/error 日志（新在前），滤掉已移除/清空时间点之前的条目，供概览页异常卡片展示。
+
+    传输层抖动的 warn 是重试后已自愈的环境噪声，与健康档案同口径不进卡片；
+    重试耗尽会升级成 error 级的站点失败日志，仍然可见。
+    """
     state = _dismiss_state()
     cleared_at = state.get("cleared_at")
     dismissed = set(state.get("dismissed", []))
@@ -224,6 +241,8 @@ def error_stream(limit: int = 200) -> list[dict[str, Any]]:
         for item in items:
             for log in item.get("logs", []):
                 if log.get("level") not in ("warn", "error"):
+                    continue
+                if log.get("level") == "warn" and is_transport_error(str(log.get("message") or "")):
                     continue
                 if cleared_at is not None and float(log.get("time") or 0) <= float(cleared_at):
                     continue

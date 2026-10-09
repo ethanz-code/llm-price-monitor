@@ -7,7 +7,6 @@ HTML 页面内嵌价格表按结构特征识别，命中目标模型即确定性
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from collections import deque
@@ -17,6 +16,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from llm_price_monitor import tasklog
 from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor
 from llm_price_monitor.config import (
     ACCESS_TOKEN_VAR,
@@ -35,9 +35,6 @@ from llm_price_monitor.tracker import (
     looks_like_platform_pricing,
     newapi_price_record,
 )
-
-_ENV_VALUE_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
 
 class Adapter(Protocol):
     def collect(
@@ -58,10 +55,7 @@ def headers(spec: SiteSpec, user_agent: str) -> dict[str, str]:
     """
     result = {**spec.request_headers, "user-agent": user_agent}
     if spec.cookie:
-        cookie = spec.cookie
-        if not cookie:
-            raise PriceMonitorError("配置文件 cookie 未配置")
-        result["cookie"] = cookie
+        result["cookie"] = spec.cookie
     return result
 
 
@@ -69,8 +63,8 @@ def auth_inject_headers(spec: SiteSpec, target: str) -> dict[str, str]:
     """按「认证与续签」里配的规则，把凭证展开成该采集目标的请求头（target 见 AUTH_INJECT_TARGETS）。
 
     没配 auth_inject 的老配置按老行为注入 Authorization（auth_header/auth_prefix 可改），
-    存量站点不改配置就能继续跑。值里的 ${access_token}/${refresh_token} 先展开成当前凭证，
-    再交给环境变量展开——顺序不能反，否则这两个占位符会被当成未设置的环境变量直接抛错。
+    存量站点不改配置就能继续跑。值里的 ${access_token}/${refresh_token} 展开成当前凭证，
+    其余文本原样保留（不认环境变量，占位符只有这两个）。
 
     还没拿到 Access Token 的站点（新站点或刚清空）不注入：请求照常发出、由 401 触发续签补上，
     否则这条"空凭证 → 采集 → 续签"的引导链会被自己拦死。
@@ -109,20 +103,7 @@ def _expand_credential_vars(spec: SiteSpec, value: str) -> str:
                 f"站点 {spec.id} 的凭证注入引用了 {REFRESH_TOKEN_VAR}，但当前认证方式没有 Refresh Token（只有「登录会话自动续签」才有）"
             )
         value = value.replace(REFRESH_TOKEN_VAR, refresh_token)
-    return expand_header_value(value)
-
-
-def expand_header_value(value: str) -> str:
-    def _expand(match: re.Match[str]) -> str:
-        name = match.group(1)
-        resolved = os.getenv(name)
-        if resolved is None:
-            raise ValueError(
-                f"请求头引用的环境变量未设置: {name}（请在运行进程的环境中提供 {name}，如 docker compose 的 environment 或 shell export）"
-            )
-        return resolved
-
-    return _ENV_VALUE_PATTERN.sub(_expand, value)
+    return value
 
 
 def response_error_detail(response: httpx.Response, limit: int = 120) -> str:
@@ -203,7 +184,7 @@ def build_request_kwargs(
     shadowed = {name.casefold() for name in injected} | ({"authorization"} if spec.auth_token else set())
     request_headers = headers(spec, user_agent)
     request_headers.update({
-        str(key): expand_header_value(str(value))
+        str(key): str(value)
         for key, value in entry.headers.items()
         if str(key).casefold() not in shadowed
     })
@@ -214,7 +195,7 @@ def build_request_kwargs(
 
 
 def auth_required_records(spec: SiteSpec, message: str, source_url: str | None = None) -> list[PriceRecord]:
-    targets = list(spec.models) or [ModelTarget("*")]
+    targets = list(spec.models)
     source_url = source_url or str(spec.network.get("url") or "")
     metadata = {"pricing_kind": "auth_required", "currency": "CNY", "error": message}
     return [
@@ -267,25 +248,12 @@ def network_pricing_records(
     records: dict[str, PriceRecord] = {}
     attempted_groups: dict[str, set[str | None]] = {}
     failures: dict[str, list[str]] = {}
-    # 全量采集（models: ["*"]）：目标模型不预置，逐响应从 data[].model_name 现场展开
-    effective_targets: list[ModelTarget] = []
     for response in ordered:
         payload = response.get("payload")
         if not isinstance(payload, dict):
             continue
         data = [value for value in payload.get("data", []) if isinstance(value, dict)]
-        if spec.collect_all:
-            targets = [
-                ModelTarget(name)
-                for name in dict.fromkeys(
-                    str(value.get("model_name", "")).strip()
-                    for value in data
-                    if str(value.get("model_name", "")).strip()
-                )
-            ]
-            effective_targets.extend(targets)
-        else:
-            targets = list(spec.models)
+        targets = list(spec.models)
         for target in targets:
             attempted_groups.setdefault(target.name, set())
             failures.setdefault(target.name, [])
@@ -343,7 +311,7 @@ def network_pricing_records(
                     metadata["matched_model_name"] = site_name
                 record.metadata = metadata
                 records[record_key] = record
-    for target in (effective_targets if spec.collect_all else list(spec.models)):
+    for target in list(spec.models):
         groups = attempted_groups.get(target.name) or {"default"}
         for selected_group in groups:
             record_key = f"{target.name}:{selected_group or ''}"
@@ -393,14 +361,10 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
             for model in models:
                 if not isinstance(model, dict):
                     continue
-                if spec.collect_all:
-                    name = str(model.get("name", "")).strip()
-                    target = ModelTarget(name) if name else None
-                else:
-                    target = next(
-                        (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
-                        None,
-                    )
+                target = next(
+                    (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
+                    None,
+                )
                 if target is None:
                     continue
                 pricing = model.get("pricing") or {}
@@ -548,8 +512,6 @@ class NetworkAdapter:
             "payload": payload,
             "content_type": response.headers.get("content-type", ""),
         }
-        ai_page_text = response.text
-        ai_captured = [captured]
         if not response_is_json:
             # 接口直采不做Headless自动回退：抓到空壳/风控页就按采集失败上报，
             # 需要浏览器渲染的站点由管理员显式切到「网页模式」（headless.enabled）
@@ -559,8 +521,7 @@ class NetworkAdapter:
             # Always let AI inspect New API/One API model names when enabled.
             # It resolves informal configured labels to evidence-backed
             # model_name aliases; pricing itself remains deterministic.
-            # 全量采集没有预置目标名可解析，直读已覆盖全部模型，跳过这轮 AI。
-            if ai is not None and ai.enabled and ai.base_url and ai.pick_model() and not spec.collect_all:
+            if ai is not None and ai.usable:
                 try:
                     ai_records = AIPriceExtractor(ai).extract(
                         spec, "", [captured], client=client,
@@ -589,15 +550,17 @@ class NetworkAdapter:
                         resolved.metadata = details
                     if any(record.price_status != "unavailable" for record in resolved_records):
                         return resolved_records
-                except AIExtractionError:
-                    pass
+                except AIExtractionError as exc:
+                    # 回落确定性直采定价是既定设计，但回落原因必须留痕——
+                    # 超时/模型池全坏时无日志就无从定位整轮为何拖长
+                    tasklog.emit(f"[{spec.id}] AI 模型名解析失败，使用直采定价：{exc}", "warn")
             return direct_records
         if looks_like_platform_pricing(payload):
             # 新版平台分桶定价结构：直读 final_prices，不再依赖 AI 逐分组映射
             platform_records = platform_pricing_records(spec, [captured])
             if platform_records:
                 return platform_records
-        if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
+        if ai is not None and ai.usable:
             return AIPriceExtractor(ai).extract(
                 spec,
                 "",
@@ -624,7 +587,7 @@ class NetworkAdapter:
         # 页面自带结构化价格表时优先确定性解析；页面里没有目标模型时，
         # 自动发现页面引用的 JS chunk 逐个查找（chunk 文件名常带内容哈希，
         # 每次采集重新发现，站点改版也能跟上），仍未命中再交给 AI
-        entries = _parse_base_price_entries(response.text)
+        entries = parse_base_price_entries(response.text)
         evidence_url = str(response.url)
         evidence_status = response.status_code
         evidence_text = response.text
@@ -682,7 +645,7 @@ class NetworkAdapter:
             )
             if any(record.price_status == "confirmed" for record in records):
                 return records
-        if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
+        if ai is not None and ai.usable:
             return AIPriceExtractor(ai).extract(
                 spec, ai_page_text, ai_captured, client=client,
                 expected_models=[target.name for target in spec.models],
@@ -757,7 +720,7 @@ def _search_price_chunk(
                 continue
             if chunk_response.status_code != 200:
                 continue
-            parsed = _parse_base_price_entries(chunk_response.text)
+            parsed = parse_base_price_entries(chunk_response.text)
             if parsed and any(_entry_matches_targets(item, spec) for item in parsed):
                 return _ChunkHit(chunk_url, chunk_response.status_code, chunk_response.text, parsed)
             if fallback is None and any(name in chunk_response.text.casefold() for name in target_names):
@@ -826,7 +789,7 @@ def _entries_from_json(payload: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _parse_base_price_entries(text: str) -> list[dict[str, Any]]:
+def parse_base_price_entries(text: str) -> list[dict[str, Any]]:
     """解析基准价表条目：先试整体 JSON（标准编码、键序无关），再退回压缩 JS 字面量正则。"""
     stripped = text.lstrip()
     if stripped[:1] in {"{", "["}:
@@ -847,12 +810,7 @@ def _parse_base_price_entries(text: str) -> list[dict[str, Any]]:
 
 
 def _entry_matches_targets(entry: dict[str, Any], spec: SiteSpec) -> bool:
-    """基准价表条目是否命中配置的目标模型；站点省略版本号的写法也算命中。
-
-    全量采集（models: ["*"]）时任何带模型名的条目都算命中。
-    """
-    if spec.collect_all:
-        return any(str(model).strip() for model in entry.get("models") or [])
+    """基准价表条目是否命中配置的目标模型；站点省略版本号的写法也算命中。"""
     return bool(resolve_site_names(
         [str(model) for model in entry.get("models") or []],
         {target.name: (target.name,) for target in spec.models},
@@ -898,7 +856,7 @@ def _ratio_endpoint(network: dict[str, Any]) -> tuple[str, dict[str, str]] | Non
         headers = ratio_raw.get("headers")
         if not isinstance(url, str) or not url.strip():
             return None
-        return url.strip(), {str(key): expand_header_value(str(value)) for key, value in headers.items()} if isinstance(headers, dict) else {}
+        return url.strip(), {str(key): str(value) for key, value in headers.items()} if isinstance(headers, dict) else {}
     return None
 
 
@@ -992,24 +950,14 @@ def _records_from_base_entries(
             name = str(model).strip()
             if name:
                 entry_by_name.setdefault(name, item)
-    if spec.collect_all:
-        # 全量：基准价表里每个站点模型名各成一条记录，大小写重复取首个
-        seen: set[str] = set()
-        pairs: list[tuple[ModelTarget, str, dict[str, Any] | None]] = []
-        for name, entry in entry_by_name.items():
-            if name.casefold() in seen:
-                continue
-            seen.add(name.casefold())
-            pairs.append((ModelTarget(name), name, entry))
-    else:
-        matched = resolve_site_names(
-            list(entry_by_name),
-            {target.name: (target.name,) for target in spec.models},
-        )
-        pairs = [
-            (target, matched.get(target.name, ""), entry_by_name.get(matched.get(target.name, "")))
-            for target in spec.models
-        ]
+    matched = resolve_site_names(
+        list(entry_by_name),
+        {target.name: (target.name,) for target in spec.models},
+    )
+    pairs = [
+        (target, matched.get(target.name, ""), entry_by_name.get(matched.get(target.name, "")))
+        for target in spec.models
+    ]
     for target, site_name, entry in pairs:
         if entry is None:
             records.append(_base_entry_unavailable(spec, target.name, source_url, evidence, f"基准价表中未找到模型 {target.name}", adapter_label))

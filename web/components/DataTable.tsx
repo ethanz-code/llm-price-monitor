@@ -8,6 +8,7 @@ import { Btn, Empty, Sel } from "./ui";
 import { IconNodes } from "./icons";
 import { useNarrow } from "@/lib/useNarrow";
 import { PAGE_SIZE_OPTIONS, usePageSize } from "@/lib/usePageSize";
+import { formatCount } from "@/lib/format";
 
 export interface DColumn<T> {
   /** 稳定标识；缺省时取 dataIndex */
@@ -51,6 +52,8 @@ export function DataTable<T extends object>({
   rows,
   rowKey,
   paginated,
+  defaultPageSize,
+  pageSizeStorageKey,
   empty = "暂无数据",
   footer,
   scrollX,
@@ -64,8 +67,12 @@ export function DataTable<T extends object>({
   columns: DColumn<T>[];
   rows: T[];
   rowKey: keyof T & string | ((row: T) => string);
-  /** true = 开启分页：每页条数默认 35，选择器可改并全站记住 */
+  /** true = 开启分页：每页条数默认 35（或 defaultPageSize），选择器可改并全站记住 */
   paginated?: boolean;
+  /** 本表的默认每页条数：无本地偏好时生效（如榜单页 100） */
+  defaultPageSize?: number;
+  /** 本表独立的每页条数存储键：传入后不被全站偏好影响（与 defaultPageSize 搭配用） */
+  pageSizeStorageKey?: string;
   empty?: ReactNode;
   footer?: ReactNode;
   /** 表格最小宽度（px），超出时容器横向滚动 */
@@ -116,7 +123,7 @@ export function DataTable<T extends object>({
   );
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [pageSize, setPageSize] = usePageSize();
+  const [pageSize, setPageSize] = usePageSize(defaultPageSize, pageSizeStorageKey);
 
   function toggleExpand(key: string) {
     setExpanded((previous) => {
@@ -311,7 +318,7 @@ export function DataTable<T extends object>({
       {paginated && (pageCount > 1 || sorted.length > PAGE_SIZE_OPTIONS[0]) && (
         <div className="pager">
           <span className="pager-info">
-            共 <span className="mono">{sorted.length}</span> 条
+            共 <span className="mono">{formatCount(sorted.length)}</span> 条
           </span>
           {pageCount > 1 && (
             <>

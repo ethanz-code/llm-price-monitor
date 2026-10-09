@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -18,8 +19,8 @@ from llm_price_monitor.ai import (
     request_with_model_fallback,
 )
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec, load_config, sites_from_raw
-from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, target_page_text as _target_page_text
-from llm_price_monitor.report import GROUP_REMOVED_MISSES, classify, fingerprint, run_once, summary_row as _summary_row
+from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, slim_pricing_payload as _slim_pricing_payload, target_page_text as _target_page_text
+from llm_price_monitor.report import GROUP_REMOVED_MISSES, _persist_scan_results, classify, fingerprint, record_dict, run_once, summary_row as _summary_row
 from llm_price_monitor.store import Store
 from llm_price_monitor.useragent import BROWSER_USER_AGENTS, choose_user_agent
 from llm_price_monitor.tracker import PriceRecord
@@ -54,6 +55,80 @@ def _ai_request_body(spec, page_text, responses, *, page_sources=None, config=No
     return captured["body"]
 
 
+def test_slim_pricing_payload_projects_newapi_fields():
+    payload = {
+        "success": True,
+        "message": "ok",
+        "announcement": "双十一全场促销，充值满 1000 送 100！",
+        "data": [{
+            "model_name": "gpt-5.6-sol",
+            "model_ratio": 1.25,
+            "completion_ratio": 4,
+            "quota_type": 0,
+            "enable_groups": ["default", "vip"],
+            "description": "GPT-5.6 Sol 是 OpenAI 的最新推理模型，支持超长上下文…" * 20,
+            "icon": "https://demo.test/icons/gpt.png",
+            "tags": ["热门", "推荐"],
+            "supported_endpoint_types": ["chat", "embeddings"],
+        }],
+        "group_ratio": {"default": 1, "vip": 0.8},
+        "usable_group": {"default": "默认分组", "vip": "VIP 分组"},
+    }
+
+    slimmed = _slim_pricing_payload(payload)
+
+    entry = slimmed["data"][0]
+    assert entry == {
+        "model_name": "gpt-5.6-sol",
+        "model_ratio": 1.25,
+        "completion_ratio": 4,
+        "quota_type": 0,
+        "enable_groups": ["default", "vip"],
+    }
+    assert set(slimmed) == {"data", "group_ratio", "usable_group"}
+    assert "announcement" in json.dumps(payload, ensure_ascii=False)
+    assert "description" not in json.dumps(slimmed, ensure_ascii=False)
+
+
+def test_slim_pricing_payload_keeps_non_newapi_intact():
+    payload = {"models": [{"id": "gpt-5.6-sol", "input": 1, "output": 2, "description": "长描述"}]}
+
+    assert _slim_pricing_payload(payload) == payload
+
+
+def test_ai_request_slims_newapi_pricing_evidence():
+    spec = SiteSpec(
+        id="wild",
+        adapter="browser",
+        network={"url": "https://wild.test/api/pricing"},
+        models=(ModelTarget("gpt-5.6-sol"),),
+    )
+    responses = [
+        {"url": "https://wild.test/api/pricing", "status": 200, "resource_type": "fetch", "payload": {
+            "success": True,
+            "announcement": "促销公告" * 50,
+            "data": [{
+                "model_name": "gpt-5.6-sol",
+                "model_ratio": 1.25,
+                "completion_ratio": 4,
+                "enable_groups": ["default"],
+                "description": "最新模型的超长介绍文本" * 50,
+                "icon": "https://wild.test/icon.png",
+            }],
+            "group_ratio": {"default": 1},
+        }},
+    ]
+
+    body = _ai_request_body(spec, "", responses)
+
+    request_content = body["messages"][1]["content"]
+    evidence = json.loads(request_content.split("网页证据：\n", 1)[1])
+    quote = evidence["network_evidence"][0]["quote"]
+    assert '"model_ratio":1.25' in quote
+    assert "最新模型的超长介绍文本" not in quote
+    assert "促销公告" not in quote
+
+
 def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkeypatch):
     payload = {"data": [{"model_name": "demo-model", "official": {"input": 1, "output": 2, "unit": "USD/1M tokens"}}]}
 
@@ -67,7 +142,8 @@ def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkey
     store = Store(tmp_path / "monitor.db")
     monkeypatch.setattr(NetworkAdapter, "collect", collect)
     first = run_once(config, store=store, client=httpx.Client())
-    assert [event["kind"] for event in first.events] == ["new"]
+    # 首轮是建档轮：价格静默入库，不发逐模型"新增"事件（避免新站点刷屏事件流）
+    assert first.events == []
     assert first.records[0]["price_status"] == "confirmed"
 
     payload["data"][0]["official"]["output"] = 3
@@ -184,8 +260,8 @@ def test_no_price_placeholder_never_persists_and_carry_marks_auth(tmp_path: Path
     assert store.count_history() == 1
     snapshot = store.latest_all()["demo:demo-model:default"]
     assert snapshot["input_price"] == 1 and snapshot["requires_auth"] is False
-    # 遗留占位在上一轮持久化时已被清理，这里 previous 为空，按新增建档
-    assert [event["kind"] for event in recovered.events] == ["new"]
+    # 遗留占位在上一轮持久化时已被清理，这里 previous 为空，同样按建档轮静默处理
+    assert recovered.events == []
 
     # 再次失败：沿用上次价、状态标需认证、记录上次取到价时间，且历史不膨胀
     monkeypatch.setattr(NetworkAdapter, "collect", collect_unavailable)
@@ -455,17 +531,15 @@ def test_network_page_response_is_sent_to_ai_without_dom_or_browser(monkeypatch)
     assert seen["payload"] is None
 
 
-def test_browser_adapter_expands_environment_variables_in_headers(monkeypatch):
-    monkeypatch.setenv("PRICE_TOKEN", "secret")
-
+def test_browser_adapter_headers_sent_literally():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer secret"
+        assert request.headers["authorization"] == "Bearer tk-secret"
         return httpx.Response(200, json={"data": [{"model_name": "demo-model", "input_price": 1, "output_price": 2}]})
 
     spec = SiteSpec(
-        id="env-header",
+        id="literal-header",
         models=(ModelTarget("demo-model"),),
-        network={"url": "https://demo.test/api/pricing", "headers": {"Authorization": "Bearer ${PRICE_TOKEN}"}},
+        network={"url": "https://demo.test/api/pricing", "headers": {"Authorization": "Bearer tk-secret"}},
     )
     client = httpx.Client(transport=httpx.MockTransport(handler))
     records = NetworkAdapter().collect(spec, client, 5, BROWSER_USER_AGENTS[0])
@@ -909,6 +983,284 @@ def test_ai_transport_error_is_logged(monkeypatch):
     assert "模型池全部失败" in rows[1]["error"]
 
 
+def test_ai_fallback_respects_deadline():
+    """换模型重试受总时长预算约束：预算已过就立刻中止，不再逐模型把时间烧光。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection reset by peer", request=request)
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
+    with pytest.raises(AIExtractionError) as exc_info:
+        request_with_model_fallback(
+            config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)),
+            deadline=time.monotonic() - 1,
+        )
+    assert "时间预算" in str(exc_info.value)
+
+
+def test_ai_prompt_too_long_falls_back_to_next_model(monkeypatch):
+    """prompt 超出单模型上下文按模型级故障换下一个，不再判死整轮：池内模型上下文差异大，
+    小上下文模型（如 7b 蒸馏 32k）装不下不代表 129k 的模型装不下。"""
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.read())["model"] == "m-a":
+            return httpx.Response(400, json={"error": {"message": "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 32768]"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
+    model, _ = request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert model == "m-b"
+    assert [(row["model"], row["status"]) for row in rows] == [("m-a", "fallback"), ("m-b", "ok")]
+    assert "prompt 超出该模型上下文上限" in rows[0]["error"]
+
+
+def test_ai_max_tokens_range_error_retries_with_clamped_budget(monkeypatch):
+    """max_tokens 超出模型上限：解析报错里的上限同模型降额重试一次，并缓存供后续请求直接按上限构造。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {})
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    bodies: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        bodies.append(body["max_tokens"])
+        if len(bodies) == 1:
+            return httpx.Response(400, json={"error": {"message": "Range of max_tokens should be [1, 2000]"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    model, _ = request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert model == "m-a"
+    assert bodies == [4000, 2000]
+    assert [(row["model"], row["status"]) for row in rows] == [("m-a", "param_retry"), ("m-a", "ok")]
+    # 学到的上限缓存生效：之后的请求经 ai_request 直接按上限构造，不再白发那次 400
+    _, _, clamped_body = ai_mod.ai_request(config, "m-a", "", "hi")
+    assert clamped_body["max_tokens"] == 2000
+
+
+def test_ai_http_client_bypasses_env_proxy(monkeypatch):
+    """AI 请求默认直连：环境变量代理（本地 Clash 等）不再接管，trust_env 关闭、不传代理。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:7897")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7897")
+    monkeypatch.setenv("all_proxy", "http://127.0.0.1:7897")
+    captured: dict = {}
+    real_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    def spy_client(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(ai_mod.httpx, "Client", spy_client)
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    model, _ = request_with_model_fallback(config, "", "hi", scene="测试")
+    assert model == "m-a"
+    assert captured["trust_env"] is False
+    assert captured["proxy"] is None
+
+
+def test_ai_http_client_honors_configured_proxy(monkeypatch):
+    """ai.proxy 配置了代理时显式走该代理（base_url 在海外需要代理的场景）。"""
+    import llm_price_monitor.ai as ai_mod
+
+    captured: dict = {}
+    real_client = httpx.Client
+
+    def spy_client(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(ai_mod.httpx, "Client", spy_client)
+    client = ai_mod.ai_http_client(AIConfig(base_url="https://ai.test/v1", models=("m",), proxy="http://127.0.0.1:7897"))
+    client.close()
+    assert captured["proxy"] == "http://127.0.0.1:7897"
+    assert captured["trust_env"] is False
+
+
+def test_ai_config_proxy_parsing():
+    from llm_price_monitor.config import ai_from_raw
+
+    base = {"base_url": "https://ai.test/v1", "models": ["m"], "api_key": "k"}
+    assert ai_from_raw({**base, "proxy": " http://127.0.0.1:7897 "}, cache=None).proxy == "http://127.0.0.1:7897"
+    assert ai_from_raw({**base}, cache=None).proxy is None
+    assert ai_from_raw({**base, "proxy": ""}, cache=None).proxy is None
+    with pytest.raises(ValueError, match="ai.proxy"):
+        ai_from_raw({**base, "proxy": "ftp://127.0.0.1:7897"}, cache=None)
+
+
+def test_ai_extract_batch_loop_stops_at_budget(monkeypatch):
+    """整轮提取共享单站预算：预算耗尽后剩余批次不再发起，而不是把一轮采集拖到小时级。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "SITE_AI_BUDGET_SECONDS", 0)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        result = {"models": [{
+            "model": "demo-model",
+            "input_price": 5,
+            "output_price": 30,
+            "unit": "USD/1M tokens",
+            "currency": "USD",
+            "status": "confirmed",
+            "confidence": 0.99,
+            "network_evidence": [{"url": "https://demo.test/api/price", "quote": "input=5 output=30"}],
+            "page_evidence": ["demo-model Input 5 Output 30 USD/1M tokens"],
+            "notes": "",
+        }], "cross_validation": {"status": "matched", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(
+        id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
+        models=tuple(ModelTarget(name) for name in ("m1", "m2", "m3", "m4", "m5")),
+    )
+    with pytest.raises(AIExtractionError) as exc_info:
+        extractor.extract(
+            spec, "",
+            [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+              "content_type": "application/json", "payload": {"models": []}}],
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+    # 预算在批循环入口检查：一个请求都不该发出去
+    assert calls["count"] == 0
+    assert "预算" in str(exc_info.value)
+
+
+def test_ai_extract_budget_scales_with_batch_count(monkeypatch):
+    """预算随批次数等比放大：5 模型 2 批 → 2×SITE_AI_BUDGET_SECONDS，第一批正常跑完。"""
+    import llm_price_monitor.ai as ai_mod
+
+    budget = 600
+    monkeypatch.setattr(ai_mod, "SITE_AI_BUDGET_SECONDS", budget)
+    deadline_seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    real_fallback = ai_mod.request_with_model_fallback
+
+    def spy_fallback(*args, **kwargs):
+        deadline_seen.append(kwargs.get("deadline"))
+        return real_fallback(*args, **kwargs)
+
+    monkeypatch.setattr(ai_mod, "request_with_model_fallback", spy_fallback)
+    spec = SiteSpec(
+        id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
+        models=tuple(ModelTarget(name) for name in ("m1", "m2", "m3", "m4", "m5")),
+    )
+    extractor.extract(
+        spec, "",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    # extract 拿 5 个目标模型起 2 个批次，请求入口的 deadline 都是起点 + 2×预算
+    assert len(deadline_seen) >= 1
+    assert deadline_seen[0] - ai_mod.time.monotonic() <= 2 * budget
+    assert deadline_seen[0] - ai_mod.time.monotonic() > budget
+
+
+def test_ai_extract_budget_exhaustion_keeps_completed_batches(monkeypatch):
+    """预算耗尽保留已完成批次：不再整轮作废，剩余批次不再发起，日志留痕。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor import tasklog
+
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+    monkeypatch.setattr(ai_mod.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(ai_mod, "SITE_AI_BUDGET_SECONDS", 100)
+    logs: list[tuple[str, str]] = []
+    tasklog.bind(lambda message, level: logs.append((message, level)))
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        clock.now = 500.0  # 第一批请求把时钟推过 2 批总预算 200s，第二批在入口被拦下
+        result = {"models": [{
+            "model": "demo-model",
+            "input_price": 5,
+            "output_price": 30,
+            "unit": "USD/1M tokens",
+            "currency": "USD",
+            "status": "confirmed",
+            "confidence": 0.99,
+            "network_evidence": [{"url": "https://demo.test/api/price", "quote": "input=5 output=30"}],
+            "page_evidence": ["demo-model Input 5 Output 30 USD/1M tokens"],
+            "notes": "",
+        }], "cross_validation": {"status": "matched", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    try:
+        extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+        spec = SiteSpec(
+            id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
+            models=tuple(ModelTarget(name) for name in ("demo-model", "m2", "m3", "m4", "m5")),
+        )
+        records = extractor.extract(
+            spec, "",
+            [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+              "content_type": "application/json", "payload": {"models": []}}],
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+    finally:
+        tasklog.unbind()
+    assert calls["count"] == 1  # 第二批没有发起
+    assert len(records) >= 1  # 第一批的成果保留
+    assert any("保留已完成" in message and "剩余批次不再发起" in message for message, _ in logs)
+
+
+def test_ai_extract_switches_model_on_bad_models_shape(monkeypatch):
+    """解析得出但缺 models 数组的坏 JSON（实测 kimi 输出过）在校验层拦下换下一个模型，不再炸整轮提取。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("garbage-model", "good-model"), api_key="k")
+    called: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        called.append(body["model"])
+        # 实测坏响应形态：合法 JSON 对象，但 models 是字符串
+        content = '{"models":":[{","model":"demo-model"}' if body["model"] == "garbage-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    extractor = AIPriceExtractor(config)
+    spec = SiteSpec(
+        id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
+        models=tuple(ModelTarget(name) for name in ("demo-model",)),
+    )
+    records = extractor.extract(
+        spec, "",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert called == ["garbage-model", "good-model"]  # 坏模型被换掉，整轮没有失败
+    # good-model 返回空 models：预期模型按既有口径落 unavailable 占位，而不是整轮报错
+    assert len(records) == 1
+    assert records[0].price_status == "unavailable"
+
+
 def test_provider_error_detail_parses_each_provider_shape():
     """任意供应商的错误形态都解析成 message 要点：JSON 递归找消息字段，HTML 剥标签，纯文本保留。"""
     def response(body: str, status: int = 403) -> httpx.Response:
@@ -962,14 +1314,14 @@ def test_ai_config_loads_bounded_non_thinking_output(tmp_path: Path):
         "ai": {
             "base_url": "https://config-ai.test/v1",
             "models": ["config-model"],
-            "max_tokens": 1234,
+            "max_tokens": 4000,
             "enable_thinking": False,
         },
         "settings": {},
         "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}],
     }))
 
-    assert config.ai.max_tokens == 1234
+    assert config.ai.max_tokens == 4000
     assert config.ai.enable_thinking is False
 
 
@@ -997,7 +1349,7 @@ def test_target_model_aliases_select_one_page_card():
 
 
 def test_browser_adapter_requires_explicit_target_model():
-    with pytest.raises(PriceMonitorError, match="未配置目标模型 models；全量采集请配置"):
+    with pytest.raises(PriceMonitorError, match="未配置目标模型 models"):
         NetworkAdapter().collect(
             SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}),
             httpx.Client(),
@@ -1072,8 +1424,8 @@ def test_browser_probe_reports_no_discoverable_price_data(tmp_path: Path, monkey
 
 def test_browser_adapter_requires_network_url(tmp_path: Path):
     config = load_config(_write_config(tmp_path, {
-        "settings": {},
-        "sites": [{"id": "demo", "adapter": "standard", "models": ["demo-model"]}],
+        "settings": {"monitor_models": ["demo-model"]},
+        "sites": [{"id": "demo", "adapter": "standard"}],
     }))
     with pytest.raises(PriceMonitorError, match="未配置 network.url"):
         NetworkAdapter().collect(config.sites[0], httpx.Client(), 1, BROWSER_USER_AGENTS[0], config.ai)
@@ -1818,11 +2170,11 @@ def test_run_once_persists_per_site_collect_status(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(NetworkAdapter, "collect", collect)
     config = load_config(_write_config(tmp_path, {
-        "settings": {"history_file": str(tmp_path / "history.jsonl"), "latest_file": str(tmp_path / "latest.json"), "event_file": str(tmp_path / "events.jsonl")},
+        "settings": {"history_file": str(tmp_path / "history.jsonl"), "latest_file": str(tmp_path / "latest.json"), "event_file": str(tmp_path / "events.jsonl"), "monitor_models": ["demo-model"]},
         "sites": [
-            {"id": "good", "models": ["demo-model"]},
-            {"id": "bad", "adapter": "missing", "models": ["demo-model"]},
-            {"id": "off", "enabled": False, "models": ["demo-model"]},
+            {"id": "good", "enabled": True},
+            {"id": "bad", "adapter": "missing", "enabled": True},
+            {"id": "off", "enabled": False},
         ],
     }))
     store = Store(tmp_path / "monitor.db")
@@ -1938,8 +2290,8 @@ def test_standard_adapter_discovers_prices_in_referenced_js_chunk():
     page = '<html><head><script src="/static/js/prices-abc123.js"></script></head><body>定价页</body></html>'
     chunk = '{category:"openai",provider:"openAI",name:"GPT-5.6 Sol",models:["gpt-5.6-sol"],input:5,output:30}'
     (spec,) = sites_from_raw([
-        {"id": "chunky", "models": ["gpt-5.6-sol"], "network": {"url": "https://example.com/dashboard/pricing"}},
-    ])
+        {"id": "chunky", "network": {"url": "https://example.com/dashboard/pricing"}},
+    ], models=(ModelTarget("gpt-5.6-sol"),))
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith(".js"):
@@ -1960,13 +2312,12 @@ def test_standard_adapter_applies_ratio_url_to_base_prices():
     (spec,) = sites_from_raw([
         {
             "id": "rated",
-            "models": ["gpt-5.6-sol"],
             "network": {
                 "url": "https://example.com/dashboard/pricing",
                 "ratio_url": "https://example.com/api/public/model-pricing",
             },
         },
-    ])
+    ], models=(ModelTarget("gpt-5.6-sol"),))
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/public/model-pricing":
@@ -2067,6 +2418,64 @@ def test_group_removed_event_after_six_misses(tmp_path: Path, monkeypatch):
     assert removed["previous"]["metadata"]["group"] == "vip"
 
 
+def _sanity_catalog() -> dict:
+    return {
+        "usd_cny_rate": 6.74,
+        "models": {
+            "demomodel": {"found": True, "currency": "USD", "list": {"input": 5.0, "output": 30.0}, "source_url": "https://demo.test"},
+            "sanemodel": {"found": True, "currency": "USD", "list": {"input": 5.0, "output": 30.0}, "source_url": "https://demo.test"},
+        },
+    }
+
+
+def test_price_sanity_voids_absurd_extraction(tmp_path: Path, monkeypatch):
+    """站点价对厂商价离谱时作废本次观测：错误数值不得进快照与历史，正常价不受影响。"""
+    def collect(*_args):
+        return [
+            PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+            PriceRecord("sane-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    # 百万级错价被作废：首轮无上次价可沿用，整条不落快照
+    assert "demo:demo-model:default" not in store.latest_all()
+    # 正常价（0.2 折）原样入库
+    sane = store.latest_all()["demo:sane-model:default"]
+    assert sane["input_price"] == 1 and sane["price_status"] == "confirmed"
+
+
+def test_price_sanity_carries_last_price_with_reason(tmp_path: Path, monkeypatch):
+    """上次有价、本次提取翻车：沿用上次已知价并带上作废原因，不把好数据打成无价。"""
+    rounds = [
+        [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})],
+        [PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})],
+    ]
+
+    def collect(*_args):
+        return rounds.pop(0)
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+    run_once(config, store=store, client=httpx.Client())
+
+    carried = store.latest_all()["demo:demo-model:default"]
+    assert carried["input_price"] == 1  # 上次的真实价还在展示
+    assert carried["price_status"] == "unavailable"
+    assert "可信区间" in (carried.get("metadata") or {}).get("error", "")
+
+
 def test_group_removed_requires_consecutive_misses(tmp_path: Path, monkeypatch):
     """缺失中途恢复一次就清零计数：累计而非连续的缺失不得累积成下线。"""
     groups = {"default", "vip"}
@@ -2117,6 +2526,81 @@ def test_group_added_event_for_known_model(tmp_path: Path, monkeypatch):
     assert [event["kind"] for event in added.events] == ["group_added"]
     assert added.events[0]["current"]["metadata"]["group"] == "vip"
     assert added.events[0]["previous"] is None
+
+
+def test_established_site_still_records_new_model(tmp_path: Path, monkeypatch):
+    """建档轮静默只针对全新站点：站点建立后再冒出的全新模型仍发"新增"事件。"""
+    models = {"demo-model"}
+
+    def collect(*_args):
+        return [
+            PriceRecord(name, 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})
+            for name in sorted(models)
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    first = run_once(config, store=store, client=httpx.Client())
+    assert first.events == []  # 首轮建档：静默入库
+    models.add("extra-model")
+    second = run_once(config, store=store, client=httpx.Client())
+    assert [(event["kind"], event["model"]) for event in second.events] == [("new", "extra-model")]
+
+
+def test_concurrent_persist_dedupes_events_and_respects_touched(tmp_path: Path):
+    """并行采集复查去重：测试采集与全量采集对同一份旧快照各自检出同一变化时，
+    后落库一路在锁内复查最新快照后丢弃重复事件；本轮没碰过的站点行（touched 之外）
+    不得拿开始时的旧值回写覆盖并发轮次的更新。"""
+
+    def row(site_id: str, model: str, input_price: float, captured_at: float) -> dict:
+        record = PriceRecord(model, input_price, input_price * 5, "USD/1M tokens", "https://demo.test/pricing", captured_at, {"group": "default"})
+        base = record_dict(site_id, record)
+        base["price_status"] = "confirmed"
+        base["requires_auth"] = False
+        base["fingerprint"] = fingerprint(base)
+        return base
+
+    store = Store(tmp_path / "monitor.db")
+    old_demo = row("demo", "demo-model", 1.0, 1000.0)
+    old_other = row("other", "other-model", 2.0, 1000.0)
+    store.replace_latest({"demo:demo-model:default": old_demo, "other:other-model:default": old_other})
+
+    # 两路扫描共同的旧基线；各自采集到同一份新价（captured_at 不同、指纹相同）
+    fresh_demo = row("demo", "demo-model", 3.0, 2000.0)
+    fresh_demo_later = row("demo", "demo-model", 3.0, 2500.0)
+    event = {"site_id": "demo", "model": "demo-model", "kind": "changed", "previous": old_demo, "current": fresh_demo, "detected_at": 2000.0}
+    duplicate = {**event, "current": fresh_demo_later, "detected_at": 2500.0}
+
+    _persist_scan_results(
+        store, latest={"demo:demo-model:default": fresh_demo, "other:other-model:default": old_other},
+        history_rows=[], events=[event], removed_keys=set(), touched_keys={"demo:demo-model:default"},
+    )
+    assert store.read_events(limit=10)[1] == 1
+
+    # 并行路（单站测试）在第一路落库后写同一变化：事件被复查丢弃；
+    # 它基线里的 other 旧值不在 touched 内，不得覆盖期间 other 被并发更新的价格
+    concurrent_other = row("other", "other-model", 9.0, 2200.0)
+    store.replace_latest({"other:other-model:default": concurrent_other})
+    _persist_scan_results(
+        store, latest={"demo:demo-model:default": fresh_demo_later, "other:other-model:default": old_other},
+        history_rows=[], events=[duplicate], removed_keys=set(), touched_keys={"demo:demo-model:default"},
+    )
+    assert store.read_events(limit=10)[1] == 1  # 同一变化只入库一次
+    assert store.latest_all()["other:other-model:default"]["input_price"] == 9.0  # 不回写覆盖
+    assert store.latest_all()["demo:demo-model:default"]["input_price"] == 3.0
+
+    # 分组下线同口径：并发轮次已把分组摘除时，后到一路的下线事件被丢弃
+    store.remove_latest(["demo:demo-model:default"])
+    remove_event = {"site_id": "demo", "model": "demo-model", "kind": "group_removed", "previous": fresh_demo_later, "current": None, "detected_at": 3000.0}
+    _persist_scan_results(
+        store, latest={"other:other-model:default": concurrent_other},
+        history_rows=[], events=[remove_event], removed_keys={"demo:demo-model:default"}, touched_keys=set(),
+    )
+    assert store.read_events(limit=10)[1] == 1
+    assert "demo:demo-model:default" not in store.latest_all()  # 摘除结果不被复活
 
 
 def test_persist_false_scan_does_not_pollute_group_miss(tmp_path: Path, monkeypatch):
@@ -2635,85 +3119,378 @@ def test_canonical_site_config_pops_response_sample_residue():
     assert canonical == {"id": "x"}
 
 
-def test_site_models_wildcard_must_be_alone():
-    with pytest.raises(ValueError, match="不能再列出其他模型"):
-        sites_from_raw([{"id": "demo", "models": ["*", "demo-model"]}])
-    (site,) = sites_from_raw([{"id": "demo", "models": ["*"]}])
-    assert site.collect_all is True
+def test_monitor_models_wildcard_rejected():
+    from llm_price_monitor.config import settings_from_raw
+
+    with pytest.raises(ValueError, match='不再支持通配符'):
+        settings_from_raw({"monitor_models": ["*"]}, resolve_env=False)
+    with pytest.raises(ValueError, match='不再支持通配符'):
+        settings_from_raw({"monitor_models": ["*", "demo-model"]}, resolve_env=False)
 
 
-def test_network_pricing_collect_all_enumerates_every_model_and_group():
-    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
-    records = _network_pricing_records(spec, [{
-        "url": "https://demo.test/api/pricing",
-        "status": 200,
-        "resource_type": "fetch",
-        "payload": {
-            "group_ratio": {"default": 1, "vip": 0.5},
-            "data": [
-                {"model_name": "model-a", "enable_groups": ["default", "vip"], "model_ratio": 2, "completion_ratio": 2},
-                {"model_name": "model-b", "model_ratio": 1, "completion_ratio": 1},
-            ],
-        },
-    }])
-
-    by_key = {(record.model, record.metadata.get("group")): record for record in records}
-    assert set(by_key) == {("model-a", "default"), ("model-a", "vip"), ("model-b", "default")}
-    assert by_key[("model-a", "vip")].input_price == 2.0
-    assert by_key[("model-a", "default")].input_price == 4.0
-    assert by_key[("model-b", "default")].input_price == 2.0
-    assert all(record.price_status == "confirmed" for record in records)
+def test_ai_extract_without_models_still_fails():
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    with pytest.raises(AIExtractionError, match="未配置目标模型"):
+        extractor.extract(spec, "", [])
 
 
-def test_platform_pricing_collect_all_parses_every_supported_model():
-    from llm_price_monitor.adapters import platform_pricing_records
-
-    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/api/models"})
-    payload = {"data": [{"platforms": [{"supported_models": [
-        {"name": "model-x", "pricing": {"final_prices": [{"group_name": "default", "input_price": 1e-6, "output_price": 2e-6}]}},
-        {"name": "model-y", "pricing": {"final_prices": [{"group_name": "default", "input_price": 3e-6, "output_price": 4e-6}]}},
-    ]}]}]}
-    records = platform_pricing_records(spec, [{"url": "https://demo.test/api/models", "status": 200, "resource_type": "fetch", "payload": payload}])
-    assert {(record.model, record.input_price, record.output_price) for record in records} == {
-        ("model-x", 1.0, 2.0),
-        ("model-y", 3.0, 4.0),
+def _unavailable_result(names: list[str]) -> dict:
+    return {
+        "models": [
+            {
+                "model": name, "observed_model": name, "aliases": [],
+                "input_price": None, "output_price": None,
+                "unit": "CNY/1M tokens", "currency": "CNY",
+                "status": "unavailable", "confidence": 0.0, "group": "default",
+                "network_evidence": [], "page_evidence": [], "notes": "",
+            }
+            for name in names
+        ],
+        "cross_validation": {"status": "none", "conflicts": []},
     }
 
 
-def test_base_price_entries_collect_all_keeps_every_site_model():
-    from llm_price_monitor.adapters import _entry_matches_targets, _records_from_base_entries
-
-    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
-    entries = [
-        {"provider": "openai", "name": "GPT", "models": ["gpt-5", "gpt-5-mini"], "input": 1, "output": 2},
-        {"provider": "zhipu", "name": "GLM", "models": ["glm-5.3"], "input": 3, "output": 4},
-    ]
-    assert all(_entry_matches_targets(entry, spec) for entry in entries)
-    assert _entry_matches_targets({"models": ["  "]}, spec) is False
-
-    records = _records_from_base_entries(spec, entries, [], "https://demo.test/pricing", adapter_label="browser_network")
-    assert sorted(record.model for record in records) == ["glm-5.3", "gpt-5", "gpt-5-mini"]
-    by_model = {record.model: record for record in records}
-    assert by_model["glm-5.3"].input_price == 3
-    assert by_model["glm-5.3"].metadata["currency"] == "USD"
-
-
-def test_ai_collect_all_prompt_switches_to_full_catalog_scope():
-    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
-    body = _ai_request_body(spec, "页面上的模型卡片", [])
-    assert "通配全量" in body["messages"][0]["content"]
-    user = body["messages"][1]["content"]
-    assert "全部模型（未限定清单）" in user
-    assert "不得遗漏" in user
-
-
-def test_ai_collect_all_keeps_models_without_configured_targets():
-    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
+def _ai_extract_handler(seen_batches: list[list[str]], *, fail_second: bool = False):
+    calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if fail_second and calls["n"] == 2:
+            return httpx.Response(500, json={"error": {"message": "boom"}})
+        body = json.loads(request.read().decode())
+        user = body["messages"][1]["content"]
+        models_line = user.split("expected_models：\n", 1)[1].split("\n", 1)[0]
+        batch = json.loads(models_line)
+        seen_batches.append(batch)
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(_unavailable_result(batch))}}]})
+
+    return handler
+
+
+def test_ai_extract_splits_expected_models_into_batches_of_four():
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    targets = [f"model-{index:02d}" for index in range(17)]
+    seen_batches: list[list[str]] = []
+    handler = _ai_extract_handler(seen_batches)
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    records = extractor.extract(
+        spec, "", [],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        expected_models=targets,
+    )
+    assert seen_batches == [targets[0:4], targets[4:8], targets[8:12], targets[12:16], targets[16:17]]
+    assert sorted(record.model for record in records) == targets
+
+
+def test_ai_extract_batch_failure_fails_whole_round():
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    targets = [f"model-{index:02d}" for index in range(5)]
+    seen_batches: list[list[str]] = []
+    handler = _ai_extract_handler(seen_batches, fail_second=True)
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    with pytest.raises(AIExtractionError):
+        extractor.extract(
+            spec, "", [],
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            expected_models=targets,
+        )
+    # 第一批已成功也不返回半份数据
+    assert len(seen_batches) == 1
+
+
+def test_ai_config_rejects_max_tokens_below_4000():
+    from llm_price_monitor.config import ai_from_raw
+
+    with pytest.raises(ValueError, match="最低 4000"):
+        ai_from_raw({"base_url": "https://ai.test/v1", "models": ["m"], "api_key": "k", "max_tokens": 3999}, cache=None)
+    config = ai_from_raw({"base_url": "https://ai.test/v1", "models": ["m"], "api_key": "k", "max_tokens": 4000}, cache=None)
+    assert config.max_tokens == 4000
+
+
+def test_request_fallback_switches_model_on_invalid_output(monkeypatch):
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    # 模型池是随机洗牌的，钉死顺序断言才稳定
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+    called_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        called_models.append(body["model"])
+        content = "思考过程耗尽了全部 token" if body["model"] == "bad-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    model, response = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert called_models == ["bad-model", "good-model"]
+
+
+def test_request_fallback_budget_retry_on_truncated_output(monkeypatch):
+    """正文非空且 token 用量顶格 = 预算截断：同模型放大 max_tokens 重试一次，而不是换模型。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("thinker",), api_key="k")
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        sent.append(body)
+        if body["max_tokens"] == 4000:
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": '{"models": [{"model": "写了一半'}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 4000, "total_tokens": 5000},
+            })
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({"models": []})}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 1500, "total_tokens": 2500},
+        })
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "thinker"
+    assert [item["max_tokens"] for item in sent] == [4000, 16000]
+    assert [row["status"] for row in rows] == ["param_retry", "ok"]
+    assert "已放大到 16000" in rows[0]["error"]
+    assert rows[0]["completion_tokens"] == 4000
+
+
+def test_request_fallback_no_budget_retry_below_limit(monkeypatch):
+    """用量没顶格（模型纯粹输出了坏 JSON）不是预算问题：直接换下一个模型。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        sent.append(body)
+        content = "不是 JSON 的内容" if body["model"] == "bad-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 500, "total_tokens": 510},
+        })
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert [item["model"] for item in sent] == ["bad-model", "good-model"]
+    assert all(item["max_tokens"] == 4000 for item in sent)
+
+
+def test_request_fallback_empty_answer_with_full_budget_skips_budget_retry(monkeypatch):
+    """空正文 + 用量顶格是思考烧光预算：放大只会让它想得更久，直接换下一个模型。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("blank-thinker", "good-model"), api_key="k")
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        sent.append(body)
+        content = "" if body["model"] == "blank-thinker" else json.dumps({"models": []})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4000, "total_tokens": 4010},
+        })
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert all(item["max_tokens"] == 4000 for item in sent)
+
+
+def test_fallback_log_records_usage_and_finish_reason(monkeypatch):
+    """校验失败的 fallback 日志要带 token 用量，报错尾部带停止原因，截断才定位得了。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        content = "不是 JSON 的内容" if body["model"] == "bad-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3210, "completion_tokens": 980, "total_tokens": 4190},
+        })
+
+    request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    fallback_row = rows[0]
+    assert fallback_row["status"] == "fallback"
+    assert fallback_row["prompt_tokens"] == 3210
+    assert fallback_row["completion_tokens"] == 980
+    assert fallback_row["total_tokens"] == 4190
+    assert fallback_row["error"].endswith("｜finish=stop")
+
+
+def test_validation_failure_cools_model_for_subsequent_calls(monkeypatch):
+    """产出质量差（用量没顶格还坏 JSON）的模型进短期冷却，后续调用直接跳过。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+
+    def garbage_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        content = "不是 JSON" if body["model"] == "bad-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 500, "total_tokens": 510},
+        })
+
+    request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(garbage_handler)),
+        validate=json_content,
+    )
+    assert ai_mod._MODEL_COOLDOWN["bad-model"] > time.time()
+    assert "good-model" not in ai_mod._MODEL_COOLDOWN
+
+    called_models: list[str] = []
+
+    def ok_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        called_models.append(body["model"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"models": []})}}]})
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(ok_handler)),
+        validate=json_content,
+    )
+    assert called_models == ["good-model"]
+    assert model == "good-model"
+
+
+def test_budget_truncation_does_not_cool_model(monkeypatch):
+    """非空截断是预算问题不是模型的错：放大重试路径不进冷却名单。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("thinker",), api_key="k")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        content = (
+            '{"models": [{"model": "写一半'
+            if body["max_tokens"] == 4000
+            else json.dumps({"models": []})
+        )
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": body["max_tokens"], "total_tokens": body["max_tokens"] + 10},
+        })
+
+    request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert ai_mod._MODEL_COOLDOWN == {}
+
+
+def test_fallback_log_saves_raw_response_tail(monkeypatch):
+    """fallback 日志要存模型实际回复的原文尾部，坏在哪一眼可见。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+
+    bad_answer = '{"models": [{"model": "demo", "input_price": 0, "output_price": 0, "note": "写到一半没了'
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        content = bad_answer if body["model"] == "bad-model" else json.dumps({"models": []})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert rows[0]["status"] == "fallback"
+    assert rows[0]["response_excerpt"] == bad_answer[-500:]
+
+
+def test_json_content_empty_answer_has_explicit_message():
+    from llm_price_monitor.ai import AIExtractionError, json_content
+
+    with pytest.raises(AIExtractionError, match="回复正文为空"):
+        json_content("   ")
+
+
+def test_prompt_too_long_recognizes_dashscope_input_length_error():
+    from llm_price_monitor.ai import _prompt_too_long
+
+    exc = httpx.HTTPStatusError(
+        "client error",
+        request=httpx.Request("POST", "https://ai.test/v1/chat/completions"),
+        response=httpx.Response(400, json={"error": {
+            "code": "InvalidParameter",
+            "message": "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 129024]",
+        }}),
+    )
+    assert _prompt_too_long(exc) is True
+
+
+def test_evidence_ladder_shrinks_on_dashscope_input_length_error():
+    """证据超长：供应商报"Range of input length"也要触发降档，而不是整轮失败。"""
+    spec = SiteSpec(id="demo", models=(ModelTarget("gpt-5"),), network={"url": "https://demo.test/pricing"})
+    big_page = ("模型卡片 gpt-5 输入 1 输出 2 元 " * 30 + "\n") * 1200  # ~60 万字符，任何一档都装不下之前的完整原文
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        content = body["messages"][-1]["content"]
+        sizes.append(len(content))
+        if len(content) > 120_000:
+            return httpx.Response(400, json={"error": {
+                "code": "InvalidParameter",
+                "message": "<400> InternalError.Algo.InvalidParameter: Range of input length should be [1, 129024]",
+            }})
         result = {
             "models": [{
-                "model": "fresh-model", "observed_model": "fresh-model", "aliases": [],
+                "model": "gpt-5", "observed_model": "gpt-5", "aliases": [],
                 "input_price": 1, "output_price": 2, "unit": "CNY/1M tokens", "currency": "CNY",
                 "status": "confirmed", "confidence": 0.9, "group": "default",
                 "network_evidence": [], "page_evidence": [], "notes": "",
@@ -2723,17 +3500,9 @@ def test_ai_collect_all_keeps_models_without_configured_targets():
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
     extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
-    records = extractor.extract(
-        spec, "",
-        [{"url": "https://demo.test/api/pricing", "resource_type": "fetch", "status": 200, "payload": {"data": [{"model_name": "fresh-model"}]}}],
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    assert [record.model for record in records] == ["fresh-model"]
-    assert records[0].input_price == 1
+    records = extractor.extract(spec, big_page, [], client=httpx.Client(transport=httpx.MockTransport(handler)))
 
-
-def test_ai_extract_without_models_or_wildcard_still_fails():
-    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
-    with pytest.raises(AIExtractionError, match="未配置目标模型"):
-        extractor.extract(spec, "", [])
+    assert [record.model for record in records] == ["gpt-5"]
+    assert len(sizes) >= 2
+    assert sizes[0] > 120_000
+    assert sizes[-1] <= 120_000

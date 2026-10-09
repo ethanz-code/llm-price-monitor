@@ -17,8 +17,9 @@ from llm_price_monitor.adapters import build_request_kwargs, http_error_message,
 from llm_price_monitor.timeline import TIMELINE_KEYS
 from llm_price_monitor.ai import (
     AIExtractionError,
-    _fit_text,
+    fit_text,
     ai_content,
+    ai_http_client,
     json_content,
     request_with_model_fallback,
 )
@@ -111,9 +112,9 @@ def ai_extract_status(
 页面地址：{url}
 
 网页内容：
-{_fit_text(text, config.max_input_chars)}"""
+{fit_text(text, config.max_input_chars)}"""
     own = client is None
-    client = client or httpx.Client(timeout=config.timeout)
+    client = client or ai_http_client(config)
     try:
         _, response = request_with_model_fallback(config, system, user, client=client, scene="渠道状态")
         result = json_content(ai_content(config.api_format, response.json()))
@@ -158,7 +159,7 @@ def fetch_site_status(
         data = _status_from_text(response.text)
         parse_kind = "embedded_json"
     if data is None:
-        if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
+        if ai is not None and ai.usable:
             data = ai_extract_status(ai, response.text, str(response.url), client=client)
             parse_kind = "ai"
         else:

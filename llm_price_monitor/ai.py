@@ -9,7 +9,7 @@ import json
 import random
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -18,8 +18,6 @@ from llm_price_monitor.config import AIConfig, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import (
     candidate_payload,
     contains_price_evidence,
-    first_model_segment,
-    first_target_payload,
     is_preferred_response_url,
     join_page_sources,
     payload_hash,
@@ -27,9 +25,11 @@ from llm_price_monitor.evidence import (
     redact_url,
     sanitize_evidence,
     structure_page_source,
+    slim_pricing_payload,
 )
+from llm_price_monitor import tasklog
 from llm_price_monitor.matching import canonical_target, contains_model_alias
-from llm_price_monitor.tracker import PriceRecord, _TextParser
+from llm_price_monitor.tracker import PriceRecord, TextParser
 from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none
 
 NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析中转站的价格接口响应（one-api/new-api 及各种自研结构）。自己判断响应的组织方式和价格字段：从原始 JSON 里找到目标模型的价格节点，按字段名和数量级判断单价口径（每 token 还是每 1M tokens，必要时换算成 CNY/1M tokens），同一模型的多份价格（分组/阶梯）逐个展开各输出一条。只使用证据里的数据，不得把倍率、余额或官方参考价冒充实际价格；拿不准口径就在 notes 写明推断依据并标 candidate，不要因此放弃。"""
@@ -37,6 +37,10 @@ NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析中转站的价格接口响�
 
 class AIExtractionError(PriceMonitorError):
     pass
+
+
+class AIBudgetExhaustedError(AIExtractionError):
+    """单站 AI 提取的时间预算耗尽：调用方可保留已完成批次的部分成果，不再发起新请求。"""
 
 
 # AI 请求日志钩子：由应用启动时注入 store.add_ai_log，ai.py 不反向依赖存储层
@@ -69,18 +73,65 @@ def _usage_tokens(api_format: str, payload: dict[str, Any]) -> tuple[int | None,
     to_int = lambda v: int(v) if isinstance(v, (int, float)) else None
     return to_int(prompt), to_int(completion), to_int(total)
 
+def _finish_reason(api_format: str, payload: dict[str, Any]) -> str | None:
+    """非流式响应的停止原因（length=预算截断等），截断判定与日志定位用；取不到返回 None。"""
+    if api_format == "chat_completions":
+        choices = payload.get("choices")
+        reason = choices[0].get("finish_reason") if isinstance(choices, list) and choices else None
+    elif api_format == "openai_responses":
+        reason = payload.get("status")
+    elif api_format == "anthropic":
+        reason = payload.get("stop_reason")
+    elif api_format == "gemini":
+        candidates = payload.get("candidates")
+        reason = candidates[0].get("finishReason") if isinstance(candidates, list) and candidates else None
+    else:
+        reason = None
+    return str(reason) if reason else None
+
+
+def _with_token_budget(api_format: str, body: dict[str, Any], limit: int) -> dict[str, Any]:
+    """按接口结构放大单次回复的 token 预算（截断重试用），其余字段原样保留。"""
+    if api_format in ("chat_completions", "anthropic"):
+        return {**body, "max_tokens": limit}
+    if api_format == "openai_responses":
+        return {**body, "max_output_tokens": limit}
+    if api_format == "gemini":
+        return {**body, "generationConfig": {**body.get("generationConfig", {}), "maxOutputTokens": limit}}
+    return body
+
 
 # 证据超长被供应商拒绝时，按阶梯收紧单条证据文本上限逐级重试；None 表示不限制。
 EVIDENCE_CHAR_LADDER: tuple[int | None, ...] = (None, 240_000, 96_000, 40_000, 16_000)
+# 抽取按模型分批的大小：单批输出 JSON 控制在 max_tokens=4000 预算内（一条完整记录含
+# 分组 tiers 与证据引用约 300~700 tokens，思考型模型还会额外烧预算），批太大输出会在
+# 中途截断成非法 JSON；批太小则调用次数翻倍。
+AI_EXTRACT_BATCH_SIZE = 4
+
+# 单站 AI 提取的总时长预算（× 批次数）：分批提取与换模型回退都没有总上限，链路整体
+# 抖动时（如凌晨 sudocode 单站拖 10.8 小时）一个站就能占住采集互斥名额拖垮整轮调度。
+# 600s 按单批站点的正常最慢耗时（约 6 分钟）取 2 倍富余标定；监控清单 40 模型 10 批次的
+# 全量提取正常就要 10 分钟起步，必须随批次数等比放大，否则每轮贴线爆预算。超预算保留
+# 已完成批次（直采兜底承接剩余模型），一个批次都没成才按失败上报该站。
+SITE_AI_BUDGET_SECONDS = 600
+
+# 校验失败（空正文/坏 JSON/输出非对象）的模型短期冷却：随机抽池会让同一个惯犯模型反复被选中
+# 反复失败，纯烧时间；冷却期内选模型直接跳过，全冷却时回退全池不拒服。截断（预算问题）与
+# 传输抖动（渠道问题）不冷却——那不是模型的错。进程重启清零；助手路径另有存库版 24h 冷却。
+_MODEL_COOLDOWN: dict[str, float] = {}
+_MODEL_COOLDOWN_TTL = 2 * 3600
+# fallback 日志里存的模型回复原文取尾部：JSON 坏在收尾（截断/少括号），开头没信息量
+_RESPONSE_TAIL_CHARS = 500
 
 _PROMPT_TOO_LONG_MARKERS = (
-    "1261",
+    "1261",  # 裸数字错误码：个别供应商 prompt 超限时正文只返回错误码不带文案
     "prompt 超长",
     "prompt is too long",
     "context length",
     "maximum context",
     "too many tokens",
     "request too large",
+    "range of input length",  # 阿里系（DashScope）：Range of input length should be [1, N]
 )
 
 
@@ -88,12 +139,12 @@ def _plain_text(value: str) -> str:
     """HTML 页面证据转纯文本，避免整页标签撑爆 AI 上下文；JSON 等非 HTML 内容原样返回。"""
     if not value.lstrip().startswith("<"):
         return value
-    parser = _TextParser()
+    parser = TextParser()
     parser.feed(value)
     return " ".join(parser.parts)
 
 
-def _fit_text(value: str, limit: int) -> str:
+def fit_text(value: str, limit: int) -> str:
     """把超长证据文本收敛到 limit 字符以内；保留开头与结尾，价格证据可能在任一端。"""
     if len(value) <= limit:
         return value
@@ -187,52 +238,158 @@ def _thinking_restricted(response: httpx.Response) -> bool:
     return response.status_code == 400 and "enable_thinking" in response.text
 
 
-def request_with_model_fallback(
-    config: AIConfig,
-    system: str,
-    user: str,
-    *,
-    json_mode: bool = True,
-    max_tokens: int | None = None,
-    client: httpx.Client | None = None,
-    scene: str = "AI 请求",
-    timeout: float | None = None,
-) -> tuple[str, httpx.Response]:
-    """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
+# max_tokens 越界报错解析：DashScope 等会在 400 文案里给出该模型的准确上限
+_MAX_TOKENS_RANGE_RE = re.compile(r"max_tokens should be \[1,\s*(\d+)\]", re.IGNORECASE)
+# 进程内缓存各模型学到的 max_tokens 上限：ai_request 构造请求时直接按上限降额，不再白发一次 400
+_MODEL_MAX_TOKENS_LIMIT: dict[str, int] = {}
 
-    思考不可关的模型拒收 enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。
-    连接失败（超时/连接重置/SSL EOF 等传输错误）与模型报错同样换下一个并留痕。
-    prompt 超长与 401 属于请求级/配置级问题，换模型无意义，原样抛出；池子耗尽时抛最后一个错误。
-    返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。timeout 可覆盖配置的单次请求超时
-    （如助手场景收紧死线），不传用 config.timeout。
+
+def _max_tokens_range_error(response: httpx.Response) -> int | None:
+    """从 max_tokens 越界的 400 报错里解析出该模型的上限，解析不出返回 None。"""
+    match = _MAX_TOKENS_RANGE_RE.search(response.text[:2000])
+    return int(match.group(1)) if match else None
+
+
+def ai_http_client(config: AIConfig, timeout: float | None = None) -> httpx.Client:
+    """AI 请求专用 httpx.Client：默认绕过环境变量代理直连。
+
+    本地 Clash 等环境代理会按固定间隔掐断等响应的长连接（AI 日志里 transport 错误时长
+    聚集在 135/150/180s 的固定断点即来自它），AI 端点直连可达，不走 trust_env 的
+    http_proxy 等环境变量；base_url 确实需要代理出海时在 ai.proxy 里显式配置。
     """
+    return httpx.Client(timeout=timeout or config.timeout, trust_env=False, proxy=config.proxy or None)
+
+
+def _fallback_pool(config: AIConfig) -> list[str]:
+    """换模型重试共用的起点：模型池为空直接抛配置错误；返回打乱后的副本供调用方再过滤。"""
     pool = model_pool(config)
     if not pool:
         raise AIExtractionError("配置文件 ai.models 未配置")
     order = pool[:]
     random.shuffle(order)
+    return order
+
+
+def _log_pool_exhausted(scene: str, model: str, last_error_text: str, prompt_excerpt: str) -> None:
+    """模型池全部失败的整次失败补一条 error 行：成功率按最终结果统计时才不会漏掉这种失败。"""
+    log_ai_request(
+        scene=scene, model=model, status="error", duration_ms=0,
+        error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=prompt_excerpt,
+    )
+
+
+def _stream_thinking_attempts(config: AIConfig) -> list[bool | None]:
+    """流式重试的翻参序列：只有 chat_completions 的请求体带 enable_thinking，其他结构翻参重试只会白发一次同样的请求。"""
+    attempts: list[bool | None] = [None]
+    if config.enable_thinking is False and config.api_format == "chat_completions":
+        attempts.append(True)
+    return attempts
+
+
+def _stream_status_failure(
+    exc: httpx.HTTPStatusError, *, model: str, scene: str, duration_ms: int,
+    thinking_flip_possible: bool, enable_thinking: bool | None,
+    prompt_excerpt: str, on_model_failure: Callable[[str, str], None] | None = None,
+) -> tuple[str, str]:
+    """流式尝试的 HTTP 状态错误共同定性（两个流式回退共用），返回 (action, error_text)。
+
+    action："retry" 思考受限且本次还没翻参，同模型重试；"next" 回退状态码，换下一个模型；
+    该上抛的（401 配置级问题 / 不在 _MODEL_FALLBACK_STATUSES 的失败）在这里直接抛 AIExtractionError。
+    """
+    error_text = provider_error_detail(exc.response)
+    if thinking_flip_possible and enable_thinking is None and _thinking_restricted(exc.response):
+        log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
+        return "retry", error_text
+    status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
+    log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=prompt_excerpt)
+    if exc.response.status_code == 401 or status == "error":
+        raise AIExtractionError(error_text) from exc
+    if on_model_failure is not None:
+        on_model_failure(model, error_text)
+    return "next", error_text
+
+
+def _stream_transport_failure(
+    exc: httpx.TransportError, *, model: str, scene: str, duration_ms: int,
+    mid_stream: bool, prompt_excerpt: str, on_model_failure: Callable[[str, str], None] | None = None,
+) -> str:
+    """流式尝试的传输层失败共同处理（两个流式回退共用），返回错误明细供调用方留痕。
+
+    正文已放给用户（mid_stream）只能记失败抛出，半截回答没法换模型重来；还没出字按渠道抖动
+    处理——记 transport（连接抖动不算报错失败）后换下一个模型。
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+    if mid_stream:
+        log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + detail, prompt_excerpt=prompt_excerpt)
+        if on_model_failure is not None:
+            on_model_failure(model, "流式输出中断｜" + detail)
+        raise AIExtractionError(f"流式输出中断：{detail}") from exc
+    log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + detail, prompt_excerpt=prompt_excerpt)
+    if on_model_failure is not None:
+        on_model_failure(model, "连接失败，未收到响应｜" + detail)
+    return detail
+
+
+def request_with_model_fallback(
+    config: AIConfig,
+    system: str,
+    user: str,
+    *,
+    max_tokens: int | None = None,
+    json_mode: bool = True,
+    client: httpx.Client | None = None,
+    scene: str = "AI 请求",
+    timeout: float | None = None,
+    validate: Callable[[str], None] | None = None,
+    deadline: float | None = None,
+) -> tuple[str, httpx.Response]:
+    """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
+
+    最近校验失败进冷却名单的模型先跳过（全冷却时回退全池，不拒服）。思考不可关的模型拒收
+    enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。连接失败（超时/连接
+    重置/SSL EOF 等传输错误）与模型报错同样换下一个并留痕。
+    validate 传入时在 HTTP 成功后对回复正文做内容校验（如 JSON 可解析），校验失败按模型问题
+    换下一个——思考型模型耗尽 max_tokens 输出空正文就靠这条兜住；正文非空且 token 用量顶格
+    说明是预算截断（思考 token 与正文共享 max_tokens），同模型放大预算重试一次再考虑换，
+    不冷却；空正文与没顶格的坏输出才是模型的产出质量问题，进冷却名单。冷却与截断判定的
+    依据都随
+    fallback 日志落库（token 用量 + finish 原因），日志里能直接看到模型实际回了什么。
+    401 属于配置级问题原样抛出；prompt 超出单模型上下文按模型级故障换下一个——池内模型上下文差异大，一个装不下不代表全部装不下；max_tokens 超出模型上限时解析上限同模型降额重试并缓存，之后的请求经 ai_request 直接按上限构造。池子耗尽时抛最后一个错误。
+    返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。timeout 可覆盖配置的单次请求超时
+    （如助手场景收紧死线），不传用 config.timeout。deadline 为换模型重试的总时长上界
+    （time.monotonic() 时刻），超出即抛 AIExtractionError，价格提取用它与单站预算挂钩。
+    """
+    pool = _fallback_pool(config)
+    now = time.time()
+    # 最近校验失败进冷却名单的模型先跳过（全冷却时回退全池，不拒服）
+    order = [name for name in pool if _MODEL_COOLDOWN.get(name, 0) <= now] or pool
     request_timeout = timeout or config.timeout
+    request_limit = config.max_tokens if max_tokens is None else max_tokens
     passed_client = client is not None
-    client = client or httpx.Client(timeout=config.timeout)
-    last_exc: httpx.HTTPError | None = None
+    client = client or ai_http_client(config, request_timeout)
+    last_exc: Exception | None = None
     last_error_text = ""
     try:
         for model in order:
+            if deadline is not None and time.monotonic() > deadline:
+                # 换模型重试无总上限，链路整体抖动时会把整轮采集拖死；到预算即中止，
+                # 由调用方按各自语义处理（价格提取回落确定性定价或记该站失败）
+                raise AIBudgetExhaustedError("AI 请求超出单站时间预算，中止换模型重试")
             url, headers, base_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
-            candidates = [base_body]
+            attempts = [base_body]
             if base_body.get("enable_thinking") is False:
-                candidates.append({**base_body, "enable_thinking": True})
-            for request_body in candidates:
+                attempts.append({**base_body, "enable_thinking": True})
+            budget_tried = False
+            token_clamped = False
+            while attempts:
+                body = attempts.pop(0)
                 started = time.monotonic()
                 try:
-                    # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
-                    response = (
-                        client.post(url, headers=headers, json=request_body, timeout=request_timeout)
-                        if passed_client
-                        else httpx.post(url, headers=headers, json=request_body, timeout=request_timeout)
-                    )
+                    # client 统一由 ai_http_client / 调用方注入：测试可以 patch httpx.Client 或直接传 client
+                    response = client.post(url, headers=headers, json=body, timeout=request_timeout)
                     response.raise_for_status()
                     duration_ms = int((time.monotonic() - started) * 1000)
+                    payload: dict[str, Any] = {}
                     try:
                         payload = response.json()
                         prompt_tokens, completion_tokens, total_tokens = _usage_tokens(config.api_format, payload)
@@ -240,6 +397,43 @@ def request_with_model_fallback(
                     except Exception:
                         prompt_tokens = completion_tokens = total_tokens = None
                         answer = None
+                    if validate is not None:
+                        try:
+                            validate(answer or "")
+                        except Exception as exc:
+                            # 内容校验失败（空正文/非法 JSON 等）按模型问题换下一个，不整轮失败；
+                            # 用量顶格且正文非空是预算截断（思考 token 与正文共享 max_tokens），同模型
+                            # 放大预算重试一次；用量没顶格才是产出质量问题，顺手记短期冷却。
+                            duration_ms = int((time.monotonic() - started) * 1000)
+                            finish = _finish_reason(config.api_format, payload)
+                            detail = str(exc) + (f"｜finish={finish}" if finish else "")
+                            truncated = completion_tokens is not None and completion_tokens >= request_limit
+                            nonempty = bool(answer and answer.strip())
+                            raw_tail = (answer or "")[-_RESPONSE_TAIL_CHARS:] or None
+                            if nonempty and truncated and not budget_tried:
+                                budget_tried = True
+                                log_ai_request(
+                                    scene=scene, model=model, status="param_retry", duration_ms=duration_ms,
+                                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
+                                    error=f"回复在 {request_limit} tokens 预算内被截断，已放大到 {request_limit * 4} 同模型重试｜" + detail,
+                                    prompt_excerpt=user, response_excerpt=raw_tail,
+                                )
+                                attempts.insert(0, _with_token_budget(config.api_format, body, request_limit * 4))
+                                continue
+                            if not (nonempty and truncated):
+                                # 空正文（思考烧光预算没产出）与没顶格的坏输出是模型自己的质量问题，短期不再选它；
+                                # 非空截断是预算问题，放大后大多能成，不冷却
+                                _MODEL_COOLDOWN[model] = time.time() + _MODEL_COOLDOWN_TTL
+                            log_ai_request(
+                                scene=scene, model=model, status="fallback", duration_ms=duration_ms,
+                                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
+                                error="回复内容校验未通过，换下一个模型｜" + detail, prompt_excerpt=user,
+                                response_excerpt=raw_tail,
+                            )
+                            last_exc = exc
+                            last_error_text = str(exc)
+                            attempts.clear()
+                            continue
                     log_ai_request(
                         scene=scene, model=model, status="ok", duration_ms=duration_ms,
                         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
@@ -249,19 +443,33 @@ def request_with_model_fallback(
                 except httpx.HTTPStatusError as exc:
                     duration_ms = int((time.monotonic() - started) * 1000)
                     error_text = provider_error_detail(exc.response)
-                    if _thinking_restricted(exc.response) and request_body.get("enable_thinking") is False:
+                    if _thinking_restricted(exc.response) and body.get("enable_thinking") is False:
                         log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=user)
                         continue
-                    if exc.response.status_code == 401 or _prompt_too_long(exc):
+                    if exc.response.status_code == 401:
                         log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
                         raise
+                    clamped = _max_tokens_range_error(exc.response)
+                    current_budget = body.get("max_tokens") or body.get("max_output_tokens") or (body.get("generationConfig") or {}).get("maxOutputTokens") or request_limit
+                    if clamped is not None and current_budget > clamped and not token_clamped:
+                        # max_tokens 超出模型上限（含截断放大后撞上限）：解析上限同模型降额重试一次并
+                        # 缓存；池里其他路径经 ai_request 直接按上限构造。token_clamped 防同类错死循环
+                        _MODEL_MAX_TOKENS_LIMIT[model] = clamped
+                        token_clamped = True
+                        log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error=f"模型 max_tokens 上限 {clamped}，已降额同模型重试｜" + error_text, prompt_excerpt=user)
+                        attempts.insert(0, _with_token_budget(config.api_format, body, clamped))
+                        continue
                     if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
                         log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
                         raise
-                    log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
+                    # prompt 超出该模型上下文（如 7b 蒸馏模型只有 32k）按模型级故障换下一个，不冷却：
+                    # 超长是请求属性不是模型质量问题；其余 400 类照旧换模型
+                    detail = ("prompt 超出该模型上下文上限，换下一个模型｜" + error_text) if _prompt_too_long(exc) else error_text
+                    log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=detail, prompt_excerpt=user)
                     last_exc = exc
                     last_error_text = error_text
-                    break
+                    attempts.clear()
+                    continue
                 except httpx.TransportError as exc:
                     # 传输层失败（超时/连接重置/SSL EOF 等，没拿到 HTTP 响应）：以前直接往上抛、一条日志
                     # 都不留；按渠道故障处理——留痕后换下一个模型（同一 base_url，多半是整台机器在抖）。
@@ -270,13 +478,10 @@ def request_with_model_fallback(
                     last_error_text = f"{type(exc).__name__}: {exc}"
                     log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + last_error_text, prompt_excerpt=user)
                     last_exc = exc
-                    break
+                    attempts.clear()
+                    continue
         assert last_exc is not None
-        # 模型池全部失败的整次失败也补一条 error 行：成功率按最终结果统计时才不会漏掉这种失败
-        log_ai_request(
-            scene=scene, model=model, status="error", duration_ms=0,
-            error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=user,
-        )
+        _log_pool_exhausted(scene, model, last_error_text, user)
         raise last_exc
     finally:
         if not passed_client:
@@ -290,19 +495,11 @@ def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: 
     传输错误（超时/SSL 等）同样处理：还没出字就换下一个并留痕，已出字再断记一条失败后抛出。
     timeout 覆盖单次请求超时，不传用 config.timeout；四种接口结构都支持。
     """
-    pool = model_pool(config)
-    if not pool:
-        raise AIExtractionError("配置文件 ai.models 未配置")
-    order = pool[:]
-    random.shuffle(order)
+    order = _fallback_pool(config)
     last_exc: httpx.HTTPError | None = None
     last_error_text = ""
     for model in order:
-        attempts: list[bool | None] = [None]
-        # 只有 chat_completions 的请求体带 enable_thinking；其他结构翻参重试只会白发一次同样的请求
-        if config.enable_thinking is False and config.api_format == "chat_completions":
-            attempts.append(True)
-        for enable_thinking in attempts:
+        for enable_thinking in _stream_thinking_attempts(config):
             started = time.monotonic()
             received: list[str] = []
             try:
@@ -315,38 +512,26 @@ def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: 
                 )
                 return
             except httpx.HTTPStatusError as exc:
-                duration_ms = int((time.monotonic() - started) * 1000)
-                error_text = provider_error_detail(exc.response)
-                if _thinking_restricted(exc.response) and config.enable_thinking is False and enable_thinking is None:
-                    log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=user)
+                action, error_text = _stream_status_failure(
+                    exc, model=model, scene=scene, duration_ms=int((time.monotonic() - started) * 1000),
+                    thinking_flip_possible=config.enable_thinking is False, enable_thinking=enable_thinking,
+                    prompt_excerpt=user,
+                )
+                if action == "retry":
                     continue
-                status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
-                log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
-                if exc.response.status_code == 401 or status == "error":
-                    raise AIExtractionError(error_text) from exc
                 last_exc = exc
                 last_error_text = error_text
                 break
             except httpx.TransportError as exc:
-                # 传输层失败（超时/连接重置/SSL EOF 等）：以前直接往上抛、一条日志不留。还没出字就当渠道
-                # 故障留痕换下一个模型，记 transport（连接抖动，不算报错失败）；已经出字再断只能原样报错，
-                # 半截回答没法换模型重来
-                duration_ms = int((time.monotonic() - started) * 1000)
-                detail = f"{type(exc).__name__}: {exc}"
-                if received:
-                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + detail, prompt_excerpt=user)
-                    raise AIExtractionError(f"流式输出中断：{detail}") from exc
-                log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + detail, prompt_excerpt=user)
+                last_error_text = _stream_transport_failure(
+                    exc, model=model, scene=scene, duration_ms=int((time.monotonic() - started) * 1000),
+                    mid_stream=bool(received), prompt_excerpt=user,
+                )
                 last_exc = exc
-                last_error_text = detail
                 break
     assert last_exc is not None
-    # 整个模型池都失败：补一条 error 行（成功率按最终结果统计时才不会漏掉这种失败），
-    # 并把状态码和供应商报错要点一起报出去，这才是用户该看到的真实原因
-    log_ai_request(
-        scene=scene, model=model, status="error", duration_ms=0,
-        error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=user,
-    )
+    # 把状态码和供应商报错要点一起报出去，这才是用户该看到的真实原因
+    _log_pool_exhausted(scene, model, last_error_text, user)
     raise AIExtractionError(f"模型池全部失败，最后一次错误 {last_error_text}") from last_exc
 
 
@@ -385,7 +570,7 @@ def _stream_chat_events(
     finish_reason: str | None = None
     usage: dict[str, Any] | None = None
     started = time.monotonic()
-    with httpx.Client(timeout=request_timeout) as client:
+    with ai_http_client(config, request_timeout) as client:
         with client.stream("POST", url, headers=headers, json=body) as response:
             if response.is_error:
                 # 供应商报错时先读出响应体：流式响应默认不读正文，后续取 .text 会直接抛 ResponseNotRead
@@ -550,25 +735,17 @@ def ai_stream_messages_fallback(
     （fallback/transport/伪工具调用/空响应/流中断）时回调，供调用方记冷却名单；
     timeout 覆盖单次请求超时（如助手场景的收紧死线）。
     """
-    pool = model_pool(config)
-    if not pool:
-        raise AIExtractionError("配置文件 ai.models 未配置")
+    order = _fallback_pool(config)
 
     def notify_failure(model: str, error_text: str) -> None:
         if on_model_failure is not None:
             on_model_failure(model, error_text)
 
-    order = pool[:]
-    random.shuffle(order)
     prompt_excerpt = str(messages[-1].get("content") or "")[:300] if messages else ""
     last_exc: Exception | None = None
     last_error_text = ""
     for model in order:
-        # 只有 chat_completions 的请求体带 enable_thinking；其他结构翻参重试只会白发一次同样的请求
-        attempts: list[bool | None] = [None]
-        if config.enable_thinking is False and config.api_format == "chat_completions":
-            attempts.append(True)
-        for enable_thinking in attempts:
+        for enable_thinking in _stream_thinking_attempts(config):
             started = time.monotonic()
             received = False
             text_parts: list[str] = []
@@ -617,16 +794,13 @@ def ai_stream_messages_fallback(
                 yield finish
                 return
             except httpx.HTTPStatusError as exc:
-                duration_ms = int((time.monotonic() - started) * 1000)
-                error_text = provider_error_detail(exc.response)
-                if _thinking_restricted(exc.response) and config.enable_thinking is False and enable_thinking is None:
-                    log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
+                action, error_text = _stream_status_failure(
+                    exc, model=model, scene=scene, duration_ms=int((time.monotonic() - started) * 1000),
+                    thinking_flip_possible=config.enable_thinking is False, enable_thinking=enable_thinking,
+                    prompt_excerpt=prompt_excerpt, on_model_failure=notify_failure,
+                )
+                if action == "retry":
                     continue
-                status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
-                log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=prompt_excerpt)
-                if exc.response.status_code == 401 or status == "error":
-                    raise AIExtractionError(error_text) from exc
-                notify_failure(model, error_text)
                 last_exc = exc
                 last_error_text = error_text
                 break
@@ -648,24 +822,16 @@ def ai_stream_messages_fallback(
                 last_error_text = error_text
                 break
             except httpx.TransportError as exc:
-                duration_ms = int((time.monotonic() - started) * 1000)
-                detail = f"{type(exc).__name__}: {exc}"
-                if received and tools is None:
-                    # 无工具的流已经把正文放给用户了，半截回答没法换模型重来
-                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + detail, prompt_excerpt=prompt_excerpt)
-                    notify_failure(model, "流式输出中断｜" + detail)
-                    raise AIExtractionError(f"流式输出中断：{detail}") from exc
-                # 带工具的流正文还攥在手里没放出去，按连接抖动处理换下一个模型即可
-                log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + detail, prompt_excerpt=prompt_excerpt)
-                notify_failure(model, "连接失败，未收到响应｜" + detail)
+                # 无工具的流正文已放给用户，半截回答没法换模型重来；带工具的还攥在手里，按连接抖动换下一个模型
+                last_error_text = _stream_transport_failure(
+                    exc, model=model, scene=scene, duration_ms=int((time.monotonic() - started) * 1000),
+                    mid_stream=bool(received and tools is None), prompt_excerpt=prompt_excerpt,
+                    on_model_failure=notify_failure,
+                )
                 last_exc = exc
-                last_error_text = detail
                 break
     assert last_exc is not None
-    log_ai_request(
-        scene=scene, model=model if order else "", status="error", duration_ms=0,
-        error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=prompt_excerpt,
-    )
+    _log_pool_exhausted(scene, model if order else "", last_error_text, prompt_excerpt)
     raise AIExtractionError(f"模型池全部失败，最后一次错误 {last_error_text}") from last_exc
 
 
@@ -677,7 +843,7 @@ def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = No
     """
     request_timeout = config.timeout if timeout is None else timeout
     url, headers, base_body = ai_request(config, model, "", "连接测试，请只回复 ok", max_tokens=8, json_mode=False)
-    own_client = client or httpx.Client(timeout=request_timeout)
+    own_client = client or ai_http_client(config, request_timeout)
     try:
         response = own_client.post(url, headers=headers, json=base_body, timeout=request_timeout)
         if _thinking_restricted(response) and base_body.get("enable_thinking") is False:
@@ -731,7 +897,7 @@ def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_token
         body["stream"] = True
     elif api_format == "gemini":
         url = url.replace(":generateContent", ":streamGenerateContent?alt=sse")
-    with httpx.Client(timeout=timeout or config.timeout) as client:
+    with ai_http_client(config, timeout) as client:
         with client.stream("POST", url, headers=headers, json=body) as response:
             if response.is_error:
                 # 供应商报错时先读出响应体：流式响应默认不读正文，后续取 .text 会直接抛 ResponseNotRead
@@ -799,6 +965,8 @@ def chat_content(payload: dict[str, Any]) -> str:
 
 def json_content(value: str) -> dict[str, Any]:
     text = value.strip()
+    if not text:
+        raise AIExtractionError("AI 回复正文为空（思考型模型把预算花在思考上时常见）")
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
     parsed: Any = text
@@ -814,6 +982,19 @@ def json_content(value: str) -> dict[str, Any]:
     if isinstance(parsed, list):
         return {"models": parsed}
     raise AIExtractionError("AI 标准化结果必须是 JSON 对象")
+
+
+def _validated_price_payload(answer: str) -> dict[str, Any]:
+    """价格提取换模型链的内容校验：合法 JSON 之外还必须是带 models 数组的对象。
+
+    只查「能解析」会放过形状坏掉的回复（实测模型会输出 {"models":":[{",…} 这类
+    解析得出但结构全废的 JSON），它会在 _records 才炸掉、整轮提取直接回落直采；
+    在这里拦下就能走既有的换下一个模型链路重抽一次。
+    """
+    result = json_content(answer)
+    if not isinstance(result.get("models"), list):
+        raise AIExtractionError("AI 标准化结果缺少 models 数组")
+    return result
 
 
 def _responses_endpoint(base_url: str) -> str:
@@ -991,6 +1172,10 @@ def ai_request(
     function calling 风格的工具定义，四种接口结构都会转成各自的工具协议。
     """
     limit = config.max_tokens if max_tokens is None else max_tokens
+    learned_limit = _MODEL_MAX_TOKENS_LIMIT.get(model)
+    if learned_limit is not None and limit > learned_limit:
+        # 该模型的上限已从报错里学到（见 _MODEL_MAX_TOKENS_LIMIT）：直接按上限构造，省一次 400
+        limit = learned_limit
     if config.api_format == "openai_responses":
         if messages is not None:
             instructions, items = _responses_messages(messages)
@@ -1111,9 +1296,7 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
     固定解析规则认不出的形态交给 AI 判断什么是真正要拿的数据；AI 未启用、
     未配置或请求失败时返回 None，由调用方回落到固定解析结果。
     """
-    if not config.enabled or not config.base_url:
-        return None
-    if not config.pick_model():
+    if not config.usable:
         return None
     text = raw_text.strip()
     if not text:
@@ -1128,7 +1311,7 @@ def extract_notice_content(config: AIConfig, raw_text: str, *, client: httpx.Cli
     )
     user = f"公告接口原始响应：\n{text[:config.max_input_chars]}"
     own = client is None
-    client = client or httpx.Client(timeout=config.timeout)
+    client = client or ai_http_client(config)
     try:
         if not config.api_key:
             return None
@@ -1148,8 +1331,9 @@ class AIPriceExtractor:
         self.config = config
 
     def _cache_key(self, spec: SiteSpec, expected_models: list[str], evidence: str) -> str:
-                # version=8：位置型数组与分组倍率规则上线后旧缓存结果不可信，整体失效重抽。
-        return payload_hash({"version": 11, "site": spec.id, "models": expected_models, "evidence": evidence})
+        # version=8：位置型数组与分组倍率规则上线后旧缓存结果不可信，整体失效重抽。
+        # version=12：价格合理性校验上线，旧缓存结果未过检（含 hao 站 OCR 模型提取的百万级错价），整体失效重抽。
+        return payload_hash({"version": 12, "site": spec.id, "models": expected_models, "evidence": evidence})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -1196,7 +1380,7 @@ class AIPriceExtractor:
         for response in responses:
             if str(response.get("resource_type", "")) not in {"fetch", "xhr"}:
                 continue
-            original_payload = sanitize_evidence(response.get("payload"))
+            original_payload = slim_pricing_payload(sanitize_evidence(response.get("payload")))
             candidate = candidate_payload(original_payload, expected_models) if original_payload is not None else None
             original_body = (
                 json.dumps(original_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1211,55 +1395,38 @@ class AIPriceExtractor:
                 source == "model_list"
                 and is_preferred_response_url(response_url)
             )
-            # 只按目标模型做候选预筛；找不到候选时保留完整响应，避免误丢模型。
-            matched_models = ["unresolved"]
+            # 找不到候选时保留完整响应，避免误丢模型；目标模型要到 AI 解析阶段才能确定。
             if not preferred_response and not contains_price_evidence(original_body):
                 continue
-            for matched_model in matched_models:
-                # Keep every object matching this target model. A single pricing
-                # response commonly contains several configured models; selecting
-                # only the first match silently discarded later prices.
-                payload = candidate if matched_model == "unresolved" else first_target_payload(original_payload, matched_model)
-                if matched_model == "unresolved" and candidate is None:
-                    payload = original_payload
-                if response.get("payload") is None:
-                    payload = None
-                body = (
-                    json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                    if payload is not None
-                    else redact_text(_plain_text(str(response.get("text", ""))))
-                )
-                if response.get("payload") is not None and payload is None:
-                    continue
-                captured = {
-                    "url": redact_url(response_url),
-                    "status": response.get("status"),
-                    "resource_type": response.get("resource_type"),
-                    "content_type": response.get("content_type"),
-                    "source": source,
-                    "preferred_response": preferred_response,
-                    "target_model": matched_model,
-                    "match_basis": [
-                        basis
-                        for basis, matched in (
-                            ("response_url", contains_model_alias(response_url, matched_model)),
-                            ("response_body", contains_model_alias(original_body, matched_model)),
-                        )
-                        if matched
-                    ],
-                    "quote": (
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                        if payload is not None
-                        else (first_model_segment(body, matched_model, expected_models) if matched_model != "unresolved" else body)
-                    ),
-                }
-                clean_responses.append(captured)
+            payload = candidate if candidate is not None else original_payload
+            if response.get("payload") is None:
+                payload = None
+            body = (
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                if payload is not None
+                else redact_text(_plain_text(str(response.get("text", ""))))
+            )
+            if response.get("payload") is not None and payload is None:
+                continue
+            captured = {
+                "url": redact_url(response_url),
+                "status": response.get("status"),
+                "resource_type": response.get("resource_type"),
+                "content_type": response.get("content_type"),
+                "source": source,
+                "preferred_response": preferred_response,
+                # 采集期目标模型未解析，统一记为 unresolved；别名匹配依据留待 AI 阶段产出。
+                "target_model": "unresolved",
+                "match_basis": [],
+                "quote": body,
+            }
+            clean_responses.append(captured)
         # 价格证据默认原样交给 AI；只有供应商以"超长"拒绝时才按 EVIDENCE_CHAR_LADDER 收紧上限。
         if max_chars is not None:
             for source in filtered_page_sources:
-                source["quote"] = _fit_text(str(source.get("quote", "")), max_chars)
+                source["quote"] = fit_text(str(source.get("quote", "")), max_chars)
             for captured in clean_responses:
-                captured["quote"] = _fit_text(str(captured.get("quote", "")), max_chars)
+                captured["quote"] = fit_text(str(captured.get("quote", "")), max_chars)
         evidence = {
             "site_id": spec.id,
             "source_url": redact_url(str(spec.network.get("url") or "")),
@@ -1282,18 +1449,11 @@ class AIPriceExtractor:
     ) -> tuple[str, str, list[dict[str, str]], list[dict[str, Any]]]:
         evidence, _, filtered_page_text, filtered_page_sources, clean_responses = self._evidence(spec, page_text, responses, expected_models, page_sources, max_chars=max_chars)
         expected = expected_models or []
-        if expected:
-            scope_line = "只分析 expected_models 指定的目标模型，不要识别其他模型。"
-            id_rule = (
-                "若页面卡片或结构中明确出现 expected_models 的精确 model ID，价格归属以该 ID 为准，"
-                "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
-            )
-        else:
-            scope_line = "expected_models 为通配全量：采集证据中出现的每一个模型，不得遗漏任何带价格信息的模型，也不要输出证据中不存在的模型。"
-            id_rule = (
-                "若页面卡片或结构中明确出现某个模型的精确 model ID，价格归属以该 ID 为准，"
-                "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
-            )
+        scope_line = "只分析 expected_models 指定的目标模型，不要识别其他模型。"
+        id_rule = (
+            "若页面卡片或结构中明确出现 expected_models 的精确 model ID，价格归属以该 ID 为准，"
+            "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
+        )
         system = (
             NEWAPI_ONEAPI_PRICING_GUIDANCE
             + "\n\n你是模型价格数据抽取器。只能使用 user 消息中的网页证据，禁止凭常识补全或猜测价格。"
@@ -1305,16 +1465,10 @@ class AIPriceExtractor:
             "也要保留该页面价格并标 candidate，不得输出 unavailable，也不得用网络中的相似模型价格替代。"
             "必须只返回 JSON，不要 Markdown，不要解释。"
         )
-        if expected:
-            output_rule = "- 只输出 expected_models 中的目标模型；model 必须填标准名，页面显示名和接口模型 ID 分别填进 observed_model 与 aliases，忽略其他模型。"
-            trim_rule = "- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。"
-            unavailable_rule = "- 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。"
-            models_line = json.dumps(expected_models, ensure_ascii=False)
-        else:
-            output_rule = "- 输出证据中出现的每一个模型，不得遗漏；model 填该模型的接口原始 ID 或页面标准显示名，同一模型的其他写法填进 observed_model 与 aliases。"
-            trim_rule = "- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要裁剪、过滤或只取第一条，响应里的每个模型都要保留。"
-            unavailable_rule = "- 只为证据中确实出现、但按上述规则仍拿不到价格的模型输出 unavailable，不要为没有证据的模型编造记录。"
-            models_line = "全部模型（未限定清单）"
+        output_rule = "- 只输出 expected_models 中的目标模型；model 必须填标准名，页面显示名和接口模型 ID 分别填进 observed_model 与 aliases，忽略其他模型。"
+        trim_rule = "- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。"
+        unavailable_rule = "- 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。"
+        models_line = json.dumps(expected_models, ensure_ascii=False)
         user = f"""请将以下价格页面证据标准化。
 
 输出结构必须是：
@@ -1384,71 +1538,109 @@ expected_models：
         ai_model = self.config.pick_model()
         if not self.config.base_url or not ai_model:
             raise AIExtractionError("配置文件 ai.base_url 或 ai.models 未配置")
-        # 全量采集（models: ["*"]）：expected 置空，证据筛选与记录映射都走"不筛选"路径
-        collect_all = spec.collect_all
-        expected = [] if collect_all else list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
-        if not expected and not collect_all:
-            raise AIExtractionError(f"站点 {spec.id} 未配置目标模型 models；全量采集请配置 models: [\"*\"]")
+        expected = list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
+        if not expected:
+            raise AIExtractionError(f"站点 {spec.id} 未配置目标模型 models")
         own = client is None
-        client = client or httpx.Client(timeout=self.config.timeout)
+        client = client or ai_http_client(self.config)
+        # 整轮预算随批次数等比放大：600s 按单批时代的正常最慢耗时标定，监控清单 40 模型
+        # 10 批次的全量提取正常就要 10 分钟起步，固定 600s 贴线必爆
+        batch_count = max(1, -(-len(expected) // AI_EXTRACT_BATCH_SIZE))
+        budget_seconds = SITE_AI_BUDGET_SECONDS * batch_count
+        deadline = time.monotonic() + budget_seconds
         try:
-            raw_result: dict[str, Any] | None = None
-            evidence_key = ""
-            base_evidence_key = ""
-            searchable = ""
-            network_evidence: list[dict[str, Any]] = []
-            previous_body = ""
-            for max_chars in EVIDENCE_CHAR_LADDER:
-                system, user, page_evidence, network_evidence = self._request(
-                    spec, page_text, responses, expected, page_sources, max_chars=max_chars,
+            records: list[PriceRecord] = []
+            # 分批抽取：单批输出控制在 max_tokens 预算内；任一批失败整轮失败，不落半份数据。
+            # 批间检查 deadline，防止慢模型+换模型重试把一轮采集拖到小时级；预算耗尽时
+            # 保留已完成批次（直采兜底和定价快照承接都能用上），一个批次都没成才整轮报错
+            try:
+                for start in range(0, len(expected), AI_EXTRACT_BATCH_SIZE):
+                    if time.monotonic() > deadline:
+                        raise AIBudgetExhaustedError(
+                            f"AI 提取超出单站 {budget_seconds} 秒预算（共 {batch_count} 批），剩余批次不再发起"
+                        )
+                    batch = expected[start:start + AI_EXTRACT_BATCH_SIZE]
+                    records.extend(self._extract_batch(spec, page_text, responses, batch, page_sources, client, deadline))
+            except AIBudgetExhaustedError:
+                if not records:
+                    raise
+                tasklog.emit(
+                    f"[{spec.id}] AI 提取超出单站 {budget_seconds} 秒预算，保留已完成 {len(records)} 条，剩余批次不再发起",
+                    "warn",
                 )
-                request_key = json.dumps({"system": system, "user": user}, ensure_ascii=False, sort_keys=True)
-                if request_key == previous_body:
-                    # 证据本身没超过当前上限，请求与上一次完全相同，再发也必然同样被拒。
-                    continue
-                previous_body = request_key
-                evidence_key = self._cache_key(spec, expected, json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False, sort_keys=True))
-                if max_chars == EVIDENCE_CHAR_LADDER[0]:
-                    base_evidence_key = evidence_key
-                cached = self._cached_result(evidence_key)
-                if cached is not None:
-                    raw_result = cached
-                    searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
-                    break
-                if not self.config.api_key:
-                    raise AIExtractionError("配置文件 ai.api_key 未配置")
-                searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
-                try:
-                    ai_model, response = request_with_model_fallback(self.config, system, user, client=client, scene="价格抽取")
-                    raw_result = json_content(ai_content(self.config.api_format, response.json()))
-                    break
-                except httpx.HTTPStatusError as exc:
-                    if _prompt_too_long(exc) and max_chars != EVIDENCE_CHAR_LADDER[-1]:
-                        continue
-                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
-                except httpx.TimeoutException as exc:
-                    # 只在大证据超时时降级重试——小证据超时多半是供应商抖动，多等无益。
-                    if len(request_key) > 100_000 and max_chars != EVIDENCE_CHAR_LADDER[-1]:
-                        continue
-                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}") from exc
-                except (httpx.HTTPError, ValueError) as exc:
-                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
-            if raw_result is None:
-                raise AIExtractionError("AI 请求未完成")
-            allowed_urls = {redact_url(str(item.get("url", ""))) for item in network_evidence}
-            response_bodies = {
-                redact_url(str(item.get("url", ""))): str(item.get("quote", ""))
-                for item in network_evidence
-            }
-            records = self._records(spec, raw_result, searchable, payload_hash(raw_result), allowed_urls, response_bodies, expected, ai_model=ai_model)
-            self._save_cached_result(evidence_key, raw_result)
-            if base_evidence_key and evidence_key != base_evidence_key:
-                # 结果同时挂在未截断证据的 key 下：页面内容不变时，下次无需再白等一次超时。
-                self._save_cached_result(base_evidence_key, raw_result)
             return records
         finally:
             if own:
                 client.close()
+
+    def _extract_batch(
+        self,
+        spec: SiteSpec,
+        page_text: str,
+        responses: list[dict[str, Any]],
+        expected: list[str],
+        page_sources: list[dict[str, str]] | None,
+        client: httpx.Client,
+        deadline: float | None = None,
+    ) -> list[PriceRecord]:
+        raw_result: dict[str, Any] | None = None
+        evidence_key = ""
+        base_evidence_key = ""
+        searchable = ""
+        network_evidence: list[dict[str, Any]] = []
+        previous_body = ""
+        ai_model = self.config.pick_model()
+        for max_chars in EVIDENCE_CHAR_LADDER:
+            system, user, page_evidence, network_evidence = self._request(
+                spec, page_text, responses, expected, page_sources, max_chars=max_chars,
+            )
+            request_key = json.dumps({"system": system, "user": user}, ensure_ascii=False, sort_keys=True)
+            if request_key == previous_body:
+                # 证据本身没超过当前上限，请求与上一次完全相同，再发也必然同样被拒。
+                continue
+            previous_body = request_key
+            evidence_key = self._cache_key(spec, expected, json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False, sort_keys=True))
+            if max_chars == EVIDENCE_CHAR_LADDER[0]:
+                base_evidence_key = evidence_key
+            cached = self._cached_result(evidence_key)
+            if cached is not None:
+                raw_result = cached
+                searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
+                break
+            if not self.config.api_key:
+                raise AIExtractionError("配置文件 ai.api_key 未配置")
+            searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
+            try:
+                ai_model, response = request_with_model_fallback(
+                    self.config, system, user, client=client, scene="价格抽取",
+                    validate=_validated_price_payload, deadline=deadline,
+                )
+                raw_result = json_content(ai_content(self.config.api_format, response.json()))
+                break
+            except httpx.HTTPStatusError as exc:
+                if _prompt_too_long(exc) and max_chars != EVIDENCE_CHAR_LADDER[-1]:
+                    continue
+                raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
+            except httpx.TimeoutException as exc:
+                # 只在大证据超时时降级重试——小证据超时多半是供应商抖动，多等无益。
+                if len(request_key) > 100_000 and max_chars != EVIDENCE_CHAR_LADDER[-1]:
+                    continue
+                raise AIExtractionError(f"AI 价格识别请求失败: {exc}") from exc
+            except (httpx.HTTPError, ValueError) as exc:
+                raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
+        if raw_result is None:
+            raise AIExtractionError("AI 请求未完成")
+        allowed_urls = {redact_url(str(item.get("url", ""))) for item in network_evidence}
+        response_bodies = {
+            redact_url(str(item.get("url", ""))): str(item.get("quote", ""))
+            for item in network_evidence
+        }
+        records = self._records(spec, raw_result, searchable, payload_hash(raw_result), allowed_urls, response_bodies, expected, ai_model=ai_model)
+        self._save_cached_result(evidence_key, raw_result)
+        if base_evidence_key and evidence_key != base_evidence_key:
+            # 结果同时挂在未截断证据的 key 下：页面内容不变时，下次无需再白等一次超时。
+            self._save_cached_result(base_evidence_key, raw_result)
+        return records
 
     def _records(
         self,

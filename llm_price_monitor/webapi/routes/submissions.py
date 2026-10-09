@@ -1,6 +1,8 @@
 """站点提交端点：访客申请把某个中转站加入监控清单，入库并尽力推送 WxPusher 通知。"""
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any
 
@@ -11,6 +13,8 @@ from llm_price_monitor import wxpusher
 from llm_price_monitor.config import config_from_store
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.deps import client_ip
+
+_log = logging.getLogger("llm_price_monitor.webapi.routes.submissions")
 
 # 单 IP 每分钟最多提交次数：超量拒绝，防刷库
 SUBMIT_MAX_PER_MINUTE = 3
@@ -30,6 +34,7 @@ def build_router(store: Store) -> APIRouter:
 
     # 进程内限速状态：随应用生命周期存续，重启即重置
     submit_hits: dict[str, list[float]] = {}
+    submit_lock = threading.Lock()
 
     @router.post("/api/site-submissions")
     def submit_site(body: SiteSubmissionBody, request: Request) -> dict[str, bool]:
@@ -48,11 +53,12 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=400, detail="联系方式最长 100 字")
         now = time.time()
         ip = client_ip(request)
-        recent = [t for t in submit_hits.get(ip, []) if now - t < 60]
-        if len(recent) >= SUBMIT_MAX_PER_MINUTE:
-            raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
-        recent.append(now)
-        submit_hits[ip] = recent
+        with submit_lock:  # 同步路由跑线程池，读-判-写必须整体原子
+            recent = [t for t in submit_hits.get(ip, []) if now - t < 60]
+            if len(recent) >= SUBMIT_MAX_PER_MINUTE:
+                raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
+            recent.append(now)
+            submit_hits[ip] = recent
         store.add_site_submission(name=name, url=url, models=models, contact=contact, ip=ip)
         settings = config_from_store(store).settings
         if settings.wxpusher_app_token:
@@ -66,8 +72,8 @@ def build_router(store: Store) -> APIRouter:
                     summary=f"新站点提交：{name}",
                     uid=settings.wxpusher_uid,
                 )
-            except Exception:
-                pass  # 尽力而为：推送失败不阻塞访客提交
+            except Exception as exc:
+                _log.warning("站点提交的 WxPusher 通知推送失败：%s", exc)  # 尽力而为：推送失败不阻塞入库
         return {"ok": True}
 
     # 管理端接口挂在 /api/admin 前缀下：公开写路径集合按路径放行，管理接口必须与之分开

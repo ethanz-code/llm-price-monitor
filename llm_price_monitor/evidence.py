@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from llm_price_monitor.matching import model_alias_pattern, model_aliases, contains_model_alias
+from llm_price_monitor.tracker import looks_like_newapi_pricing
 
 SENSITIVE_EVIDENCE_KEYS = {
     "authorization",
@@ -109,6 +110,70 @@ def sanitize_evidence(value: Any) -> Any:
     return value
 
 
+# new-api 定价响应中与计价有关的字段白名单。直采解析（tracker.newapi_price_record）
+# 和 AI 抽取规则都只读这些字段；描述、图标、标签、端点类型等是入 token 的大头，投影掉。
+NEWAPI_ENTRY_FIELDS = frozenset({
+    "model_name",
+    "model_ratio",
+    "completion_ratio",
+    "cache_ratio",
+    "create_cache_ratio",
+    "model_price",
+    "quota_type",
+    "billing_mode",
+    "billing_expr",
+    "pricing_rules",
+    "request_rules",
+    "enable_groups",
+    "vendor",
+    "input_price",
+    "output_price",
+    "input",
+    "output",
+    "prompt_price",
+    "prompt",
+    "input_cost",
+    "completion_price",
+    "completion",
+    "output_cost",
+    "pricing",
+    "price_unit",
+    "unit",
+    "currency",
+    "cache_read_price",
+    "cache_create_price",
+    "cache_create_1h_price",
+    "official_pricing",
+    "official_price",
+})
+NEWAPI_TOP_FIELDS = frozenset({
+    "data",
+    "group_ratio",
+    "usable_group",
+    "pricing_version",
+    "billing_denomination_version",
+    "pricing_cny_rate",
+    "unit",
+    "currency",
+})
+
+
+def slim_pricing_payload(payload: Any) -> Any:
+    """new-api 定价响应按字段白名单投影后再交给 AI；其他结构原样返回。
+
+    完整定价响应里模型清单以外的无关字段会把入 token 推到十几万，
+    这条白名单投影叠加在目标模型预筛之上把入参压下来。
+    """
+    if not looks_like_newapi_pricing(payload):
+        return payload
+    slimmed = {key: value for key, value in payload.items() if key in NEWAPI_TOP_FIELDS}
+    slimmed["data"] = [
+        {key: value for key, value in item.items() if key in NEWAPI_ENTRY_FIELDS} if isinstance(item, dict) else item
+        for item in payload["data"]
+    ]
+    return slimmed
+
+
 def filter_target_payload(value: Any, model: str) -> Any:
     """递归保留 JSON 中包含目标模型的对象，去掉同响应中的其他模型。"""
     if isinstance(value, dict):
@@ -139,30 +204,6 @@ def filter_target_payload(value: Any, model: str) -> Any:
     if contains_model_alias(str(value), model):
         return value
     return None
-
-
-def first_target_payload(value: Any, model: str) -> Any:
-    """保留响应中第一个命中的目标模型对象，避免把分页结果整体交给 AI。"""
-    if isinstance(value, dict):
-        direct_model = any(
-            contains_model_alias(str(key), model)
-            or (not isinstance(child, (dict, list)) and contains_model_alias(str(child), model))
-            for key, child in value.items()
-        )
-        if direct_model:
-            return value
-        for key, child in value.items():
-            filtered = first_target_payload(child, model)
-            if filtered is not None:
-                return {str(key): filtered}
-        return None
-    if isinstance(value, list):
-        for child in value:
-            filtered = first_target_payload(child, model)
-            if filtered is not None:
-                return [filtered]
-        return None
-    return value if contains_model_alias(str(value), model) else None
 
 
 def candidate_payload(value: Any, expected_models: list[str]) -> Any:
@@ -376,30 +417,6 @@ def _grouped_rows_for(
             continue
         rows.append((name, _trim_number(ratio_value), final))
     return rows
-
-
-def first_model_segment(value: str, model: str, expected_models: list[str], limit: int = 2800) -> str:
-    """截取首次命中的模型段，到下一个目标模型段之前结束。"""
-    lowered = value.casefold()
-    matches = [
-        (lowered.find(alias.casefold()), alias)
-        for alias in model_aliases(model)
-        if lowered.find(alias.casefold()) >= 0
-    ]
-    if not matches:
-        return ""
-    start = min(position for position, _ in matches)
-    boundaries: list[int] = []
-    for candidate in expected_models:
-        aliases = model_aliases(candidate)
-        for alias in aliases:
-            position = lowered.find(alias.casefold(), start + len(alias))
-            if position == start:
-                continue
-            if position >= 0:
-                boundaries.append(position)
-    end = min(boundaries) if boundaries else len(value)
-    return clip(value[start:end].strip(), limit)
 
 
 def page_model_card(page_text: str, target: str) -> str:

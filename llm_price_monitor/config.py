@@ -39,10 +39,7 @@ class ModelTarget:
     name: str
 
 
-COLLECT_ALL_MODEL = "*"  # models 配置成 ["*"] 表示全量采集，目标模型由接口/页面证据现场展开
-
-
-DEPRECATED_SITE_FIELDS = frozenset({"note", "preferred_response_url_patterns", "ratio_base_price", "model_list_url", "currency"})  # 已废弃的站点字段：加载/保存时静默丢弃
+DEPRECATED_SITE_FIELDS = frozenset({"note", "preferred_response_url_patterns", "ratio_base_price", "model_list_url", "currency", "models"})  # 已废弃的站点字段：加载/保存时静默丢弃；目标模型统一走 settings.monitor_models
 
 # 凭证注入的三个目标：价格采集（含附加地址、倍率接口、Headless）、渠道状态、站点公告
 AUTH_INJECT_TARGETS = ("price", "status", "notice")
@@ -154,8 +151,8 @@ def canonical_site_config(config: dict[str, Any]) -> tuple[dict[str, Any], list[
             notes.append("已有站点级 auth_token，手写的 Authorization 一律以它为准移除")
     return config, notes
 
-# 四类采集任务的定时间隔（分钟），存 settings.schedule；0 = 关闭该项定时、只保留手动触发
-DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440}
+# 五类采集任务的定时间隔（分钟），存 settings.schedule；0 = 关闭该项定时、只保留手动触发
+DEFAULT_SCHEDULE_MINUTES = {"price": 60, "status": 5, "notice": 30, "catalog": 1440, "rankings": 1440}
 SCHEDULE_KEYS = tuple(DEFAULT_SCHEDULE_MINUTES)
 
 
@@ -185,16 +182,10 @@ class SiteSpec:
     enabled: bool = True
     network: dict[str, Any] = field(default_factory=dict)
     networks: tuple[dict[str, Any], ...] = ()  # 附加采集地址：与 network 同构，逐个采集后合并价格
-    status: dict[str, Any] = field(default_factory=dict)
-    notice: dict[str, Any] = field(default_factory=dict)
-    token_refresh: dict[str, Any] = field(default_factory=dict)
-    auth_inject: dict[str, Any] = field(default_factory=dict)  # 凭证注入规则：{价格/状态/公告目标: {header, value}}  # 认证续签请求配置：url/method/params/headers/body/refresh_token  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
-
-    @property
-    def collect_all(self) -> bool:
-        """models 为 ["*"] 时全量采集；目标模型不预置，由每次采集的证据现场展开。"""
-        return any(target.name == COLLECT_ALL_MODEL for target in self.models)
-
+    status: dict[str, Any] = field(default_factory=dict)  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
+    notice: dict[str, Any] = field(default_factory=dict)  # 公告地址：默认从 network.url 推导 /api/notice
+    token_refresh: dict[str, Any] = field(default_factory=dict)  # 认证续签请求配置：url/method/params/headers/body/refresh_token
+    auth_inject: dict[str, Any] = field(default_factory=dict)  # 凭证注入规则：{价格/状态/公告目标: {header, value}}
 
 class AIResultCache(Protocol):
     """AI 抽取结果缓存后端：由存储层实现（document 表），文件缓存已退役。"""
@@ -229,6 +220,10 @@ class MonitorSettings:
     assistant_daily_limit: int = 10
     # AI 助手每 IP 每小时提问次数上限（防单访客高频刷问题）；0 表示不限制
     assistant_hourly_limit: int = 10
+    # 通用监控目标模型：全部站点统一按这份清单采集（站点管理页配置），必须列出明确模型名
+    monitor_models: tuple[str, ...] = ()
+    # 从监控清单里被手动移除过的模型：目录刷新自动补模型时跳过，避免删掉又被加回
+    monitor_models_dismissed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -238,6 +233,8 @@ class AIConfig:
     models: tuple[str, ...] = ()
     api_key: str | None = None
     api_format: str = "chat_completions"
+    # AI 请求显式代理地址；留空直连（绕开本地 Clash 等环境代理掐长连接，见 ai.ai_http_client）
+    proxy: str | None = None
     timeout: float = 180.0
     max_input_chars: int = 60000
     max_tokens: int = 4000
@@ -247,6 +244,11 @@ class AIConfig:
     def pick_model(self) -> str:
         # 每次调用随机选一个模型，多模型分摊用量。
         return secrets.choice(self.models) if self.models else ""
+
+    @property
+    def usable(self) -> bool:
+        """发起 AI 请求的最低条件：已启用、有地址、模型池非空。"""
+        return bool(self.enabled and self.base_url and self.models)
 
 
 @dataclass(frozen=True)
@@ -259,12 +261,14 @@ class MonitorConfig:
 def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSettings:
     raw = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {key: raw[key] for key in MonitorSettings.__dataclass_fields__ if key in raw}
-    for key in ("user_agent_platforms", "user_agent_chrome_versions", "ai_ignored_errors"):
+    for key in ("user_agent_platforms", "user_agent_chrome_versions", "ai_ignored_errors", "monitor_models", "monitor_models_dismissed"):
         if key in values:
             value = values[key]
             if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
                 raise ValueError(f"settings.{key} 必须是非空字符串数组")
             values[key] = tuple(dict.fromkeys(item.strip() for item in value))
+    if "*" in values.get("monitor_models", ()):
+        raise ValueError('settings.monitor_models 不再支持通配符 "*" 全量采集，请列出明确的模型清单')
     for key in ("retention_price_days", "retention_visit_days", "retention_status_days", "retention_ai_log_days"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
             raise ValueError(f"settings.{key} 必须是不小于 1 的整数（天）")
@@ -291,19 +295,28 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
         parsed_base = urlsplit(base_url)
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
             raise ValueError("配置文件 ai.base_url 必须是完整的 http(s) URL")
+    proxy = str(raw.get("proxy") or "").strip() or None
+    if proxy:
+        parsed_proxy = urlsplit(proxy)
+        if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.netloc:
+            raise ValueError("配置文件 ai.proxy 必须是完整的 http(s) 代理 URL，留空表示直连")
     timeout = float(raw.get("timeout", 180))
     max_input_chars = int(raw.get("max_input_chars", 60000))
     max_tokens = int(raw.get("max_tokens", 4000))
     if not timeout > 0:
         raise ValueError("配置文件 ai.timeout 必须是大于 0 的数字（秒）")
-    if max_input_chars < 1 or max_tokens < 1:
-        raise ValueError("配置文件 ai.max_input_chars / ai.max_tokens 必须是不小于 1 的整数")
+    if max_input_chars < 1:
+        raise ValueError("配置文件 ai.max_input_chars 必须是不小于 1 的整数")
+    if max_tokens < 4000:
+        # 抽取按 8 个模型一批规划输出预算，低于 4000 单批 JSON 必然被截断。
+        raise ValueError("配置文件 ai.max_tokens 最低 4000：低于该值抽取输出必然截断")
     return AIConfig(
         enabled=bool(raw.get("enabled", True)),
         base_url=base_url,
         models=tuple(dict.fromkeys(item.strip() for item in raw_models if item.strip())),
         api_key=api_key or None,
         api_format=api_format,
+        proxy=proxy,
         timeout=timeout,
         max_input_chars=max_input_chars,
         max_tokens=max_tokens,
@@ -428,7 +441,11 @@ def _validate_headless(network: dict[str, Any], site_id: str) -> None:
         raise ValueError(f"站点 {site_id} 的 network.headless.wait_seconds 必须是 0~60 之间的数字")
 
 
-def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
+def sites_from_raw(values: list[Any], *, models: tuple[ModelTarget, ...] = ()) -> tuple[SiteSpec, ...]:
+    """raw 站点列表 → SiteSpec；models 是通用监控目标（settings.monitor_models），统一注入每个站点。
+
+    站点级 models 字段已废弃：目标模型只在通用清单里配置，这里的 models 参数就是唯一来源。
+    """
     sites = []
     for raw_value in values:
         value = {key: item for key, item in raw_value.items() if key not in DEPRECATED_SITE_FIELDS}
@@ -521,12 +538,6 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
             for key, header_value in request_headers.items()
         ):
             raise ValueError(f"站点 {site_id} 的 request_headers 必须是字符串键值对象")
-        raw_models = value.get("models", [])
-        if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
-            raise ValueError(f"站点 {site_id} 的 models 必须是字符串数组；模型分组/别名字段已下线，别名由 AI 自动解析")
-        models = tuple(ModelTarget(item.strip()) for item in raw_models if item.strip())
-        if COLLECT_ALL_MODEL in {item.name for item in models} and len(models) > 1:
-            raise ValueError(f"站点 {site_id} 的 models 配置通配符 \"*\" 时不能再列出其他模型")
         raw_auth_inject = value.get("auth_inject", {})
         _validate_auth_inject(raw_auth_inject, site_id)
         site_values = {
@@ -552,7 +563,10 @@ def config_from_raw(
     """raw dict → 强类型配置；文件种子路径（resolve_env=True）额外要求站点不为空。"""
     settings = settings_from_raw(raw.get("settings", {}), resolve_env=resolve_env)
     ai = ai_from_raw(raw.get("ai", {}), cache=cache)
-    sites = sites_from_raw(raw.get("sites", []))
+    sites = sites_from_raw(
+        raw.get("sites", []),
+        models=tuple(ModelTarget(name) for name in settings.monitor_models),
+    )
     if resolve_env and not sites:
         raise ValueError("配置中没有启用站点")
     return MonitorConfig(settings, ai, sites)

@@ -14,6 +14,7 @@ from . import (  # noqa: F401
     collect,
     data,
     geo,
+    rankings,
     settings,
     sites,
     status,

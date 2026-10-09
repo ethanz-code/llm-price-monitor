@@ -13,10 +13,8 @@ from typing import Any
 
 import httpx
 
-from llm_price_monitor.ai import AIExtractionError
+from llm_price_monitor.ai import AIExtractionError, ai_content, ai_http_client, ai_request, json_content
 from llm_price_monitor.config import AIConfig
-
-from .classify import _chat_json, ai_available
 
 SYSTEM_PROMPT = """\
 你是科技文档翻译。给你一批 AI 模型的英文简介（JSON：models 数组，每项含 model 标识与
@@ -28,6 +26,30 @@ translations 必须覆盖每个 model。"""
 
 # 单次 AI 请求的简介条数上限：简介普遍几百字，控制请求体积避免截断
 BATCH_SIZE = 30
+
+
+def ai_available(config: AIConfig) -> bool:
+    return bool(config.enabled and config.base_url and config.api_key and config.models)
+
+
+def _chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
+    """一次 JSON 对话请求（与 ai.AIPriceExtractor 同一套响应解析）。"""
+    ai_model = config.pick_model()
+    if not config.base_url or not ai_model:
+        raise AIExtractionError("ai.base_url 或 ai.models 未配置")
+    own = client is None
+    client = client or ai_http_client(config)
+    try:
+        try:
+            endpoint, headers, request_body = ai_request(config, ai_model, system, user)
+            response = client.post(endpoint, headers=headers, json=request_body, timeout=config.timeout)
+            response.raise_for_status()
+            return json_content(ai_content(config.api_format, response.json()))
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AIExtractionError(f"AI 请求失败: {exc}") from exc
+    finally:
+        if own:
+            client.close()
 
 
 def description_fingerprint(entry: dict[str, Any]) -> str:

@@ -22,14 +22,14 @@ def _config(tmp_path: Path) -> Path:
             "event_file": str(tmp_path / "var" / "events.jsonl"),
             # 测试默认关闭后台调度，避免定时线程在用例间隙发起真实采集；
             # 调度行为由 test_scheduler_* 用例单独打开验证
-            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0},
+            "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0},
+            "monitor_models": ["demo-model"],
         },
         "ai": {"enabled": False},
         "sites": [{
             "id": "demo",
             "adapter": "standard",
             "model_list_url": "https://demo.test/pricing",
-            "models": ["demo-model"],
             "request_headers": {"Authorization": "Bearer ${SECRET_TOKEN}"},
         }],
     }), encoding="utf-8")
@@ -132,8 +132,8 @@ def test_overview_attaches_discount_and_catalog_context(workspace: Path):
     data = client.get("/api/overview").json()
     assert data["catalog"]["enabled"] is True
     assert data["records"][0]["discount"]["input"] == 0.5
-    # 信息完整度：demo 只填了监控模型（models），认证/续签/附加地址都没配，得 1 分
-    assert data["site_completeness"] == {"demo": 1}
+    # 信息完整度：监控模型走通用清单不再计分，demo 认证/续签/附加地址都没配，得 0 分
+    assert data["site_completeness"] == {"demo": 0}
 
 
 def test_catalog_missing_returns_404(workspace: Path):
@@ -156,7 +156,7 @@ def test_scheduler_submits_due_jobs_periodically(workspace: Path, monkeypatch):
     monkeypatch.setattr(scheduler_mod, "CHECK_INTERVAL_SECONDS", 0.05)
     config_path = _config(workspace)
     doc = json.loads(config_path.read_text(encoding="utf-8"))
-    doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 0.001}
+    doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 0.001, "rankings": 0}
     config_path.write_text(json.dumps(doc), encoding="utf-8")
 
     # 等上一个测试留下的 catalog-refresh 线程退出，避免计数被在途任务干扰
@@ -204,7 +204,7 @@ def test_catalog_auto_syncs_on_first_start(workspace: Path, monkeypatch):
     # 只打开厂商定价调度（首轮 schedule_state 为空即视为到期，立即补一次），其余保持关闭
     config_path = _config(workspace)
     config_doc = json.loads(config_path.read_text(encoding="utf-8"))
-    config_doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 1440}
+    config_doc["settings"]["schedule"] = {"price": 0, "status": 0, "notice": 0, "catalog": 1440, "rankings": 0}
     config_path.write_text(json.dumps(config_doc), encoding="utf-8")
     client = TestClient(create_app(config_path))
     catalog_status = 0
@@ -272,6 +272,31 @@ def test_collect_rejects_unknown_site_and_parallel_runs(workspace: Path, monkeyp
     client.post("/api/collect", json={})
     conflict = client.post("/api/collect", json={})
     assert conflict.status_code == 409
+    release.set()
+
+
+def test_collect_test_not_blocked_by_global_collect(workspace: Path, monkeypatch):
+    """站点测试采集不进采集互斥组：全局采集在跑时单站测试照常提交，同类测试之间仍互斥。"""
+    from llm_price_monitor.report import MonitorReport
+    import llm_price_monitor.webapi.routes.collect as collect_routes
+
+    release = threading.Event()
+
+    def slow_run_once(config, *, persist=True, **_kwargs):
+        release.wait(2)
+        return MonitorReport(0.0, 1.0, [], [], [])
+
+    monkeypatch.setattr(collect_routes, "run_once", slow_run_once)
+    client = _admin_client(workspace)
+    assert client.post("/api/collect", json={}).status_code == 200
+    # 全局采集运行中：单站测试不再被 409 拒绝，照常提交
+    started = client.post("/api/collect", json={"site_id": "demo"})
+    assert started.status_code == 200
+    test_task_id = started.json()["task_id"]
+    # 同类测试仍互斥：第二个测试要等第一个结束
+    conflict = client.post("/api/collect", json={"site_id": "demo"})
+    assert conflict.status_code == 409
+    assert client.get(f"/api/tasks/{test_task_id}").json()["kind"] == "collect-test"
     release.set()
 
 
@@ -881,6 +906,43 @@ def test_catalog_tasks_are_mutually_exclusive():
         tasks._RUNNING_KINDS.clear()
 
 
+def test_collect_test_runs_parallel_to_global_collect():
+    """单站测试采集不进采集互斥组：与全局采集双向不冲突；同类测试之间仍互斥。"""
+    from llm_price_monitor.webapi import tasks
+
+    tasks._RUNNING_KINDS.clear()
+    try:
+        tasks._RUNNING_KINDS["collect-price"] = "task-1"
+        assert tasks._conflict_of("collect-test") is None
+        tasks._RUNNING_KINDS.clear()
+        tasks._RUNNING_KINDS["collect-test"] = "task-2"
+        assert tasks._conflict_of("collect-price") is None
+        assert tasks._conflict_of("collect-test") == "task-2"
+    finally:
+        tasks._RUNNING_KINDS.clear()
+
+
+def test_merge_site_health_concurrent_no_lost_update(tmp_path: Path):
+    """测试采集与全局采集并行写健康档案：合并读-改-写加锁后并发合并不丢站点条目。"""
+    from llm_price_monitor.report import _merge_site_health
+    from llm_price_monitor.store import Store
+
+    store = Store(tmp_path / "monitor.db")
+    barrier = threading.Barrier(2)
+
+    def merge(site_id: str) -> None:
+        barrier.wait(2)
+        _merge_site_health(store, "price", {site_id: {"level": "warn", "message": "m", "time": 1.0}})
+
+    threads = [threading.Thread(target=merge, args=(site_id,)) for site_id in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    doc = store.get_document("site_collect_health")
+    assert set(doc) == {"a", "b"}
+
+
 def test_store_purge_visits_keeps_recent(workspace: Path):
     """purge_visits 只删窗口之前的记录，供 90 天保留策略调用。"""
     from llm_price_monitor.store import Store
@@ -934,9 +996,9 @@ def test_settings_validates_schedule(workspace: Path):
     client = _admin_client(workspace)
     assert client.put("/api/settings", json={"settings": {"schedule": {"price": -5}}}).status_code == 400
     assert client.put("/api/settings", json={"settings": {"schedule": {"price": True}}}).status_code == 400
-    ok = client.put("/api/settings", json={"settings": {"schedule": {"price": 30, "status": 0, "notice": 10, "catalog": 720}}})
+    ok = client.put("/api/settings", json={"settings": {"schedule": {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0}}})
     assert ok.status_code == 200
-    assert ok.json()["settings"]["schedule"] == {"price": 30, "status": 0, "notice": 10, "catalog": 720}
+    assert ok.json()["settings"]["schedule"] == {"price": 30, "status": 0, "notice": 10, "catalog": 720, "rankings": 0}
 
 
 def test_scheduler_run_due_submits_due_jobs_and_persists_state(tmp_path: Path, monkeypatch):
@@ -949,7 +1011,7 @@ def test_scheduler_run_due_submits_due_jobs_and_persists_state(tmp_path: Path, m
     tasks.reset()  # 任务注册表进程内共享，先清场再用精确计数断言
     monkeypatch.setattr(jobs, "fetch_catalogs", lambda **_kwargs: ({"models": {}}, {"models": {}}))
     store = Store(tmp_path / "monitor.db")
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 60}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 60, "rankings": 0}})
 
     scheduler_mod._run_due(store)
     kinds = [task["kind"] for task in tasks.recent(100)]
@@ -970,7 +1032,7 @@ def test_scheduler_run_due_disabled_all_and_invalid_config(tmp_path: Path):
 
     tasks.reset()
     store = Store(tmp_path / "monitor.db")
-    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0}})
+    store.set_document("settings", {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}})
     scheduler_mod._run_due(store)
     assert tasks.recent(100) == []
 
@@ -987,7 +1049,7 @@ def test_reseed_modes(workspace: Path):
     # skip_existing：启动时默认值已把 settings 全字段落库，种子声明值不再视为"缺失"；
     # 手动删掉 timeout 后才重新可补
     seed_path.write_text(json.dumps({
-        "settings": {"timeout": 99, "schedule": {"price": 123, "status": 0, "notice": 0, "catalog": 0}},
+        "settings": {"timeout": 99, "schedule": {"price": 123, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}},
         "ai": {"enabled": True},
         "sites": [],
     }), encoding="utf-8")
@@ -1006,7 +1068,7 @@ def test_reseed_modes(workspace: Path):
 
     # overwrite：种子里的键逐项覆盖；sites 为空数组时受保护不清空
     seed_path.write_text(json.dumps({
-        "settings": {"timeout": 20, "schedule": {"price": 30, "status": 5, "notice": 10, "catalog": 720}},
+        "settings": {"timeout": 20, "schedule": {"price": 30, "status": 5, "notice": 10, "catalog": 720, "rankings": 0}},
         "ai": {"enabled": True},
         "sites": [],
     }), encoding="utf-8")
@@ -1052,7 +1114,8 @@ def test_default_seed_ships_ai_without_key(workspace: Path):
     assert isinstance(data["ai"].get("base_url"), str) and data["ai"]["base_url"]
     assert isinstance(data["ai"].get("models"), list) and len(data["ai"]["models"]) >= 3
     assert "api_key" not in data["ai"]  # 种子不含密钥，Key 由向导/设置页填写后存数据库
-    assert data["settings"]["schedule"]["price"] == 60 and data["settings"]["schedule"]["catalog"] == 1440
+    assert data["settings"]["schedule"]["price"] == 180
+    assert data["settings"]["schedule"]["catalog"] == 1440 and data["settings"]["schedule"]["rankings"] == 1440
 
 
 def test_settings_defaults_written_to_db(workspace: Path):
@@ -1173,6 +1236,34 @@ def test_tasklog_emit_without_binding_is_noop():
     tasklog.emit("错误也应被忽略", "error")
 
 
+def test_submit_conflict_error_names_blocking_task(tmp_path: Path):
+    """互斥报错要报占用方任务的 kind 与开始时间：占用方和请求方是两个任务，
+    只报请求方 kind 会让用户误以为是上一次同类操作没结束。"""
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi import tasks
+
+    tasks.reset()
+    tasks.attach_store(Store(tmp_path / "monitor.db"))
+    release = threading.Event()
+    started = threading.Event()
+
+    def job() -> dict:
+        started.set()
+        release.wait(2)
+        return {}
+
+    first = tasks.submit("collect", job)
+    assert started.wait(2)
+    with pytest.raises(RuntimeError) as exc_info:
+        tasks.submit("collect-price", lambda: {})
+    message = str(exc_info.value)
+    started_at = time.strftime("%m-%d %H:%M", time.localtime(tasks.get(first)["started_at"]))
+    assert "collect 任务" in message and started_at in message
+    # 请求方的 kind 不能再出现在报错里，否则又会误导为"上一次价格采集没结束"
+    assert "collect-price" not in message
+    release.set()
+
+
 def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
     """概览页异常卡片：跨任务汇总警告/错误日志；逐条移除与清空只影响卡片展示，任务日志本体不动。"""
     import llm_price_monitor.webapi.routes.collect as collect_routes
@@ -1182,6 +1273,10 @@ def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
 
     def flaky(_config, **_kwargs):
         tasklog.emit("[demo] 渠道状态被跳过：站点未开放", "warn")
+        tasklog.emit(
+            "传输层抖动（[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1032)），1s 后重试（1/2）",
+            "warn",
+        )
         tasklog.emit("[demo] 价格采集失败：连接超时", "error")
         return MonitorReport(0.0, 1.0, [], [], [])
 
@@ -1201,6 +1296,7 @@ def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
 
     run_collect()
     entries = client.get("/api/tasks/errors").json()["entries"]
+    # 传输层抖动的 warn 已自愈，与健康档案同口径不进卡片；业务 warn 与 error 照常
     assert [entry["level"] for entry in entries] == ["error", "warn"]  # 新日志在前，info 不进卡片
     assert all("价格采集失败" in entry["message"] or "渠道状态被跳过" in entry["message"] for entry in entries)
 
@@ -1210,6 +1306,7 @@ def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
     assert [entry["level"] for entry in remaining] == ["error"]
     detail = client.get(f"/api/tasks/{next(iter(client.get('/api/tasks').json()['tasks']))['id']}").json()
     assert any("渠道状态被跳过" in log["message"] for log in detail["logs"])  # 任务日志本体不受影响
+    assert any("传输层抖动" in log["message"] for log in detail["logs"])  # 抖动只在任务日志里留痕
 
     assert client.delete("/api/tasks/errors").json()["remaining"] == 0
     assert client.get("/api/tasks/errors").json()["entries"] == []
@@ -1355,7 +1452,6 @@ def test_site_config_slimmed_on_save(workspace: Path):
     fat = {
         "id": "slim",
         "adapter": "standard",
-        "models": ["m1"],
         "auth_token": None,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
@@ -1370,7 +1466,6 @@ def test_site_config_slimmed_on_save(workspace: Path):
     assert created.json()["site"] == {
         "id": "slim",
         "enabled": True,  # 启用态始终落库：管理台行内判断直接读它
-        "models": ["m1"],
         "network": {"url": "https://slim.test/api/pricing"},
     }
 
@@ -1470,7 +1565,14 @@ def test_assistant_daily_ip_limit(workspace: Path, monkeypatch):
         yield {"type": "delta", "text": "答"}
         yield {"type": "finish", "finish_reason": "stop", "tool_calls": [], "usage": None}
 
-    monkeypatch.setattr(assistant_routes.httpx, "post", lambda *args, **kwargs: _FakeResponse())
+    class _FakeGateClient:
+        def post(self, *args: object, **kwargs: object) -> _FakeResponse:
+            return _FakeResponse()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(assistant_routes.httpx, "Client", lambda *args, **kwargs: _FakeGateClient())
     monkeypatch.setattr(assistant_routes, "ai_stream_messages_fallback", fake_events)
     config_path = _config(workspace)
     doc = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1607,3 +1709,95 @@ def test_vendor_source_refresh_task_merges_into_catalog(workspace: Path, monkeyp
     entry = catalog["models"]["glm5.3flash"]
     assert entry["region"] == "cn" and entry["vendor"] == "ZhipuAI"
     assert entry["list_cny"] == {"input": 0.8, "output": 2.8}
+
+
+def test_monitor_model_removals_tracked_on_save(workspace: Path):
+    """保存监控清单时：移除项进 dismissed（自动补模型时跳过），重新加回则解除。"""
+    client = _admin_client(workspace)
+    # workspace 初始清单是 ["demo-model"]，第一次保存就把它的移除记进 dismissed
+    assert client.put("/api/settings", json={"settings": {"monitor_models": ["m-a", "m-b"]}}).status_code == 200
+    assert client.put("/api/settings", json={"settings": {"monitor_models": ["m-a"]}}).status_code == 200
+    settings = client.get("/api/settings").json()["settings"]
+    assert settings["monitor_models"] == ["m-a"]
+    assert settings["monitor_models_dismissed"] == ["demo-model", "m-b"]
+
+    # 重新加回（含曾被移除的 demo-model）即解除忽略
+    assert client.put("/api/settings", json={"settings": {"monitor_models": ["m-a", "m-b", "demo-model"]}}).status_code == 200
+    settings = client.get("/api/settings").json()["settings"]
+    assert settings["monitor_models_dismissed"] == []
+
+
+def test_auto_append_latest_models(tmp_path: Path):
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi.jobs import auto_append_latest_models
+
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("settings", {"monitor_models": ["m-old"], "monitor_models_dismissed": ["m-gone"]})
+    # 目录键是匹配用归一化形式，条目的 model 字段才是标准显示名：自动补必须取显示名
+    catalog = {"models": {
+        "aold": {"vendor": "A", "release_date": "2026-08-01", "model": "m-old"},
+        "anew": {"vendor": "A", "release_date": "2026-09-30", "model": "m-new"},
+        "anew2": {"vendor": "A", "release_date": "2026-09-30", "model": "m-new-2"},
+        "aolder": {"vendor": "A", "release_date": "2026-07-01", "model": "m-older"},
+        "bold": {"vendor": "B", "release_date": "2025-01-01", "model": "m-gone"},
+        "bnodate": {"vendor": "B", "model": "m-nodate"},
+        "cmonth": {"vendor": "C", "release_date": "2026-09", "model": "m-c"},
+    }}
+
+    # 每厂商取发布日期最新的一批：A 家 9-30 两个都进、旧日期不进；B 家最新是被移除的 m-gone，
+    # 跳过且无日期的也不进；C 家月粒度日期照常参与
+    assert auto_append_latest_models(store, catalog) == ["m-c", "m-new", "m-new-2"]
+    assert store.get_document("settings")["monitor_models"] == ["m-old", "m-c", "m-new", "m-new-2"]
+    # 下一轮：没有新模型就不再写库
+    assert auto_append_latest_models(store, catalog) == []
+
+
+def test_canonicalize_monitor_models(tmp_path: Path):
+    from llm_price_monitor.store import Store
+    from llm_price_monitor.webapi.jobs import canonicalize_monitor_models
+
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("settings", {
+        # 历史遗留：清单里存过目录的归一化键（丢横线），与手动加的标准名/自定义名混在一起
+        "monitor_models": ["deepseekchat", "gpt5", "deepseek-chat", "my-own-model"],
+        "monitor_models_dismissed": ["kimik2"],
+    })
+    catalog = {"models": {
+        "deepseekchat": {"model": "deepseek-chat"},
+        "gpt5": {"model": "GPT-5"},
+        "kimik2": {"model": "kimi-k2"},
+    }}
+
+    renamed = canonicalize_monitor_models(store, catalog)
+    assert renamed == ["deepseekchat → deepseek-chat", "gpt5 → GPT-5", "kimik2 → kimi-k2"]
+    settings = store.get_document("settings")
+    # 换名后去重、自定义模型保留原样；移除名单同步换名，继续拦住自动补模型
+    assert settings["monitor_models"] == ["deepseek-chat", "GPT-5", "my-own-model"]
+    assert settings["monitor_models_dismissed"] == ["kimi-k2"]
+    # 没有变化就不再写库
+    assert canonicalize_monitor_models(store, catalog) == []
+
+
+def test_vendor_sources_seeded_on_first_boot(workspace: Path, monkeypatch):
+    """种子文件里的 vendor_sources 首次启动导入（含描述）；坏条目跳过不阻断启动。"""
+    from llm_price_monitor.webapi import jobs as web_jobs
+
+    config_path = _config(workspace)
+    seed = json.loads(config_path.read_text(encoding="utf-8"))
+    seed["vendor_sources"] = [
+        {"vendor": "Zhipu AI", "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "region": "cn",
+         "note": "bigmodel.cn 官方定价页，人民币标价直接作为国内基准"},
+        {"vendor": "坏条目", "url": "ftp://x.cn"},  # 非法 URL：导入时跳过
+    ]
+    config_path.write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(web_jobs, "fetch_catalogs", lambda *a, **k: (_fake_catalog_doc(), _fake_catalog_doc()))
+
+    # 不能用 _admin_client：它内部再调一次 _config 会把种子改动覆盖回原样
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(config_path), client=("testclient", 50000))
+    assert client.post("/api/setup", json={"username": "admin", "password": "s3cret"}).status_code == 200
+    sources = client.get("/api/vendor-sources").json()["sources"]
+    assert [s["vendor"] for s in sources] == ["Zhipu AI"]
+    assert sources[0]["note"] == "bigmodel.cn 官方定价页，人民币标价直接作为国内基准"
+    assert sources[0]["enabled"] is True and sources[0]["region"] == "cn"

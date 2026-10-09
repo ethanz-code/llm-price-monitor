@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import { IconGithub, IconMail, IconWecom } from "./icons";
 import { LogoMark } from "./LogoMark";
-import { DajuSit } from "./DajuArt";
 import { FeedbackModal } from "./FeedbackModal";
 import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
 import { ChromeMosaic } from "./ChromeMosaic";
@@ -26,10 +25,6 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>{site.name}</span>
           </div>
           <p>{footer.brandLine}</p>
-          <p className="footer-watch-line">
-            <DajuSit width={17} />
-            {footer.watchLine}
-          </p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
               className="footer-icon"

@@ -110,6 +110,8 @@ export function TimeSeriesChart({
   levelLabels,
   window: windowProp,
   onWindowChange,
+  hiddenSeries,
+  onToggleSeries,
 }: {
   times: number[];
   series: TimeSeries[];
@@ -124,6 +126,11 @@ export function TimeSeriesChart({
   /** 时间轴窗口，取全跨度比例；null 表示全部。不传则组件内部自持。 */
   window?: [number, number] | null;
   onWindowChange?: (value: [number, number] | null) => void;
+  /** 图例隐藏状态（受控）：传入后隐藏/显示由外部持有（页面图表与分享图共用同一份），
+   *  不传则组件内部自持（与其他用法兼容）。 */
+  hiddenSeries?: ReadonlySet<string>;
+  /** 受控模式下图例点选回调。 */
+  onToggleSeries?: (name: string) => void;
 }) {
   const { dark, axisColor, gridColor, palette, lineColor, statusColors } = useChartTheme();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -131,7 +138,8 @@ export function TimeSeriesChart({
   const miniRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
   const [innerWindow, setInnerWindow] = useState<[number, number] | null>(null);
-  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const [innerHidden, setInnerHidden] = useState<ReadonlySet<string>>(new Set());
+  const hidden = hiddenSeries ?? innerHidden;
   const [hover, setHover] = useState<number | null>(null);
   /** 指针在概览条上的落点意图：两端缩放、窗口内平移、其余不响应。 */
   const [miniHover, setMiniHover] = useState<"start" | "end" | "move" | null>(null);
@@ -449,13 +457,18 @@ export function TimeSeriesChart({
     setWindowFrac([lo, Math.max(hi, lo + minSpan)]);
   };
 
-  const toggle = (name: string) =>
-    setHidden((prev) => {
+  const toggle = (name: string) => {
+    if (hiddenSeries && onToggleSeries) {
+      onToggleSeries(name);
+      return;
+    }
+    setInnerHidden((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
       return next;
     });
+  };
 
   const hoverX = hover != null ? PAD.left + ((hover - i0) / span) * (width - PAD.left - PAD.right) : 0;
   const tooltipRows = hover != null

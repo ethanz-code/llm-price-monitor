@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from llm_price_monitor.browser_setup import ensure_browser_ready
-from llm_price_monitor.catalog import jsonio
+from llm_price_monitor.catalog import jsonio, vendor_sources
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, MonitorSettings, config_from_store
 from llm_price_monitor import ai
 from llm_price_monitor.store import Store
@@ -82,6 +82,21 @@ def _seed_store(store: Store, config_path: Path) -> None:
     store.replace_sites([item for item in raw.get("sites", []) if isinstance(item, dict)])
     store.set_document("settings", _settings_seed_document(raw.get("settings", {})))
     store.set_document("ai", _ai_seed_document(raw.get("ai", {})))
+    seed_sources = raw.get("vendor_sources")
+    for item in seed_sources if isinstance(seed_sources, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            vendor_sources.upsert_source(
+                store,
+                vendor=str(item.get("vendor") or ""),
+                url=str(item.get("url") or ""),
+                enabled=bool(item.get("enabled", True)),
+                region=str(item.get("region") or "cn"),
+                note=str(item["note"]) if item.get("note") else None,
+            )
+        except ValueError:
+            continue  # 种子里的坏条目跳过，不阻断启动
     config_from_store(store)  # 立即校验导入结果，坏配置在启动期报错
 
     # 旧配置的 settings 里可自定义数据文件路径；未配置时用标准名
@@ -156,7 +171,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     # 一律 401——访客照常看页面，但拿不到可直接抓取的 JSON API。
     # 令牌未设置时（本地开发）不启用封锁。健康检查、登录态探测与 AI 助手状态
     # 属于访客功能本身，保持公开。
-    public_get_paths = {"/api/health", "/api/auth/state", "/api/assistant/status"}
+    public_get_paths = {"/api/health", "/api/auth/state", "/api/assistant/status", "/api/rankings"}
     internal_token = os.environ.get("PRICE_WEB_INTERNAL_TOKEN", "")
 
     @app.middleware("http")
@@ -206,6 +221,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.assistant.build_router(store))
     app.include_router(routes.ai_logs.build_router(store))
     app.include_router(routes.vendor_sources.build_router(store))
+    app.include_router(routes.rankings.build_router(store))
     ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志
     ensure_browser_ready(store)
     scheduler.start_scheduler(store)

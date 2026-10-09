@@ -42,16 +42,17 @@ uv run price-web --with-frontend
 ```json
 {
   "id": "example",
-  "models": ["gpt-5.6-sol"],
   "network": {
     "url": "https://example.com/dashboard/pricing",
     "ratio_url": "https://example.com/api/public/model-pricing",
-    "headers": { "Authorization": "Bearer ${EXAMPLE_SITE_TOKEN}" }
+    "headers": { "Authorization": "Bearer <站点令牌>" }
   }
 }
 ```
 
-请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）都支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。站点 `models` 也可以配置成 `["*"]` 表示全量采集：接口直采从定价响应现场展开全部模型，网页/AI 提取模式则让 AI 抽取页面上出现的每一个模型（大站模型多时输出可能被 max_tokens 截断，建议优先在能直采的站点使用）。
+请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）支持 `${access_token}`/`${refresh_token}` 凭证占位符，展开成「认证与续签」的当前凭证，续签换新后自动跟着变；其余文本原样保留，不做环境变量注入。注意直采请求头不认凭证占位符——认证走「认证与续签」的凭证注入配置，或写死旧 token 由续签自动回写。
+
+要监控哪些模型在站点管理页顶部「监控模型」统一配置（`settings.monitor_models`），所有站点共用一份，不再按站点单独配置；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，网页/AI 提取模式让 AI 抽取页面上的每一个模型——大站会超出 AI 输入上限，慎用）。
 
 可选字段：
 
@@ -113,6 +114,7 @@ new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/
 | 端点 | 鉴权 | 说明 |
 | ---- | ---- | ---- |
 | `GET /api/overview` / `latest` / `history` / `feed` / `status` / `notice` / `catalog` / `discount` / `meta` | 公开 | 数据读取（`feed` 为价格事件+站点公告合并的统一事件流；`status` 另有 `/api/status/latest`、`/api/status/events`） |
+| `GET /api/rankings` | 公开 | 模型榜单（Artificial Analysis 排名/智能指数/速度/延迟，每日定时同步） |
 | `GET /api/geo` | 公开 | 逐站点解析公网 IP 归属地（带缓存），供首页监控地球使用 |
 | `GET /api/assistant/status`、`POST /api/assistant/ask`（含 `/stream` 流式） | 公开（按 IP 每日限次） | AI 智能助手：基于平台采集的站点、价格与状态数据答问，未配置 AI 时入口隐藏 |
 | `POST /api/site-submissions` | 公开（按 IP 限次） | 访客提交监控站点申请；管理员经 `GET /api/admin/site-submissions` 查看，配置了 WxPusher 时每条新提交推送到微信 |
@@ -121,6 +123,7 @@ new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
 | `POST /api/collect` | 管理员 | 触发采集（AI 兜底始终启用），结果附带官方价折扣 |
 | `POST /api/catalog/refresh` | 管理员 | 从 models.dev 同步官方价目录（免密钥，秒级） |
+| `POST /api/rankings/refresh` | 管理员 | 抓取 Artificial Analysis 榜单页并解析落库 |
 | `GET /api/vendor-sources`（含 `/detection`）、`POST /api/vendor-sources`、`PUT/DELETE /api/vendor-sources/{vendor}`、`POST /api/vendor-sources/{vendor}/refresh` | 管理员 | 厂商定价源：国内价覆盖检测、配置厂商国内定价页并抓取合并进官方目录 |
 | `GET /api/settings` / `PUT /api/settings` | 管理员 | 系统设置（AI、WxPusher 通知） |
 | `GET /api/sites`、`POST /api/sites`、`PUT/DELETE /api/sites/{id}` | 管理员 | 站点配置增删改 |

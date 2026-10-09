@@ -1,41 +1,150 @@
 {
-    "settings": {
-        "timeout": 45,
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-        "random_user_agent": false,
-        "user_agent_platforms": [],
-        "user_agent_chrome_versions": [],
-        "user_agent_version_window": 2,
-        "retention_price_days": 90,
-        "retention_visit_days": 90,
-        "retention_status_days": 90,
-        "retention_ai_log_days": 7,
-        "max_task_runs": 100,
-        "max_task_log_lines": 500,
-        "assistant_daily_limit": 10,
-        "assistant_hourly_limit": 10,
-        "schedule": {
-            "price": 60,
-            "status": 5,
-            "notice": 30,
-            "catalog": 1440
-        }
+  "settings": {
+    "timeout": 45,
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "random_user_agent": false,
+    "user_agent_platforms": [],
+    "user_agent_chrome_versions": [],
+    "user_agent_version_window": 2,
+    "retention_price_days": 90,
+    "retention_visit_days": 90,
+    "retention_status_days": 90,
+    "retention_ai_log_days": 7,
+    "max_task_runs": 100,
+    "max_task_log_lines": 500,
+    "assistant_daily_limit": 10,
+    "assistant_hourly_limit": 10,
+    "schedule": {
+      "price": 180,
+      "status": 5,
+      "notice": 30,
+      "catalog": 1440,
+      "rankings": 1440
+    }
+  },
+  "ai": {
+    "enabled": true,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "models": [
+      "qwen3.8-flash",
+      "qwen3.8-27b",
+      "qwen3.8-max",
+      "kimi-k3",
+      "kimi-k2.7-code",
+      "deepseek-v4-pro-0813",
+      "deepseek-v4-flash-0731"
+    ],
+    "timeout": 180,
+    "max_input_chars": 60000,
+    "max_tokens": 4000,
+    "proxy": null
+  },
+  "sites": [],
+  "vendor_sources": [
+    {
+      "vendor": "Zhipu AI",
+      "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md",
+      "region": "cn",
+      "enabled": true,
+      "note": "GLM 系列最全的一家（GLM-5.3 到 Flash 轻量档共 32 个模型）；官方 .md 价目表直连解析，不依赖 AI，最稳"
     },
-    "ai": {
-        "enabled": true,
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": [
-            "qwen3.8-flash",
-            "qwen3.8-27b",
-            "qwen3.8-max",
-            "kimi-k3",
-            "kimi-k2.7-code",
-            "deepseek-v4-pro-0813",
-            "deepseek-v4-flash-0731"
-        ],
-        "timeout": 180,
-        "max_input_chars": 60000,
-        "max_tokens": 4000
+    {
+      "vendor": "DeepSeek",
+      "url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+      "region": "cn",
+      "enabled": true,
+      "note": "V4 系列（Flash/Pro），以低价著称；官方价分峰谷时段、闲时半价，基准取高峰标准档"
     },
-    "sites": []
+    {
+      "vendor": "Moonshot AI",
+      "url": "https://platform.kimi.com/docs/pricing/chat",
+      "region": "cn",
+      "enabled": true,
+      "note": "Kimi K3/K2.7 系列（K3 支持百万级上下文）；另有 code 编程档与 highspeed 提速加价档，共 4 个模型"
+    },
+    {
+      "vendor": "Alibaba Cloud",
+      "url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "region": "cn",
+      "enabled": true,
+      "note": "千问 Qwen 全系 + 聚合第三方模型，开源阵容最大的一家；价格页超大，AI 分块提取约十分钟，先覆盖千问主力档"
+    },
+    {
+      "vendor": "MiniMax",
+      "url": "https://platform.minimax.cn/docs/guides/pricing-paygo",
+      "region": "cn",
+      "enabled": true,
+      "note": "M 系列文本主力，语音/视频同厂交付；价格分 512k 上下文档与 highspeed 档，基准取标准档"
+    },
+    {
+      "vendor": "Volcengine Ark",
+      "url": "https://docs.volcengine.com/docs/ark/model-pricing",
+      "region": "cn",
+      "enabled": true,
+      "note": "豆包 doubao-seed 全系 + 平台代售 DeepSeek 等，文本/生图/视频一张价目表；29 个模型入库"
+    },
+    {
+      "vendor": "Tencent",
+      "url": "https://cloud.tencent.com/document/product/1729/97731",
+      "region": "cn",
+      "enabled": true,
+      "note": "混元家族全系（a13b/role/translation/vision 等）；计费带峰谷时段，基准取高峰档"
+    },
+    {
+      "vendor": "StepFun",
+      "url": "https://platform.stepfun.com/docs/zh/guides/pricing/details",
+      "region": "cn",
+      "enabled": true,
+      "note": "Step 3.x 系列、含视觉理解型号；10 个模型明码标价，静态直解析"
+    },
+    {
+      "vendor": "SiliconFlow",
+      "url": "https://www.siliconflow.cn/pricing",
+      "region": "cn",
+      "enabled": true,
+      "note": "聚合托管平台：一份页价覆盖 GLM/DeepSeek/千问/Kimi 等各家开源模型，横向比价最方便"
+    },
+    {
+      "vendor": "SenseNova",
+      "url": "https://www.sensecore.cn/help/docs/model-as-a-service/nova/pricing",
+      "region": "cn",
+      "enabled": true,
+      "note": "商汤日日新 V6.5 系列；按千 tokens 计价（入库已折算百万口径），语音按次计费的型号没入库"
+    },
+    {
+      "vendor": "Xiaomi",
+      "url": "https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
+      "region": "cn",
+      "enabled": true,
+      "note": "MiMo 系列（pro/flash/ultraspeed 三档速度），模型少而精；ASR 按小时计价未入库"
+    },
+    {
+      "vendor": "Baidu",
+      "url": "https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya",
+      "region": "cn",
+      "enabled": true,
+      "note": "ERNIE 5.1/4.5 企业级系列，40 个模型（含聚合的 DeepSeek/GLM/Kimi 与 OCR/Embedding）"
+    },
+    {
+      "vendor": "iFlytek",
+      "url": "https://xinghuo.xfyun.cn/sparkapi",
+      "region": "cn",
+      "enabled": true,
+      "note": "星火 X2 系列 + 星辰 MaaS 广场（GLM/Kimi/DeepSeek 同场在售）；免费小型号标 0 价"
+    },
+    {
+      "vendor": "01.AI",
+      "url": "https://platform.lingyiwanwu.com/docs",
+      "region": "cn",
+      "enabled": true,
+      "note": "零一走单主力路线（yi-lightning 仅 2 个模型）；定价不分输入输出、统一价"
+    },
+    {
+      "vendor": "Baichuan",
+      "url": "https://platform.baichuan-ai.com/prices",
+      "region": "cn",
+      "enabled": true,
+      "note": "百川 M3/Baichuan4 系列；部分模型输入输出合并计价（按并价入库），复核时留意"
+    }
+  ]
 }

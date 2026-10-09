@@ -8,15 +8,16 @@ import { Btn, Input } from "@/components/ui";
 import { LogoMark } from "@/components/LogoMark";
 import { IconCheck } from "@/components/icons";
 
-/** 首次设置向导：创建管理员账号 → 配置必填密钥（可跳过）→ 完成指引。
+/** 首次设置向导：创建管理员账号 → 配置必填密钥（可跳过）→ 监控模型（可跳过）→ 完成指引。
  *  仅在数据库还没有管理员账号时可用；完成后 /setup 不可重复进入。 */
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 const STEPS: { id: Step; label: string }[] = [
   { id: 1, label: "创建账号" },
   { id: 2, label: "配置密钥" },
-  { id: 3, label: "开始使用" },
+  { id: 3, label: "监控模型" },
+  { id: 4, label: "开始使用" },
 ];
 
 export default function SetupPage() {
@@ -44,7 +45,7 @@ export default function SetupPage() {
       <div className="auth-card auth-card-wide">
         <LogoMark size={36} />
         <h1 className="auth-title">开始使用</h1>
-        <p className="auth-sub">第一次运行需要三步：创建管理员账号、填入必需的密钥，然后添加要监控的站点。</p>
+        <p className="auth-sub">首次运行需完成四步：创建管理员账号、配置必需的密钥、选择要检测的模型、添加要监控的站点。</p>
         <ol className="setup-steps">
           {STEPS.map((item) => (
             <li key={item.id} className={item.id === step ? "on" : item.id < step ? "done" : ""}>
@@ -55,7 +56,8 @@ export default function SetupPage() {
         </ol>
         {step === 1 && <StepAccount onDone={() => setStep(2)} />}
         {step === 2 && <StepKeys onDone={() => setStep(3)} onSkip={() => setStep(3)} />}
-        {step === 3 && <StepDone />}
+        {step === 3 && <StepModels onDone={() => setStep(4)} onSkip={() => setStep(4)} />}
+        {step === 4 && <StepDone />}
       </div>
     </div>
   );
@@ -157,9 +159,9 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
           <span>AI 提取</span>
         </div>
         <p className="auth-hint">
-          标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；结果会缓存以减少重复调用，仍可能产生 token 费用。
-          推荐先用阿里云百炼的免费模型：Base URL 和模型列表已预置，只需创建一个 API Key 填到下面。新用户开通百炼即送
-          新人免费额度（90 天，北京地域），无需实名认证：
+          标准协议站点在本地直接解析定价，AI 用于识别模型别名与非标准定价格式；结果会缓存以减少重复调用，仍可能产生 token 费用。
+          推荐使用阿里云百炼免费模型：Base URL 与模型列表已预置，仅需创建一个 API Key 填入下方。新用户开通百炼即赠新人免费额度
+          （90 天，北京地域），无需实名认证：
           <a href="https://help.aliyun.com/zh/model-studio/new-free-quota" target="_blank" rel="noreferrer">免费额度说明</a>
           ·
           <a href="https://help.aliyun.com/zh/model-studio/get-api-key" target="_blank" rel="noreferrer">获取 API Key</a>
@@ -192,16 +194,103 @@ function StepKeys({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }
   );
 }
 
-/* ---------- 第 3 步：完成 ---------- */
+/* ---------- 第 3 步：监控模型（可跳过，留空则按官方目录自动补各厂商最新模型） ---------- */
+
+function StepModels({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }) {
+  const [models, setModels] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    apiSend<{ settings?: { monitor_models?: unknown } }>("/api/settings", "GET")
+      .then((loaded) => {
+        const existing = Array.isArray(loaded.settings?.monitor_models) ? loaded.settings.monitor_models : [];
+        setModels(existing.filter((item): item is string => typeof item === "string").join(", "));
+      })
+      .catch(() => {}); // 读取失败就保持空表单，跳过也能起步
+  }, []);
+
+  async function save() {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = models.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+      await apiSend("/api/settings", "PUT", { settings: { monitor_models: list }, ai: {} });
+      onDone();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="auth-form">
+      <div className="setup-keys-group">
+        <div className="setup-keys-head">
+          <span>选择要检测的模型</span>
+        </div>
+        <p className="auth-hint">
+          输入模型名称（逗号分隔），所有站点统一按此清单采集价格；后续可在「站点管理」顶部调整。
+          亦可跳过：目录每天刷新时会自动把各厂商最新发布的模型加入清单。
+        </p>
+        <div className="setup-keys-fields">
+          <label className="auth-field">
+            <span>监控模型（逗号分隔，留空则自动添加各厂商最新模型）</span>
+            <Input value={models} onChange={setModels} placeholder="gpt-5.6, claude-sonnet-5, glm-5.3…" />
+          </label>
+        </div>
+      </div>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Btn variant="primary" size="lg" loading={loading} onClick={save}>
+          保存并继续
+        </Btn>
+        <Btn size="lg" onClick={onSkip}>
+          先跳过
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 第 4 步：完成 ---------- */
 
 const NEXT_STEPS = [
-  { title: "添加监控站点", text: "在「站点管理」里新增中转站的价格接口地址与目标模型。", href: "/admin/sites", label: "去添加站点" },
+  { title: "添加监控站点", text: "在「站点管理」里新增中转站的价格接口地址与登录凭证。", href: "/admin/sites", label: "去添加站点" },
   { title: "等待自动采集", text: "系统会按「系统设置」里的频率自动采集，第一次价格数据很快就有。", href: "/admin/tasks", label: "看采集任务" },
 ];
 
 function StepDone() {
+  const [autoFill, setAutoFill] = useState<"running" | "manual" | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // 监控清单留空：补一次目录同步，各厂商最新发布的模型自动进清单；同步失败则提示手动选择
+    apiSend<{ settings?: { monitor_models?: unknown } }>("/api/settings", "GET")
+      .then((loaded) => {
+        if (cancelled) return;
+        const models = Array.isArray(loaded.settings?.monitor_models) ? loaded.settings.monitor_models : [];
+        if (models.length) return;
+        setAutoFill("running");
+        apiSend("/api/catalog/refresh", "POST").catch(() => {
+          if (!cancelled) setAutoFill("manual");
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="setup-done">
+      {autoFill === "running" && (
+        <p className="auth-hint">正在同步官方目录，各厂商最新发布的模型将自动添加至监控清单。</p>
+      )}
+      {autoFill === "manual" && (
+        <p className="auth-hint">尚未配置监控模型：可在「站点管理」顶部添加要检测的模型。</p>
+      )}
       <ul>
         {NEXT_STEPS.map((item) => (
           <li key={item.title}>

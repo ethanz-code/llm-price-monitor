@@ -8,7 +8,7 @@ import { ToneNum, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 
-/** Landing 的最新快照预览表：与价格总览同一口径（不折叠，各分组各占一行），列渲染含交互，需在客户端渲染。 */
+/** Landing 的最新快照预览表：每模型一行（综合价最低的代表行，见 priceRows.lowestPriceRowPerModel），列渲染含交互，需在客户端渲染。 */
 export function SnapshotPreview({
   rows,
   rate,

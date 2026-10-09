@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { apiGet } from "@/lib/api";
+import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import { PageHeader } from "@/components/PageHeader";
 import { NoticeBody } from "@/components/NoticeBody";
 import { ToneTag } from "@/components/ToneTag";
 import { StatusCharts } from "@/components/StatusCharts";
 import { StatusUptimeBars } from "@/components/StatusUptimeBars";
 import { ShareSiteButton } from "@/components/ShareSiteButton";
+import { ChartLegendProvider } from "@/components/ChartLegendContext";
 import { formatTime } from "@/lib/format";
 import {
   buildSiteViews,
@@ -16,12 +17,26 @@ import {
   type RateLevel,
 } from "@/lib/channelStatus";
 import type { Tone } from "@/components/ToneTag";
+import type { Metadata } from "next";
 import { getSiteInfo } from "@/lib/sites";
 import type { NoticeSnapshot, StatusSnapshot } from "@/lib/types";
+import { pageMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "站点检测" };
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ siteId: string }>;
+}): Promise<Metadata> {
+  const { siteId: rawId } = await params;
+  const name = getSiteInfo(decodeURIComponent(rawId)).name;
+  return pageMetadata(
+    `站点检测 · ${name}`,
+    `「${name}」的渠道检测档案：近 7 天可用率、延迟、出字速度与站点公告存档。`,
+    `/overview/status/${rawId}`,
+  );
+}
 
 const RATE_TONE: Record<RateLevel, string> = {
   ok: "var(--tone-green-text)",
@@ -186,16 +201,21 @@ export default async function StatusDetailPage({
   let error: string | null = null;
   try {
     // 固定看最近 7 天：时间条件下推给接口（since，数据库只取范围内的行）。
-    // 库里的快照只存时间线增量（写入侧 strip_status_delta 裁掉与上一条重复的检测点），
-    // 单条很小；max_records 只作为极密站点的防御上限——抽样会打洞，不能设太小。
-    const since = Math.floor(Date.now() / 1000 - 7 * 86_400);
+    // 取该站最近 400 条（与首页 per_site=400 同口径，截断不抽样）——
+    // 抽样会在时间线上打洞，两个页面的时段分桶必须建立在同一段记录上数值才一致。
+    // since 对齐到分钟：60s 缓存窗口内 URL 稳定，fetch 缓存才能命中（与首页同口径）
+    const since = Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60;
     const [timeline, noticeData] = await Promise.all([
       apiGet<{ records: StatusSnapshot[]; total: number }>(
-        `/api/status?site_id=${encodeURIComponent(siteId)}&limit=2000&since=${since}&max_records=400`,
+        `/api/status?site_id=${encodeURIComponent(siteId)}&limit=400&since=${since}`,
+        undefined,
+        PUBLIC_REVALIDATE,
       ),
       // 公告拉取失败只影响公告区，不阻塞整页；只取最新一次采集的存档
       apiGet<{ records: NoticeSnapshot[] }>(
         `/api/notice?site_id=${encodeURIComponent(siteId)}&limit=1`,
+        undefined,
+        PUBLIC_REVALIDATE,
       ).catch(() => ({
         records: [] as NoticeSnapshot[],
       })),
@@ -209,11 +229,13 @@ export default async function StatusDetailPage({
   const views = buildSiteViews(records);
   const series = views.availability[siteId] ?? [];
   const channels = views.channels[siteId] ?? [];
-  // 顶部整站时段色块：同样服务端预分桶，客户端只拿 ~28 个桶
-  const uptimeBuckets = buildUptimeBuckets(series, 28);
+  // 顶部整站时段色块：服务端用抽稀前的全量序列预分桶（桶内平均/最差/次数都是真实口径，
+  // 不受保峰抽稀影响），客户端只拿 ~28 个桶
+  const uptimeBuckets = views.uptimeBuckets[siteId] ?? [];
 
   return (
-    <div className="page">
+    <ChartLegendProvider>
+      <div className="page">
       <PageHeader
         title={`站点检测 · ${getSiteInfo(siteId).name || siteId}`}
         actions={
@@ -370,6 +392,7 @@ export default async function StatusDetailPage({
           </Link>
         </div>
       )}
-    </div>
+      </div>
+    </ChartLegendProvider>
   );
 }

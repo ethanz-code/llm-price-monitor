@@ -7,7 +7,7 @@ import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { getSiteInfo } from "@/lib/sites";
 import type { EventRow } from "@/lib/types";
-import { dayKey, dayLabel, eventMeta, formatTime, isNoticeEvent, noticeExcerpt } from "@/lib/format";
+import { dayKey, dayLabel, eventMeta, formatTime, isNoticeEvent, noticeExcerpt, noticePlainText } from "@/lib/format";
 import type { FeedEvent, HistoryListData } from "@/lib/types";
 import { describeChange, EventDetailModal } from "./EventDetailModal";
 
@@ -116,7 +116,7 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
                   </span>
                 </div>
                 <div style={{ color: "var(--text-2)", fontSize: 13, marginTop: 4 }}>
-                  <span title={event.content}>{noticeExcerpt(event.content)}</span>
+                  <span title={noticePlainText(event.content)}>{noticeExcerpt(event.content)}</span>
                 </div>
               </div>
             </div>

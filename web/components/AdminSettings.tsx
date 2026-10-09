@@ -3,23 +3,21 @@
 /** 系统设置：按「采集调度 / 数据保留 / AI 提取 / 微信通知 WxPusher / 种子导入」分组，AI 与通知可独立测试有效性。 */
 
 import { useEffect, useState } from "react";
-import { toast, Btn, Input, Sel, Modal } from "./ui";
+import { toast, Btn, Input, Sel, Modal, SettingRow } from "./ui";
+import { errorText } from "@/lib/api";
 import { IconEye, IconEyeOff } from "./icons";
 import { apiSend } from "@/lib/api";
 import type { SettingsData, SiteConfig } from "@/lib/types";
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** 四类采集任务的后台定时间隔（分钟），与后端 settings.schedule 默认值保持一致；0 = 关闭定时。 */
-const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5, notice: 30, catalog: 1440 };
+/** 五类采集任务的后台定时间隔（分钟），与后端 settings.schedule 默认值保持一致；0 = 关闭定时。 */
+const DEFAULT_SCHEDULE_MINUTES: Record<string, number> = { price: 60, status: 5, notice: 30, catalog: 1440, rankings: 1440 };
 
 const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "price", label: "价格采集", hint: "定时去各站点看价格，有变化就记下来" },
   { key: "status", label: "渠道状态", hint: "定时检查开了状态监测的站点，渠道有变化就记事件" },
   { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来" },
   { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录，并重新抓取所有已启用的厂商定价源（默认 24 小时一次）" },
+  { key: "rankings", label: "模型榜单", hint: "定时更新 Artificial Analysis 模型榜单（默认 24 小时一次）" },
 ];
 
 /** 数据保留天数配置项：与后端 settings 的 retention_*_days 字段一一对应；价格/状态事件与公告永不清理。 */
@@ -89,19 +87,6 @@ function SecretInput({
         </button>
       }
     />
-  );
-}
-
-function SettingRow({ label, hint, children }: { label: string; hint?: React.ReactNode; children?: React.ReactNode }) {
-  return (
-    <div style={{ display: "grid", gap: 4 }}>
-      {/* label 包裹控件：读屏软件能把字段名和输入框关联起来 */}
-      <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13.5 }}>{label}</span>
-        {children}
-      </label>
-      {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
-    </div>
   );
 }
 
@@ -346,8 +331,8 @@ export function AdminSettings() {
     }
     const maxTokensText = aiMaxTokens.trim();
     const maxTokens = maxTokensText ? Number.parseFloat(maxTokensText) : DEFAULT_AI_MAX_TOKENS;
-    if (!Number.isFinite(maxTokens) || maxTokens < 1 || !Number.isInteger(maxTokens)) {
-      toast("单次回复上限需是不小于 1 的整数（token）");
+    if (!Number.isFinite(maxTokens) || maxTokens < 4000 || !Number.isInteger(maxTokens)) {
+      toast("单次回复上限最低 4000（token）：低于该值价格抽取的输出会被截断");
       return;
     }
     const ai: Record<string, unknown> = {
@@ -650,7 +635,7 @@ export function AdminSettings() {
                 style={{ width: 120, maxWidth: "100%" }}
               />
             </SettingRow>
-            <SettingRow label="单次回复上限（token）" hint="模型单次最多生成多少 token，一般不用改">
+            <SettingRow label="单次回复上限（token）" hint="模型单次最多生成多少 token；最低 4000，价格抽取的输出需要这个预算">
               <Input
                 value={aiMaxTokens}
                 onChange={setAiMaxTokens}

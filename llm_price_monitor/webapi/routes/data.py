@@ -44,12 +44,11 @@ def build_router(store: Store) -> APIRouter:
             notice = store.latest_notice(site_id)
             if isinstance(notice, dict) and notice.get("content"):
                 notices[site_id] = {"content": str(notice["content"]), "captured_at": notice.get("captured_at")}
-        # 站点信息完整度：监控模型、认证凭证、附加采集地址各 1 分（0–3），给前端智能排序用；
+        # 站点信息完整度：认证凭证、附加采集地址各 1 分（0–2），给前端智能排序用；
         # network.ratio_url（倍率接口）与价格接口同地址、token_refresh（续签）均不计分
         site_completeness = {
             site.id: sum(
                 (
-                    bool(site.models),
                     bool(site.auth_token or site.cookie or site.cookies),
                     bool(site.networks),
                 )

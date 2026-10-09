@@ -19,7 +19,7 @@ import {
   YAxis,
 } from "recharts";
 import { apiSend } from "@/lib/api";
-import { formatTime } from "@/lib/format";
+import { formatCount, formatTime } from "@/lib/format";
 import type { AnalyticsSummary, VisitLog, VisitLogsData } from "@/lib/types";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
@@ -64,7 +64,7 @@ interface SimpleTooltipEntry {
 function SimpleTooltip({ active, payload, label }: { active?: boolean; payload?: SimpleTooltipEntry[]; label?: string }) {
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload;
-  return <ChartBubble label={point?.name ?? label} rows={[{ name: "访问量", value: point?.pv ?? 0 }]} />;
+  return <ChartBubble label={point?.name ?? label} rows={[{ name: "访问量", value: formatCount(point?.pv ?? 0) }]} />;
 }
 
 /** 横向条形图：名称在左、条上带数值，高度随条目数伸缩。 */
@@ -88,6 +88,7 @@ function NamedBars({ data, color, axisColor }: { data: { name: string; pv: numbe
             <LabelList
               dataKey="pv"
               position="right"
+              formatter={(value) => formatCount(Number(value))}
               style={{ fill: "var(--text-2)", fontSize: 11, fontFamily: "var(--mono)" }}
             />
           </Bar>
@@ -129,7 +130,7 @@ function DeviceDonut({ data, palette }: { data: { name: string; pv: number }[]; 
             <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: palette[index % palette.length], flexShrink: 0 }} />
             <span>{deviceLabel(item.name)}</span>
             <span className="mono" style={{ color: "var(--text-2)" }}>
-              {item.pv} · {total ? Math.round((item.pv / total) * 100) : 0}%
+              {formatCount(item.pv)} · {total ? Math.round((item.pv / total) * 100) : 0}%
             </span>
           </li>
         ))}
@@ -212,7 +213,7 @@ export function AdminAnalytics() {
           </div>
           {otherRegions.length > 0 && (
             <p style={{ color: "var(--text-3)", fontSize: 12, margin: "6px 0 0" }}>
-              {otherRegions.map((item) => `${item.name} ${item.pv}`).join(" · ")}
+              {otherRegions.map((item) => `${item.name} ${formatCount(item.pv)}`).join(" · ")}
             </p>
           )}
         </section>

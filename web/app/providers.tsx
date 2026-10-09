@@ -29,7 +29,7 @@ export function Providers({ children }: { children: ReactNode }) {
   const [dark, setDark] = useState(true);
 
   const apply = useCallback(() => {
-    const stored = (localStorage.getItem("theme-mode") as ThemeMode | null) ?? "system";
+    const stored = (localStorage.getItem("theme-mode") as ThemeMode | null) ?? "light";
     const isDark = resolveDark(stored);
     setModeState(stored);
     setDark(isDark);

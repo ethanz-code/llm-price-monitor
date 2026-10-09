@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -15,12 +16,15 @@ from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import tasks
 from llm_price_monitor.webapi.jobs import catalog_refresh_job, vendor_source_refresh_job
 
+_log = logging.getLogger("llm_price_monitor.webapi.routes.vendor_sources")
+
 
 class VendorSourceBody(BaseModel):
     vendor: str
     url: str
     enabled: bool = True
     region: str = "cn"
+    note: str | None = None
 
 
 def build_router(store: Store) -> APIRouter:
@@ -60,7 +64,7 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if vendor in vendor_sources.load_sources(store):
             raise HTTPException(status_code=409, detail=f"厂商定价源已存在: {vendor}")
-        record = vendor_sources.upsert_source(store, body.vendor, body.url, body.enabled, region)
+        record = vendor_sources.upsert_source(store, body.vendor, body.url, body.enabled, region, note=body.note)
         return {"source": _summary(record)}
 
     @router.put("/api/vendor-sources/{vendor}")
@@ -74,7 +78,7 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if normalized_vendor != vendor:
             raise HTTPException(status_code=400, detail="请求体里的厂商名与路径不一致（不支持改名，请删除后重建）")
-        record = vendor_sources.upsert_source(store, vendor, body.url, body.enabled, region)
+        record = vendor_sources.upsert_source(store, vendor, body.url, body.enabled, region, note=body.note)
         revert_task_id = None
         if not body.enabled:
             # 停用后目录里上次合并的国内价会残留，自动触发目录刷新恢复 models.dev 基准
@@ -103,8 +107,9 @@ def build_router(store: Store) -> APIRouter:
 
 
 def _submit_catalog_refresh_silently(store: Store) -> str | None:
-    """后台提交目录刷新以恢复 models.dev 基准；冲突（刷新进行中）时静默跳过。"""
+    """后台提交目录刷新以恢复 models.dev 基准；冲突（刷新进行中）时留痕跳过。"""
     try:
         return tasks.submit("catalog-refresh", catalog_refresh_job(store))
-    except RuntimeError:
+    except RuntimeError as exc:
+        _log.warning("删除厂商源后的目录自动刷新未触发（已有同类任务在跑）：%s", exc)
         return None

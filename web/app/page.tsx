@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiGet } from "@/lib/api";
+import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
   currencySymbol,
@@ -11,7 +11,7 @@ import {
   toCnyPrice,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import { sortSnapshotRows } from "@/lib/priceRows";
+import { lowestPriceRowPerModel, sortSnapshotRows } from "@/lib/priceRows";
 import {
   buildSiteViews,
   latencyLevel,
@@ -24,6 +24,7 @@ import type {
   HistoryListData,
   MetaData,
   OverviewData,
+  RankingsData,
   StatusSnapshot,
 } from "@/lib/types";
 import { SiteSubmitButton } from "@/components/SiteSubmitModal";
@@ -35,6 +36,7 @@ import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
 import { DajuChartNap, DajuNap, DajuYarn } from "@/components/DajuArt";
+import { FaqList } from "@/components/FaqList";
 import { alerts, home } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +49,8 @@ interface LandingData {
   status: StatusSnapshot[];
   /** 站点 IP 归属地：服务端取好传给首屏地球，读接口封锁后浏览器不再直接调 */
   geo: Record<string, SiteGeo>;
+  /** AA 榜单：首页速览用，拉取失败只影响榜单小节 */
+  rankings: RankingsData | null;
   error: string | null;
 }
 
@@ -68,15 +72,21 @@ const STRIP_DOT_TONE: Record<RateLevel, string> = {
 async function loadLanding(): Promise<LandingData> {
   try {
     // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
-    const [overview, meta, feed, status, geo] = await Promise.all([
-      apiGet<OverviewData>("/api/overview"),
-      apiGet<MetaData>("/api/meta"),
-      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8").catch(() => null),
-      apiGet<{ records: StatusSnapshot[] }>("/api/status?per_site=30").catch(() => ({
-        records: [] as StatusSnapshot[],
-      })),
+    const [overview, meta, feed, status, geo, rankings] = await Promise.all([
+      apiGet<OverviewData>("/api/overview", undefined, PUBLIC_REVALIDATE),
+      apiGet<MetaData>("/api/meta", undefined, PUBLIC_REVALIDATE),
+      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8", undefined, PUBLIC_REVALIDATE).catch(() => null),
+      // 与站点检测详情页同口径：最近 7 天、每站最近 400 条（截断不抽样），
+      // 星球/轮播要取「最新时段区块平均率」，必须和详情页拿到同一段序列。
+      // since 对齐到分钟：60s 缓存窗口内 URL 稳定，fetch 缓存才能命中
+      apiGet<{ records: StatusSnapshot[] }>(
+        `/api/status?per_site=400&since=${Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60}`,
+        undefined,
+        PUBLIC_REVALIDATE,
+      ).catch(() => ({ records: [] as StatusSnapshot[] })),
       // 站点定位较慢（DNS + 归属地查询），失败只影响地球落点，不阻塞整页
-      apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo").catch(() => ({ geo: {} })),
+      apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo", undefined, PUBLIC_REVALIDATE).catch(() => ({ geo: {} })),
+      apiGet<RankingsData>("/api/rankings", undefined, PUBLIC_REVALIDATE).catch(() => null),
     ]);
     // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
     let history: HistoryListData | null;
@@ -85,7 +95,7 @@ async function loadLanding(): Promise<LandingData> {
     } catch {
       history = null;
     }
-    return { overview, meta, feed, history, status: status.records, geo: geo.geo, error: null };
+    return { overview, meta, feed, history, status: status.records, geo: geo.geo, rankings, error: null };
   } catch (cause) {
     return {
       overview: null,
@@ -94,9 +104,25 @@ async function loadLanding(): Promise<LandingData> {
       history: null,
       status: [],
       geo: {},
+      rankings: null,
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
+}
+
+/** 榜单去重：推理档位变体（-xhigh/-high/-medium/-low 后缀）只留排名最靠前的基础模型行。 */
+function topBaseModels(rankings: RankingsData | null, count = 5) {
+  if (!rankings) return [];
+  const seen = new Set<string>();
+  const top: RankingsData["models"] = [];
+  for (const entry of rankings.models) {
+    const base = entry.slug.replace(/-(xhigh|high|medium|low)$/, "");
+    if (seen.has(base)) continue;
+    seen.add(base);
+    top.push(entry);
+    if (top.length >= count) break;
+  }
+  return top;
 }
 
 /** 站点去重：优先 /api/meta 全量清单，退化到快照里出现过的站点。 */
@@ -123,9 +149,11 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 }
 
 export default async function LandingPage() {
-  const { overview, meta, feed, history, status, geo, error } = await loadLanding();
+  const { overview, meta, feed, history, status, geo, rankings, error } = await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
+  // 首页榜单速览：基础模型去重后的 Top 5
+  const rankingsTop = topBaseModels(rankings);
   // 站点价统一按 RMB 展示：汇率取厂商价快照口径
   const rate = overview?.catalog?.usd_cny_rate ?? null;
   // 最新事件侧栏直接用统一事件流；公告事件没有模型行，展示公告摘要
@@ -136,14 +164,16 @@ export default async function LandingPage() {
   // 阈值与详情页一致：可用率 80/60 三档，延迟 1000/3000ms 三档
   const siteViews = buildSiteViews(status);
   const availBySite = siteViews.availability;
+  const bucketsBySite = siteViews.uptimeBuckets;
   const latencyBySite = siteViews.latency;
   const globeSites: GlobeSite[] = sites.map((site) => {
     const series = availBySite[site.id] ?? [];
     const latestPoint = series[series.length - 1];
-    // 节点百分比用近期多次检测的平均渠道正常比例，比"最新一瞬"更能代表日常可用性
-    const availability = series.length
-      ? Math.round(series.reduce((sum, point) => sum + point.pct, 0) / series.length)
-      : null;
+    // 节点百分比与详情页顶部时段色块同口径：最新一个时段区块的平均正常率
+    // （uptimeBuckets 由服务端用抽稀前的全量序列分桶，均值不受「保峰抽稀只留最差」影响）
+    const siteBuckets = bucketsBySite[site.id] ?? [];
+    const latestBucket = siteBuckets[siteBuckets.length - 1];
+    const availability = latestBucket ? latestBucket.avg : null;
     return {
       id: site.id,
       name: getSiteInfo(site.id, site.sourceUrl).name,
@@ -167,8 +197,8 @@ export default async function LandingPage() {
   // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
   const statusSiteIds = new Set(status.map((row) => row.site_id));
 
-  // 最新快照与价格总览同一口径：不折叠，各分组各占一行
-  const parentRows = sortSnapshotRows(records);
+  // 首页精选：每个模型归一合并后只留综合价最低的一行，再按采集时间倒序
+  const parentRows = sortSnapshotRows(lowestPriceRowPerModel(records, rate));
 
   // 终端演示窗内容用真实数据渲染：没有快照时整个窗不出现，不放占位假数。
   // 命令行首用虚构的 monitor.sh / 日志文件名，不出现本站任何真实接口路径
@@ -419,6 +449,39 @@ export default async function LandingPage() {
           </section>
         </Reveal>
 
+        {rankingsTop.length > 0 && (
+          <Reveal>
+            <section className="landing-section">
+              <div className="landing-section-head">
+                <div className="landing-section-title">
+                  <h2>{home.sections.rankings}</h2>
+                </div>
+                <Link href="/rankings" className="landing-more">
+                  完整榜单 →
+                </Link>
+              </div>
+              <p className="landing-section-sub">{home.sectionSubs.rankings}</p>
+              <div className="rank-cards">
+                {rankingsTop.map((entry) => (
+                  <Link key={entry.slug} href="/rankings" className="rank-card">
+                    <span className="rank-card-head">
+                      <span className="mono">#{entry.rank}</span>
+                      <span>{entry.creator ?? "—"}</span>
+                    </span>
+                    <span className="rank-card-name mono" title={entry.name}>
+                      {entry.name.replace(/\s*\([^)]*\)$/, "")}
+                    </span>
+                    <span className="rank-card-index mono">
+                      {entry.intelligence_index ?? "—"}
+                    </span>
+                    <span className="rank-card-label">智能指数</span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          </Reveal>
+        )}
+
         <Reveal>
           <section className="landing-section">
             <div className="landing-section-head">
@@ -460,14 +523,7 @@ ${termPriceLines.join("\n")}${
                 <h2>{home.sections.faq}</h2>
               </div>
             </div>
-            <div className="faq-list">
-              {home.faq.map((item) => (
-                <details className="faq-item" key={item.q}>
-                  <summary>{item.q}</summary>
-                  <p>{item.a}</p>
-                </details>
-              ))}
-            </div>
+            <FaqList items={home.faq} />
           </section>
         </Reveal>
 

@@ -5,11 +5,11 @@ export type ThemeMode = "light" | "dark" | "system";
  * 设置 <html data-theme> 与 colorScheme。与 providers.tsx 的运行时逻辑保持一致。
  * 视觉全部由 globals.css 的 CSS 变量驱动，不再依赖组件库 token。
  */
-export const themeInitScript = `(function(){try{var m=localStorage.getItem("theme-mode")||"system";var d=m==="dark"||(m==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var t=d?"dark":"light";document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;}catch(e){}})();`;
+export const themeInitScript = `(function(){try{var m=localStorage.getItem("theme-mode")||"light";var d=m==="dark"||(m==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var t=d?"dark":"light";document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;}catch(e){}})();`;
 
 export function resolveDark(mode: ThemeMode): boolean {
   if (mode === "dark") return true;
   if (mode === "light") return false;
-  if (typeof window === "undefined") return true; // SSR 默认暗色（dark-first）
+  if (typeof window === "undefined") return false; // SSR 默认亮色（AA 式 light-first）
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }

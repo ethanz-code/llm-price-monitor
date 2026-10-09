@@ -14,10 +14,18 @@ function serverHeaders(): HeadersInit | undefined {
     : { "x-internal-token": INTERNAL_TOKEN };
 }
 
-export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T> {
+/** 公开匿名数据的 fetch 缓存秒数：一轮采集间隔远大于 60s，页面数据最多滞后 1 分钟。
+ *  只供不带会话 cookie 的公开取数使用；带 cookie 的调用必须保持缺省 no-store（见下）。 */
+export const PUBLIC_REVALIDATE = 60;
+
+export async function apiGet<T>(path: string, headers?: HeadersInit, revalidate?: number): Promise<T> {
   // 额外 headers（服务端转发管理员 cookie）与内网令牌合并，令牌始终带上
   const merged = { ...(serverHeaders() as Record<string, string> | undefined), ...(headers as Record<string, string> | undefined) };
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers: merged });
+  // revalidate 缺省保持 no-store：转发管理员 cookie 的请求不能与匿名请求共享缓存
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...(revalidate ? { next: { revalidate } } : { cache: "no-store" }),
+    headers: merged,
+  });
   if (!res.ok) {
     throw new Error(`GET ${path} 失败: HTTP ${res.status}`);
   }
@@ -25,8 +33,11 @@ export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T>
 }
 
 /** 读接口允许 404：数据尚未生成时返回 null，其余错误照常抛出。 */
-export async function apiGetOptional<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers: serverHeaders() });
+export async function apiGetOptional<T>(path: string, revalidate?: number): Promise<T | null> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...(revalidate ? { next: { revalidate } } : { cache: "no-store" }),
+    headers: serverHeaders(),
+  });
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(`GET ${path} 失败: HTTP ${res.status}`);
@@ -86,4 +97,9 @@ export async function fetchAuthState(): Promise<AuthState | null> {
 async function detailOf(res: Response): Promise<string> {
   const data = (await res.json().catch(() => null)) as { detail?: string } | null;
   return data?.detail ?? `HTTP ${res.status}`;
+}
+
+/** 把 catch 到的错误转成可展示文案：Error 取 message，其余 String 化。 */
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

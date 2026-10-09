@@ -7,7 +7,7 @@ import { DataTable, type DColumn } from "./DataTable";
 import { Btn, Empty, Modal } from "./ui";
 import { DajuSit } from "./DajuArt";
 import { apiSend } from "@/lib/api";
-import { formatClock, formatTime, taskKindLabel } from "@/lib/format";
+import { formatClock, formatCount, formatTime, taskKindLabel } from "@/lib/format";
 import type { TaskDetail, TaskInfo, TasksData } from "@/lib/types";
 
 function StatusTag({ status }: { status: string }) {
@@ -195,8 +195,8 @@ export function AdminTasks() {
         const result = task.result as { records?: unknown[]; models_found?: number } | undefined;
         const countText =
           task.kind === "catalog-refresh"
-            ? `找到 ${String(result?.models_found ?? 0)} 条`
-            : `${(result?.records ?? []).length} 条记录`;
+            ? `找到 ${formatCount(result?.models_found ?? 0)} 条`
+            : `${formatCount((result?.records ?? []).length)} 条记录`;
         return (
           <span style={{ display: "grid", gap: 2 }}>
             {hasErrors && (

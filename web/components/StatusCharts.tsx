@@ -9,6 +9,7 @@ import {
   type ChannelDotRow,
 } from "@/lib/channelStatus";
 import { useNarrow } from "@/lib/useNarrow";
+import { useChartLegend } from "./ChartLegendContext";
 import { StatusTrendChart } from "./StatusTrendChart";
 import { StatusLatencyChart } from "./StatusLatencyChart";
 import { StatusTpsChart } from "./StatusTpsChart";
@@ -24,6 +25,8 @@ export function StatusCharts({
 }) {
   const narrow = useNarrow();
   const [window, setWindow] = useState<[number, number] | null>(null);
+  // 延迟图图例隐藏状态提升到页面级：分享图生成时拿同一份，图例点掉的渠道分享图里也不画
+  const legend = useChartLegend();
 
   const chartAvailability = useMemo(
     () => (narrow ? downsampleWorst(availability, NARROW_CHART_POINTS, (a, b) => (a.pct < b.pct ? a : b)) : availability),
@@ -75,6 +78,8 @@ export function StatusCharts({
             series={latencyModel.series}
             window={window}
             onWindowChange={setWindow}
+            hiddenSeries={legend.hidden}
+            onToggleSeries={legend.toggle}
           />
         </>
       )}

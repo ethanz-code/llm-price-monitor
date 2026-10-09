@@ -5,8 +5,7 @@ import httpx
 import pytest
 
 from llm_price_monitor.catalog import modelsdev
-from llm_price_monitor.catalog.classify import BATCH_SIZE, attach_ai_tiers
-from llm_price_monitor.catalog.discount import build_discount
+from llm_price_monitor.catalog.discount import build_discount, sanity_violation
 from llm_price_monitor.catalog.modelsdev import fetch_catalog
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, description_fingerprint
 from llm_price_monitor.config import AIConfig
@@ -95,6 +94,20 @@ def test_build_discount_skips_rows_without_official_or_price():
     assert entry is None and "站点未拿到可用价格" in reason
 
 
+def test_sanity_violation_flags_only_absurd_ratios():
+    # 正常折扣（约 0.03 折）与在售站实测上限附近（约 2.8 倍）都放行
+    assert sanity_violation(_row(), OFFICIAL_MODELS, 6.74) is None
+    assert sanity_violation(_row(input_price=94.0, output_price=564.0), OFFICIAL_MODELS, 6.74) is None
+    # 百万级错价（hao 站 OCR 提取事故同款）拦下
+    reason = sanity_violation(_row(input_price=2_000_000, output_price=6_000_000), OFFICIAL_MODELS, 6.74)
+    assert reason and "输入" in reason and "可信区间" in reason
+    # 高到刚出上界（约 20.2 倍）拦下，报哪个方向
+    reason = sanity_violation(_row(input_price=680.0, output_price=680.0), OFFICIAL_MODELS, 6.74)
+    assert reason and "输入" in reason
+    # 目录没收录该模型：没有判据，不拦
+    assert sanity_violation(_row(model="unknown-model"), OFFICIAL_MODELS, 6.74) is None
+
+
 # ---------- modelsdev.fetch_catalog ----------
 
 def _provider(pid: str, name: str, doc: str, models: dict) -> dict:
@@ -104,7 +117,7 @@ def _provider(pid: str, name: str, doc: str, models: dict) -> dict:
 def _snapshot() -> dict:
     return {
         "openai": _provider("openai", "OpenAI", "https://platform.openai.com/docs/models", {
-            "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "description": "flagship model",
+            "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "description": "top-tier model",
                             "release_date": "2026-08-01",
                             "cost": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 6.0,
                                      "input_audio": 6.0,
@@ -162,7 +175,7 @@ def test_fetch_catalog_maps_whitelist_and_skips_priceless(catalog_fetch):
                                         "tier": {"type": "context", "size": 200000}}]
     assert entry["list_audio"] == {"input": 6.0, "output": None}
     assert entry["list_audio_cny"] == {"input": 40.44, "output": None}
-    assert entry["description"] == "flagship model"
+    assert entry["description"] == "top-tier model"
     assert entry["source_url"] == "https://platform.openai.com/docs/models"
     # meta：来源与汇率
     assert doc["source"] == "models.dev"
@@ -236,7 +249,7 @@ def test_fetch_catalogs_shared_snapshot_covers_all_providers(monkeypatch):
         "openai:gpt5.6sol", "openai:gpt5.5", "moonshotai:kimik2.7", "openrouter:gpt5.6sol",
     }
     assert all(item["region"] == "global" for item in full["models"].values())
-    # 官方条目补发布日期，供 AI 档位判定与指纹使用
+    # 官方条目补发布日期，供展示与自动补监控模型使用
     assert official["models"]["gpt5.6sol"]["release_date"] == "2026-08-01"
     # 全量目录与官方目录同构（同一套 meta 字段）
     assert full["source"] == "models.dev" and full["usd_cny_rate"] == 6.74
@@ -319,180 +332,13 @@ def test_attach_catalog_discounts_falls_back_to_live_rate(monkeypatch):
     assert result["records"][0]["discount"]["input"] == 0.5
 
 
-# ---------- catalog.classify（AI 档位判定）----------
+# ---------- 测试用 AI 配置 ----------
 
 
 def _ai_config(**overrides) -> AIConfig:
     values: dict = {"enabled": True, "base_url": "https://ai.test/v1", "models": ("test-ai",), "api_key": "sk-test"}
     values.update(overrides)
     return AIConfig(**values)
-
-
-def _tier_output() -> dict:
-    return {
-        "models": {
-            "gpt6": {
-                "found": True, "model": "gpt-6", "name": "GPT-6", "vendor": "OpenAI",
-                "description": "most capable model", "list": {"input": 10.0, "output": 40.0},
-                "family": "gpt", "modalities": {"output": ["text"]},
-            },
-            "gpt56mini": {
-                "found": True, "model": "gpt-5.6-mini", "name": "GPT-5.6 Mini", "vendor": "OpenAI",
-                "description": "small fast model", "list": {"input": 0.25, "output": 2.0},
-                "family": "gpt-mini", "modalities": {"output": ["text"]},
-            },
-        }
-    }
-
-
-def _recorder(verdict_pages: list[list[dict]]):
-    """按调用次序回放 AI 响应的 MockTransport，并记录调用次数。"""
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        page = verdict_pages[calls["n"]] if calls["n"] < len(verdict_pages) else []
-        calls["n"] += 1
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"verdicts": page})}}]})
-
-    return httpx.MockTransport(handler), calls
-
-
-def test_attach_ai_tiers_classifies_new_models():
-    transport, calls = _recorder([
-        [{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": None}],
-    ])
-    output = _tier_output()
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
-    assert calls["n"] == 1  # 同厂商一批
-    models = output["models"]
-    assert models["gpt6"]["tier"] == "flagship" and models["gpt6"]["tier_fp"]
-    assert models["gpt56mini"]["tier"] is None and models["gpt56mini"]["tier_fp"]
-
-
-def test_attach_ai_tiers_reuses_fingerprints_without_calls():
-    output = _tier_output()
-    transport, _ = _recorder([[{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": None}]])
-    with httpx.Client(transport=transport) as client:
-        attach_ai_tiers(output, None, _ai_config(), client)
-    previous = {"models": {key: dict(entry) for key, entry in output["models"].items()}}
-
-    # 上一轮结果作为 previous：指纹未变的条目沿用档位，不再发请求
-    frozen = _tier_output()
-    reuse_transport, calls = _recorder([])  # 只要发生请求就会取到空 verdict 页并留下无 tier，方便断言
-    with httpx.Client(transport=reuse_transport) as client:
-        assert attach_ai_tiers(frozen, previous, _ai_config(), client) == 0
-    assert calls["n"] == 0
-    assert frozen["models"]["gpt6"]["tier"] == "flagship"
-    assert frozen["models"]["gpt56mini"]["tier"] is None
-
-
-def test_attach_ai_tiers_drops_invalid_verdicts():
-    transport, _ = _recorder([[
-        {"model": "gpt-6", "tier": "flagship"},
-        {"model": "not-in-list", "tier": "flagship"},  # 清单外模型
-        {"model": "gpt-5.6-mini", "tier": "ultra"},  # 非法档位
-    ]])
-    output = _tier_output()
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == 1
-    assert output["models"]["gpt6"]["tier"] == "flagship"
-    assert "tier" not in output["models"]["gpt56mini"]  # 丢弃后下一轮重试
-
-
-def test_attach_ai_tiers_silent_when_unavailable_or_failing():
-    # AI 未配置：不调用、无档位
-    untouched = _tier_output()
-    assert attach_ai_tiers(untouched, None, _ai_config(enabled=False), None) == 0
-    assert "tier" not in untouched["models"]["gpt6"]
-    # AI 失败：静默跳过，条目保持无 tier
-    failing = _tier_output()
-    broken = httpx.MockTransport(lambda request: httpx.Response(500))
-    with httpx.Client(transport=broken) as client:
-        assert attach_ai_tiers(failing, None, _ai_config(), client) == 0
-    assert "tier" not in failing["models"]["gpt6"]
-
-
-def test_attach_ai_tiers_batches_large_vendors():
-    models = {
-        f"m{i}": {
-            "found": True, "model": f"m-{i}", "name": f"M{i}", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "modalities": {"output": ["text"]},
-        }
-        for i in range(BATCH_SIZE + 5)
-    }
-    verdicts = [{"model": f"m-{i}", "tier": "flagship"} for i in range(BATCH_SIZE + 5)]
-    transport, calls = _recorder([verdicts, verdicts])
-    output = {"models": models}
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == BATCH_SIZE + 5
-    assert calls["n"] == 2  # 超过单批上限分两次请求
-
-
-def test_attach_ai_tiers_demotes_stale_models_when_newer_generation_exists():
-    from datetime import date, timedelta
-
-    old_date = (date.today() - timedelta(days=800)).isoformat()
-    recent_date = (date.today() - timedelta(days=30)).isoformat()
-    models = {
-        "old": {
-            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
-        },
-        "recent": {
-            "found": True, "model": "m-new", "name": "M New", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "release_date": recent_date, "modalities": {"output": ["text"]},
-        },
-    }
-    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}, {"model": "m-new", "tier": "flagship"}]])
-    output = {"models": models}
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
-    assert output["models"]["old"]["tier"] is None  # 新一代在售，旧代硬降为 null
-    assert output["models"]["recent"]["tier"] == "flagship"
-
-
-def test_attach_ai_tiers_keeps_old_flagship_without_newer_generation():
-    from datetime import date, timedelta
-
-    old_date = (date.today() - timedelta(days=800)).isoformat()
-    models = {
-        "old": {
-            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
-        },
-    }
-    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}]])
-    output = {"models": models}
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == 1
-    assert output["models"]["old"]["tier"] == "flagship"  # 厂商无新一代在售，保留 AI 判定
-
-
-def test_attach_ai_tiers_demotes_monthly_granularity_release_date():
-    """月粒度发布日期（如 2024-09）按当月 1 号参与旧代校验，不再绕过硬降级。"""
-    models = {
-        "old": {
-            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "release_date": "2024-09", "modalities": {"output": ["text"]},
-        },
-        "recent": {
-            "found": True, "model": "m-new", "name": "M New", "vendor": "V",
-            "description": "x", "list": {"input": 1.0, "output": 2.0},
-            "family": "f", "release_date": "2026-09", "modalities": {"output": ["text"]},
-        },
-    }
-    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}, {"model": "m-new", "tier": "flagship"}]])
-    output = {"models": models}
-    with httpx.Client(transport=transport) as client:
-        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
-    assert output["models"]["old"]["tier"] is None
-    assert output["models"]["recent"]["tier"] == "flagship"
 
 
 # ---------- catalog.translate（简介中译）----------
@@ -502,7 +348,7 @@ def _desc_output() -> dict:
     return {
         "models": {
             "m1": {"found": True, "model": "m-1", "vendor": "V", "description": "Fast model for chat."},
-            "m2": {"found": True, "model": "m-2", "vendor": "V", "description": "Flagship reasoning model."},
+            "m2": {"found": True, "model": "m-2", "vendor": "V", "description": "Top reasoning model."},
             "m3": {"found": True, "model": "m-3", "vendor": "V"},  # 无简介，不进待翻清单
         }
     }
@@ -521,7 +367,7 @@ def _zh_recorder(pages: list[list[dict]]):
 
 def test_attach_zh_descriptions_translates_and_caches():
     transport, calls = _zh_recorder([
-        [{"model": "m1", "zh": "面向对话的快速模型。"}, {"model": "m2", "zh": "旗舰推理模型。"}],
+        [{"model": "m1", "zh": "面向对话的快速模型。"}, {"model": "m2", "zh": "最新推理模型。"}],
     ])
     output = _desc_output()
     with httpx.Client(transport=transport) as client:
@@ -560,13 +406,13 @@ def test_attach_zh_descriptions_skips_bad_translation_and_off_list():
     transport, _ = _zh_recorder([[
         {"model": "m1", "zh": "   "},  # 空译文：丢弃，下一轮重试
         {"model": "nope", "zh": "清单外条目"},
-        {"model": "m2", "zh": "旗舰推理模型。"},
+        {"model": "m2", "zh": "最新推理模型。"},
     ]])
     output = _desc_output()
     with httpx.Client(transport=transport) as client:
         assert attach_zh_descriptions(output, None, _ai_config(), client) == 1
     assert "description_zh" not in output["models"]["m1"]
-    assert output["models"]["m2"]["description_zh"] == "旗舰推理模型。"
+    assert output["models"]["m2"]["description_zh"] == "最新推理模型。"
 
 
 def test_attach_zh_descriptions_silent_when_unavailable_or_failing():
@@ -581,7 +427,7 @@ def test_attach_zh_descriptions_silent_when_unavailable_or_failing():
 
 def test_attach_zh_descriptions_dedupes_same_description():
     transport, calls = _zh_recorder([
-        [{"model": "m1", "zh": "面向对话的快速模型。"}, {"model": "m2", "zh": "旗舰推理模型。"}],
+        [{"model": "m1", "zh": "面向对话的快速模型。"}, {"model": "m2", "zh": "最新推理模型。"}],
     ])
     output = _desc_output()
     output["models"]["m4"] = {"found": True, "model": "m-4", "vendor": "W", "description": "Fast model for chat."}
@@ -594,7 +440,7 @@ def test_attach_zh_descriptions_dedupes_same_description():
 
 
 def test_attach_zh_descriptions_seed_reuses_other_catalog():
-    transport, calls = _zh_recorder([[{"model": "m2", "zh": "旗舰推理模型。"}]])
+    transport, calls = _zh_recorder([[{"model": "m2", "zh": "最新推理模型。"}]])
     output = _desc_output()
     seed = {"x" * 16: "面向对话的快速模型。"}
     seed[description_fingerprint(output["models"]["m1"])] = "面向对话的快速模型。"

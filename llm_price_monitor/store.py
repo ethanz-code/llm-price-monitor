@@ -28,6 +28,27 @@ from llm_price_monitor.timeline import (
 
 _MAX_ROW_LIMIT = 2000  # 公开读接口单次返回行数上限：limit 入参统一在 _read_rows 钳制，防单请求拖全表
 
+
+def latest_site_prefix(site_id: str) -> str:
+    """该站点全部快照 key 的共同前缀（含结尾冒号）。"""
+    return f"{site_id}:"
+
+
+def latest_key(site_id: str, model: str, group: str) -> str:
+    """latest 表快照 key 的唯一编码入口，格式 "{site_id}:{model}:{group}"。
+
+    模型/分组名含 ":" 时仍可编码，但解码（split_latest_key）会把多出的段并进
+    model（group 恒取最后一段）；编码侧的告警在 report._event_snapshot_key。
+    """
+    return f"{site_id}:{model}:{group}"
+
+
+def split_latest_key(key: str, site_id: str) -> tuple[str, str]:
+    """从快照 key 解出 (model, group)：剥掉站点前缀后 group 取最后一段。"""
+    rest = key[len(site_id) + 1:]
+    model, _, group = rest.rpartition(":")
+    return (model or rest), group
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sites (
     id TEXT PRIMARY KEY,
@@ -280,8 +301,9 @@ class Store:
             if purge and deleted:
                 for table in ("price_trend", "price_events", "status_records", "status_events", "notice_records", "notice_events"):
                     conn.execute(f"DELETE FROM {table} WHERE site_id = ?", (site_id,))
-                # latest 的 key 形如 "{site_id}:{model}:{group}"，用前缀精确匹配避免 LIKE 通配符歧义
-                conn.execute("DELETE FROM latest WHERE substr(key, 1, ?) = ?", (len(site_id) + 1, f"{site_id}:"))
+                # 用站点前缀精确匹配避免 LIKE 通配符歧义（key 格式见 latest_key）
+                prefix = latest_site_prefix(site_id)
+                conn.execute("DELETE FROM latest WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))
                 conn.execute("DELETE FROM documents WHERE name = ?", (f"status_ref:{site_id}",))
                 # collect_status 与 site_collect_health 都是 site_id → 状态 的文档，删站点时同步摘除
                 for doc_name in ("collect_status", "site_collect_health"):
@@ -302,11 +324,10 @@ class Store:
             if renamed:
                 for table in ("price_trend", "price_events", "status_records", "status_events", "notice_records", "notice_events"):
                     conn.execute(f"UPDATE {table} SET site_id = ? WHERE site_id = ?", (new_id, old_id))
-                # latest 的 key 形如 "{site_id}:{model}:{group}"
-                prefix_len = len(old_id) + 1
+                old_prefix = latest_site_prefix(old_id)
                 conn.execute(
                     "UPDATE latest SET key = ? || substr(key, ?) WHERE substr(key, 1, ?) = ?",
-                    (new_id, prefix_len + 1, prefix_len, f"{old_id}:"),
+                    (new_id, len(old_prefix) + 1, len(old_prefix), old_prefix),
                 )
                 conn.execute("UPDATE documents SET name = ? WHERE name = ?", (f"status_ref:{new_id}", f"status_ref:{old_id}"))
                 # collect_status 与 site_collect_health 都是 site_id → 状态 的文档，改名同步搬迁（与 delete_site 对齐）
@@ -465,6 +486,7 @@ class Store:
         site_id: str | None = None,
         kind: str | None = None,
         exclude_kind: str | None = None,
+        since: float | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         return self._read_rows(
             "price_events",
@@ -474,6 +496,8 @@ class Store:
             exclude_kind=exclude_kind,
             kind_column="kind",
             payload_column="payload",
+            since=since,
+            since_column="detected_at",
         )
 
     # ---------- 站点提交 ----------
@@ -1025,20 +1049,19 @@ class Store:
         targets = {group.strip().casefold() for group in groups if group.strip()}
         if not targets:
             return stats
-        prefix_len = len(site_id) + 1
-        site_prefix = f"{site_id}:"
+        site_prefix = latest_site_prefix(site_id)
 
         def in_targets(group: Any) -> bool:
             return str(group or "default").strip().casefold() in targets
 
         with self._conn() as conn:
-            # 快照：key 形如 "{site_id}:{model}:{group}"，分组是最后一段
+            # 快照：分组是 key 的最后一段（格式见 latest_key）
             stale_keys = [
                 row["key"]
                 for row in conn.execute(
-                    "SELECT key FROM latest WHERE substr(key, 1, ?) = ?", (prefix_len, site_prefix)
+                    "SELECT key FROM latest WHERE substr(key, 1, ?) = ?", (len(site_prefix), site_prefix)
                 ).fetchall()
-                if not in_targets(row["key"][prefix_len:].rsplit(":", 1)[-1])
+                if not in_targets(split_latest_key(row["key"], site_id)[1])
             ]
             if stale_keys:
                 conn.executemany("DELETE FROM latest WHERE key = ?", [(key,) for key in stale_keys])
@@ -1073,7 +1096,7 @@ class Store:
             pruned_watch = {
                 key: count
                 for key, count in watch.items()
-                if not key.startswith(site_prefix) or in_targets(key[prefix_len:].rsplit(":", 1)[-1])
+                if not key.startswith(site_prefix) or in_targets(split_latest_key(key, site_id)[1])
             }
             if pruned_watch != watch:
                 self.set_document("group_miss", pruned_watch)
@@ -1159,10 +1182,17 @@ class Store:
             )
 
     def read_status_events(
-        self, *, limit: int = 200, site_id: str | None = None, kind: str | None = None
+        self, *, limit: int = 200, site_id: str | None = None, kind: str | None = None, since: float | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         return self._read_rows(
-            "status_events", limit=limit, site_id=site_id, kind=kind, kind_column="kind", payload_column="payload"
+            "status_events",
+            limit=limit,
+            site_id=site_id,
+            kind=kind,
+            kind_column="kind",
+            payload_column="payload",
+            since=since,
+            since_column="detected_at",
         )
 
     # ---------- 站点公告版本与变化事件 ----------
@@ -1209,10 +1239,17 @@ class Store:
             )
 
     def read_notice_events(
-        self, *, limit: int = 200, site_id: str | None = None, kind: str | None = None
+        self, *, limit: int = 200, site_id: str | None = None, kind: str | None = None, since: float | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         return self._read_rows(
-            "notice_events", limit=limit, site_id=site_id, kind=kind, kind_column="kind", payload_column="payload"
+            "notice_events",
+            limit=limit,
+            site_id=site_id,
+            kind=kind,
+            kind_column="kind",
+            payload_column="payload",
+            since=since,
+            since_column="detected_at",
         )
 
     def _read_rows(
@@ -1226,6 +1263,7 @@ class Store:
         payload_column: str,
         exclude_kind: str | None = None,
         since: float | None = None,
+        since_column: str = "captured_at",
         max_records: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         # limit 来自公开端点的查询参数，钳制上限防止一次请求把整张表读进内存
@@ -1243,7 +1281,7 @@ class Store:
             clauses.append(f"{kind_column} != ?")
             params.append(exclude_kind)
         if since is not None:
-            clauses.append("captured_at >= ?")
+            clauses.append(f"{since_column} >= ?")
             params.append(since)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._conn() as conn:

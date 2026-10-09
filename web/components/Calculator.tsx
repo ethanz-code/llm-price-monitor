@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Btn, Input, Seg, toast } from "./ui";
 import { IconCheck } from "./icons";
 import { DajuAwake, DajuNap } from "./DajuArt";
-import { formatPrice, looseIncludes, formatDiscount } from "@/lib/format";
+import { formatCount, formatDiscount, formatPrice, looseIncludes } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { calculator } from "@/lib/copy";
 import type { CatalogData, CatalogEntry, OverviewData, OverviewRecord } from "@/lib/types";
@@ -373,7 +373,7 @@ export function Calculator({
                           {formatPrice(line.unitPrice)}
                         </td>
                         <td className="num" style={{ textAlign: "right" }}>
-                          {line.tokens.toLocaleString("en-US")}
+                          {formatCount(line.tokens)}
                         </td>
                         <td className="num" style={{ textAlign: "right" }}>
                           {symbol}

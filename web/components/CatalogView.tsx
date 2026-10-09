@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Btn, Input, Pick, Seg, toast } from "./ui";
 import { IconSearch } from "./icons";
@@ -9,6 +10,7 @@ import { CatalogTable } from "./CatalogTable";
 import { CatalogAllTable } from "./CatalogAllTable";
 import { CatalogEmptyState } from "./CatalogEmptyState";
 import type { CatalogData } from "@/lib/types";
+import type { RankingHit } from "@/lib/rankings";
 
 type CatalogViewKey = "official" | "all";
 
@@ -16,10 +18,13 @@ type CatalogViewKey = "official" | "all";
 export function CatalogView({
   official,
   all,
+  rankingsIndex = {},
   initialView = "official",
 }: {
   official: CatalogData | null;
   all: CatalogData | null;
+  /** AA 榜单匹配索引：模型名 → 排名/智能指数，官方定价表里给条目挂徽标用 */
+  rankingsIndex?: Record<string, RankingHit>;
   initialView?: CatalogViewKey;
 }) {
   const [view, setView] = useState<CatalogViewKey>(initialView);
@@ -95,10 +100,16 @@ export function CatalogView({
             </span>
           )
         )}
+        <Link
+          href="/rankings"
+          style={{ marginLeft: "auto", color: "var(--accent-text)", fontSize: 13.5, whiteSpace: "nowrap" }}
+        >
+          模型榜单 →
+        </Link>
       </div>
       {view === "official" ? (
         official ? (
-          <CatalogTable data={official} keyword={keyword} vendor={vendor} />
+          <CatalogTable data={official} keyword={keyword} vendor={vendor} rankingsIndex={rankingsIndex} />
         ) : (
           <CatalogEmptyState />
         )

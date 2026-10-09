@@ -6,7 +6,7 @@ import { useState } from "react";
 import { toast, Btn, Modal } from "./ui";
 import { DataTable, type DColumn } from "./DataTable";
 import { ToneTag } from "./ToneTag";
-import { formatClock, formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
+import { formatClock, formatCount, formatPrice, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
 import type { SiteConfig, TaskDetail } from "@/lib/types";
 
 type TestRecord = {
@@ -167,7 +167,7 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
               )}
               {task.status === "done" && !allInvalid && !needsAuth && (
                 <ToneTag tone={records.length > 0 ? "green" : "yellow"}>
-                  完成：{records.length} 条记录{elapsed !== null ? ` · 耗时 ${elapsed} 秒` : ""}
+                  完成：{formatCount(records.length)} 条记录{elapsed !== null ? ` · 耗时 ${elapsed} 秒` : ""}
                 </ToneTag>
               )}
               {task.status === "done" && !allInvalid && invalid.length > 0 && (

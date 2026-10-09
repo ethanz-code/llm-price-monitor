@@ -1,17 +1,26 @@
 import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
 import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
-import type { OverviewData, StatusSnapshot } from "@/lib/types";
+import { buildRankingIndex, type RankingHit } from "@/lib/rankings";
+import type { OverviewData, RankingsData, StatusSnapshot } from "@/lib/types";
 import { alerts } from "@/lib/copy";
+import { formatCount } from "@/lib/format";
 import { PageDigest } from "@/components/PageDigest";
 import { OverviewTable } from "@/components/OverviewTable";
 import { SiteAlert } from "@/components/SiteAlert";
+import { pageMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "中转站定价" };
+export const metadata = pageMetadata(
+  "中转站定价",
+  "各家中转站的模型输入输出价格与折扣对照，附渠道可用率，每条价格都附来源链接，点开就能核对。",
+  "/overview",
+);
 
-// collect_status（需要关注的站点）仅管理员可见：服务端请求必须带上会话 cookie
+// collect_status（需要关注的站点）仅管理员可见：服务端请求必须带上会话 cookie。
+// 因此本页保持逐请求渲染 + 取数 no-store，不走 PUBLIC_REVALIDATE——
+// 管理员与匿名访客的取数结果不能共享同一份缓存
 const SESSION_COOKIE = "ppm_session";
 
 // 渠道迷你方块取最近 30 次检测；600 条时序对多站点场景足够，摘要化后传给前端体积很小
@@ -23,14 +32,18 @@ export default async function OverviewPage() {
   let data: OverviewData | null = null;
   // 渠道点阵数据源（渠道 → 检测点序列）；拉取失败只影响该列展示，不阻塞总览
   let statusDots: Record<string, ChannelDotRow[]> = {};
+  // AA 榜单匹配索引：给当前选中模型挂排名徽标；拉取失败只影响徽标
+  let rankingsIndex: Record<string, RankingHit> = {};
   let error: string | null = null;
   try {
-    const [overview, status] = await Promise.all([
+    const [overview, status, rankings] = await Promise.all([
       apiGet<OverviewData>("/api/overview", headers),
       apiGet<{ records: StatusSnapshot[] }>(`/api/status?limit=${STATUS_LIMIT}`, headers).catch(() => null),
+      apiGet<RankingsData>("/api/rankings").catch(() => null),
     ]);
     data = overview;
     statusDots = status ? channelDotsBySite(status.records ?? []) : {};
+    rankingsIndex = buildRankingIndex(rankings);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
@@ -41,13 +54,13 @@ export default async function OverviewPage() {
       {data && (
         <PageDigest
           items={[
-            { label: "站点", value: String(new Set(data.records.map((row) => row.site_id)).size) },
-            { label: "模型", value: String(new Set(data.records.map((row) => row.model)).size) },
-            { label: "价格记录", value: String(data.records.length) },
+            { label: "站点", value: formatCount(new Set(data.records.map((row) => row.site_id)).size) },
+            { label: "模型", value: formatCount(new Set(data.records.map((row) => row.model)).size) },
+            { label: "价格记录", value: formatCount(data.records.length) },
           ]}
         />
       )}
-      {data && <OverviewTable data={data} statusDots={statusDots} />}
+      {data && <OverviewTable data={data} statusDots={statusDots} rankingsIndex={rankingsIndex} />}
     </div>
   );
 }

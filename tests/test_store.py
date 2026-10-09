@@ -110,6 +110,19 @@ def test_store_history_and_events_filters(tmp_path: Path):
     assert total == 1 and events[0]["kind"] == "new"
 
 
+def test_read_events_since_filters_detected_at(tmp_path: Path):
+    """事件表的 since 过滤走 detected_at 列（不是快照表的 captured_at）：时间窗口下推到 SQL。"""
+    store = Store(tmp_path / "monitor.db")
+    now = time.time()
+    store.append_events([
+        {"site_id": "a", "model": "m1", "kind": "changed", "detected_at": now - 86400 * 10},
+        {"site_id": "a", "model": "m1", "kind": "changed", "detected_at": now - 60},
+    ])
+    events, total = store.read_events(limit=10, since=now - 86400)
+    assert total == 1
+    assert [event["detected_at"] for event in events] == [now - 60]
+
+
 def test_read_rows_clamps_limit(tmp_path: Path, monkeypatch):
     """公开读接口的 limit 统一钳制到 _MAX_ROW_LIMIT：超大入参不会一次拖全表。"""
     import llm_price_monitor.store as store_module
@@ -132,7 +145,7 @@ def test_seed_imports_var_files_once(tmp_path: Path, monkeypatch):
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({
         # timeout 断言种子导入；schedule 全 0 关闭后台调度，测试环境不触网
-        "settings": {"timeout": 15.0, "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0}},
+        "settings": {"timeout": 15.0, "schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}},
         "ai": {"enabled": False},
         "sites": [_site_config("demo", "https://demo.test/api")],
     }), encoding="utf-8")

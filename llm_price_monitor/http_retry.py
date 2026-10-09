@@ -17,10 +17,11 @@ import httpx
 
 from llm_price_monitor import tasklog
 
-# 传输层错误最多重试次数；总尝试 = 1 + RETRY_ATTEMPTS
-RETRY_ATTEMPTS = 2
+# 传输层错误最多重试次数；总尝试 = 1 + RETRY_ATTEMPTS。3 次退避约 10s 窗口：
+# 2 次（1s/2s）只够盖住秒级抖动，实测对端会持续掐十几秒才恢复
+RETRY_ATTEMPTS = 3
 # 指数退避间隔（秒）；第 N 次重试取 RETRY_BACKOFF[min(N-1, 末位)]，超长自动取末位
-RETRY_BACKOFF: tuple[float, ...] = (1.0, 2.0)
+RETRY_BACKOFF: tuple[float, ...] = (1.0, 3.0, 6.0)
 
 # 代理环境变量，按 https > all > http 取第一个非空值（大小写都认，与 httpx 约定一致）
 _PROXY_ENV_KEYS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")

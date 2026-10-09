@@ -5,9 +5,6 @@ export type Tone = "green" | "blue" | "yellow" | "red" | "gray";
 export const EVENT_META: Record<string, { label: string; tone: Tone }> = {
   new: { label: "新增", tone: "blue" },
   changed: { label: "价格变化", tone: "yellow" },
-  price_increased: { label: "涨价", tone: "red" },
-  price_decreased: { label: "降价", tone: "green" },
-  restored: { label: "恢复", tone: "green" },
   recovered: { label: "恢复", tone: "green" },
   status_changed: { label: "状态变化", tone: "yellow" },
   group_removed: { label: "分组下线", tone: "red" },
@@ -38,6 +35,11 @@ export function noticeExcerpt(content: string, maxLines = 1): string {
   return text.length > cap ? `${text.slice(0, cap)}…` : text;
 }
 
+/** 公告纯文本（剥 HTML 标签、压平空白）：悬浮提示等不渲染标记的场景用。 */
+export function noticePlainText(content: string): string {
+  return content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   const digits = value >= 100 ? 1 : value >= 1 ? 2 : 3;
@@ -62,6 +64,12 @@ export function currencySymbol(unit: string | null | undefined): string {
 /** 阶梯计价格的悬停解释；格内逐档列出单价的格子和单行摘要都挂这条。 */
 export const TIERED_PRICE_TIP =
   "阶梯计价：该站点按单次请求的上下文长度分档计价，此处逐档列出各档单价。";
+
+/** 统计数字千分位：3006 → 3,006；缺数显示 —。带小数的数值列（如榜单延迟）传 maximumFractionDigits 复用。 */
+export function formatCount(value: number | null | undefined, maximumFractionDigits = 0): string {
+  if (value === null || value === undefined) return "—";
+  return value.toLocaleString("en-US", { maximumFractionDigits });
+}
 
 /** token 数缩写：272000 → 272K、1000000 → 1M，不足 1K 原样。 */
 export function formatTokens(value: number): string {
@@ -154,6 +162,52 @@ export function effectiveCnyPrice(
   rate: number | null | undefined,
 ): number | null {
   const raw = effectivePrice(row, field);
+  const converted = toCnyPrice(raw, row?.unit, rate);
+  return converted ?? raw;
+}
+
+/** 缓存价字段：与 input/output 同币种同计价单位，存于记录 metadata。 */
+export type CachePriceField = "cache_read_price" | "cache_create_price" | "cache_create_1h_price";
+
+/** 缓存价字段的展示标签（表格行前缀与事件摘要共用同一份口径）。 */
+export const CACHE_PRICE_LABELS: Record<CachePriceField, string> = {
+  cache_read_price: "缓存读",
+  cache_create_price: "缓存写",
+  cache_create_1h_price: "缓存写(1h)",
+};
+
+/** 缓存价记录的最小结构：只需要 unit 与 metadata 里的缓存价字段。 */
+interface CachePriced {
+  unit?: string;
+  metadata?: {
+    cache_read_price?: number | null;
+    cache_create_price?: number | null;
+    cache_create_1h_price?: number | null;
+  } | null;
+}
+
+/** 缓存价原始值：站点未提供（字段缺省或 null）返回 null。 */
+export function cachePriceValue(row: CachePriced | null | undefined, field: CachePriceField): number | null {
+  const value = row?.metadata?.[field];
+  return typeof value === "number" ? value : null;
+}
+
+/** 缓存价文本：折算口径与输入/输出价一致（USD 乘汇率折 RMB，CNY 原样，其余回落原币）；无值返回 null。 */
+export function cachePriceText(row: CachePriced | null | undefined, field: CachePriceField, rate?: number | null): string | null {
+  const value = cachePriceValue(row, field);
+  if (value === null) return null;
+  const converted = toCnyPrice(value, row?.unit, rate);
+  const symbol = converted !== null ? "¥" : currencySymbol(row?.unit);
+  return `${symbol}${formatPrice(converted ?? value)}`;
+}
+
+/** 折算成 RMB 的缓存价（排序用），口径与 effectiveCnyPrice 一致。 */
+export function effectiveCnyCachePrice(
+  row: CachePriced | null | undefined,
+  field: CachePriceField,
+  rate: number | null | undefined,
+): number | null {
+  const raw = cachePriceValue(row, field);
   const converted = toCnyPrice(raw, row?.unit, rate);
   return converted ?? raw;
 }

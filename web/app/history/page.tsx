@@ -1,13 +1,19 @@
-import { apiGet } from "@/lib/api";
+import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { FeedData, HistoryListData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
 import { HistoryView } from "@/components/HistoryView";
 import { alerts } from "@/lib/copy";
+import { formatCount } from "@/lib/format";
+import { pageMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "事件追踪" };
+export const metadata = pageMetadata(
+  "事件追踪",
+  "各站点价格调整与公告变动的时间线：什么模型、什么时候、涨了还是降了，都有存档。",
+  "/history",
+);
 
 export default async function HistoryPage() {
   let feed: FeedData | null = null;
@@ -16,8 +22,8 @@ export default async function HistoryPage() {
   try {
     // 事件流已由 /api/feed 统一合并（价格+公告），历史记录独立取
     [feed, history] = await Promise.all([
-      apiGet<FeedData>("/api/feed?events_limit=300&notice_limit=100"),
-      apiGet<HistoryListData>("/api/history?limit=500"),
+      apiGet<FeedData>("/api/feed?events_limit=300&notice_limit=100", undefined, PUBLIC_REVALIDATE),
+      apiGet<HistoryListData>("/api/history?limit=500", undefined, PUBLIC_REVALIDATE),
     ]);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -29,8 +35,8 @@ export default async function HistoryPage() {
       {feed && (
         <PageDigest
           items={[
-            { label: "价格事件", value: String(feed.price_total) },
-            { label: "公告", value: String(feed.notice_total) },
+            { label: "价格事件", value: formatCount(feed.price_total) },
+            { label: "公告", value: formatCount(feed.notice_total) },
           ]}
         />
       )}

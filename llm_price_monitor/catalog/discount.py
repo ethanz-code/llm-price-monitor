@@ -85,6 +85,32 @@ def build_discount(
     return entry, None
 
 
+# 价格合理性边界：站点价 / 厂商价 落在 (0.01, 20) 之外视为提取事故（单位换算翻车、
+# 幻觉价格）。上界依据：在售中转站实测最高约 2.8 倍厂商价，20 倍留足余量；
+# 下界拦"两百万/1M tokens"这类放大百万倍的换算事故；0 元价不在数值上判真伪。
+SANITY_MIN_RATIO = 0.01
+SANITY_MAX_RATIO = 20.0
+
+
+def sanity_violation(row: dict[str, Any], official_models: dict[str, Any], rate: float) -> str | None:
+    """价格合理性校验：站点价与厂商价的比例超出可信边界时返回中文原因，正常或无法判据返回 None。
+
+    无法判据包括目录无该模型、站点无价；0 元价同样不拦——可能是真免费档，数值上分不清真伪。
+    """
+    entry, _reason = build_discount(row, official_models, rate)
+    if entry is None:
+        return None
+    for label, ratio, site_price, official_price in (
+        ("输入", entry.input_discount, entry.site_input_cny, entry.official_input_cny),
+        ("输出", entry.output_discount, entry.site_output_cny, entry.official_output_cny),
+    ):
+        if ratio is None:
+            continue
+        if ratio < SANITY_MIN_RATIO or ratio > SANITY_MAX_RATIO:
+            return f"站点{label}价 {site_price} 为厂商价 {official_price} 的 {ratio:.0f} 倍，超出可信区间，判定为提取错误"
+    return None
+
+
 def _site_prices(row: dict[str, Any]) -> tuple[Any, Any]:
     """顶层价格优先；阶梯记录顶层为空时取第一档（standard）价格。"""
     site_input, site_output = row.get("input_price"), row.get("output_price")

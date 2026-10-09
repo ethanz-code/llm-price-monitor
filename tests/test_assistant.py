@@ -43,7 +43,7 @@ def test_ask_runs_tool_loop_and_returns_answer(workspace: Path, monkeypatch):
     rounds: list[list[dict[str, Any]] | None] = []
 
     def fake_post(url: str, *, headers: dict, json: dict, timeout: float):
-        # 分类门控走真实 httpx.post：这里放行判定为 data
+        # 分类门控走真实 AI 请求（打桩 httpx.Client 接住）：这里放行判定为 data
         return _GateResponse('{"action": "data"}')
 
     def fake_events(config, messages, tools, *, scene, **kwargs):
@@ -58,7 +58,7 @@ def test_ask_runs_tool_loop_and_returns_answer(workspace: Path, monkeypatch):
         yield {"type": "delta", "text": "-model 输入 5.0 USD/1M tokens。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -89,7 +89,7 @@ def test_ask_forces_answer_after_max_tool_rounds(workspace: Path, monkeypatch):
         yield {"type": "delta", "text": "按查到的数据回答。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -118,7 +118,7 @@ def test_ask_never_leaks_credentials(workspace: Path, monkeypatch):
         yield {"type": "delta", "text": "好的。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -204,6 +204,19 @@ class _GateResponse:
         return {"choices": [{"message": {"content": self.content}}]}
 
 
+class _GateHttpClient:
+    """分类门控 AI 请求的客户端打桩：request_with_model_fallback 经 ai_http_client（httpx.Client）发请求。"""
+
+    def __init__(self, responder) -> None:
+        self._responder = responder
+
+    def post(self, url: str, *, headers: dict, json: dict, timeout: float) -> _GateResponse:
+        return self._responder(url=url, headers=headers, json=json, timeout=timeout)
+
+    def close(self) -> None:
+        return None
+
+
 def _gated_client(workspace: Path, monkeypatch, actions: list[str], captured: dict):
     """actions 为每次分类调用的判定结果，按次出队；回答路径统一走事件 fake（general/data 通吃）。"""
     gate_actions = list(actions)
@@ -218,7 +231,7 @@ def _gated_client(workspace: Path, monkeypatch, actions: list[str], captured: di
         yield {"type": "delta", "text": "demo-model 输入 5.0 USD/1M tokens。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -263,7 +276,7 @@ def test_data_questions_run_tool_loop_on_any_format(workspace: Path, monkeypatch
         yield {"type": "delta", "text": "demo-model 输入 5.0 USD/1M tokens。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -293,7 +306,7 @@ def test_failed_model_cooldowns_for_data_questions(workspace: Path, monkeypatch)
         yield {"type": "delta", "text": "ok"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -343,7 +356,7 @@ def test_ask_forwards_recent_history(workspace: Path, monkeypatch):
         yield {"type": "delta", "text": "你刚才问过价格。"}
         yield _finish()
 
-    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
     monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -461,6 +474,59 @@ def test_tool_executors_filter_sort_and_bound(workspace: Path):
     assert "error" in history  # 缺 model 参数给指引而不是报错
 
 
+def test_tool_get_price_events_reads_beyond_recent_200(workspace: Path):
+    """事件读取窗口（2000 + since 下推）：按模型过滤的查询不被最近的 200 条其他模型事件挤掉。"""
+    store = TestClient(create_app(_config(workspace))).app.state.store
+    now = time.time()
+    # rare-model 先写入（id 最小、最旧）：按"最新 200 条"读取会被完全挤掉，放大的窗口才能命中
+    events = [{"site_id": "demo", "model": "rare-model", "kind": "changed", "detected_at": now - 300}]
+    events += [
+        {"site_id": "demo", "model": f"model-{index}", "kind": "changed", "detected_at": now - index}
+        for index in range(250)
+    ]
+    store.append_events(events)
+    result = json.loads(assistant._execute_tool(store, "get_price_events", '{"model": "rare-model", "days": 7}'))
+    assert result["total"] == 1
+    assert result["events"][0]["model"] == "rare-model"
+
+
+def test_tool_get_official_prices_filters_and_hints(workspace: Path):
+    """官方价工具：模型/厂商子串过滤、目录未生成报错、查不到给中性提示。"""
+    store = TestClient(create_app(_config(workspace))).app.state.store
+    # 开发环境 var/catalog.json 会被启动装载进 store：先显式清空再验"目录未生成"分支
+    store.set_document("catalog", {})
+    missing = json.loads(assistant._execute_tool(store, "get_official_prices", "{}"))
+    assert "官方价目录还没有生成" in missing["error"]
+    store.set_document("catalog", {
+        "generated_at": 1000.0,
+        "models": {
+            "glm-5": {
+                "model": "glm-5", "name": "GLM-5", "vendor": "Zhipu AI", "region": "cn",
+                "list": {"input": 0.8, "output": 2.0}, "list_cny": {"input": 6.0, "output": 15.0},
+                "list_tiers": [{"input": 1.6, "output": 4.0, "cache_read": 0.2, "tier": ">128K"}],
+                "list_tiers_cny": [{"input": 12.0, "output": 30.0, "cache_read": 1.5, "tier": ">128K"}],
+            },
+            "gpt-5": {
+                "model": "gpt-5", "vendor": "OpenAI", "region": "global",
+                "list": {"input": 1.25, "output": 10.0}, "list_cny": {"input": 9.0, "output": 72.0},
+                "cache": {"read": 0.125, "write": None},
+            },
+        },
+    })
+    result = json.loads(assistant._execute_tool(store, "get_official_prices", '{"model": "glm"}'))
+    assert result["total"] == 1
+    row = result["official_prices"][0]
+    assert row["vendor"] == "Zhipu AI" and row["region"] == "cn"
+    assert row["list_cny"]["input"] == 6.0  # 人民币精确标价
+    assert row["list_tiers"][0]["tier"] == ">128K"  # 分档价随条目返回
+    by_vendor = json.loads(assistant._execute_tool(store, "get_official_prices", '{"vendor": "openai"}'))
+    assert [row["model"] for row in by_vendor["official_prices"]] == ["gpt-5"]
+    assert "cache" in by_vendor["official_prices"][0]
+    miss = json.loads(assistant._execute_tool(store, "get_official_prices", '{"model": "qwen"}'))
+    assert miss["total"] == 0 and miss["official_prices"] == []
+    assert "管理端未配置" in miss["hint"] or "管理端" in miss["hint"]
+
+
 def _latest_price_row(site_id: str, model: str, input_price: float) -> dict[str, Any]:
     return {
         "site_id": site_id,
@@ -496,9 +562,8 @@ def test_ask_falls_back_to_next_model_on_stream_error(workspace: Path, monkeypat
         )
 
     real_client = httpx.Client
+    # 门控（非流式）与回答（流式）都经 ai_http_client → httpx.Client，统一被 MockTransport 接住
     monkeypatch.setattr(ai_module.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
-    # 分类门控走非流式 httpx.post：同样被 MockTransport 接住，判定放行为 data
-    monkeypatch.setattr(ai_module.httpx, "post", lambda url, **kwargs: real_client(transport=httpx.MockTransport(handler)).post(url, **kwargs))
     monkeypatch.setattr("llm_price_monitor.ai.random.shuffle", lambda _: None)
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
@@ -533,7 +598,6 @@ def test_ask_retries_same_model_when_thinking_restricted(workspace: Path, monkey
 
     real_client = httpx.Client
     monkeypatch.setattr(ai_module.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
-    monkeypatch.setattr(ai_module.httpx, "post", lambda url, **kwargs: real_client(transport=httpx.MockTransport(handler)).post(url, **kwargs))
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
     store = client.app.state.store

@@ -40,6 +40,7 @@ llm_price_monitor/
 │                         # settings / data / status(含公告) / analytics(含建议)
 └── catalog/
     ├── modelsdev.py      # models.dev api.json 同步与官方价目录映射（不落盘，持久化由调用方决定）
+    ├── rankings.py       # Artificial Analysis 榜单页抓取解析（ rankings 文档）与模型名匹配
     ├── fx.py             # USD→CNY 汇率多源容灾
     ├── discount.py       # 折扣计算纯函数
     └── jsonio.py / normalize.py
@@ -200,10 +201,9 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
       "list": { "input": 5.0, "output": 30.0 },        // 官方列表价，折扣对比唯一基准
       "list_cny": { "input": 33.7, "output": 202.2 },  // 快照汇率换算的人民币价，仅供展示
       "source_url": "https://platform.openai.com/docs/models",  // 厂商官方文档
-      "description": "Flagship multimodal model ...",  // models.dev 收录的英文简介
+      "description": "Most capable multimodal model ...",  // models.dev 收录的英文简介
       "family": "gpt-sol",         // models.dev 产品线家族
-      "limit": { "context": 1050000, "input": 922000, "output": 128437 },  // 上下文/最大输入/最大输出 token 上限
-      "tier": "flagship"           // AI 档位：flagship 顶级（整行高亮）/ mainstream 主流 / null 其他；AI 不可用时缺省
+      "limit": { "context": 1050000, "input": 922000, "output": 128437 }  // 上下文/最大输入/最大输出 token 上限
     }
   }
 }
@@ -213,7 +213,7 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 - 部分模型另带长上下文分档价与音频价：`list_tiers`/`list_tiers_cny`（models.dev `tiers` 原结构，档内 `tier` 为分档条件，如 `{"type": "context", "size": 200000}` 表示 prompt 超 200K 后整请求按该档计费）、`list_audio`/`list_audio_cny`；上游没带的模型这些字段为 null。前端在厂商价列以小字展示（如 `>200K $10 / $60`、`音频 $6 / —`）。
 - 折扣基准统一为官方列表价；`list_cny` 与各处折扣计算共用目录快照汇率，保证页面展示与折扣口径一致。
 - `models` 顺序即展示顺序：厂商按权威清单排序（OpenAI → Anthropic → Google → xAI → Zhipu AI → DeepSeek → Moonshot → Alibaba Cloud），厂商内按发布时间倒序，最新在前。
-- `release_date` 是发布日期（缺失为 null），既在全量价格页展示，也是 AI 旗舰档位判定的输入：同产品线有更新代次或发布超过约 18 个月的旧代模型不会被高亮。
+- `release_date` 是发布日期（缺失为 null），既在全量价格页展示，也用于目录刷新时自动把各厂商发布日期最新的模型补进监控清单。
 - `description_zh` 是 AI 随同步翻译的中文简介（带 `desc_fp` 指纹，简介没变不重复翻译；AI 未配置或未轮到时缺省，页面回落英文原文）。官方目录每轮全量翻译，全量渠道目录条目数以千计，按每轮 300 条限额随刷新逐步补齐。
 - 输入输出标价都为 0 的条目是渠道免费档（如 OpenRouter 的 `:free` 模型），页面直接标注「免费」。
 - 每次刷新全量替换目录；models.dev 不可达时任务失败，旧目录原样保留，不丢数据。

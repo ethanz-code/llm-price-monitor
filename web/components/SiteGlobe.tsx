@@ -17,7 +17,7 @@ export interface GlobeSite {
   name: string;
   models: number;
   enabled: boolean;
-  /** 最近一次渠道正常率（0–100）；未接入渠道检测为 null */
+  /** 最新时段区块平均正常率（0–100，与详情页时段色块同口径）；未接入渠道检测为 null */
   availability: number | null;
   down: number;
   checks: number;
@@ -54,7 +54,7 @@ function statusHex(site: GlobeSite, dark: boolean): string {
   const level = rateLevel(site.availability);
   if (level === "warn") return dark ? "#E0B45C" : "#B45309";
   if (level === "down") return dark ? "#E27B78" : "#DC2626";
-  return dark ? "#C8FF00" : "#86C200";
+  return dark ? "#45D072" : "#34A853";
 }
 
 /** marker 十六进制色 → cobe 需要的 0–1 RGB。 */
@@ -169,14 +169,14 @@ export function SiteGlobe({
       theta,
       dark: dark ? 1 : 0,
       // 形态对齐 cobe 官方 demo（V2）：diffuse 1.2 / mapBrightness 6 / theta 0.2，
-      // 颜色沿用项目主题：品牌绿标记点，深浅两套底色
+      // 颜色沿用项目主题：暗色光晕取品牌橙 #ff8534 压暗一档，标记点用渠道状态色
       diffuse: 1.2,
       mapSamples: 16000,
       mapBrightness: 6,
       baseColor: dark ? [0.3, 0.3, 0.32] : [1, 1, 1],
-      // 标记点两种主题都用品牌绿（亮色下用深一档的 #86C200 保证对比度）
+      // 默认标记色仅兜底：实际颜色由 buildMarkers 里每个节点的状态色覆盖
       markerColor: dark ? [0.78, 1, 0] : [0.525, 0.76, 0],
-      glowColor: dark ? [0.15, 0.19, 0.06] : [1, 1, 1],
+      glowColor: dark ? [0.22, 0.11, 0.04] : [1, 1, 1],
       markers: [],
     });
     globeRef.current = globe;

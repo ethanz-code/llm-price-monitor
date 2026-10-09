@@ -7,7 +7,7 @@ import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { ToneNum } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
-import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { useNarrow } from "@/lib/useNarrow";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
@@ -15,7 +15,7 @@ interface Row extends CatalogEntry {
   key: string;
 }
 
-/** 全量渠道价表：models.dev 所有厂商的带价模型，仅供浏览，不做旗舰高光。 */
+/** 全量渠道价表：models.dev 所有厂商的带价模型，仅供浏览。 */
 export function CatalogAllTable({ data }: { data: CatalogData }) {
   const [keyword, setKeyword] = useState("");
   const [vendor, setVendor] = useState("all");
@@ -221,7 +221,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
         >
           <span style={{ fontWeight: 550, fontSize: 15 }}>全量渠道价格</span>
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-            共 <span className="mono">{Object.values(data.models).filter((entry) => entry.found).length}</span> 条 ·{" "}
+            共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 ·{" "}
             <span className="mono">{vendors.length}</span> 个渠道 · 快照{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）· 来源{" "}

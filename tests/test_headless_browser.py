@@ -2,16 +2,20 @@
 import httpx
 import pytest
 
-from llm_price_monitor.config import sites_from_raw
+from llm_price_monitor.config import ModelTarget, sites_from_raw
 from llm_price_monitor.tracker import fetch_price
 
 
+def _from_raw(values):
+    """站点级 models 已废弃：目标模型经通用清单参数注入。"""
+    return sites_from_raw(values, models=(ModelTarget("gpt-5.6-luna"),))
+
 def _site(network: dict) -> dict:
-    return {"id": "demo", "models": ["gpt-5.6-luna"], "network": network}
+    return {"id": "demo", "network": network}
 
 
 def test_headless_config_valid_passes_validation():
-    (spec,) = sites_from_raw([
+    (spec,) = _from_raw([
         _site({
             "url": "https://demo.test/pricing",
             "headless": {
@@ -27,34 +31,34 @@ def test_headless_config_valid_passes_validation():
 
 def test_headless_absent_or_disabled_keeps_other_fields_unchecked():
     # 未启用时只校验 enabled，其余字段即使畸形也不报错
-    (spec,) = sites_from_raw([
+    (spec,) = _from_raw([
         _site({"url": "https://demo.test/pricing", "headless": {"enabled": False, "cookies": "oops", "wait_seconds": 999}})
     ])
     assert spec.network["headless"]["enabled"] is False
-    (bare,) = sites_from_raw([_site({"url": "https://demo.test/pricing"})])
+    (bare,) = _from_raw([_site({"url": "https://demo.test/pricing"})])
     assert "headless" not in bare.network
 
 
 def test_headless_enabled_must_be_bool():
     with pytest.raises(ValueError, match="headless.enabled 必须是布尔值"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": "yes"}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": "yes"}})])
 
 
 def test_headless_cookie_missing_value_rejected():
     with pytest.raises(ValueError, match=r"headless\.cookies\[0\]\.value 必须是非空字符串"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "cookies": [{"name": "session"}]}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "cookies": [{"name": "session"}]}})])
 
 
 def test_headless_local_storage_must_be_string_dict():
     with pytest.raises(ValueError, match="headless.localStorage 必须是字符串键值对象"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "localStorage": {"token": 123}}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "localStorage": {"token": 123}}})])
 
 
 def test_headless_wait_seconds_out_of_range_rejected():
     with pytest.raises(ValueError, match="wait_seconds 必须是 0~60 之间的数字"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "wait_seconds": 61}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "wait_seconds": 61}})])
     with pytest.raises(ValueError, match="wait_seconds 必须是 0~60 之间的数字"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "wait_seconds": -1}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "headless": {"enabled": True, "wait_seconds": -1}})])
 
 
 def test_fetch_price_uses_browser_when_headless_enabled(monkeypatch):
@@ -107,7 +111,7 @@ def _spec(headless: dict | None):
     network = {"url": "https://demo.test/pricing"}
     if headless is not None:
         network["headless"] = headless
-    (spec,) = sites_from_raw([_site(network)])
+    (spec,) = _from_raw([_site(network)])
     return spec
 
 
@@ -179,7 +183,7 @@ def test_network_adapter_html_shell_fails_without_auto_headless(monkeypatch):
 
 def _ratio_site(ratio: dict | str):
     network = {"url": "https://demo.test/pricing", "ratio_url": ratio}
-    (spec,) = sites_from_raw([_site(network)])
+    (spec,) = _from_raw([_site(network)])
     return spec
 
 
@@ -224,10 +228,9 @@ def test_ratio_url_string_still_works(monkeypatch):
     assert priced and priced[0].output_price == 9.9 * 0.5
 
 
-def test_ratio_url_headers_expand_env_variables(monkeypatch):
+def test_ratio_url_headers_sent_literally():
     from llm_price_monitor.adapters import NetworkAdapter
 
-    monkeypatch.setenv("TEST_RATIO_KEY", "rk-9")
     seen: list[httpx.Headers] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -236,13 +239,13 @@ def test_ratio_url_headers_expand_env_variables(monkeypatch):
             return _ratio_json()
         return httpx.Response(200, text=_RATIO_PAGE)
 
-    ratio = {"url": "https://ratio.test/api/rate", "headers": {"X-Rate-Key": "${TEST_RATIO_KEY}"}}
+    ratio = {"url": "https://ratio.test/api/rate", "headers": {"X-Rate-Key": "rk-9"}}
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         NetworkAdapter().collect(_ratio_site(ratio), client, 20.0, "test-ua")
     assert seen[0]["x-rate-key"] == "rk-9"
 
 
-# ---------- browser_fetch：异常类型、环境变量注入与 UA 透传 ----------
+# ---------- browser_fetch：异常类型、UA 透传与凭证占位符 ----------
 
 def _fake_playwright(monkeypatch, captured: dict, *, fail: bool = False):
     import sys
@@ -292,12 +295,12 @@ def test_fetch_page_html_wraps_failure_as_price_monitor_error(monkeypatch):
         fetch_page_html("https://demo.test/pricing", {"enabled": True})
 
 
-def test_fetch_page_html_expands_env_and_passes_user_agent(monkeypatch):
+def test_fetch_page_html_literal_values_and_user_agent(monkeypatch):
     from llm_price_monitor.browser_fetch import fetch_page_html
 
     captured: dict = {}
     _fake_playwright(monkeypatch, captured)
-    monkeypatch.setenv("TEST_HEADLESS_TOKEN", "tk-1")
+    # 环境变量注入已移除：值里除凭证占位符外的文本原样透传，不再做环境变量替换
     fetch_page_html(
         "https://demo.test/pricing",
         {
@@ -307,8 +310,8 @@ def test_fetch_page_html_expands_env_and_passes_user_agent(monkeypatch):
         },
         "ua-1",
     )
-    assert captured["cookies"][0]["value"] == "tk-1"
-    assert '"tk-1"' in captured["script"]
+    assert captured["cookies"][0]["value"] == "${TEST_HEADLESS_TOKEN}"
+    assert '"${TEST_HEADLESS_TOKEN}"' in captured["script"]
     assert captured["ua"] == "ua-1"
 
 
@@ -364,11 +367,79 @@ def test_local_storage_refresh_token_placeholder_expands_and_reports_missing(mon
         )
 
 
+def test_cookie_expands_access_token_placeholder(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import SiteSpec
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    spec = SiteSpec(id="demo", auth_token="tk-9")
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {"enabled": True, "cookies": [{"name": "session", "value": "sid=${access_token}; Path=/"}]},
+        spec=spec,
+    )
+    assert captured["cookies"][0]["value"] == "sid=tk-9; Path=/"
+
+
+def test_cookie_access_token_placeholder_skipped_without_token(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    # 与 localStorage 同一条引导链：还没拿到 Access Token 就不写这条，等续签补上后下次采集自然带上
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {
+            "enabled": True,
+            "cookies": [
+                {"name": "session", "value": "${access_token}"},
+                {"name": "theme", "value": "dark"},
+            ],
+        },
+    )
+    assert [item["name"] for item in captured["cookies"]] == ["theme"]
+
+
+def test_cookie_refresh_token_missing_reports(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import PriceMonitorError, SiteSpec
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    with pytest.raises(PriceMonitorError, match="没有 Refresh Token"):
+        fetch_page_html(
+            "https://demo.test/pricing",
+            {"enabled": True, "cookies": [{"name": "refresh", "value": "${refresh_token}"}]},
+            spec=SiteSpec(id="demo"),
+        )
+
+
+def test_login_value_supports_mixed_text_and_multiple_placeholders(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import SiteSpec
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    spec = SiteSpec(id="demo", auth_token="tk-9", token_refresh={"refresh_token": "rf-1"})
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {
+            "enabled": True,
+            "cookies": [{"name": "combo", "value": "a=${access_token}&r=${refresh_token}"}],
+            "localStorage": {"combo": "Bearer ${access_token}|refresh=${refresh_token}|static"},
+        },
+        spec=spec,
+    )
+    assert captured["cookies"][0]["value"] == "a=tk-9&r=rf-1"
+    assert "Bearer tk-9|refresh=rf-1|static" in captured["script"]
+
+
 def test_ratio_headers_config_validation():
     with pytest.raises(ValueError, match="ratio_url.headers 必须是对象"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "https://ratio.test", "headers": "bad"}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "https://ratio.test", "headers": "bad"}})])
     with pytest.raises(ValueError, match="ratio_url.url 必须是完整的"):
-        sites_from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "not-a-url"}})])
+        _from_raw([_site({"url": "https://demo.test/pricing", "ratio_url": {"url": "not-a-url"}})])
 
 
 # ---------- 启动自检：browser_setup ----------

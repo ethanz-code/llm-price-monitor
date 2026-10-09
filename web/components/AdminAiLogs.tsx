@@ -14,7 +14,7 @@ import { useEffect, useState, type ReactNode } from "react";import {
   YAxis,
 } from "recharts";
 import { apiSend } from "@/lib/api";
-import { formatTime, successRateTone, toneText } from "@/lib/format";
+import { formatCount, formatTime, successRateTone, toneText } from "@/lib/format";
 import type { AiLogDailyPoint as DailyPoint, AiLogSummary } from "@/lib/types";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
@@ -55,11 +55,6 @@ function StatusTag({ status }: { status: string }) {
   return <span className="tag tone-red">整次失败</span>;
 }
 
-/** 千分位整数：3006 → 3,006；没有用量时显示 —。 */
-function countText(value: number | null): string {
-  return value == null ? "—" : value.toLocaleString("en-US");
-}
-
 /** 耗时：不足 1 秒按毫秒显示（662ms），超过按秒显示（5.4s）。 */
 function durationText(ms: number | null): string {
   if (ms == null || !Number.isFinite(ms)) return "—";
@@ -69,9 +64,9 @@ function durationText(ms: number | null): string {
 /** token 用量：输入 / 输出分别标注；两者都缺但有合计时退回合计。 */
 function tokensText(row: AiLog): string {
   if (row.prompt_tokens == null && row.completion_tokens == null) {
-    return row.total_tokens == null ? "—" : `共 ${countText(row.total_tokens)}`;
+    return row.total_tokens == null ? "—" : `共 ${formatCount(row.total_tokens)}`;
   }
-  return `入 ${countText(row.prompt_tokens)} · 出 ${countText(row.completion_tokens)}`;
+  return `入 ${formatCount(row.prompt_tokens)} · 出 ${formatCount(row.completion_tokens)}`;
 }
 
 /** 输入输出比：入 ≥ 出显示 3.2 : 1，反之 1 : 2.5；任一侧为 0 时显示 —。 */
@@ -109,8 +104,8 @@ function TokensTooltip({ active, payload }: { active?: boolean; payload?: { payl
     <ChartBubble
       label={point.day}
       rows={[
-        { color: lineColor, name: "输入 token", value: point.prompt_tokens.toLocaleString("en-US") },
-        { color: secondaryColor, name: "输出 token", value: point.completion_tokens.toLocaleString("en-US") },
+        { color: lineColor, name: "输入 token", value: formatCount(point.prompt_tokens) },
+        { color: secondaryColor, name: "输出 token", value: formatCount(point.completion_tokens) },
       ]}
     />
   );
@@ -236,8 +231,8 @@ function LogDetailModal({ log, onClose }: { log: AiLog; onClose: () => void }) {
           <span>耗时 {durationText(log.duration_ms)}</span>
           {(log.prompt_tokens != null || log.completion_tokens != null || log.total_tokens != null) && (
             <span>
-              token 输入 {countText(log.prompt_tokens)} · 输出 {countText(log.completion_tokens)}
-              {log.total_tokens != null ? ` · 合计 ${countText(log.total_tokens)}` : ""}
+              token 输入 {formatCount(log.prompt_tokens)} · 输出 {formatCount(log.completion_tokens)}
+              {log.total_tokens != null ? ` · 合计 ${formatCount(log.total_tokens)}` : ""}
             </span>
           )}
         </div>
@@ -332,17 +327,17 @@ export function AdminAiLogs() {
     ? [
         {
           label: "调用总数",
-          value: summary.total.toLocaleString("en-US"),
+          value: formatCount(summary.total),
           hint: (
             <>
               {failure > 0 ? (
-                <span style={{ color: toneText("red") }}>失败 {failure}</span>
+                <span style={{ color: toneText("red") }}>失败 {formatCount(failure)}</span>
               ) : (
-                `失败 ${failure}`
+                `失败 ${formatCount(failure)}`
               )}
-              {` · 换模型重试 ${summary.fallback} · 参数适配 ${summary.param_retry}`}
-              {summary.transport > 0 ? ` · 连接抖动 ${summary.transport}` : ""}
-              {summary.ignored > 0 ? ` · 已忽略 ${summary.ignored}` : ""}
+              {` · 换模型重试 ${formatCount(summary.fallback)} · 参数适配 ${formatCount(summary.param_retry)}`}
+              {summary.transport > 0 ? ` · 连接抖动 ${formatCount(summary.transport)}` : ""}
+              {summary.ignored > 0 ? ` · 已忽略 ${formatCount(summary.ignored)}` : ""}
             </>
           ),
         },
@@ -350,12 +345,12 @@ export function AdminAiLogs() {
           label: "成功率",
           value: successRate != null ? `${successRate.toFixed(1)}%` : "—",
           color: successRate != null ? toneText(successRateTone(successRate)) : undefined,
-          hint: `成功 ${summary.ok} 次 · 失败 ${failure} 次`,
+          hint: `成功 ${formatCount(summary.ok)} 次 · 失败 ${formatCount(failure)} 次`,
         },
         {
           label: "token 总消耗",
-          value: summary.total_tokens.toLocaleString("en-US"),
-          hint: `输入 ${summary.prompt_tokens.toLocaleString("en-US")} · 输出 ${summary.completion_tokens.toLocaleString("en-US")}`,
+          value: formatCount(summary.total_tokens),
+          hint: `输入 ${formatCount(summary.prompt_tokens)} · 输出 ${formatCount(summary.completion_tokens)}`,
         },
         { label: "输入输出比", value: ioRatioText(summary), hint: "输入 token ÷ 输出 token" },
         { label: "平均耗时", value: durationText(summary.avg_duration_ms), hint: "全部调用的均值" },

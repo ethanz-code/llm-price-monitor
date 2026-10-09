@@ -56,6 +56,20 @@ def masked_ai(doc: dict[str, Any] | None) -> dict[str, Any]:
     return ai
 
 
+def track_monitor_model_removals(store: Store, incoming: dict[str, Any]) -> None:
+    """保存监控清单时记录被移除的模型（monitor_models_dismissed）：
+    目录刷新自动补模型时跳过它们，否则手动删掉的模型下轮又会被加回来。"""
+    stored = store.get_document("settings") or {}
+    old = stored.get("monitor_models") or []
+    new = incoming.get("monitor_models")
+    if not isinstance(new, list) or not all(isinstance(item, str) for item in new):
+        return  # 形状不对交给 settings_from_raw 报 400
+    dismissed = {str(item) for item in stored.get("monitor_models_dismissed") or []}
+    dismissed |= {str(item) for item in old if item not in new}
+    dismissed -= {item for item in new}
+    incoming["monitor_models_dismissed"] = sorted(dismissed)
+
+
 def merge_ai_preserving_mask(stored: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     """合并 ai 配置：入参 api_key 等于当前掩码时视为“未修改”，换回库中的完整密钥；传 null/空串表示清除。"""
     incoming = dict(incoming)
@@ -81,6 +95,8 @@ def build_router(store: Store) -> APIRouter:
         """合并保存系统设置；保存前用配置构建器做类型校验，非法输入返回 400。"""
         try:
             if body.settings is not None:
+                if "monitor_models" in body.settings:
+                    track_monitor_model_removals(store, body.settings)
                 merged = {**(store.get_document("settings") or {}), **body.settings}
                 settings_from_raw(merged, resolve_env=False)
                 if "schedule" in merged:

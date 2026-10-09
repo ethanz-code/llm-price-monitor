@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from llm_price_monitor.config import AIConfig
+
 from llm_price_monitor.catalog import fx
 from llm_price_monitor.catalog.normalize import model_key, round2
 from llm_price_monitor.page_price import fetch_page_prices
@@ -46,9 +48,10 @@ class DomesticBrand:
 
     aliases: models.dev 的 provider id（完整匹配）；cn_provider_ids: 其中属于
     国内站口径的渠道；keywords: 名称/文档 URL 兜底关键词（models.dev 未来新增
-    厂商也能被识别）；suggested_url: 已核验可解析的国内定价页（网页页）；
-    suggested_json_url: 已核验的 JSON 价格接口（可选）。两者在推荐添加时并列
-    预填，标注采集类型。
+    厂商也能被识别）；suggested_url: 已核验的国内定价页（2026-09-29 逐页实测：
+    静态解析可直接出价，或原始 HTML 有内容、AI 兜底可出价）；suggested_json_url:
+    已核验的 JSON 价格接口（可选）。两者在推荐添加时并列预填，标注采集类型。
+    解析会取错价或拿不到内容的页面一律不预填，避免脏价静默进基准。
     """
 
     vendor: str
@@ -68,21 +71,23 @@ DOMESTIC_BRANDS: tuple[DomesticBrand, ...] = (
         cn_provider_ids=(),  # zhipuai/zai 的文档都指向 docs.z.ai 国际站
         keywords=("zhipu", "bigmodel", "z.ai"),
         suggested_url="https://docs.bigmodel.cn/cn/guide/start/pricing.md",
-        note="添加 bigmodel.cn 定价页，页价直接作为国内基准（推荐页已核验可解析）",
+        note="GLM 系列最全的一家（GLM-5.3 到 Flash 轻量档共 32 个模型）；官方 .md 价目表直连解析，不依赖 AI，最稳",
     ),
     DomesticBrand(
         vendor="DeepSeek",
         aliases=("deepseek",),
         cn_provider_ids=("deepseek",),  # 单条目已核与官方中文价页空闲时段一致
         keywords=("deepseek",),
-        note="添加官方中文定价页取人民币标价（models.dev 条目为空闲时段美元换算价，已停用）",
+        suggested_url="https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+        note="V4 系列（Flash/Pro），以低价著称；官方价分峰谷时段、闲时半价，基准取高峰标准档",
     ),
     DomesticBrand(
         vendor="Moonshot AI",
         aliases=("moonshotai", "moonshotai-cn"),
         cn_provider_ids=("moonshotai-cn",),
         keywords=("moonshot",),
-        note="添加 platform.moonshot.cn 定价页，取官方人民币标价（models.dev 为美元换算价）",
+        suggested_url="https://platform.kimi.com/docs/pricing/chat",
+        note="Kimi K3/K2.7 系列（K3 支持百万级上下文）；另有 code 编程档与 highspeed 提速加价档，共 4 个模型",
     ),
     DomesticBrand(
         vendor="Alibaba Cloud",
@@ -92,80 +97,78 @@ DOMESTIC_BRANDS: tuple[DomesticBrand, ...] = (
         ),
         cn_provider_ids=("alibaba-cn", "alibaba-token-plan-cn", "alibaba-coding-plan-cn"),
         keywords=("alibaba", "aliyun"),
-        note="国内站与国际站价差大（中位约一半）；添加百炼国内定价页替换现基准",
+        suggested_url="https://help.aliyun.com/zh/model-studio/model-pricing",
+        note="千问 Qwen 全系 + 聚合第三方模型，开源阵容最大的一家；价格页超大，AI 分块提取约十分钟，先覆盖千问主力档",
     ),
     DomesticBrand(
         vendor="MiniMax",
         aliases=("minimax", "minimax-cn", "minimax-coding-plan", "minimax-cn-coding-plan"),
         cn_provider_ids=("minimax-cn", "minimax-cn-coding-plan"),
         keywords=("minimax",),
-        note="添加 MiniMax 国内定价页，取官方人民币标价（models.dev 为美元换算价）",
+        suggested_url="https://platform.minimax.cn/docs/guides/pricing-paygo",
+        note="M 系列文本主力，语音/视频同厂交付；价格分 512k 上下文档与 highspeed 档，基准取标准档",
     ),
     DomesticBrand(
         vendor="Volcengine Ark",
         aliases=("volcengine", "volcengine-coding-plan"),
         cn_provider_ids=("volcengine", "volcengine-coding-plan"),
         keywords=("volcengine",),
-        note="添加火山方舟定价页，取官方人民币标价",
+        suggested_url="https://docs.volcengine.com/docs/ark/model-pricing",
+        note="豆包 doubao-seed 全系 + 平台代售 DeepSeek 等，文本/生图/视频一张价目表；29 个模型入库",
     ),
     DomesticBrand(
         vendor="Tencent",
         aliases=("tencent-tokenhub", "tencent-coding-plan", "tencent-token-plan"),
         cn_provider_ids=("tencent-tokenhub", "tencent-coding-plan", "tencent-token-plan"),
         keywords=("tencent",),
-        note="添加腾讯云定价页，取官方人民币标价",
+        suggested_url="https://cloud.tencent.com/document/product/1729/97731",
+        note="混元家族全系（a13b/role/translation/vision 等）；计费带峰谷时段，基准取高峰档",
     ),
     DomesticBrand(
         vendor="StepFun",
         aliases=("stepfun", "stepfun-ai", "stepfun-step-plan", "stepfun-ai-step-plan"),
         cn_provider_ids=("stepfun", "stepfun-step-plan"),
         keywords=("stepfun",),
-        note="添加 stepfun.com 国内定价页（现基准为国际站换算价）",
+        suggested_url="https://platform.stepfun.com/docs/zh/guides/pricing/details",
+        note="Step 3.x 系列、含视觉理解型号；10 个模型明码标价，静态直解析",
     ),
     DomesticBrand(
         vendor="SiliconFlow",
         aliases=("siliconflow", "siliconflow-cn"),
         cn_provider_ids=("siliconflow-cn",),
         keywords=("siliconflow",),
-        note="添加硅基流动国内定价页，取官方人民币标价",
+        suggested_url="https://www.siliconflow.cn/pricing",
+        note="聚合托管平台：一份页价覆盖 GLM/DeepSeek/千问/Kimi 等各家开源模型，横向比价最方便",
     ),
     DomesticBrand(
         vendor="SenseNova",
         aliases=("sensenova",),
         cn_provider_ids=("sensenova",),
         keywords=("sensenova",),
-        note="添加商汤日日新定价页，取官方人民币标价",
-    ),
-    DomesticBrand(
-        vendor="ModelScope",
-        aliases=("modelscope",),
-        cn_provider_ids=("modelscope",),
-        keywords=("modelscope",),
-        note="添加魔搭社区定价页，取官方人民币标价",
-    ),
-    DomesticBrand(
-        vendor="iFlow",
-        aliases=("iflowcn",),
-        cn_provider_ids=("iflowcn",),
-        keywords=("iflow",),
-        note="添加心流定价页，取官方人民币标价",
+        suggested_url="https://www.sensecore.cn/help/docs/model-as-a-service/nova/pricing",
+        note="商汤日日新 V6.5 系列；按千 tokens 计价（入库已折算百万口径），语音按次计费的型号没入库",
     ),
     DomesticBrand(
         vendor="Xiaomi",
         aliases=("xiaomi-token-plan-cn",),
         cn_provider_ids=("xiaomi-token-plan-cn",),
         keywords=("xiaomi",),
-        note="添加小米定价页，取官方人民币标价",
+        suggested_url="https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
+        note="MiMo 系列（pro/flash/ultraspeed 三档速度），模型少而精；ASR 按小时计价未入库",
     ),
     # models.dev 未收录的常见国内厂商：关键词用于将来新增渠道时自动识别
     DomesticBrand(vendor="Baidu", aliases=(), cn_provider_ids=(), keywords=("baidu", "qianfan"),
-                  note="models.dev 未收录；添加千帆定价页取国内标价"),
+                  suggested_url="https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya",
+                  note="ERNIE 5.1/4.5 企业级系列，40 个模型（含聚合的 DeepSeek/GLM/Kimi 与 OCR/Embedding）"),
     DomesticBrand(vendor="iFlytek", aliases=(), cn_provider_ids=(), keywords=("iflytek", "xfyun", "xinghuo"),
-                  note="models.dev 未收录；添加星火定价页取国内标价"),
+                  suggested_url="https://xinghuo.xfyun.cn/sparkapi",
+                  note="星火 X2 系列 + 星辰 MaaS 广场（GLM/Kimi/DeepSeek 同场在售）；免费小型号标 0 价"),
     DomesticBrand(vendor="01.AI", aliases=(), cn_provider_ids=(), keywords=("01.ai", "lingyi", "wanwu"),
-                  note="models.dev 未收录；添加零一万物定价页取国内标价"),
+                  suggested_url="https://platform.lingyiwanwu.com/docs",
+                  note="零一走单主力路线（yi-lightning 仅 2 个模型）；定价不分输入输出、统一价"),
     DomesticBrand(vendor="Baichuan", aliases=(), cn_provider_ids=(), keywords=("baichuan",),
-                  note="models.dev 未收录；添加百川定价页取国内标价"),
+                  suggested_url="https://platform.baichuan-ai.com/prices",
+                  note="百川 M3/Baichuan4 系列；部分模型输入输出合并计价（按并价入库），复核时留意"),
 )
 
 
@@ -205,10 +208,11 @@ def _save_sources(store: Any, sources: dict[str, dict[str, Any]]) -> None:
 
 
 def upsert_source(
-    store: Any, vendor: str, url: str, enabled: bool = True, region: str = "cn"
+    store: Any, vendor: str, url: str, enabled: bool = True, region: str = "cn", note: str | None = None
 ) -> dict[str, Any]:
     """新增或更新一个定价源（只动配置字段）；返回该源记录。
 
+    note 是给覆盖检测行展示的厂商描述（如"官方中文定价页，人民币标价"），不传则保留原值。
     换 URL 或换区域时清空上次抓取结果——models 归属旧地址与旧合并口径，
     合并前必须重新抓取。
     """
@@ -220,6 +224,8 @@ def upsert_source(
         url_changed = bool(record) and record.get("url") != url
         region_changed = bool(record) and validate_region(str(record.get("region") or "")) != normalized_region
         record.update({"vendor": vendor, "url": url, "enabled": bool(enabled), "region": normalized_region})
+        if note is not None:
+            record["note"] = str(note).strip() or None
         if url_changed or region_changed:
             for field in ("last_fetched_at", "last_status", "last_error", "last_method", "model_count", "models"):
                 record[field] = None
@@ -264,12 +270,14 @@ def refresh_source(store: Any, vendor: str, *, timeout: float, ai_config: AIConf
         raise ValueError(f"厂商定价源不存在: {vendor}")
     url = str(source.get("url") or "")
     try:
-        result = fetch_page_prices(url, ai_config=ai_config, timeout=timeout)
+        # 静态解析失败才触发渲染，正常页零开销；SPA 定价页（火山/星火/百川等）没有这步就拿不到内容
+        result = fetch_page_prices(url, ai_config=ai_config, timeout=timeout, headless=True)
     except httpx.HTTPError as exc:
         _record_fetch(store, vendor, last_fetched_at=time.time(), last_status="failed", last_error=f"抓取失败：{exc}", last_method=None, model_count=0, models=None)
         return {"vendor": vendor, "status": "failed", "error": f"抓取失败：{exc}", "model_count": 0}
     models = result.get("models") or []
-    error = "；".join(result.get("warnings") or []) or None
+    # 同一告警会因分块/AI 返回重复模型而重复（如小米 asr 列两次），去重后再存
+    error = "；".join(dict.fromkeys(result.get("warnings") or [])) or None
     record = _record_fetch(
         store, vendor,
         last_fetched_at=time.time(),
@@ -454,6 +462,7 @@ def detect_vendor_coverage(
                 if url
             ],
             "note": brand.note,
+            "source_note": (source or {}).get("note"),
             "source_added": source is not None,
             "source_enabled": bool(source.get("enabled", True)) if source else None,
         })
@@ -472,14 +481,10 @@ def _catalog_rate(catalog: dict[str, Any]) -> float | None:
 
 
 def refresh_and_merge(store: Any, vendor: str, *, timeout: float, ai_config: AIConfig | None) -> dict[str, Any]:
-    """单源「立即抓取」：抓页更新源文档后，就地重合并官方价目录并补 AI 档位。
+    """单源「立即抓取」：抓页更新源文档后，就地重合并官方价目录。
 
-    合并只动价格字段，已合并过条目的 tier_fp 原样保留，因此把目录自身当
-    previous 传给 attach_ai_tiers 即可：老条目沿用档位，合并新增的条目进
-    本轮判定队列（没有简介，翻译步骤无事可做，不用跑）。
+    合并只动价格字段，条目已有的简介译文等元数据原样保留。
     """
-    from llm_price_monitor.catalog.classify import attach_ai_tiers
-
     summary = refresh_source(store, vendor, timeout=timeout, ai_config=ai_config)
     if summary.get("status") == "failed":
         return summary
@@ -490,8 +495,6 @@ def refresh_and_merge(store: Any, vendor: str, *, timeout: float, ai_config: AIC
     if not rate:
         return {**summary, "merge": "无可用汇率，未合并"}
     merged, merge_summary = merge_sources_into_catalog(catalog, load_sources(store), rate)
-    if merge_summary["matched"] + merge_summary["added"] and ai_config is not None:
-        attach_ai_tiers(merged, catalog, ai_config)
     store.set_document("catalog", merged)
     return {**summary, "merge": merge_summary}
 

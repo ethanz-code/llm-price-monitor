@@ -1,6 +1,8 @@
 """访客行为端点：页面访问埋点与统计（管理员）、访客建议。"""
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any
 
@@ -13,6 +15,8 @@ from llm_price_monitor import visitor_geo
 from llm_price_monitor.store import Store
 from llm_price_monitor.ua import parse_user_agent
 from llm_price_monitor.webapi.deps import client_ip
+
+_log = logging.getLogger("llm_price_monitor.webapi.routes.analytics")
 
 # 单 IP 每分钟最多写入的访问记录数：超量静默丢弃，防伪造来源刷库
 TRACK_MAX_PER_MINUTE = 60
@@ -34,6 +38,8 @@ def build_router(store: Store) -> APIRouter:
     feedback_hits: dict[str, list[float]] = {}
     track_hits: dict[str, list[float]] = {}
     visit_purge_state = {"last": 0.0}
+    feedback_lock = threading.Lock()
+    track_lock = threading.Lock()
     # 同 IP + 路径 30 秒内只记一次，避免刷新与重复预取虚高 PV
     visit_hits: dict[tuple[str, str], float] = {}
 
@@ -50,11 +56,12 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=400, detail="联系方式最长 100 字")
         now = time.time()
         ip = client_ip(request)
-        recent = [t for t in feedback_hits.get(ip, []) if now - t < 60]
-        if len(recent) >= 3:
-            raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
-        recent.append(now)
-        feedback_hits[ip] = recent
+        with feedback_lock:  # 同步路由跑线程池，读-判-写必须整体原子
+            recent = [t for t in feedback_hits.get(ip, []) if now - t < 60]
+            if len(recent) >= 3:
+                raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
+            recent.append(now)
+            feedback_hits[ip] = recent
         store.append_feedback(content, contact)
         settings = config_from_store(store).settings
         if settings.wxpusher_app_token:
@@ -65,8 +72,8 @@ def build_router(store: Store) -> APIRouter:
                     summary=content[:100],
                     uid=settings.wxpusher_uid,
                 )
-            except Exception:
-                pass  # 尽力而为：推送失败不阻塞访客提交
+            except Exception as exc:
+                _log.warning("访客建议的 WxPusher 推送失败：%s", exc)  # 尽力而为：推送失败不阻塞入库
         return {"ok": True}
 
     @router.post("/api/analytics/track")
@@ -79,18 +86,19 @@ def build_router(store: Store) -> APIRouter:
         user_agent = (request.headers.get("user-agent") or "")[:500]
         now = time.time()
         key = (ip, path)
-        if now - visit_hits.get(key, 0.0) < 30:
-            return {"ok": True}
-        visit_hits[key] = now
-        recent = [t for t in track_hits.get(ip, []) if now - t < 60]
-        if len(recent) >= TRACK_MAX_PER_MINUTE:
+        with track_lock:  # 同步路由跑线程池，去重与限速的读-判-写必须整体原子
+            if now - visit_hits.get(key, 0.0) < 30:
+                return {"ok": True}
+            visit_hits[key] = now
+            recent = [t for t in track_hits.get(ip, []) if now - t < 60]
+            if len(recent) >= TRACK_MAX_PER_MINUTE:
+                track_hits[ip] = recent
+                return {"ok": True}  # 超量静默丢弃：响应不区分，避免给刷库者探测信号
+            recent.append(now)
             track_hits[ip] = recent
-            return {"ok": True}  # 超量静默丢弃：响应不区分，避免给刷库者探测信号
-        recent.append(now)
-        track_hits[ip] = recent
-        for stale_key, stale_ts in list(visit_hits.items()):
-            if now - stale_ts > 300:
-                visit_hits.pop(stale_key, None)
+            for stale_key, stale_ts in list(visit_hits.items()):
+                if now - stale_ts > 300:
+                    visit_hits.pop(stale_key, None)
         ua = parse_user_agent(user_agent)
         store.add_visit(path=path, ip=ip, user_agent=user_agent, browser=ua.browser, os=ua.os, device=ua.device)
         if now - visit_purge_state["last"] > 3600:
@@ -112,8 +120,8 @@ def build_router(store: Store) -> APIRouter:
                 resolved = visitor_geo.resolve_regions(ips)
                 failed = [ip for ip in ips if ip not in resolved]
                 store.save_ip_geo(resolved, failed)
-        except Exception:
-            pass  # 归属地解析只影响地图，失败时照常返回统计
+        except Exception as exc:
+            _log.warning("访客归属地解析失败：%s", exc)  # 归属地解析只影响地图，失败时照常返回统计
         summary = store.visit_summary()
         summary["regions"] = store.region_dist(cutoff=cutoff)
         return {**summary, "retained_days": config_from_store(store).settings.retention_visit_days}

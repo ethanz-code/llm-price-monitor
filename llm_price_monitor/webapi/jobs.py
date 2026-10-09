@@ -6,8 +6,9 @@ from collections.abc import Callable
 from typing import Any
 
 from llm_price_monitor.catalog import vendor_sources
-from llm_price_monitor.catalog.classify import attach_ai_tiers
 from llm_price_monitor.catalog.modelsdev import fetch_catalogs
+from llm_price_monitor.catalog.normalize import model_key
+from llm_price_monitor.catalog.rankings import fetch_rankings
 from llm_price_monitor.catalog.translate import attach_zh_descriptions, fingerprint_translations
 from llm_price_monitor.config import MonitorConfig, config_from_store
 from llm_price_monitor import tasklog
@@ -76,6 +77,83 @@ def notice_scan_job(config: MonitorConfig, store: Store) -> Callable[[], dict[st
     return _run
 
 
+def auto_append_latest_models(store: Store, catalog: dict[str, Any]) -> list[str]:
+    """目录刷新后把各厂商最新发布的模型补进 settings.monitor_models。
+
+    每个厂商取发布日期最新的一批（同日并列全收），没标日期的条目不参与；
+    手动移除过的模型记在 monitor_models_dismissed（settings 保存路由负责记录），这里跳过。
+    模型名取条目的 model 字段（标准显示名）：dict 键是匹配用的归一化形式（去横线、
+    casefold），拿键进清单界面上就丢横线。返回本次追加的模型名。
+    """
+    settings = store.get_document("settings") or {}
+    monitor = [str(item) for item in settings.get("monitor_models") or [] if str(item).strip()]
+    dismissed = {str(item) for item in settings.get("monitor_models_dismissed") or []}
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    latest: dict[str, str] = {}
+    for entry in (entries or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        vendor = str(entry.get("vendor") or "")
+        released = str(entry.get("release_date") or "")
+        if vendor and released and (vendor not in latest or released > latest[vendor]):
+            latest[vendor] = released
+    newest: set[str] = set()
+    for entry in (entries or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        vendor = str(entry.get("vendor") or "")
+        model = str(entry.get("model") or "").strip()
+        if vendor and model and str(entry.get("release_date") or "") == latest.get(vendor):
+            newest.add(model)
+    missing = sorted(newest - set(monitor) - dismissed)
+    if not missing:
+        return []
+    store.set_document("settings", {**settings, "monitor_models": [*monitor, *missing]})
+    return missing
+
+
+def canonicalize_monitor_models(store: Store, catalog: dict[str, Any]) -> list[str]:
+    """目录刷新后把监控清单与移除名单里匹配到目录的名字换成标准显示名，返回「旧名 → 新名」记录。
+
+    历史遗留：清单里存过目录的归一化键（去横线、casefold），按 model_key 对照条目
+    换回标准显示名；匹配不到目录的（手动添加的自定义模型）保留原样。移除名单同步
+    换名，否则删过的模型换名后不再被拦住，会被自动补模型加回来。
+    """
+    settings = store.get_document("settings") or {}
+    monitor = [str(item) for item in settings.get("monitor_models") or []]
+    dismissed = [str(item) for item in settings.get("monitor_models_dismissed") or []]
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(entries, dict) or not entries:
+        return []
+
+    renamed: list[str] = []
+
+    def canonicalize(names: list[str]) -> list[str]:
+        out: list[str] = []
+        for name in names:
+            stripped = name.strip()
+            if not stripped:
+                continue  # 空项没有监控意义，顺手清掉
+            entry = entries.get(model_key(stripped))
+            standard = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
+            if standard and standard != stripped:
+                renamed.append(f"{stripped} → {standard}")
+            final = standard or stripped
+            if final not in out:
+                out.append(final)
+        return out
+
+    monitor_new = canonicalize(monitor)
+    dismissed_new = sorted(canonicalize(dismissed))
+    if monitor_new == monitor and dismissed_new == dismissed:
+        return renamed
+    store.set_document(
+        "settings",
+        {**settings, "monitor_models": monitor_new, "monitor_models_dismissed": dismissed_new},
+    )
+    return renamed
+
+
 def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
     """厂商定价同步任务体：一次拉取 models.dev 快照，合并厂商定价源，落两份目录。"""
     def _run() -> dict[str, Any]:
@@ -84,14 +162,14 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             ai_config = monitor_config.ai
             fetch_timeout = float(monitor_config.settings.timeout)
         except ValueError:
-            ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有 AI 档位与中文简介
+            ai_config = None  # 配置缺失或非法：目录照常落盘，只是没有中文简介
             fetch_timeout = PAGE_FETCH_TIMEOUT
         tasklog.emit("开始刷新厂商定价：抓取 models.dev 快照")
         output, full = fetch_catalogs()
         providers = len({entry["vendor"] for entry in full["models"].values()})
         tasklog.emit(f"快照抓取完成：{providers} 个厂商，{len(full['models'])} 个模型")
         # 厂商定价源：先逐源抓取国内定价页（单源失败不中断，沿用上次缓存结果），
-        # 再把国内价合并进官方目录——在 AI 档位/翻译之前合并，新增条目也能拿到档位
+        # 再把国内价合并进官方目录——在翻译之前合并，新增条目也能拿到译文
         source_summary = vendor_sources.refresh_all_sources(store, timeout=fetch_timeout, ai_config=ai_config)
         sources_matched = sources_added = 0
         if source_summary["sources"]:
@@ -111,13 +189,12 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
         previous_all = store.get_document("catalog_all")
         # 两份目录的译文按简介指纹互济：官方目录翻过的全量渠道直接复用，反之亦然
         seed_official = {**fingerprint_translations(previous_all), **fingerprint_translations(previous)}
-        classified = attach_ai_tiers(output, previous, ai_config) if ai_config is not None else 0
         translated = (
             attach_zh_descriptions(output, previous, ai_config, seed=seed_official)
             if ai_config is not None
             else 0
         )
-        # 全量渠道目录仅供展示，不做 AI 档位判定；简介翻译按轮次限额逐步补齐
+        # 全量渠道目录仅供展示；简介翻译按轮次限额逐步补齐
         seed_all = {**seed_official, **fingerprint_translations(output)}
         translated_all = (
             attach_zh_descriptions(full, previous_all, ai_config, budget=ALL_CATALOG_TRANSLATE_BUDGET, seed=seed_all)
@@ -125,14 +202,20 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             else 0
         )
         if ai_config is not None:
-            tasklog.emit(f"AI 档位判定 {classified} 条，中文简介翻译 {translated + translated_all} 条")
+            tasklog.emit(f"中文简介翻译 {translated + translated_all} 条")
         store.set_document("catalog", output)
         store.set_document("catalog_all", full)
         tasklog.emit(f"厂商定价已更新：官方目录 {len(output['models'])} 个模型")
+        # 先归正历史遗留的坏名字（旧版自动补模型存过归一化键），再按标准名补最新模型
+        renamed = canonicalize_monitor_models(store, output)
+        if renamed:
+            tasklog.emit("监控清单名字按目录修正：" + "；".join(renamed))
+        auto_appended = auto_append_latest_models(store, output)
+        if auto_appended:
+            tasklog.emit(f"自动新增监控模型（各厂商最新发布）：{'、'.join(auto_appended)}")
         return {
             "models_total": len(output["models"]),
             "models_found": sum(1 for entry in output["models"].values() if entry.get("found")),
-            "ai_classified": classified,
             "zh_translated": translated,
             "all_providers": providers,
             "all_models_total": len(full["models"]),
@@ -147,7 +230,7 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
 
 
 def vendor_source_refresh_job(store: Store, vendor: str) -> Callable[[], dict[str, Any]]:
-    """单厂商定价源抓取任务体：抓页、更新源文档、就地合并目录并补 AI 档位。"""
+    """单厂商定价源抓取任务体：抓页、更新源文档、就地重合并官方价目录。"""
     def _run() -> dict[str, Any]:
         tasklog.emit(f"抓取厂商定价源：{vendor}")
         try:
@@ -163,5 +246,19 @@ def vendor_source_refresh_job(store: Store, vendor: str) -> Callable[[], dict[st
             + (f"（{summary.get('error')}）" if summary.get("error") else "")
         )
         return summary
+
+    return _run
+
+
+def rankings_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
+    """AA 模型榜单同步任务体：抓页解析，整体落 rankings 文档。"""
+    def _run() -> dict[str, Any]:
+        tasklog.emit("开始刷新模型榜单：抓取 Artificial Analysis 榜单页")
+        doc = fetch_rankings()
+        models = doc["models"]
+        tasklog.emit(f"榜单解析完成：{len(models)} 个模型，覆盖 {len({e['creator'] for e in models if e['creator']})} 个厂商")
+        store.set_document("rankings", doc)
+        tasklog.emit(f"模型榜单已更新：第 1 名 {models[0]['name']}")
+        return {"models_total": len(models), "generated_at": doc["generated_at"]}
 
     return _run

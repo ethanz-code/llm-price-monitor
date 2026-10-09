@@ -28,7 +28,6 @@ from typing import Any, Callable, TypeVar
 
 import httpx
 
-from llm_price_monitor.adapters import expand_header_value
 from llm_price_monitor.config import PriceMonitorError, SiteSpec
 from llm_price_monitor.tracker import PriceRecord
 
@@ -74,14 +73,10 @@ def refresh_site_token(spec: SiteSpec, client: httpx.Client, timeout: float, use
     method = str(config.get("method") or "POST").upper()
     url = str(config["url"]).strip()
     refresh_token = str(config.get("refresh_token") or "")
-    params = {str(k): expand_header_value(str(v)) for k, v in (config.get("params") or {}).items()}
-    # 请求头 = 站点通用请求头打底，历史遗留的续签专属 headers 可覆盖；
-    # ${refresh_token} 必须先于环境变量展开——占位符名符合环境变量模式，
-    # 交给 expand_header_value 会被当成未设置的变量直接抛错
-    expand = lambda value: expand_header_value(value.replace("${refresh_token}", refresh_token))
+    params = {str(k): str(v).replace("${refresh_token}", refresh_token) for k, v in (config.get("params") or {}).items()}
     extra_headers = {
-        **{str(k): expand(str(v)) for k, v in spec.request_headers.items()},
-        **{str(k): expand(str(v)) for k, v in (config.get("headers") or {}).items()},
+        **{str(k): str(v).replace("${refresh_token}", refresh_token) for k, v in spec.request_headers.items()},
+        **{str(k): str(v).replace("${refresh_token}", refresh_token) for k, v in (config.get("headers") or {}).items()},
     }
     body_template = config.get("body")
     kwargs: dict[str, Any] = {"params": params, "headers": extra_headers, "timeout": timeout}
@@ -128,7 +123,9 @@ def _synced_endpoint(endpoint: Any, token: str, auth_header: str) -> Any:
     """把 endpoint 配置 headers 里写死的认证头同步成新 token；没有认证头则原样返回。
 
     network 条目下还可能挂着倍率接口（ratio_url）自己的一套请求头，一并同步。
-    Cookie 不在同步范围：会话凭据续签拿不到，写死了只能手动维护。
+    Cookie 不在同步范围：会话凭据续签拿不到，写死了只能手动维护；
+    Headless 登录态里引用 ${access_token}/${refresh_token} 占位符的不受此限，
+    新 token 落到 auth_token/refresh_token 后采集时实时展开（见 browser_fetch）。
     """
     if not isinstance(endpoint, dict):
         return endpoint
@@ -162,7 +159,7 @@ def _with_access_token(spec: SiteSpec, access_token: str) -> SiteSpec:
 
 
 def persist_refreshed_config(store: Any, site_id: str, access_token: str, refresh_token: str) -> None:
-    """把新 token 写回数据库里的站点 JSON：auth_token 之外，写死的认证请求头也一并替换。\n\n    部分站点把 Authorization 直接写死在采集地址 headers 里，采集时它会覆盖\n    auth_token 拼出的同名头，不同步的话续签永远"成功"但请求头还是旧 token。\n    价格、渠道状态、公告地址都在同步范围内；Cookie 不动（会话凭据续签拿不到，手动维护）。\n    """
+    """把新 token 写回数据库里的站点 JSON：auth_token 之外，写死的认证请求头也一并替换。\n\n    部分站点把 Authorization 直接写死在采集地址 headers 里，采集时它会覆盖\n    auth_token 拼出的同名头，不同步的话续签永远"成功"但请求头还是旧 token。\n    价格、渠道状态、公告地址都在同步范围内；Cookie 不动（会话凭据续签拿不到，手动维护）。\n    Headless 登录态走 ${access_token} 占位符的站点不需要同步：采集时按新 auth_token 实时展开。\n    """
     config = store.get_site_config(site_id)
     if config is None:
         return

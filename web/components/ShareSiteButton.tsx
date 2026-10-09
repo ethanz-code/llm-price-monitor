@@ -5,6 +5,7 @@ import { toPng } from "html-to-image";
 import { useTheme } from "@/app/providers";
 import { Btn, Modal, toast } from "./ui";
 import { ShareSiteCard, type ShareTheme } from "./ShareSiteCard";
+import { useChartLegend } from "./ChartLegendContext";
 import { buildChannelModel, type AvailabilityPoint, type ChannelDotRow } from "@/lib/channelStatus";
 
 /** 后台标签页、窗口失焦或锁屏时浏览器的帧时钟会停摆，rAF 拿不到回调；
@@ -89,6 +90,8 @@ export function ShareSiteButton({
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [domain, setDomain] = useState("");
   const { dark } = useTheme();
+  // 页面延迟图图例的隐藏状态：点掉的渠道分享图里也不画（生成那一刻的快照）
+  const { hidden: legendHidden } = useChartLegend();
   // 分享图配色完全跟随站点当前明暗（看到的页面什么样，图就什么样），不提供手动切换
   const [theme, setTheme] = useState<ShareTheme>("dark");
   // 初值 0（卡片时间显示"—"），挂载后再取真实时间：服务端和客户端各算一次 Date.now()
@@ -155,6 +158,7 @@ export function ShareSiteButton({
           latency={latencyModel}
           generatedAt={generatedAt}
           theme={theme}
+          hiddenSeries={legendHidden}
         />
       </div>
 

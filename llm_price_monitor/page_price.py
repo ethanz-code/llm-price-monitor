@@ -6,9 +6,13 @@ new-api 接口并按配置的模型清单过滤；本模块面向厂商官方定
 
 流水线：抓取 → 确定性解析（Markdown 表格 / HTML 表格 / JSON 价格表，任一命中即停）
 → Headless 渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
-字面出现，防幻觉，结果一律标记 candidate）。同一模型的多档价格（高峰/空闲时段、
-不同上下文档）逐档保留：AI 档位带 name（含页面里的时段定义），静态解析把时段/档位
-列收进 context；AI 兜底的基准档取标准档（如高峰时段），静态解析按页面行序取第一档。
+字面出现，防幻觉，结果一律标记 candidate）。确定性解析"出了结果但可疑"（模型名带
+档位/促销注释、合并行、同模型重复档价）时同样交给 AI 复核：AI 有产出就以 AI 为准，
+AI 没产出则把可疑记录整页降级为 candidate——宁可多人工复核，不静默采脏价。页面超过
+max_input_chars 时先剥掉 script/style 再按行分块，逐段提取后按模型键合并。同一模型的
+多档价格（高峰/空闲时段、不同上下文档）逐档保留：AI 档位带 name（含页面里的时段定义），
+静态解析把时段/档位列收进 context；AI 兜底的基准档取标准档（如高峰时段），静态解析按
+页面行序取第一档。
 
 币种按页面如实标注（「元」→ CNY、`$`/美元 → USD），单位统一折算成 /1M tokens，
 不做汇率折算。
@@ -20,13 +24,14 @@ import json
 import os
 import re
 import sys
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from llm_price_monitor.adapters import _parse_base_price_entries
+from llm_price_monitor.adapters import parse_base_price_entries
 from llm_price_monitor.ai import (
     AIExtractionError,
     ai_content,
@@ -96,7 +101,7 @@ def clean_model_name(name: str) -> str:
 
 
 def _match_column(header: str) -> str | None:
-    """表头单元格 → 语义列名。按表头名匹配而非列号（旗舰模型表会多一列「输入模态」）。"""
+    """表头单元格 → 语义列名。按表头名匹配而非列号（部分厂商的模型表会多一列「输入模态」）。"""
     h = re.sub(r"\s+", "", header).casefold()
     if not h or "输入模态" in h or "modality" in h:
         return None
@@ -275,10 +280,10 @@ def parse_html_tables(text: str, source_url: str) -> list[dict[str, Any]] | None
 def parse_json_entries(text: str, source_url: str) -> list[dict[str, Any]] | None:
     """JSON / 压缩 JS 里的基准价表（models.dev 同构结构）→ 价格记录。
 
-    `_parse_base_price_entries` 的单位约定是 USD/1M tokens；页面文本带人民币
+    `parse_base_price_entries` 的单位约定是 USD/1M tokens；页面文本带人民币
     标识时按 CNY 修正。
     """
-    entries = _parse_base_price_entries(text)
+    entries = parse_base_price_entries(text)
     if not entries:
         return None
     currency = detect_currency(text[:20000]) or "USD"
@@ -315,6 +320,95 @@ def _parse_text(text: str, source_url: str, prefix: str) -> tuple[list[dict[str,
         if records:
             return records, f"{prefix}-{kind}"
     return None
+
+
+# 确定性解析"有结果但不可信"的特征：模型名里混着档位/促销注释（MiniMax 的
+# 「≤ 512k 输入 tokens 永久五折」）、合并行（小米的「a、b」）、零宽字符（火山
+# 生图表），以及同键模型出现不同价格（促销价与原价混装）。命中就交给 AI 复核。
+_SUSPICIOUS_NAME_PATTERN = re.compile(r"[\u200b≤≥、]|\d折|时段|场景")
+
+
+def _records_suspicious(records: list[dict[str, Any]]) -> bool:
+    seen: dict[str, tuple[Any, Any]] = {}
+    for record in records:
+        if _SUSPICIOUS_NAME_PATTERN.search(str(record.get("model") or "")):
+            return True
+        key = str(record.get("model_key") or "")
+        prices = (record.get("input_price"), record.get("output_price"))
+        if key in seen and seen[key] != prices:
+            return True
+        seen[key] = prices
+    return False
+
+
+class _VisibleTextHarvester(HTMLParser):
+    """剥掉 script/style/noscript 与标签，只留可见文本（块级元素处换行），给超长页分块喂 AI 用。"""
+
+    _SKIP_TAGS = {"script", "style", "noscript"}
+    _BREAK_TAGS = {"p", "div", "tr", "li", "br", "h1", "h2", "h3", "h4", "h5", "h6", "table", "section", "article"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BREAK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in self._BREAK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def _slim_html_for_ai(text: str) -> str:
+    harvester = _VisibleTextHarvester()
+    try:
+        harvester.feed(text)
+    except Exception:
+        return text  # 残缺 HTML 退回原文，分块照常
+    return re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", "".join(harvester.parts))).strip()
+
+
+# 分块喂 AI 的单段上限：AI 单次回复有 max_tokens 上限，一段塞太多模型会让 JSON
+# 输出到一半被截断；30k 字符是"模型数 × 单模型 JSON"能在回复里装下的经验值
+_AI_CHUNK_CAP = 30000
+# 密集价目页（百炼/硅基那种一张表几百个模型）单段提取的回复预算：默认 4000 tokens
+# 装不下几十个模型的 JSON，会输出到一半截断；放大预算配合失败对半拆段双保险
+_AI_EXTRACT_MAX_TOKENS = 12000
+# 整页 AI 提取的总时长上界：超长页分块多、模型池回退会滚很久，没有上界会把抓取
+# worker 挂住；到点后已提取的段照常保留（标待复核），没跑的段记警告放弃
+_AI_PAGE_BUDGET_SECONDS = 600.0
+
+
+def _split_for_ai(text: str, limit: int) -> list[str]:
+    """AI 输入分段：不超限原样返回；超限先剥标签再按行边界切块，每段不超 limit。"""
+    limit = min(limit, _AI_CHUNK_CAP)
+    if len(text) <= limit:
+        return [text]
+    slimmed = _slim_html_for_ai(text)
+    if len(slimmed) <= limit:
+        return [slimmed]
+    chunks: list[str] = []
+    buffer: list[str] = []
+    size = 0
+    for line in slimmed.splitlines(keepends=True):
+        if buffer and size + len(line) > limit:
+            chunks.append("".join(buffer))
+            buffer, size = [], 0
+        buffer.append(line)
+        size += len(line)
+    if buffer:
+        chunks.append("".join(buffer))
+    return chunks
 
 
 def _number_in_text(value: float, text: str) -> bool:
@@ -386,32 +480,16 @@ def _pick_baseline_tier(tiers: list[dict[str, Any]]) -> dict[str, Any]:
     return tiers[0]
 
 
-def _ai_extract(
-    text: str,
+def _records_from_ai_payload(
+    raw_models: Any,
+    chunk_text: str,
     source_url: str,
-    ai_config: AIConfig,
-    client: httpx.Client,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """AI 兜底抽取；返回 (通过证据校验的记录, 丢弃原因)。
-
-    每个模型带档位数组（空闲/高峰时段、不同上下文档等），逐档做证据校验——
-    档位价格数字必须在页面文本中字面出现，幻觉档剔除、其余保留；基准档取
-    标准档（如高峰时段），保证折扣比较不受折扣档干扰。
-    """
-    warnings: list[str] = []
-    _model, response = request_with_model_fallback(
-        ai_config,
-        _AI_SYSTEM_PROMPT,
-        clip(text, ai_config.max_input_chars),
-        client=client,
-        scene="定价页价格抽取",
-    )
-    payload = json_content(ai_content(ai_config.api_format, response.json()))
-    raw_models = payload.get("models")
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """一段 AI 返回 → 通过证据校验的记录；档位价格数字必须在该段页面文本中字面出现。"""
     if not isinstance(raw_models, list):
         raise AIExtractionError("AI 没有返回 models 数组")
-
-    normalized_page = re.sub(r"[\s_-]+", "", text).casefold()
+    normalized_chunk = re.sub(r"[\s_-]+", "", chunk_text).casefold()
     records: list[dict[str, Any]] = []
     for item in raw_models:
         if not isinstance(item, dict):
@@ -419,7 +497,7 @@ def _ai_extract(
         name = str(item.get("model") or "").strip()
         if not name:
             continue
-        if model_key(name) not in normalized_page:
+        if model_key(name) not in normalized_chunk:
             warnings.append(f"AI 返回的模型 {name} 不在页面文本中，已丢弃")
             continue
         tiers: list[dict[str, Any]] = []
@@ -427,7 +505,7 @@ def _ai_extract(
             missing = [
                 label
                 for label, value in (("输入价", tier["input"]), ("输出价", tier["output"]))
-                if value is not None and value != 0 and not _number_in_text(value, text)
+                if value is not None and value != 0 and not _number_in_text(value, chunk_text)
             ]
             if missing:
                 warnings.append(f"模型 {name} 的{tier['name'] or '默认'}档{'、'.join(missing)}在页面文本中找不到，疑似幻觉，该档已丢弃")
@@ -460,6 +538,70 @@ def _ai_extract(
             "quote": redact_text(str(item.get("quote") or "")),
             "price_status": "candidate",
         })
+    return records
+
+
+def _ai_extract(
+    text: str,
+    source_url: str,
+    ai_config: AIConfig,
+    client: httpx.Client,
+    deadline: float | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """AI 兜底抽取；返回 (通过证据校验的记录, 丢弃原因)。
+
+    每个模型带档位数组（空闲/高峰时段、不同上下文档等），逐档做证据校验——
+    档位价格数字必须在页面文本中字面出现，幻觉档剔除、其余保留；基准档取
+    标准档（如高峰时段），保证折扣比较不受折扣档干扰。页面超长时剥标签分块
+    逐段提取、按模型键合并（先到先得）；单段失败不放弃整页，全部段失败才告整页失败。
+    deadline 是整页提取的总时长上界（time.monotonic() 时刻），到点后没跑的段记警告放弃。
+    """
+    warnings: list[str] = []
+    chunks = _split_for_ai(text, ai_config.max_input_chars)
+
+    def extract_chunk(chunk: str, depth: int = 0) -> list[dict[str, Any]]:
+        """单段提取；JSON 输出装不下整段模型时对半拆段重试（大表一个回复塞不下）。"""
+        try:
+            _model, response = request_with_model_fallback(
+                ai_config,
+                _AI_SYSTEM_PROMPT,
+                clip(chunk, ai_config.max_input_chars),
+                max_tokens=max(ai_config.max_tokens, _AI_EXTRACT_MAX_TOKENS),
+                client=client,
+                scene="定价页价格抽取",
+                deadline=deadline,
+            )
+            payload = json_content(ai_content(ai_config.api_format, response.json()))
+            return _records_from_ai_payload(payload.get("models"), chunk, source_url, warnings)
+        except (AIExtractionError, httpx.HTTPError, PriceMonitorError) as exc:
+            if depth >= 2 or len(chunk) < 6000:
+                raise
+            warnings.append(f"单段提取失败（{str(exc)[:60]}），对半拆段重试")
+            middle = len(chunk) // 2
+            cut = chunk.find("\n", middle)
+            if cut == -1 or cut > len(chunk) - 200:
+                cut = middle
+            return extract_chunk(chunk[:cut], depth + 1) + extract_chunk(chunk[cut:], depth + 1)
+
+    records: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    failed_chunks = 0
+    for index, chunk in enumerate(chunks):
+        label = f"第 {index + 1}/{len(chunks)} 段" if len(chunks) > 1 else ""
+        try:
+            chunk_records = extract_chunk(chunk)
+        except (AIExtractionError, httpx.HTTPError, PriceMonitorError) as exc:
+            warnings.append(f"{label} AI 提取失败：{exc}".strip())
+            failed_chunks += 1
+            continue
+        for record in chunk_records:
+            key = str(record.get("model_key") or "")
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            records.append(record)
+    if not records and failed_chunks and failed_chunks == len(chunks):
+        raise AIExtractionError(warnings[0] or "AI 没有提取到任何价格")
     return records, warnings
 
 
@@ -493,17 +635,29 @@ def fetch_page_prices(
                 parsed = _parse_text(rendered, final_url, "headless")
             except PriceMonitorError as exc:
                 warnings.append(str(exc))
-        if parsed is None and ai_config is not None and ai_config.enabled:
+        # 解析"有结果但可疑"（档位注释/合并行/重复档价）不能当可信基准：交给 AI 复核，
+        # AI 没有产出时整页降级为 candidate，宁可多人工复核也不静默采脏价
+        suspect = parsed is not None and _records_suspicious(parsed[0])
+        ai_enabled = ai_config is not None and ai_config.enabled
+        if (parsed is None or suspect) and ai_enabled:
             try:
-                # 渲染成功但静态解析不出时，AI 兜底必须看渲染后的正文——原始 text 多半是 JS 空壳
-                records, ai_warnings = _ai_extract(rendered or text, final_url, ai_config, client)
+                # 渲染出过正文（无论解析成败）就优先给 AI 看渲染后的正文——原始 text 可能是 JS 空壳
+                ai_text = rendered or text
+                records, ai_warnings = _ai_extract(
+                    ai_text, final_url, ai_config, client, deadline=time.monotonic() + _AI_PAGE_BUDGET_SECONDS,
+                )
                 warnings.extend(ai_warnings)
                 if records:
                     parsed = (records, "ai")
+                    suspect = False
             except (AIExtractionError, httpx.HTTPError, PriceMonitorError) as exc:
                 warnings.append(f"AI 兜底失败：{exc}")
-        elif parsed is None and ai_config is not None and not ai_config.enabled:
+        elif ai_config is not None and not ai_config.enabled and (parsed is None or suspect):
             warnings.append("AI 配置已禁用，跳过 AI 兜底")
+        if parsed is not None and suspect:
+            for record in parsed[0]:
+                record["price_status"] = "candidate"
+            warnings.append("确定性解析结果可疑（模型名带档位注释或同模型多价），已整页标为待复核")
 
     records, method = parsed if parsed else ([], "none")
     if parsed is None:

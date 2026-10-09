@@ -460,7 +460,8 @@ export function availabilityBySite(records: { site_id: string; captured_at: numb
   return availabilityFromDots(channelDotsBySite(records));
 }
 
-function availabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
+/** 全量可用率序列（不抽稀）：数字类展示（时段桶均值）从这里算，避免保峰抽稀把均值压悲观。 */
+function fullAvailabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
   const result: Record<string, AvailabilityPoint[]> = {};
   for (const [site, rows] of Object.entries(bySite)) {
     const cursors: DotCursor[] = rows.map((row) => ({
@@ -485,9 +486,24 @@ function availabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<s
       }
       if (total > 0) full.push({ at, pct: Math.round((ok / total) * 100), down });
     }
-    result[site] = downsampleWorst(full, MAX_SERIES_POINTS, (a, b) => (a.pct < b.pct ? a : b));
+    result[site] = full;
   }
   return result;
+}
+
+/** 保峰抽稀到 ~1440 点（画图口径）：短暂故障不会被抽丢；数字类展示不要用它，
+ *  「每格只留最差点」会把均值压悲观，数字请走 buildSiteViews 的 uptimeBuckets（全量分桶）。 */
+function downsampleAvailability(full: Record<string, AvailabilityPoint[]>): Record<string, AvailabilityPoint[]> {
+  const result: Record<string, AvailabilityPoint[]> = {};
+  for (const [site, points] of Object.entries(full)) {
+    result[site] = downsampleWorst(points, MAX_SERIES_POINTS, (a, b) => (a.pct < b.pct ? a : b));
+  }
+  return result;
+}
+
+/** 按站点把渠道检测点合并成可用率时间序列（供图表画线）：保峰抽稀到 ~1440 点。 */
+function availabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
+  return downsampleAvailability(fullAvailabilityFromDots(bySite));
 }
 
 /** 延迟趋势上的一个点：时刻 at（秒）时各渠道的自报延迟（ms，缺席的渠道不在 values 里）。 */
@@ -583,16 +599,25 @@ export function buildChannelModel(
 }
 
 /** 详情页视图集合：渠道行、可用率序列、延迟序列共享同一次 channelDotsBySite 全量走查，
- *  避免页面把同一批记录解析三遍。 */
+ *  避免页面把同一批记录解析三遍。
+ *  两个口径：availability 是保峰抽稀后的序列（画图用，毛刺不丢）；uptimeBuckets 用抽稀前的
+ *  全量序列分桶（数字用）——保峰抽稀「每格只留最差点」会把均值压悲观，区块平均率必须看全量。 */
 export function buildSiteViews(records: { site_id: string; captured_at: number; data: unknown }[]): {
   channels: Record<string, ChannelDotRow[]>;
   availability: Record<string, AvailabilityPoint[]>;
   latency: Record<string, LatencyPoint[]>;
+  uptimeBuckets: Record<string, (UptimeBucket | null)[]>;
 } {
   const bySite = channelDotsBySite(records);
+  const fullAvailability = fullAvailabilityFromDots(bySite);
+  const uptimeBuckets: Record<string, (UptimeBucket | null)[]> = {};
+  for (const [site, points] of Object.entries(fullAvailability)) {
+    uptimeBuckets[site] = buildUptimeBuckets(points);
+  }
   return {
     channels: bySite,
-    availability: availabilityFromDots(bySite),
+    availability: downsampleAvailability(fullAvailability),
     latency: latencyFromDots(bySite),
+    uptimeBuckets,
   };
 }

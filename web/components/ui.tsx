@@ -665,3 +665,16 @@ export function ComingSoon({
     </>
   );
 }
+
+/** 表单行：label 包裹控件（读屏软件能把字段名和输入框关联起来），hint 是下方辅助说明。 */
+export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children?: ReactNode }) {
+  return (
+    <div style={{ display: "grid", gap: 4 }}>
+      <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13.5 }}>{label}</span>
+        {children}
+      </label>
+      {hint && <span style={{ fontSize: 12, color: "var(--text-3)" }}>{hint}</span>}
+    </div>
+  );
+}

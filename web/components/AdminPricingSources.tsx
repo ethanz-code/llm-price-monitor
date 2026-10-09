@@ -22,23 +22,19 @@ import { DajuSit } from "./DajuArt";
 import { RiskLink } from "./RiskLink";
 import { SiteAlert } from "./SiteAlert";
 import { ToneTag, type Tone } from "./ToneTag";
-import { Btn, Empty, Input, Modal, Pick, Switch, toast } from "./ui";
+import { Btn, Empty, Input, Modal, Pick, Switch, toast, SettingRow } from "./ui";
+import { errorText } from "@/lib/api";
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** 覆盖检测统一口径：models.dev 的国内价一律不作基准，国内厂商都需要配置定价源，
- * verdict 只剩记录意义，展示不再区分。 */
-const VERDICT_PENDING: { label: string; tone: Tone; hint: string } = {
+/** 覆盖检测统一口径：models.dev 的国内价一律不作基准，国内厂商都需要配置定价源。
+ * 标签只表达「是否已配置国内定价源」，verdict（models.dev 收录情况）不参与展示。 */
+const TAG_PENDING: { label: string; tone: Tone; hint: string } = {
   label: "待添加",
   tone: "yellow",
-  hint: "models.dev 的国内价格不作为折扣基准；添加国内定价页后由程序定时抓取官方标价",
+  hint: "添加国内定价页后，程序定时抓取官方标价作为折扣基准",
 };
-const VERDICT_META: Record<VendorSourceDetection["verdict"], typeof VERDICT_PENDING> = {
-  not_listed: VERDICT_PENDING,
-  missing_cn: VERDICT_PENDING,
-  has_cn: VERDICT_PENDING,
+const TAG_ADDED: { label: string; tone: Tone } = {
+  label: "已配置",
+  tone: "green",
 };
 
 const STATUS_META: Record<string, { label: string; tone: Tone }> = {
@@ -71,6 +67,8 @@ export function AdminPricingSources() {
   const [removing, setRemoving] = useState<VendorPricingSource | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [quickAdding, setQuickAdding] = useState<string | null>(null);
+  // 覆盖检测默认折叠：15 家常态下都已配置，展开才是一键添加的操作现场
+  const [detectOpen, setDetectOpen] = useState(false);
 
   const reload = useCallback(() => {
     apiSend<{ sources: VendorPricingSource[] }>("/api/vendor-sources", "GET")
@@ -194,15 +192,16 @@ export function AdminPricingSources() {
       width: 190,
       render: (_, row) => {
         const status = statusOf(row);
-        const detail = `${status.detail}${row.last_error ? ` · ${row.last_error}` : ""}`;
+        // 有告警时只在行尾挂两个字，完整告警进悬浮提示与详情弹窗，行高保持两行以内
         return (
-          <span style={{ display: "inline-grid", gap: 2, maxWidth: 190 }}>
+          <span style={{ display: "block", maxWidth: 190 }}>
             <ToneTag tone={status.tone}>{status.label}</ToneTag>
             <span
-              title={detail}
-              style={{ fontSize: 12, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={row.last_error ?? undefined}
+              style={{ display: "block", fontSize: 12, color: "var(--text-3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
             >
-              {detail}
+              {status.detail}
+              {row.last_error ? " · 有告警" : ""}
             </span>
           </span>
         );
@@ -261,40 +260,43 @@ export function AdminPricingSources() {
 
   return (
     <div className="rise-in" style={{ display: "grid", gap: 10 }}>
-      {/* 页面说明条：与站点管理页顶部速查条同款，紧凑不加标题 */}
-      <div className="panel" style={{ padding: "10px 16px" }}>
-        <span style={{ fontSize: 13, color: "var(--text-2)" }}>
-          models.dev 的国内价格不作为基准：国内厂商都需要在下方添加官方定价页，由程序定时抓取标价作为国内折扣基准；海外定价页只作国际参考，每
-          24 小时随目录自动刷新。
-        </span>
-      </div>
-
       <div className="panel" style={{ padding: "14px 18px", display: "grid", gap: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 550 }}>models.dev 国内价覆盖检测</div>
+        <button
+          type="button"
+          onClick={() => setDetectOpen((open) => !open)}
+          style={{
+            background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit",
+            display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", textAlign: "left",
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 550, display: "inline-flex", alignItems: "center", gap: 8 }}>
+            国内厂商覆盖检测
+            {detection && (
+              <span style={{ fontSize: 12, fontWeight: 400, color: "var(--text-3)" }}>
+                {detection.filter((record) => record.source_added).length}/{detection.length} 家已配置
+              </span>
+            )}
+          </span>
+          <span aria-hidden style={{ fontSize: 12, color: "var(--text-3)" }}>{detectOpen ? "收起 ▲" : "展开 ▼"}</span>
+        </button>
         {detectionError ? (
           <SiteAlert title="覆盖检测暂时不可用" detail={detectionError} fix="在「采集任务」页刷新一次厂商定价后再来。" />
-        ) : detection === null ? (
+        ) : !detectOpen ? null : detection === null ? (
           <div style={{ color: "var(--text-2)", fontSize: 13 }}>检测中…</div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             {detection.map((record) => {
-              const meta = VERDICT_META[record.verdict];
               const added = record.source_added;
+              const meta = added ? TAG_ADDED : TAG_PENDING;
               return (
                 <div key={record.vendor} className="detect-row">
                   <span className="detect-vendor">{record.vendor}</span>
                   <ToneTag tone={meta.tone}>{meta.label}</ToneTag>
+                  {/* 右侧描述每家不同：已配置显示源自己的描述，待添加显示添加指引 */}
                   <span className="detect-note">
-                    {record.note || meta.hint}
-                    {record.providers.length > 0 && (
-                      <span style={{ color: "var(--text-3)" }}>
-                        {" "}· models.dev 渠道：{record.providers.join("、")}（带价 {record.models_priced}/{record.models_total}）
-                      </span>
-                    )}
+                    {added ? record.source_note || record.note : record.note || TAG_PENDING.hint}
                   </span>
-                  {added ? (
-                    <ToneTag tone="blue">已添加定价源</ToneTag>
-                  ) : (record.suggestions ?? []).length === 0 ? (
+                  {added ? null : (record.suggestions ?? []).length === 0 ? (
                     <Btn
                       size="sm"
                       onClick={() => setEditing({ source: { ...sourceSkeleton(), vendor: record.vendor }, isNew: true })}
@@ -599,6 +601,9 @@ function SourceDetailModal({ vendor, onClose }: { vendor: string; onClose: () =>
             {source.last_method && <span className="mono">解析方式 {source.last_method}</span>}
             <RiskLink href={source.url}>打开定价页</RiskLink>
           </div>
+          {source.last_error && (
+            <span style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--text-3)" }}>{source.last_error}</span>
+          )}
           {(source.models ?? []).length === 0 ? (
             <Empty
               icon={<DajuSit width={30} />}

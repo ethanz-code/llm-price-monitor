@@ -2,7 +2,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { apiGet } from "@/lib/api";
-import { eventMeta, formatDiscount, formatTime, isNoticeEvent, successRateTone, toneText } from "@/lib/format";
+import { eventMeta, formatCount, formatDiscount, formatTime, isNoticeEvent, successRateTone, toneText } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import type { AiLogSummary, FeedData, OverviewData } from "@/lib/types";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -52,16 +52,23 @@ export default async function AdminOverviewPage() {
   const siteIds = new Set(records.map((row) => row.site_id));
   const latestEvents = events?.events.slice(0, 5) ?? [];
   const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
-  const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
+  // 中位数而非平均：一条提取事故价就能把平均拖成天文数字，中位数对离谱值免疫
+  const sortedInputs = [...inputs].sort((a, b) => a - b);
+  const mid = Math.floor(sortedInputs.length / 2);
+  const medianInput = sortedInputs.length
+    ? sortedInputs.length % 2
+      ? sortedInputs[mid]
+      : (sortedInputs[mid - 1] + sortedInputs[mid]) / 2
+    : null;
 
   const kpis: { label: string; value: string; hint: ReactNode; color?: string; tip?: TermKey }[] = [
-    { label: "监控站点", value: String(siteIds.size), hint: "个" },
-    { label: "价格记录", value: String(records.length), hint: "条" },
-    { label: "事件总数", value: String((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "条" },
+    { label: "监控站点", value: formatCount(siteIds.size), hint: "个" },
+    { label: "价格记录", value: formatCount(records.length), hint: "条" },
+    { label: "事件总数", value: formatCount((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "条" },
     {
-      label: "平均输入折扣",
+      label: "输入折扣中位数",
       tip: "discount_input",
-      value: avgInput !== null ? formatDiscount(avgInput) : "—",
+      value: medianInput !== null ? formatDiscount(medianInput) : "—",
       hint: "相对厂商价",
     },
   ];
@@ -72,7 +79,7 @@ export default async function AdminOverviewPage() {
     const failure = aiSummary.total - aiSummary.ok - aiSummary.transport - aiSummary.ignored;
     kpis.push({
       label: "AI 调用",
-      value: aiSummary.total.toLocaleString("en-US"),
+      value: formatCount(aiSummary.total),
       hint: "次",
     });
     kpis.push({
@@ -81,8 +88,8 @@ export default async function AdminOverviewPage() {
       color: toneText(successRateTone(rate)),
       hint: (
         <>
-          成功 {aiSummary.ok}
-          {failure > 0 && <span style={{ color: toneText("red") }}> · 失败 {failure}</span>}
+          成功 {formatCount(aiSummary.ok)}
+          {failure > 0 && <span style={{ color: toneText("red") }}> · 失败 {formatCount(failure)}</span>}
         </>
       ),
     });

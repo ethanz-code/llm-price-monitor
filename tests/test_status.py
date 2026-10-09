@@ -255,6 +255,54 @@ def test_run_once_skips_status_when_not_configured_and_reports_fetch_failure(tmp
     assert len(report.records) == 1  # 价格采集不受影响
 
 
+def test_status_transport_flap_needs_three_rounds_before_error(tmp_path: Path, monkeypatch):
+    """传输抖动连续 3 轮才升级为错误：前两轮只留 warn 日志不刷错误卡片，成功一轮即清零重新计数。"""
+    from llm_price_monitor import tasklog
+    from llm_price_monitor.adapters import NetworkAdapter
+    from llm_price_monitor.tracker import PriceRecord
+
+    def collect(*_args):
+        return [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {})]
+
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    config = _config_file(tmp_path, _site_raw_config(None))
+    store = Store(tmp_path / "monitor.db")
+    merged = MonitorConfig(
+        settings=config.settings,
+        ai=config.ai,
+        sites=sites_from_raw([_site_raw_config({"url": "https://demo.test/status"})]),
+    )
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("SSL: UNEXPECTED_EOF_WHILE_READING", request=request)
+
+    def healthy(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"channels": []})
+
+    logs: list[tuple[str, str]] = []
+    tasklog.bind(lambda message, level: logs.append((message, level)))
+    try:
+        with httpx.Client(transport=httpx.MockTransport(failing)) as client:
+            first = run_once(merged, store=store, client=client)
+            second = run_once(merged, store=store, client=client)
+            third = run_once(merged, store=store, client=client)
+        with httpx.Client(transport=httpx.MockTransport(healthy)) as client:
+            run_once(merged, store=store, client=client)
+        with httpx.Client(transport=httpx.MockTransport(failing)) as client:
+            after_reset = run_once(merged, store=store, client=client)
+    finally:
+        tasklog.unbind()
+
+    def has_status_error(report) -> bool:
+        return any("渠道状态采集失败" in error["error"] for error in report.errors)
+
+    assert not has_status_error(first)
+    assert not has_status_error(second)
+    assert any("暂不报警" in message for message, level in logs if level == "warn")
+    assert has_status_error(third)  # 连续第 3 轮：升级为错误
+    assert not has_status_error(after_reset)  # 中间成功过一轮，计数已清零
+
+
 # ---------- store ----------
 
 def test_store_status_round_trip(tmp_path: Path):
@@ -371,7 +419,7 @@ def test_webapi_status_endpoints(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({
         # 关闭后台调度：测试环境不发起任何定时采集与官方价同步
-        "settings": {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0}},
+        "settings": {"schedule": {"price": 0, "status": 0, "notice": 0, "catalog": 0, "rankings": 0}},
         "ai": {"enabled": False},
         "sites": [_site_raw_config(None)],
     }), encoding="utf-8")

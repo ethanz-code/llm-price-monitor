@@ -6,6 +6,7 @@
 """
 import pytest
 
+import llm_price_monitor.ai as ai_mod
 from llm_price_monitor import visitor_geo
 from llm_price_monitor.webapi import scheduler, tasks
 
@@ -14,6 +15,8 @@ from llm_price_monitor.webapi import scheduler, tasks
 def _isolated_runtime(tmp_path, monkeypatch):
     # 路径与 workspace fixture 的约定一致（tmp_path/var/…），测试里直接打开 sqlite 断言的用例才能看到同一张库
     monkeypatch.setenv("PRICE_MONITOR_DB", str(tmp_path / "var" / "monitor.db"))
+    # 抽取的模型冷却名单是 ai 模块级状态，不清场会跨测试污染（测试反复用同一批假模型名）
+    monkeypatch.setattr(ai_mod, "_MODEL_COOLDOWN", {})
     # 访问统计会顺带解析访客 IP 归属地（外网请求），测试一律离线替代
     monkeypatch.setattr(
         visitor_geo,

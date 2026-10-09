@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+import logging
 from html.parser import HTMLParser
 from typing import Any, Literal
 
@@ -15,7 +16,11 @@ import httpx
 from llm_price_monitor.units import number_or_none as _number
 
 
+# new-api 通用口径：实售价 = model_ratio × 该基准价（CNY）。
+# 站点真实口径不是 2 时该站价格会按比例系统性错——report 的价格合理性校验是唯一防线，
+# 首次按此默认值定价时另有一次进程级告警提示核对。
 DEFAULT_NEWAPI_RATIO_BASE_PRICE = 2.0
+_RATIO_BASE_WARNED = False
 _TIER_CALL_PATTERN = re.compile(
     r"tier\(\s*['\"](?P<name>[^'\"]+)['\"]\s*,\s*(?P<formula>.*?)\s*\)",
     re.IGNORECASE | re.DOTALL,
@@ -39,7 +44,7 @@ class PriceRecord:
     requires_auth: bool = False
 
 
-class _TextParser(HTMLParser):
+class TextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
@@ -377,6 +382,13 @@ def newapi_price_record(
                     metadata[field_name] = value * multiplier * currency_multiplier
             return PriceRecord(model, input_price * multiplier * currency_multiplier, output_price * multiplier * currency_multiplier if output_price is not None else None, explicit_unit or configured_unit, source_url, time.time(), metadata, "confirmed" if output_price is not None else "candidate")
     if model_ratio is not None:
+        global _RATIO_BASE_WARNED
+        if not _RATIO_BASE_WARNED:
+            _RATIO_BASE_WARNED = True
+            logging.getLogger("llm_price_monitor.tracker").warning(
+                "正在按 new-api 默认基准价 %.1f 折算倍率定价；若该站点口径不是 %.1f，价格会成比例偏差，请在采集配置里核对",
+                DEFAULT_NEWAPI_RATIO_BASE_PRICE, DEFAULT_NEWAPI_RATIO_BASE_PRICE,
+            )
         cache_ratio = _number(item.get("cache_ratio"))
         create_cache_ratio = _number(item.get("create_cache_ratio"))
         input_price = model_ratio * ratio_base_price * multiplier * currency_multiplier
@@ -414,7 +426,7 @@ def _fetch_page_via_browser(url: str, headless_config: dict) -> str:
 def fetch_price(url: str, model: str, *, timeout: float = 20.0, client: httpx.Client | None = None, network: dict | None = None) -> PriceRecord:
     headless_config = (network or {}).get("headless") or {}
     if headless_config.get("enabled"):
-        parser = _TextParser()
+        parser = TextParser()
         parser.feed(_fetch_page_via_browser(url, headless_config))
         return extract_price(" ".join(parser.parts), model, url)
     own = client is None
@@ -427,7 +439,7 @@ def fetch_price(url: str, model: str, *, timeout: float = 20.0, client: httpx.Cl
             payload: Any = response.json()
             return _record_from_json(payload, model, url)
         else:
-            parser = _TextParser()
+            parser = TextParser()
             parser.feed(response.text)
             text = " ".join(parser.parts)
         return extract_price(text, model, url)
