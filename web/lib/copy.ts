@@ -17,7 +17,7 @@ export const site = {
 export const nav = {
   items: [
     { key: "/", label: "首页" },
-    { key: "/overview", label: "站点数据" },
+    { key: "/overview", label: "模型数据" },
     { key: "/catalog", label: "厂商数据" },
     { key: "/discover", label: "发现" },
   ],

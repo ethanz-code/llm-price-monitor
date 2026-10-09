@@ -496,6 +496,19 @@ def test_fetch_ai_rejects_hallucinated_prices() -> None:
     assert "deepseek-flash" in joined and "没有可用价格" in joined
 
 
+def test_fetch_ai_accepts_thousands_separator_prices() -> None:
+    """页面写「1,400」AI 回 1400：数字形态集含千分位写法，不把正确读数当幻觉丢弃。"""
+    page = "某站价格表（2026年10月）\nnew-model：输入 1,400 元/百万 tokens，输出 5,600 元/百万 tokens\n"
+    transport = _transport_with_ai(page, [
+        {"model": "new-model", "input": 1400, "output": 5600, "currency": "CNY", "quote": "new-model：输入 1,400"},
+    ])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    assert result["method"] == "ai"
+    assert result["models"][0]["input_price"] == 1400
+    assert result["models"][0]["output_price"] == 5600
+    assert result["warnings"] == []
+
+
 def test_fetch_without_ai_reports_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=PLAIN_PAGE)

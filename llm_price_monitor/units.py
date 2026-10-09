@@ -20,6 +20,36 @@ def number_or_none(value: Any) -> float | None:
         return None
 
 
+def price_digit_forms(value: float) -> set[str]:
+    """价格数字在证据文本里的可匹配书写形态（AI 抽取与定价页兜底两处证据闸共用）。
+
+    字面形态：原值、%g、千分位（页面常写「¥1,400」而 AI 回 1400）、整数去尾零、
+    JS 省略前导零的小数（.7）。
+    换算形态：prompt 要求 AI 把每 token / 每 1k 报价统一换算成每 1M tokens——换算
+    产物不在证据原文里，按可枚举的单位换算（×/÷ 1e3、×/÷ 1e6）放行；不做任意
+    「乘积豁免」，AI 补写的引文不可自证，乘积匹配会打穿证据闸。
+    """
+    forms = {str(value), f"{value:g}"}
+    if value == int(value):
+        forms.add(str(int(value)))
+        forms.add(f"{int(value):,}")
+    else:
+        forms.add(f"{value:,.2f}")
+        forms.add(f"{value:,}")
+    for scale in (1_000.0, 1_000_000.0):
+        for candidate in (value * scale, value / scale):
+            forms.add(f"{candidate:g}")
+            plain = f"{candidate:.12f}".rstrip("0").rstrip(".")
+            # 全零形态不收（1e-13 换算成 "0"）：子串 "0" 会命中任何含 0 的文本
+            if plain and any(char not in "0." for char in plain):
+                forms.add(plain)
+    for form in tuple(forms):
+        stripped = form.lstrip("0")
+        if stripped.startswith(".") and len(stripped) > 1:
+            forms.add(stripped)
+    return forms
+
+
 def round2(value: Any) -> Any:
     return round(value, 2) if isinstance(value, (int, float)) else value
 

@@ -8,6 +8,7 @@ import { formatCount, formatDiscount, formatPrice, looseIncludes } from "@/lib/f
 import { getSiteInfo } from "@/lib/sites";
 import { calculator } from "@/lib/copy";
 import { compareByReleaseDesc } from "@/lib/modelOrder";
+import { vendorDisplay } from "@/lib/vendorNames";
 import { ShareCalcButton } from "./ShareCalcButton";
 import type { CatalogData, CatalogEntry, OverviewData, OverviewRecord } from "@/lib/types";
 import {
@@ -55,7 +56,7 @@ function optionFromCatalog(key: string, entry: CatalogEntry): Option {
   return {
     value: key,
     label: entry.name ?? entry.model ?? key,
-    sub: entry.vendor,
+    sub: vendorDisplay(entry.vendor),
     release: entry.release_date ?? "",
     prices: {
       input: (cn ? entry.list_cny?.input : entry.list?.input) ?? null,
@@ -330,7 +331,7 @@ export function Calculator({
                     onClick={() => toggleVendor(group.vendor)}
                     aria-expanded={open}
                   >
-                    <span>{group.vendor}</span>
+                    <span>{vendorDisplay(group.vendor)}</span>
                     <span className="calc-vendor-count">· {group.items.length}</span>
                     {folded > 0 && (
                       <span className="calc-vendor-more">{open ? calculator.lessModels : calculator.moreModels(folded)}</span>

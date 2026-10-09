@@ -67,7 +67,7 @@ export default async function DiscoverPage() {
       <div
         style={{
           marginTop: 28,
-          padding: "24px 28px",
+          padding: "18px 24px",
           background: "var(--panel)",
           border: "var(--card-border)",
           borderRadius: 12,

@@ -12,7 +12,15 @@ from .summary import representative_tier, summary_tiers
 
 
 def _has_price(row: dict[str, Any]) -> bool:
-    return row.get("input_price") is not None or row.get("output_price") is not None
+    """是否拿到真实价格。0/0 双零只有 confirmed（渠道真免费档）才算有价：
+    AI 抽不到价时可能照提示词模板把数值抄成 0，这种占位行若被当成"有价"入库，
+    会以 ¥0 假免费价进快照并被首页最低价挑选选中。"""
+    input_price, output_price = row.get("input_price"), row.get("output_price")
+    if input_price is None and output_price is None:
+        return False
+    if input_price == 0 and output_price == 0:
+        return row.get("price_status") == "confirmed"
+    return True
 
 
 def _carry_last_price(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:

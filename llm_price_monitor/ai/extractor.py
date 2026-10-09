@@ -26,7 +26,7 @@ from llm_price_monitor.evidence import (
 )
 from llm_price_monitor.matching import canonical_target, contains_model_alias
 from llm_price_monitor.tracker import PriceRecord
-from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none
+from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none, price_digit_forms
 
 from .api_format import ai_content, json_content
 from .client import ai_http_client
@@ -48,15 +48,18 @@ EVIDENCE_CHAR_LADDER: tuple[int | None, ...] = (None, 240_000, 96_000, 40_000, 1
 # 非法 JSON，批太小则调用次数与重复系统提示翻倍。
 AI_EXTRACT_BATCH_SIZE = 4
 # 批间并发行数：批间相互独立（各自证据/缓存键/调用），总输出 token 不变，省的是
-# 请求排队与证据重发的串行等待；4 路对供应商是温和压力，模型池冷却名单线程安全（GIL 原子写）
+# 请求排队与证据重发的串行等待。并发峰值 = 站点 4 路（report.timeouts.SITE_FETCH_CONCURRENCY）
+# × 批次 4 路 = 16 路对同一供应商网关；429 限流走换模型 fallback（不冷却），真出现限流
+# 事故再考虑全局并发闸
 AI_EXTRACT_CONCURRENCY = 4
 
-# 单站 AI 提取的总时长预算（× 批次数）：分批提取与换模型回退都没有总上限，链路整体
-# 抖动时（如凌晨 sudocode 单站拖 10.8 小时）一个站就能占住采集互斥名额拖垮整轮调度。
-# 600s 按单批站点的正常最慢耗时（约 6 分钟）取 2 倍富余标定；监控清单 40 模型 10 批次的
-# 全量提取正常就要 10 分钟起步，必须随批次数等比放大，否则每轮贴线爆预算。超预算保留
-# 已完成批次（直采兜底承接剩余模型），一个批次都没成才按失败上报该站。
+# 单批 AI 提取的时长预算（秒）：600 按单批正常最慢耗时（约 6 分钟）取 2 倍富余标定。
+# 整轮预算 = 600 × 并行波次数（批间 4 路并行，墙钟按波次算而不是按批次数线性放大），
+# 再钳到 SITE_AI_BUDGET_MAX_SECONDS 封顶：站点采集有 900s 硬上限（report.timeouts），
+# 预算若超过它，硬超时会先把整站连同已完成批次一起作废，「超预算保留已完成批次」
+# （直采兜底承接剩余模型）就永远没机会生效。一个批次都没成才按失败上报该站。
 SITE_AI_BUDGET_SECONDS = 600
+SITE_AI_BUDGET_MAX_SECONDS = 840.0
 
 def _validated_price_payload(answer: str) -> dict[str, Any]:
     """价格提取换模型链的内容校验：合法 JSON 之外还必须是带 models 数组的对象。
@@ -301,8 +304,8 @@ class AIPriceExtractor:
     "model": "模型名",
     "observed_model": "页面或接口中实际出现的原始模型名",
     "aliases": ["属于该标准模型的展示名称或模型 ID，不要填标准模型名本身"],
-    "input_price": 0,
-    "output_price": 0,
+    "input_price": null,
+    "output_price": null,
     "unit": "CNY/1M tokens",
     "currency": "CNY",
     "status": "confirmed|candidate|rule_only|unavailable",
@@ -313,7 +316,7 @@ class AIPriceExtractor:
     "cache_read_price": null,
     "cache_create_price": null,
     "cache_create_1h_price": null,
-    "pricing_rules": {{"groups": [{{"name": "default", "tiers": [{{"context_min": 0, "context_max": null, "input_price": 0, "output_price": 0, "cache_read_price": null, "cache_create_price": null, "cache_create_1h_price": null, "unit": "CNY/1M tokens"}}]}}]}},
+    "pricing_rules": {{"groups": [{{"name": "default", "tiers": [{{"context_min": 0, "context_max": null, "input_price": null, "output_price": null, "cache_read_price": null, "cache_create_price": null, "cache_create_1h_price": null, "unit": "CNY/1M tokens"}}]}}]}},
     "network_evidence": [{{"source": "model_list", "url": "实际捕获的响应 URL", "resource_type": "fetch|xhr", "match_basis": ["response_url|response_body"], "quote": "响应正文中的目标模型证据"}}],
     "page_evidence": [{{"source": "model_list", "url": "页面 URL", "target_model": "目标模型", "quote": "目标模型卡片中的原始页面证据"}}],
     "notes": ""
@@ -371,10 +374,11 @@ expected_models：
         # 思考型模型留余量——max_tokens=4000 → 4 条/批（旧默认），16000 → 12 条/批；
         # 批越大，每批重复发送的系统提示与规则（数 K tokens）和调用开销省得越多
         batch_size = max(AI_EXTRACT_BATCH_SIZE, min(12, int(self.config.max_tokens or 16000) // 1200))
-        # 整轮预算随批次数等比放大：600s 按单批时代的正常最慢耗时标定，监控清单 40 模型
-        # 10 批次的全量提取正常就要 10 分钟起步，固定 600s 贴线必爆
+        # 整轮预算按并行波次折算再封顶：批间 AI_EXTRACT_CONCURRENCY 路并行，墙钟预算
+        # 是「批次数 × 600s」串行口径的 1/并发数；封顶保证硬超时（900s）不抢先作废整站
         batch_count = max(1, -(-len(expected) // batch_size))
-        budget_seconds = _ai.SITE_AI_BUDGET_SECONDS * batch_count
+        waves = max(1, -(-batch_count // AI_EXTRACT_CONCURRENCY))
+        budget_seconds = min(_ai.SITE_AI_BUDGET_SECONDS * waves, _ai.SITE_AI_BUDGET_MAX_SECONDS)
         deadline = time.monotonic() + budget_seconds
         try:
             records: list[PriceRecord] = []
@@ -620,14 +624,8 @@ expected_models：
             status = str(item.get("status", "unavailable"))
             input_price = number_or_none(item.get("input_price"))
             output_price = number_or_none(item.get("output_price"))
-            input_forms = {str(input_price), f"{input_price:g}"} if input_price is not None else set()
-            output_forms = {str(output_price), f"{output_price:g}"} if output_price is not None else set()
-            for forms in (input_forms, output_forms):
-                # JS 里小于 1 的小数常省略前导零（.7）：补无前导零形态，数字存在性校验不误杀
-                for form in tuple(forms):
-                    stripped = form.lstrip("0")
-                    if stripped.startswith(".") and len(stripped) > 1:
-                        forms.add(stripped)
+            input_forms = price_digit_forms(input_price) if input_price is not None else set()
+            output_forms = price_digit_forms(output_price) if output_price is not None else set()
             network_price_evidence = False
             for entry in network_evidence:
                 if not isinstance(entry, dict):
@@ -697,6 +695,15 @@ expected_models：
             ):
                 status = "candidate"
                 item["notes"] = f"网络证据未同时包含模型列表中的模型和输入/输出价格；{item.get('notes', '')}".strip()
+            if status == "unavailable" and (input_price is not None or output_price is not None):
+                # AI 自报"没有可靠价格"却照提示词模板把数值抄成 0（"0"字符几乎总在证据里，
+                # 数字在证闸门拦不住）：unavailable 是终态，占位行不得携带数值价格，
+                # 否则 0/0 会以 candidate 落库，首页最低价挑选把无数据模型渲染成 ¥0 假免费价
+                input_price = None
+                output_price = None
+                item.pop("pricing_rules", None)
+                for cache_field in ("cache_read_price", "cache_create_price", "cache_create_1h_price"):
+                    item[cache_field] = None
             if network_evidence and not network_urls_valid:
                 item["notes"] = f"AI 给出的网络响应 URL 不在已请求接口列表中；{item.get('notes', '')}".strip()
             has_pricing_rules = has_pricing_tiers(item.get("pricing_rules"))

@@ -11,6 +11,7 @@ import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { useNarrow } from "@/lib/useNarrow";
 import { formatCount, formatIsoMinute, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
+import { vendorDisplay } from "@/lib/vendorNames";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 import { rankingHit, type RankingHit } from "@/lib/rankings";
 
@@ -84,7 +85,7 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
       <span
         aria-hidden
         className="vendor-logo"
-        title={vendor}
+        title={vendorDisplay(vendor)}
         dangerouslySetInnerHTML={{ __html: remoteSvg }}
       />
     );
@@ -96,7 +97,7 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
         src={logo}
         alt=""
         aria-hidden
-        title={vendor}
+        title={vendorDisplay(vendor)}
         loading="lazy"
         onError={() => setFailed(true)}
         className="vendor-logo"
@@ -111,7 +112,7 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
       <span
         aria-hidden
         className="vendor-logo"
-        title={vendor}
+        title={vendorDisplay(vendor)}
         dangerouslySetInnerHTML={{ __html: svg }}
       />
     );
@@ -158,7 +159,7 @@ export function CatalogTable({
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true))
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${vendorDisplay(row.vendor)} ${row.name ?? ""}`, lower) : true))
       .sort(
         (a, b) =>
           vendorOrder(a.vendor, b.vendor) ||
@@ -175,7 +176,7 @@ export function CatalogTable({
       render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
           <VendorBadge vendor={v} />
-          {v}
+          {vendorDisplay(v)}
           {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
         </span>
       ),
@@ -362,7 +363,7 @@ export function CatalogTable({
                 }}
               >
                 <VendorBadge vendor={row.vendor} />
-                {row.vendor}
+                {vendorDisplay(row.vendor)}
                 {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>

@@ -27,6 +27,16 @@ const ACCESS_VAR = "${access_token}";
 /** 一条凭证注入规则：头名（Authorization / cookie / 任意）+ 值模板（可用 ${access_token}、${refresh_token}） */
 type InjectRule = { header: string; value: string };
 
+/** 贴进来的整行认证头若是写死的令牌（Authorization: Bearer xxx），把令牌段换成 ${access_token}：
+ *  续签换新后注入值实时展开成新凭证；写死的令牌没人同步，第一次续签后就会带着旧 token 采集。
+ *  只认 Authorization + 两段式 Bearer 值，其余头（x-api-key、cookie 等静态凭据）原样保留。 */
+function toVariableAuthRule(rule: InjectRule): InjectRule {
+  if (rule.header.trim().toLowerCase() !== "authorization") return rule;
+  const match = rule.value.match(/^(\S+)\s+(\S+)$/);
+  if (!match || match[1].toLowerCase() !== "bearer") return rule;
+  return { header: rule.header, value: `${match[1]} ${ACCESS_VAR}` };
+}
+
 /** 认证与续签子弹窗提交回主弹窗的字段集合 */
 type AuthFields = {
   mode: AuthMode;
@@ -47,4 +57,4 @@ type AuthFields = {
 type AuthMode = "none" | "token" | "session";
 
 export type { AuthFields, AuthMode, InjectRule, InjectTarget, RefreshOverride, RefreshTestResult };
-export { ACCESS_VAR, INJECT_TARGETS };
+export { ACCESS_VAR, INJECT_TARGETS, toVariableAuthRule };

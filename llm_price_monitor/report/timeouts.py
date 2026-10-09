@@ -25,33 +25,57 @@ _FETCH_SLOTS = threading.BoundedSemaphore(SITE_FETCH_CONCURRENCY)
 
 
 class _NetworkPhaseHandle:
-    """已开工的单站采集：线程即起、信号量限流，result() 从实际开工时刻计硬上限。"""
+    """已开工的单站采集：线程即起、信号量限流，result() 从实际开工时刻计硬上限。
+
+    超时放弃时主线程代为释放并发槽：挂死的采集线程杀不掉，若让它一直占着
+    with 块里的槽位，排队站点的 result() 会无限等待、整轮采集永不结束。
+    释放权用 _slot_held 做原子移交：主线程（放弃时）与工作线程（收尾时）
+    谁先触发谁释放、另一方跳过，不会重复 release。因此 acquire/release 必须
+    手写而不能用 with 语句——with 的 __exit__ 会无条件再 release 一次。
+    """
 
     def __init__(self, phase: Callable[[], tuple[list[PriceRecord], list[str]]], site_id: str) -> None:
         self._site_id = site_id
         self._box: dict[str, Any] = {}
         self._started_at: float | None = None
+        self._slot_lock = threading.Lock()
+        self._slot_held = False
         sink = tasklog.current_sink()
 
         def _run() -> None:
             if sink is not None:
                 tasklog.bind(sink)
-            with _FETCH_SLOTS:
+            _FETCH_SLOTS.acquire()
+            try:
+                with self._slot_lock:
+                    self._slot_held = True
                 self._started_at = time.monotonic()
                 try:
                     self._box["result"] = phase()
                 except BaseException as exc:  # 采集线程的异常转交主线程按原语义处理
                     self._box["error"] = exc
+            finally:
+                self._release_slot()
 
         self._worker = threading.Thread(target=_run, name=f"price-scan-{site_id}", daemon=True)
         self._worker.start()
 
+    def _release_slot(self) -> None:
+        """释放并发槽恰好一次：主线程超时放弃与工作线程正常收尾竞争同一释放权。"""
+        with self._slot_lock:
+            if not self._slot_held:
+                return
+            self._slot_held = False
+        _FETCH_SLOTS.release()
+
     def result(self) -> tuple[list[PriceRecord], list[str]]:
-        """等该站采完：排队等槽位不计入硬上限，开工后超硬上限仍未返回就放弃该站。"""
+        """等该站采完：排队等槽位不计入硬上限（槽位由完成或被放弃的站点让出，
+        必然等到），开工后超硬上限仍未返回就放弃该站，并把槽位让给排队中的站点。"""
         hard_timeout = _report_pkg.SITE_HARD_TIMEOUT_SECONDS
         while self._worker.is_alive():
             now = time.monotonic()
             if self._started_at is not None and now - self._started_at >= hard_timeout:
+                self._release_slot()
                 message = f"采集超过 {hard_timeout:g}s 硬上限仍未返回，本轮放弃该站（连接可能卡死在代理隧道上）"
                 tasklog.emit(f"[{self._site_id}] {message}", "error")
                 return [], [message]

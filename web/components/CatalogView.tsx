@@ -7,6 +7,7 @@ import { Btn, Input, Pick, Seg, toast } from "./ui";
 import { IconSearch } from "./icons";
 import { apiSend } from "@/lib/api";
 import { latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
+import { vendorDisplay } from "@/lib/vendorNames";
 import { CatalogTable } from "./CatalogTable";
 import { CatalogAllTable } from "./CatalogAllTable";
 import { CatalogEmptyState } from "./CatalogEmptyState";
@@ -91,7 +92,7 @@ export function CatalogView({
               value={vendor}
               onChange={setVendor}
               style={{ width: 160, maxWidth: "100%" }}
-              options={[{ value: "all", label: "全部厂商" }, ...vendors.map((v) => ({ value: v, label: v }))]}
+              options={[{ value: "all", label: "全部厂商" }, ...vendors.map((v) => ({ value: v, label: vendorDisplay(v) }))]}
             />
           </>
         ) : (
@@ -128,7 +129,7 @@ export function CatalogView({
         <div className="panel" style={{ padding: "32px 28px", textAlign: "center" }}>
           <div style={{ fontSize: 15, fontWeight: 550, marginBottom: 8 }}>全量渠道价还没生成</div>
           <p style={{ color: "var(--text-2)", fontSize: 13.5, lineHeight: 1.8, margin: "0 auto", maxWidth: 520 }}>
-            它和官方定价由同一次同步一起生成；官方定价已就绪时，点下面的按钮立刻补上（需管理员登录）。
+            它和官方定价是同一次同步一起出来的；官方定价已经就绪的话，点下面的按钮马上补上（需管理员登录）。
           </p>
           <div style={{ marginTop: 16 }}>
             <Btn variant="primary" loading={refreshing} onClick={refreshCatalog}>

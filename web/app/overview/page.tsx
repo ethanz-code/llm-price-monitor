@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
 import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
 import { buildRankingIndex, type RankingHit } from "@/lib/rankings";
-import { canonicalModel } from "@/lib/priceRows";
+import { catalogModelOrderIndex, type ModelOrderEntry } from "@/lib/modelOrder";
 import type { CatalogData, OverviewData, RankingsData, StatusSnapshot } from "@/lib/types";
 import { alerts } from "@/lib/copy";
 import { formatCount } from "@/lib/format";
@@ -35,9 +35,9 @@ export default async function OverviewPage() {
   let statusDots: Record<string, ChannelDotRow[]> = {};
   // AA 榜单匹配索引：给当前选中模型挂排名徽标；拉取失败只影响徽标
   let rankingsIndex: Record<string, RankingHit> = {};
-  // 目录发布日期索引（模型归一键 → release_date）：模型下拉按「发布日期倒序」排的依据；
+  // 目录排序索引（模型归一键 → 厂商序+发布日期）：模型下拉按「厂商分块+发布倒序」排的依据；
   // 只传这份轻量映射而非整个目录，拉取失败只影响排序口径（退化为按名称）
-  let releaseByModel: Record<string, string> = {};
+  let modelOrder: Record<string, ModelOrderEntry> = {};
   let error: string | null = null;
   try {
     const [overview, status, rankings, catalog] = await Promise.all([
@@ -49,9 +49,7 @@ export default async function OverviewPage() {
     data = overview;
     statusDots = status ? channelDotsBySite(status.records ?? []) : {};
     rankingsIndex = buildRankingIndex(rankings);
-    for (const entry of Object.values(catalog?.models ?? {})) {
-      if (entry?.model) releaseByModel[canonicalModel(entry.model)] = entry.release_date ?? "";
-    }
+    modelOrder = catalogModelOrderIndex(catalog?.models ?? {});
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
@@ -71,7 +69,7 @@ export default async function OverviewPage() {
         />
       )}
       {data && (
-        <OverviewTable data={data} statusDots={statusDots} rankingsIndex={rankingsIndex} releaseByModel={releaseByModel} />
+        <OverviewTable data={data} statusDots={statusDots} rankingsIndex={rankingsIndex} modelOrder={modelOrder} />
       )}
     </div>
   );

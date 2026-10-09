@@ -345,10 +345,37 @@ def test_is_general_llm_and_snapshot_variant():
     assert not is_general_llm({"model": "text-embedding-3-small"})
     assert not is_general_llm({"model": "doubao-seed-character"})
     assert not is_general_llm({"model": "MiniMax-H3"})
+    # 媒体生成（国内定价页不标 modalities，按名字拦）：万相系整族 + 形态标记 + 定向档
+    assert not is_general_llm({"model": "wan2.7-t2v"})
+    assert not is_general_llm({"model": "wanx2.1-t2i-plus"})
+    assert not is_general_llm({"model": "wanx-v1"})
+    assert not is_general_llm({"model": "happyhorse-1.1-t2v"})
+    assert not is_general_llm({"model": "pixverse/pixverse-v6-r2v"})
+    assert not is_general_llm({"model": "vidu/viduq3-pro_text2video"})
+    assert not is_general_llm({"model": "wanx2.1-vace-plus"})
+    assert not is_general_llm({"model": "tongyi-intent-detect-v3"})
+    assert not is_general_llm({"model": "tongyi-xiaomi-analysis-flash"})
     # 通用对话模型（含未标 modalities 的国内条目）照常通过
     assert is_general_llm({"model": "glm-5.3-flash", "modalities": {"input": ["text", "image"], "output": ["text"]}})
     assert is_general_llm({"model": "doubao-seed-2.1-pro"})
     assert is_general_llm({"model": "qwen3.8-omni-flash"})  # 输出纯文本的全模态理解模型
+    assert is_general_llm({"model": "kimi-k3"})
+
+
+def test_sanitize_model_name():
+    from llm_price_monitor.catalog.normalize import sanitize_model_name
+
+    # 页面标注尾巴（版本标注/缓存提示）剥掉还原成模型 id
+    assert sanitize_model_name("deepseek-v4-pro正式版") == ("deepseek-v4-pro", None)
+    assert sanitize_model_name("deepseek-v4-pro预览版") == ("deepseek-v4-pro", None)
+    assert sanitize_model_name("kimi-k3上下文缓存享有折扣") == ("kimi-k3", None)
+    # 整行页面文案与中文产品位：剥完为空，丢弃
+    assert sanitize_model_name("参见模型列表") == ("", "整行页面文案，非模型")
+    assert sanitize_model_name("腾讯元器") == ("", "整行页面文案，非模型")
+    # 一行并排两个模型共价：拆开必错一边，整行丢弃
+    assert sanitize_model_name("MiMo-v2.6-Pro、MiMo-v2.5-Pro")[1] is not None
+    # 干净名字原样通过
+    assert sanitize_model_name(" qwen3.8-max ") == ("qwen3.8-max", None)
 
 
 # ---------- report.attach_catalog_discounts ----------

@@ -6,7 +6,7 @@ import { IconChevronRight } from "../icons";
 import { dictToRows, originOf, rowsToText, type KvRow } from "./siteShared";
 import { SettingRow } from "../ui";
 import { HeadersEditor, SubModalFooter } from "./siteModalParts";
-import { ACCESS_VAR, INJECT_TARGETS, type AuthFields, type AuthMode, type InjectRule, type InjectTarget, type RefreshOverride, type RefreshTestResult } from "./siteAuth";
+import { ACCESS_VAR, INJECT_TARGETS, toVariableAuthRule, type AuthFields, type AuthMode, type InjectRule, type InjectTarget, type RefreshOverride, type RefreshTestResult } from "./siteAuth";
 
 /* ---------- 子弹窗：认证与续签 ---------- */
 
@@ -164,10 +164,13 @@ function AuthSubModal({
     mode === "token" && INJECT_TARGETS.some((target) => inject[target].value.includes(REFRESH_VAR))
       ? `「固定令牌」没有 Refresh Token，值里引用 ${REFRESH_VAR} 的规则采集时会报错；要用它就把认证方式换成「登录会话自动续签」`
       : "";
-  // 单框解析与插入判定：解析结果与三处当前值一致才算已插入；头名比较不区分大小写，避免无谓的重复提醒
-  const parsedInject = parseAuthLine(injectBox);
+  // 单框解析与插入判定：解析结果与三处当前值一致才算已插入；头名比较不区分大小写，避免无谓的重复提醒。
+  // 解析出两段式 Bearer 认证头时令牌段自动换成 ${access_token}：写死的令牌续签后没人换，注入值必须引用凭证变量
+  const rawParsedInject = parseAuthLine(injectBox);
+  const parsedInject = rawParsedInject ? toVariableAuthRule(rawParsedInject) : null;
+  const parsedToVariable = parsedInject !== null && rawParsedInject !== null && parsedInject.value !== rawParsedInject.value;
   const injectParseError =
-    injectBox.trim() && !parsedInject ? "按 头名: 值 的格式贴，冒号前是头名，如 Authorization: Bearer eyJ…" : "";
+    injectBox.trim() && !parsedInject ? `按 头名: 值 的格式贴，冒号前是头名，如 Authorization: Bearer ${ACCESS_VAR}` : "";
   const boxApplied =
     parsedInject !== null &&
     INJECT_TARGETS.every(
@@ -469,8 +472,10 @@ function AuthSubModal({
           <div style={{ display: "grid", gap: 8 }}>
             <span style={{ fontSize: 13.5 }}>凭证注入</span>
             <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              决定上面的 token 怎么带进采集请求：把浏览器 F12 里的整行认证头贴到下面，点插入，
-              价格、渠道状态、站点公告三处就都带上了；值里可以用 {ACCESS_VAR} 和 {REFRESH_VAR}，续签换新后自动跟着变
+              决定上面的 token 怎么带进采集请求。推荐直接填 Authorization: Bearer {ACCESS_VAR}
+              （{ACCESS_VAR} 代表上面的凭证，续签换新自动跟上），或把 F12 里的整行认证头贴进来点插入——
+              价格、渠道状态、站点公告三处一起带上，写死的令牌段会自动换成 {ACCESS_VAR}；
+              值里也可以引用 {REFRESH_VAR}，仅「登录会话自动续签」有值
             </span>
             <div style={{ display: "flex", gap: 8 }}>
               <Input
@@ -481,7 +486,7 @@ function AuthSubModal({
                   setInsertedAck(false);
                   setInsertNotice(false);
                 }}
-                placeholder="贴 F12 里的整行认证头，如 Authorization: Bearer eyJ…"
+                placeholder={`推荐 Authorization: Bearer ${ACCESS_VAR}，或贴 F12 里的整行认证头`}
                 style={{ flex: 1, minWidth: 0 }}
               />
               <Btn disabled={!parsedInject} onClick={applyInsert}>
@@ -489,7 +494,13 @@ function AuthSubModal({
               </Btn>
             </div>
             {injectParseError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{injectParseError}</span>}
-            {insertedAck && <span style={{ fontSize: 12, color: "var(--tone-green-text)" }}>已插入到三处，点确定生效</span>}
+            {insertedAck && (
+              <span style={{ fontSize: 12, color: "var(--tone-green-text)" }}>
+                {parsedToVariable
+                  ? `已插入到三处，令牌段换成了 ${ACCESS_VAR}，续签换新自动跟上；点确定生效`
+                  : "已插入到三处，点确定生效"}
+              </span>
+            )}
             {!threeUniform && (
               <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
                 三处当前不一样：想让某处不带认证就在「按目标微调」里清空那一行；要统一就贴整行认证头点插入

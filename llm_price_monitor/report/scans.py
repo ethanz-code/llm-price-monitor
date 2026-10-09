@@ -162,6 +162,9 @@ def _scan_prices(
         site_status[spec.id] = {"checked_at": time.time(), **site_status_from_records(collected)}
         site_changed = 0
         site_keys: set[str] = set()
+        # 本轮真正取到价的 key：分组/模型缺失计数只认真价轮——响应还在但没解析出价的轮次
+        # 也是"没有数据"，同样向摘除阈值累计，过期旧价不得无限期挂在定价页
+        site_priced_keys: set[str] = set()
         # 站点切片标记：本站新增的历史行与事件从这两个下标起，供站内立即落库
         history_mark = len(history_rows)
         events_mark = len(events)
@@ -207,6 +210,7 @@ def _scan_prices(
 
             current["fingerprint"] = fingerprint(current)
             current["captured_at"] = record.captured_at
+            site_priced_keys.add(key)
             records.append(current)
             # 指纹去重：价格口径与上一轮一致就不写历史行，趋势表只保留真实变化点。
             # previous 的指纹现场重算而非读存量哈希——历史行落库时的口径可能比当前代码旧，
@@ -222,13 +226,13 @@ def _scan_prices(
                 site_changed += kind != "unchanged"
             latest[key] = current
             touched_keys.add(key)
-        # 出现"需认证"占位行（401/403）时是我方凭证问题，不代表分组真的下线，
-        # 跳过缺失计数，避免 token 过期把分组刷成下线事件；
-        # 有地址采集失败时本轮记录同样不完整（没采到 ≠ 分组下线），一并跳过；
-        # 测试采集（persist=False）同样不计数——不完整的测试轮次不得污染正式下线阈值
+        # 出现"需认证"占位行（401/403）时是我方凭证问题，不代表站点真的没这份数据，
+        # 跳过缺失计数，避免 token 过期把整站价格刷成下线事件；
+        # 有地址采集失败时本轮记录同样不完整（没采到 ≠ 站点没数据），一并跳过；
+        # 测试采集（persist=False）同样不计数——不完整的测试轮次不得污染正式摘除阈值
         site_removed: set[str] = set()
         if store is not None and persist and not needs_refresh(collected) and not collect_errors:
-            site_removed = _detect_removed_groups(store, latest, spec.id, site_keys, events)
+            site_removed = _detect_removed_groups(store, latest, spec.id, site_priced_keys, events)
             removed_keys |= site_removed
         # 每站采完立即落库：单站卡死被放弃、或整轮中途被重启时，已完成的站点不随内存丢失。
         # 落库范围用站点切片限定（touched ∩ site_keys 恰为本站写过的快照 key），
@@ -254,16 +258,18 @@ def _scan_prices(
     return records, events, errors, site_status
 
 
-# 分组连续缺失这么多次才判定"下线"：站点换分组清单、临时调整常态发生，
-# 短阈值会把改版刷成下线事件；采集间隔 1 小时，6 轮即容忍半天的窗口期
-GROUP_REMOVED_MISSES = 6
+# 连续缺失这么多次才摘除：站点换分组清单、临时调整常态发生，单轮缺失就删会把改版刷成下线事件；
+# 用户口径是数据要跟站点实时对齐——连续 3 轮拿不到数据（约半天内）就把旧价从快照删掉，不长期挂过期价
+GROUP_REMOVED_MISSES = 3
 
 
 def _detect_removed_groups(
-    store: Store, latest: dict[str, dict[str, Any]], site_id: str, seen_keys: set[str], events: list[dict[str, Any]]
+    store: Store, latest: dict[str, dict[str, Any]], site_id: str, priced_keys: set[str], events: list[dict[str, Any]]
 ) -> set[str]:
-    """本轮采集成功的站点里，快照中存在但本轮没出现的分组视为一次缺失：
+    """本轮采集成功的站点里，快照中存在但本轮没取到真实价格的分组视为一次缺失：
     连续 GROUP_REMOVED_MISSES 次缺失记 group_removed 事件并从快照摘除；中途恢复则清零。
+    缺失既包括模型/分组从站点响应里消失，也包括响应还在但没解析出价的轮次
+    （占位行、沿用旧价轮）——两种都算"没有数据"，向同一阈值累计。
     缺失计数持久化到 group_miss 文档，跨轮次累计；返回本轮摘除的快照 key。
     group_miss 是并行采集（全量 + 单站测试）共享的读-改-写文档，全程持 _MERGE_LOCK，
     否则并发轮次会互相丢计数或对同一次下线重复发事件。"""
@@ -273,12 +279,10 @@ def _detect_removed_groups(
         changed = False
         site_prefix = f"{site_id}:"
         for key in [key for key in latest if key.startswith(site_prefix)]:
-            if key in seen_keys:
+            if key in priced_keys:
                 if watch.pop(key, None) is not None:
                     changed = True
                 continue
-            if not _has_price(latest[key]):
-                continue  # 无价占位行不属于"分组下线"
             count = int(watch.get(key) or 0) + 1
             if count >= GROUP_REMOVED_MISSES:
                 previous = latest.pop(key)
@@ -293,7 +297,7 @@ def _detect_removed_groups(
                     "current": None,
                     "detected_at": time.time(),
                 })
-                tasklog.emit(f"[{site_id}] 分组下线：{model}")
+                tasklog.emit(f"[{site_id}] 连续 {GROUP_REMOVED_MISSES} 轮无数据，移除旧价：{model}")
             else:
                 watch[key] = count
             changed = True

@@ -36,7 +36,7 @@ from llm_price_monitor.config import AIConfig
 from llm_price_monitor.catalog import fx
 from llm_price_monitor.catalog.brands import is_hosted_model, is_unbranded, skip_reason
 from llm_price_monitor.catalog.general import is_general_llm
-from llm_price_monitor.catalog.normalize import model_key, round2
+from llm_price_monitor.catalog.normalize import model_key, round2, sanitize_model_name
 from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.page_price import fetch_page_prices, parse_context_limit
 from llm_price_monitor.units import number_or_none
@@ -281,9 +281,16 @@ def refresh_source(store: Any, vendor: str, *, timeout: float, ai_config: AIConf
         _record_fetch(store, vendor, last_fetched_at=time.time(), last_status="failed", last_error=f"抓取失败：{exc}", last_method=None, model_count=0, models=None)
         return {"vendor": vendor, "status": "failed", "error": f"抓取失败：{exc}", "model_count": 0}
     models = result.get("models") or []
-    # 根源过滤：特殊领域模型与日期后缀快照变体（gpt-4o-2024-05-13、qwen3.8-max-0902
-    # 这类）不落库，详情展示、覆盖检测与后续合并都只见通用对话大模型
-    models = [item for item in models if is_general_llm({"model": str(item.get("model") or "")})]
+    # 模型名清洗 + 根源过滤：剥掉页面标注尾巴与整行文案（"kimi-k3上下文缓存享有
+    # 折扣"、"参见模型列表"），再滤掉特殊领域模型与日期后缀快照变体（gpt-4o-2024-05-13、
+    # qwen3.8-max-0902 这类）——不落库，详情展示、覆盖检测与后续合并都只见通用对话大模型
+    cleaned: list[dict[str, Any]] = []
+    for item in models:
+        name, reason = sanitize_model_name(str(item.get("model") or ""))
+        if reason or not is_general_llm({"model": name}):
+            continue
+        cleaned.append({**item, "model": name, "model_key": model_key(name)})
+    models = cleaned
     # 同一告警会因分块/AI 返回重复模型而重复（如小米 asr 列两次），去重后再存
     error = "；".join(dict.fromkeys(result.get("warnings") or [])) or None
     record = _record_fetch(
@@ -436,8 +443,9 @@ def merge_sources_into_catalog(
         for item in fetched:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("model") or "").strip()
-            if not name:
+            # 旧缓存数据未重抓时名字可能还带页面标注尾巴，合并前先清洗
+            name, reason = sanitize_model_name(str(item.get("model") or ""))
+            if reason:
                 continue
             key = model_key(name)
             if not key:
@@ -567,9 +575,10 @@ def merge_sources_into_channel_catalog(
         for item in source.get("models") or []:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("model") or "").strip()
-            # 特殊领域/快照变体不进全量渠道目录（存储层已过滤，这里防旧缓存）
-            if not is_general_llm({"model": name}):
+            # 名字先清洗（防旧缓存里的页面标注尾巴）；特殊领域/快照变体不进全量
+            # 渠道目录（存储层已过滤，这里防旧缓存）
+            name, reason = sanitize_model_name(str(item.get("model") or ""))
+            if reason or not is_general_llm({"model": name}):
                 continue
             key = model_key(name)
             if not key:

@@ -8,7 +8,9 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
-# ai_cache 是整份文档读-改-写，进程内加锁避免并发任务互相覆盖丢条目
+# 整份文档读-改-写（ai_cache / ai_model_limits / ai_thinking_models）进程内加锁，
+# 避免并发任务互相覆盖丢条目：批间 4 路并行 × 站点 4 路并行时，两个线程同时
+# 各学到一个模型的上限/思考标记是真实场景，无锁时后写覆盖先写
 _AI_CACHE_LOCK = threading.Lock()
 
 # 缓存保留：单条结果几 KB 到几十 KB，条目键随页面内容变，旧键自然失效却永远留在文档里；
@@ -98,10 +100,11 @@ class AIStoreMixin:
 
     def save_model_limit(self, model: str, limit: int) -> None:
         """增量记录一个模型学到的 max_tokens 上限：学习事件极低频（每模型至多一次 400），不缓存。"""
-        doc = self.get_document("ai_model_limits")
-        doc = dict(doc) if isinstance(doc, dict) else {}
-        doc[model] = limit
-        self.set_document("ai_model_limits", doc)
+        with _AI_CACHE_LOCK:  # 整档读-改-写，批并行下多线程同时学习不能互相覆盖
+            doc = self.get_document("ai_model_limits")
+            doc = dict(doc) if isinstance(doc, dict) else {}
+            doc[model] = limit
+            self.set_document("ai_model_limits", doc)
 
     def get_thinking_models(self) -> list[str]:
         """已学到思考不可关的模型名（ai_thinking_models 文档）：AI 层启动预载，重启不重学。"""
@@ -110,11 +113,12 @@ class AIStoreMixin:
 
     def remember_thinking_model(self, model: str) -> None:
         """增量记录一个拒收 enable_thinking=false 的模型：学习事件极低频（每模型至多一次 400），不缓存。"""
-        doc = self.get_document("ai_thinking_models")
-        items = [str(name) for name in doc if name] if isinstance(doc, list) else []
-        if model not in items:
-            items.append(model)
-            self.set_document("ai_thinking_models", items)
+        with _AI_CACHE_LOCK:  # 整档读-改-写，批并行下多线程同时学习不能互相覆盖
+            doc = self.get_document("ai_thinking_models")
+            items = [str(name) for name in doc if name] if isinstance(doc, list) else []
+            if model not in items:
+                items.append(model)
+                self.set_document("ai_thinking_models", items)
 
     def _ai_log_retention_days(self, conn: sqlite3.Connection) -> int:
         """AI 日志保留天数：settings.retention_ai_log_days（保存期已校验不小于 1），未配置回默认 7。"""

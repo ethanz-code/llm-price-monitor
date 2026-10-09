@@ -260,6 +260,47 @@ def test_per_site_persist_and_hard_timeout(tmp_path: Path, monkeypatch):
     assert [row["site_id"] for row in report.records] == ["demo"]
 
 
+def test_hard_timeout_releases_slot_so_queued_sites_proceed(tmp_path: Path, monkeypatch):
+    """超时放弃的站点必须把并发槽让给排队站点：并发 1、两个挂死站排前面，整轮仍要跑完、
+    正常站照常落库。回归：挂死线程杀不掉又永久占槽时，排队站点的 result() 无限等待、
+    整轮采集永不结束（4 站同挂即可触发，SSL 抖动批量出现是常态）。"""
+    import threading
+
+    import llm_price_monitor.report.timeouts as timeouts_mod
+
+    def collect(self, spec, *_args):
+        if spec.id == "demo":
+            return [PriceRecord("demo-model", 1.0, 2.0, "USD/1M tokens", "https://demo.test/pricing", 0, {})]
+        time.sleep(30)  # 模拟挂死连接：只会被硬超时掐掉，不会自己返回
+        return []
+
+    config_raw = _config(tmp_path)
+    config_raw["sites"] = [
+        {"id": "stuck-1", "adapter": "standard", "model_list_url": "https://stuck1.test/pricing", "models": ["m1"]},
+        {"id": "stuck-2", "adapter": "standard", "model_list_url": "https://stuck2.test/pricing", "models": ["m2"]},
+        config_raw["sites"][0],
+    ]
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config_raw), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    monkeypatch.setattr("llm_price_monitor.report.SITE_HARD_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(timeouts_mod, "_FETCH_SLOTS", threading.BoundedSemaphore(1))
+    outcome: dict = {}
+
+    def run() -> None:
+        outcome["report"] = run_once(config, store=store, client=httpx.Client())
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(15)
+    # 回归前：stuck-1 被放弃后槽位仍被孤儿线程占住，stuck-2 永远排不到槽，整轮挂死
+    assert not worker.is_alive()
+    assert set(store.latest_all()) == {"demo:demo-model:default"}
+    assert all(outcome["report"].site_status[site]["status"] == "error" for site in ("stuck-1", "stuck-2"))
+
+
 def test_group_whitelist_filters_collected_prices(tmp_path: Path, monkeypatch):
     """站点分组白名单：采集层只保留选中分组的价格记录（分组名忽略大小写，缺分组视为 default）；
     白名单一个分组都匹配不上时防呆保留全量，不把站点采空。"""
@@ -886,6 +927,41 @@ def test_ai_extractor_discards_prices_for_models_missing_from_evidence():
     assert "已作废" in (by_model["ghost-model"].metadata or {}).get("notes", "")
 
 
+def test_ai_extractor_unavailable_result_carries_no_zero_prices():
+    """AI 自报 unavailable 却照提示词模板抄来 0 价时必须清空：模板示例里的 "0" 字符几乎总在
+    证据文本中，数字在证闸门拦不住；0/0 一旦以 candidate 落库，首页"最低价"挑选会把
+    无数据模型渲染成 ¥0 假免费价（DaiTuAI grok-4.7 实测）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "ghost-model",
+                "observed_model": "ghost-model",
+                "input_price": 0,
+                "output_price": 0,
+                "cache_read_price": 0,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "unavailable",
+                "confidence": 0.9,
+                "page_evidence": ["ghost-model"],
+            },
+        ], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("ghost-model"),))
+    records = extractor.extract(
+        spec, "ghost-model",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert records[0].price_status == "unavailable"
+    assert records[0].input_price is None
+    assert records[0].output_price is None
+    assert (records[0].metadata or {}).get("cache_read_price") is None
+
+
 def test_ai_extractor_discards_prices_whose_digits_are_absent_from_evidence():
     """价格数字不在证据文本里时作废：模型名会被残留文案误判存在（DaiTuAI 已下线的 Kimi
     分组描述仍写着 kimi-k3），AI 还会张冠李戴（把 gpt-5.4-mini 的 ¥0.11/¥0.68 安给
@@ -923,6 +999,76 @@ def test_ai_extractor_discards_prices_whose_digits_are_absent_from_evidence():
     assert record.input_price is None
     assert record.output_price is None
     assert "未在证据文本中出现" in (record.metadata or {}).get("notes", "")
+
+
+def test_ai_extractor_keeps_unit_converted_prices():
+    """prompt 要求把每 token 报价换算成每 1M tokens：换算产物不在证据原文里，
+    证据闸按可枚举的单位换算形态放行，不把正确换算价当幻觉作废。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "demo-model",
+                "observed_model": "demo-model",
+                "input_price": 14,
+                "output_price": 68,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "candidate",
+                "confidence": 0.9,
+                "network_evidence": [{"url": "https://demo.test/api/price", "quote": "demo-model 输入 0.000014 元/token"}],
+                "page_evidence": ["demo-model 输出 0.000068 元/token"],
+                "notes": "页面按每 token 报价，已换算为每 1M tokens",
+            },
+        ], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),))
+    records = extractor.extract(
+        spec,
+        "demo-model 单价：输入 0.000014 元/token，输出 0.000068 元/token",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    record = records[0]
+    assert record.input_price == 14
+    assert record.output_price == 68
+    assert "未在证据文本中出现" not in (record.metadata or {}).get("notes", "")
+
+
+def test_ai_extractor_keeps_thousands_separator_prices():
+    """页面写「¥1,400」AI 回 1400：数字形态集补千分位写法，不再误杀。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "demo-model",
+                "observed_model": "demo-model",
+                "input_price": 1400,
+                "output_price": 5600,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "candidate",
+                "confidence": 0.9,
+                "network_evidence": [{"url": "https://demo.test/api/price", "quote": "demo-model 输入 1,400"}],
+                "page_evidence": ["demo-model 输出 5,600"],
+                "notes": "",
+            },
+        ], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),))
+    records = extractor.extract(
+        spec,
+        "demo-model 定价：输入 ¥1,400 输出 ¥5,600 / 1M tokens",
+        [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+          "content_type": "application/json", "payload": {"models": []}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    record = records[0]
+    assert record.input_price == 1400
+    assert record.output_price == 5600
 
 
 _ASSISTANT_TOOLS = [
@@ -1476,9 +1622,12 @@ def test_ai_extract_batch_loop_stops_at_budget(monkeypatch):
     assert "预算" in str(exc_info.value)
 
 
-def test_ai_extract_budget_scales_with_batch_count(monkeypatch):
-    """预算随批次数等比放大：5 模型 2 批 → 2×SITE_AI_BUDGET_SECONDS，第一批正常跑完。"""
+def test_ai_extract_budget_scales_with_batch_waves(monkeypatch):
+    """预算按并行波次折算，不按串行批次数线性放大：2 批在默认 4 路并发下是 1 波（600s），
+    并发压到 1 退回串行口径（2×600s）。串行口径会把预算放大到站点 900s 硬超时之上，
+    硬超时先到就轮不到「超预算保留已完成批次」生效。"""
     import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import extractor as extractor_mod
 
     budget = 600
     monkeypatch.setattr(ai_mod, "SITE_AI_BUDGET_SECONDS", budget)
@@ -1501,16 +1650,54 @@ def test_ai_extract_budget_scales_with_batch_count(monkeypatch):
         id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
         models=tuple(ModelTarget(name) for name in ("m1", "m2", "m3", "m4", "m5")),
     )
+    responses = [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
+                  "content_type": "application/json", "payload": {"models": []}}]
+
+    deadline_seen.clear()
+    extractor.extract(spec, "", responses, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    first = deadline_seen[0] - ai_mod.time.monotonic()
+    assert 0 < first <= budget  # 2 批并行 = 1 波
+
+    monkeypatch.setattr(extractor_mod, "AI_EXTRACT_CONCURRENCY", 1)
+    deadline_seen.clear()
+    extractor.extract(spec, "", responses, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    second = deadline_seen[0] - ai_mod.time.monotonic()
+    assert budget < second <= 2 * budget  # 并发 1 = 串行 2 波
+
+
+def test_ai_extract_budget_capped_under_site_hard_timeout(monkeypatch):
+    """预算封顶在站点硬上限之下：批次数再多也只给 SITE_AI_BUDGET_MAX_SECONDS——
+    站点采集 900s 硬超时先到会把已完成批次连同整站一起丢，封顶才让「保留已完成批次」
+    有机会生效（17 模型 5 批 → 2 波 = 1200s → 封顶 840s）。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "SITE_AI_BUDGET_SECONDS", 600)
+    deadline_seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [], "cross_validation": {"status": "none", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    real_fallback = ai_mod.request_with_model_fallback
+
+    def spy_fallback(*args, **kwargs):
+        deadline_seen.append(kwargs.get("deadline"))
+        return real_fallback(*args, **kwargs)
+
+    monkeypatch.setattr(ai_mod, "request_with_model_fallback", spy_fallback)
+    spec = SiteSpec(
+        id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
+        models=tuple(ModelTarget(name) for name in (f"m{i}" for i in range(17))),
+    )
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret", max_tokens=4000))
     extractor.extract(
         spec, "",
         [{"url": "https://demo.test/api/price", "status": 200, "resource_type": "fetch",
           "content_type": "application/json", "payload": {"models": []}}],
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    # extract 拿 5 个目标模型起 2 个批次，请求入口的 deadline 都是起点 + 2×预算
-    assert len(deadline_seen) >= 1
-    assert deadline_seen[0] - ai_mod.time.monotonic() <= 2 * budget
-    assert deadline_seen[0] - ai_mod.time.monotonic() > budget
+    remaining = deadline_seen[0] - ai_mod.time.monotonic()
+    assert 800 < remaining <= ai_mod.SITE_AI_BUDGET_MAX_SECONDS
 
 
 def test_ai_extract_budget_exhaustion_keeps_completed_batches(monkeypatch):
@@ -2778,7 +2965,7 @@ def test_ai_ping_model_retries_with_thinking_enabled_when_restricted(monkeypatch
 
 
 
-def test_group_removed_event_after_six_misses(tmp_path: Path, monkeypatch):
+def test_group_removed_event_after_miss_threshold(tmp_path: Path, monkeypatch):
     """分组连续 GROUP_REMOVED_MISSES 轮没出现才记 group_removed 并从快照摘除；中途恢复则不报。"""
     groups = {"default", "vip"}
 
@@ -2807,6 +2994,84 @@ def test_group_removed_event_after_six_misses(tmp_path: Path, monkeypatch):
     assert list(store.latest_all()) == ["demo:demo-model:default"]
     removed = next(event for event in store.read_events(limit=10)[0] if event["kind"] == "group_removed")
     assert removed["previous"]["metadata"]["group"] == "vip"
+
+
+def test_zero_price_placeholder_never_entered_snapshot(tmp_path: Path, monkeypatch):
+    """0/0 双零占位行不得进快照：AI 抽不到价照模板抄成 0 时，非 confirmed 的双零行若被当有价入库，
+    会被首页"最低价"挑选选中，把无数据模型渲染成 ¥0 假免费价；confirmed 双零（真免费档）照常入库。"""
+    def collect(*_args):
+        return [
+            PriceRecord("ghost-model", 0, 0, "CNY/1M tokens", "https://demo.test/pricing", 0,
+                        {"group": "default", "pricing_kind": "unavailable"}, "unavailable"),
+            PriceRecord("free-model", 0, 0, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    keys = store.latest_all()
+    assert "demo:ghost-model:default" not in keys
+    assert keys["demo:free-model:default"]["input_price"] == 0
+
+
+def test_legacy_zero_price_row_swept_on_next_persist(tmp_path: Path, monkeypatch):
+    """旧版本落进快照的 0/0 无数据占位行：新口径判无价，下一轮落库时随无价行清扫直接摘除。"""
+    def collect(*_args):
+        return [PriceRecord("demo-model", 1, 2, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.replace_latest({"demo:ghost-model:default": {
+        "site_id": "demo", "model": "ghost-model", "input_price": 0, "output_price": 0,
+        "unit": "CNY/1M tokens", "source_url": "https://demo.test/pricing", "captured_at": 0.0,
+        "metadata": {"group": "default", "pricing_kind": "unavailable"},
+        "price_status": "unavailable", "requires_auth": False,
+    }})
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    keys = store.latest_all()
+    assert "demo:ghost-model:default" not in keys
+    assert "demo:demo-model:default" in keys
+
+
+def test_stale_price_removed_after_consecutive_no_data_rounds(tmp_path: Path, monkeypatch):
+    """连续 GROUP_REMOVED_MISSES 轮"响应还在但没解析出价"同样向摘除阈值累计：
+    阈值内沿用旧价展示，到阈值整行摘除并发 group_removed，过期价不长期挂定价页。"""
+    def placeholder_round():
+        return [PriceRecord("demo-model", None, None, "来源未说明单位", "https://demo.test/pricing", 0,
+                            {"group": "default", "pricing_kind": "unavailable"}, "unavailable")]
+
+    rounds = [[PriceRecord("demo-model", 1, 2, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]]
+    rounds += [placeholder_round() for _ in range(GROUP_REMOVED_MISSES)]
+
+    def collect(*_args):
+        return rounds.pop(0)
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    second = run_once(config, store=store, client=httpx.Client())  # 第 1 轮无数据：沿用旧价
+    assert [event["kind"] for event in second.events] == ["changed"]
+    assert "demo:demo-model:default" in store.latest_all()
+
+    third = run_once(config, store=store, client=httpx.Client())  # 第 2 轮：继续沿用，不重复报事件
+    assert all(event["kind"] == "unchanged" for event in third.events)
+    assert "demo:demo-model:default" in store.latest_all()
+
+    final = run_once(config, store=store, client=httpx.Client())  # 第 3 轮：到阈值，摘除旧价
+    assert [event["kind"] for event in final.events if event["kind"] != "unchanged"] == ["group_removed"]
+    assert "demo:demo-model:default" not in store.latest_all()
 
 
 def _sanity_catalog() -> dict:

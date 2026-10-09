@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconCheck } from "../icons";
 import { apiSend } from "@/lib/api";
 import { looseIncludes } from "@/lib/format";
+import { canonicalModel, catalogModelOrderIndex, modelOrderCompare, type ModelOrderEntry } from "@/lib/modelOrder";
+import { vendorDisplay } from "@/lib/vendorNames";
 import type { CatalogData } from "@/lib/types";
 
 /** 多选下拉的候选项：id 是勾选与标签用的值，note 是右侧的补充说明（模型名/厂商等）。 */
@@ -99,9 +101,9 @@ function TagMultiSelect({
           alignItems: "center",
           width: "100%",
           minHeight: 34,
-          // 已选标签多时框体不无限长高：约四行封顶，内部滚动
-          maxHeight: 138,
-          overflowY: "auto",
+          // 已选标签多时框体不无限长高：约三行封顶，内部滚动；scroll 让滚动条常显，别等溢出才出现
+          maxHeight: 105,
+          overflowY: "scroll",
           padding: "5px 10px",
           borderRadius: 6,
           border: "1px solid var(--border-strong)",
@@ -246,8 +248,9 @@ function TagMultiSelect({
  *  目录外自定义的垫底。 */
 function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
   const [options, setOptions] = useState<MultiOption[] | null>(null);
-  // 模型 id → 厂商顺序号与发布日期：已选清单按与下拉同款规则排序时查用
-  const [orderById, setOrderById] = useState<ReadonlyMap<string, { vendorRank: number; release: string }> | null>(null);
+  // 模型归一键 → 目录排序依据（厂商序+发布日期）：已选清单按与下拉同款规则排序时查用；
+  // 排序口径与模型数据页模型下拉共用（lib/modelOrder），两处看到的顺序一致
+  const [orderById, setOrderById] = useState<ReadonlyMap<string, ModelOrderEntry> | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -255,33 +258,18 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     apiSend<CatalogData>("/api/catalog", "GET")
       .then((data) => {
         if (cancelled) return;
-        const rows = Object.values(data.models ?? {})
-          .filter((entry) => typeof entry.model === "string" && entry.model)
-          .map((entry) => ({
-            id: entry.model,
-            vendor: typeof entry.vendor === "string" ? entry.vendor : "",
-            // 发布日期倒序：新模型排前面；没标日期的垫在本厂商后部
-            release: typeof entry.release_date === "string" ? entry.release_date : "",
-            note: [entry.name ?? "", entry.vendor ?? ""].filter(Boolean).join(" · ") || undefined,
-          }));
-        // 厂商顺序 = 目录里厂商首次出现的顺序：同一家的模型天然挨着
-        const rankByVendor = new Map<string, number>();
-        const orderById = new Map<string, { vendorRank: number; release: string }>();
-        for (const row of rows) {
-          if (row.vendor && !rankByVendor.has(row.vendor)) rankByVendor.set(row.vendor, rankByVendor.size);
-          orderById.set(row.id, { vendorRank: rankByVendor.get(row.vendor) ?? Number.MAX_SAFE_INTEGER, release: row.release });
-        }
-        setOrderById(orderById);
-        const byGroup = (a: { id: string; release: string }, b: { id: string; release: string }) => {
-          const va = orderById.get(a.id)?.vendorRank ?? Number.MAX_SAFE_INTEGER;
-          const vb = orderById.get(b.id)?.vendorRank ?? Number.MAX_SAFE_INTEGER;
-          return va - vb || b.release.localeCompare(a.release) || a.id.localeCompare(b.id);
-        };
+        const index = catalogModelOrderIndex(data.models ?? {});
+        setOrderById(new Map(Object.entries(index)));
+        const compare = modelOrderCompare(index);
         setOptions(
-          rows
-            .map(({ id, release, note }) => ({ id, release, note }))
-            .sort(byGroup)
-            .map(({ id, note }) => ({ id, note })),
+          Object.values(data.models ?? {})
+            .filter((entry) => typeof entry.model === "string" && entry.model)
+            .map((entry) => ({
+              id: entry.model,
+              note: [entry.name ?? "", vendorDisplay(String(entry.vendor ?? ""))].filter(Boolean).join(" · ") || undefined,
+            }))
+            // 同厂商挨在一起、厂商内发布日期倒序、同日期按名称（厂商序取目录首次出现顺序）
+            .sort((a, b) => compare({ key: canonicalModel(a.id), name: a.id }, { key: canonicalModel(b.id), name: b.id })),
         );
       })
       .catch(() => {
@@ -300,7 +288,7 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     (list: string[]) => {
       if (!orderById) return list;
       return list
-        .map((id) => ({ id, ...(orderById.get(id) ?? { vendorRank: Number.MAX_SAFE_INTEGER, release: "" }) }))
+        .map((id) => ({ id, ...(orderById.get(canonicalModel(id)) ?? { vendorRank: Number.MAX_SAFE_INTEGER, release: "" }) }))
         .sort(
           (a, b) =>
             a.vendorRank - b.vendorRank || b.release.localeCompare(a.release) || a.id.localeCompare(b.id),

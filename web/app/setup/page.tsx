@@ -232,7 +232,7 @@ function StepModels({ onDone, onSkip }: { onDone: () => void; onSkip: () => void
         </div>
         <p className="auth-hint">
           输入模型名称（逗号分隔），所有站点统一按此清单采集价格；后续可在「站点管理」顶部调整。
-          亦可跳过：目录每天刷新时会自动把各厂商最新发布的模型加入清单。
+          不想现在选也行：目录每天刷新时会自动把各厂商最新发布的模型加入清单。
         </p>
         <div className="setup-keys-fields">
           <label className="auth-field">

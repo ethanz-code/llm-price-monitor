@@ -17,7 +17,7 @@ from llm_price_monitor.ai import (
 from llm_price_monitor.catalog.normalize import model_key
 from llm_price_monitor.config import AIConfig, PriceMonitorError
 from llm_price_monitor.evidence import clip, redact_text
-from llm_price_monitor.units import number_or_none
+from llm_price_monitor.units import number_or_none, price_digit_forms
 
 from .parsing import detect_currency
 from .tiers import _compose_baseline
@@ -112,15 +112,8 @@ def _split_for_ai(text: str, limit: int) -> list[str]:
 
 
 def _number_in_text(value: float, text: str) -> bool:
-    """价格数字的常见书写形式是否在页面文本中字面出现（与 ai.py 的证据校验同思路）。"""
-    candidates = {str(value), f"{value:g}"}
-    if value == int(value):
-        candidates.add(str(int(value)))
-        candidates.add(f"{int(value):,}")
-    else:
-        candidates.add(f"{value:,.2f}")
-        candidates.add(f"{value:,}")
-    return any(candidate in text for candidate in candidates)
+    """价格数字的常见书写形式是否在页面文本中字面出现（形态集与 ai 抽取的证据闸共用）。"""
+    return any(form in text for form in price_digit_forms(value))
 
 
 _AI_SYSTEM_PROMPT = (

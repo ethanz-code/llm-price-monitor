@@ -483,6 +483,14 @@ def test_settings_roundtrip_and_validation(workspace: Path):
     bad = client.put("/api/settings", json={"ai": {"timeout": "abc"}})
     assert bad.status_code == 400
 
+    # settings 里的 *_secret 字段（mihomo 控制接口密钥）同口径：读回掩码、掩码回传视为未修改
+    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": "real-mihomo-secret"}}).status_code == 200
+    assert client.get("/api/settings").json()["settings"]["proxy_controller_secret"] == "••••cret"
+    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": "••••cret"}}).status_code == 200
+    assert store.get_document("settings")["proxy_controller_secret"] == "real-mihomo-secret"
+    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": None}}).status_code == 200
+    assert not store.get_document("settings").get("proxy_controller_secret")
+
 
 def test_sites_crud_requires_admin_and_validates(workspace: Path):
     client = TestClient(create_app(_config(workspace)))

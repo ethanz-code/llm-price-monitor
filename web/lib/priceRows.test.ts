@@ -51,6 +51,27 @@ describe("lowestPriceRowPerModel", () => {
     const picked = lowestPriceRowPerModel(rows, null);
     expect(picked.map((r) => canonicalModel(r.model))).toEqual(["priced"]);
   });
+
+  it("0/0 双零只有 confirmed（真免费档）算可用价，无数据占位行不入选", () => {
+    const rows = [
+      // 无数据占位行被 AI 照提示词模板抄成 0/0：不能当免费价当选"最低价"（DaiTuAI grok-4.7 实测）
+      row({ model: "ghost", input_price: 0, output_price: 0, price_status: "unavailable" }),
+      // confirmed 双零是真免费档，照常入选
+      row({ model: "free-tier", input_price: 0, output_price: 0 }),
+    ];
+    const picked = lowestPriceRowPerModel(rows, null);
+    expect(picked.map((r) => canonicalModel(r.model))).toEqual(["freetier"]);
+  });
+
+  it("组内同时有真价与 0/0 占位行时，最低价取真价行", () => {
+    const rows = [
+      row({ site_id: "a", model: "demo", input_price: 0, output_price: 0, price_status: "unavailable" }),
+      row({ site_id: "b", model: "demo", input_price: 2, output_price: 8 }),
+    ];
+    const picked = lowestPriceRowPerModel(rows, null);
+    expect(picked).toHaveLength(1);
+    expect(picked[0].site_id).toBe("b");
+  });
 });
 
 describe("orderByReleaseDesc", () => {

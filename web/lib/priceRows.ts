@@ -1,23 +1,26 @@
 /** 价格行的合并规则：OverviewTable 与首页最新快照共用，保证"同站点同模型合并为一行"的口径一致。 */
 
 import { effectiveCnyPrice, effectivePrice } from "./format";
-import { compareByReleaseDesc } from "./modelOrder";
+import { canonicalModel, compareByReleaseDesc } from "./modelOrder";
 import type { OverviewRecord } from "./types";
 
-/** 模型名归一：小写并去掉空格/连字符/下划线（与后端 model_key 同规则，点号保留——
- *  "GLM-5.2" 与 "GLM52" 在后端目录里就是两个键，前端分组不擅自合并）。
- *  不同站点对同一模型的写法经常不同（如 "GPT-5.6 Sol" 与 "gpt-5.6-sol"），归一后才能按语义合并。 */
-export function canonicalModel(model: string): string {
-  return model.toLowerCase().replace(/[\s\-_]+/g, "");
-}
+// 模型名归一（与后端 model_key 同规则，点号保留——"GLM-5.2" 与 "GLM52" 在后端目录里
+// 就是两个键，前端分组不擅自合并）已迁到 modelOrder.ts，这里保留导出给老引用方
+export { canonicalModel } from "./modelOrder";
 
-/** 有效价 = 顶层价格或阶梯档价任一可得；无效行（需认证/无数据）在时间排序中沉底。 */
+/** 有效价 = 顶层价格或阶梯档价任一可得；0/0 双零只有 confirmed（真免费档）算数——
+ *  无数据占位行被 AI 照提示词模板抄成 0 时不得当免费价，否则首页"最低价"会选中 ¥0 行；
+ *  其余无效行（需认证/无数据）在时间排序中沉底。 */
 export function hasUsablePrice(row: OverviewRecord): boolean {
+  if (row.input_price === 0 && row.output_price === 0 && row.price_status !== "confirmed") {
+    return false;
+  }
   return effectivePrice(row, "input_price") != null || effectivePrice(row, "output_price") != null;
 }
 
-/** 首页精选行序：目录口径排序（发布日期倒序，新模型在前），与总览页模型下拉同一套，
- *  目录没收录的模型垫底按名称；行内容仍是每模型全站综合价最低的代表行。 */
+/** 首页精选行序：发布日期倒序（新模型在前），目录没收录的模型垫底按名称；
+ *  模型下拉（监控多选/模型数据页）用厂商分块口径（modelOrder.modelOrderCompare），
+ *  首页是平铺的最新价格流，保持纯发布倒序让新模型顶在最前面。 */
 export function orderByReleaseDesc(
   rows: OverviewRecord[],
   releaseByModel: Record<string, string>,

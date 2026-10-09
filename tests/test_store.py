@@ -473,3 +473,26 @@ def test_thinking_models_document_roundtrip(tmp_path: Path):
     store.remember_thinking_model("glm-5.3")  # 重复学习不重复记录
 
     assert store.get_thinking_models() == ["glm-5.3", "MiniMax-M2.5"]
+
+
+def test_model_limit_concurrent_writes_serialize(tmp_path: Path, monkeypatch):
+    """学习文档写入串行化：整档读-改-写不持锁时，并发学习会互相覆盖丢条目
+    （批间 4 路并行 × 站点 4 路并行下，两个线程同时各学一个上限是真实场景）。"""
+    import threading
+
+    store = Store(tmp_path / "monitor.db")
+    real_get_document = store.get_document
+
+    def slow_get_document(name: str):
+        value = real_get_document(name)
+        if name == "ai_model_limits":
+            time.sleep(0.05)  # 放大读-改-写窗口：让全部线程都读到旧档再写
+        return value
+
+    monkeypatch.setattr(store, "get_document", slow_get_document)
+    threads = [threading.Thread(target=store.save_model_limit, args=(f"m{i}", 1000 + i)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert store.get_model_limits() == {f"m{i}": 1000 + i for i in range(4)}

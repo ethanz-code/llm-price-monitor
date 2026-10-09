@@ -472,7 +472,7 @@ def test_refresh_and_merge_updates_record_and_catalog(tmp_path: Path, monkeypatc
 
 
 def test_refresh_source_filters_specials_and_snapshots_at_storage(tmp_path: Path, monkeypatch):
-    """根源过滤：抓取结果里的特殊领域模型与日期后缀快照变体不落库，通用模型照常保存。"""
+    """根源过滤：页面标注尾巴清洗、整行文案与并排共价行丢弃，特殊领域模型与日期后缀快照变体不落库。"""
     store = Store(tmp_path / "monitor.db")
     upsert_source(store, "Alibaba Cloud", "https://help.aliyun.com/zh/model-studio/models")
 
@@ -485,13 +485,42 @@ def test_refresh_source_filters_specials_and_snapshots_at_storage(tmp_path: Path
             # 特殊领域：语音合成与角色扮演
             {"model": "qwen3-tts-flash", "input_price": None, "output_price": 2.0, "currency": "CNY"},
             {"model": "qwen-flash-character", "input_price": 0.5, "output_price": 1.5, "currency": "CNY"},
+            # 万相媒体生成：按名字拦
+            {"model": "wan2.7-t2v", "input_price": 1.0, "output_price": 4.0, "currency": "CNY"},
+            # 页面标注尾巴：剥掉还原成模型 id 后照常落库
+            {"model": "kimi-k3上下文缓存享有折扣", "input_price": 20.0, "output_price": 100.0, "currency": "CNY"},
+            # 整行页面文案与一行并排多模型共价：丢弃
+            {"model": "参见模型列表", "input_price": None, "output_price": None, "currency": "CNY"},
+            {"model": "MiMo-v2.6-Pro、MiMo-v2.5-Pro", "input_price": 1.0, "output_price": 4.0, "currency": "CNY"},
         ]}
 
     monkeypatch.setattr(vs, "fetch_page_prices", fake_fetch)
     summary = refresh_source(store, "Alibaba Cloud", timeout=5, ai_config=None)
-    assert summary["status"] == "ok" and summary["model_count"] == 1
+    assert summary["status"] == "ok" and summary["model_count"] == 2
     stored = vs.load_sources(store)["Alibaba Cloud"]["models"]
-    assert [item["model"] for item in stored] == ["qwen3.8-max"]
+    assert [item["model"] for item in stored] == ["qwen3.8-max", "kimi-k3"]
+    assert [item["model_key"] for item in stored] == ["qwen3.8max", "kimik3"]
+
+
+def test_merge_cleans_stale_cache_names_and_blocks_media(tmp_path: Path):
+    """合并防御：旧缓存里的页面标注尾巴清洗后再合并，万相媒体模型不进任何目录。"""
+    store = Store(tmp_path / "monitor.db")
+    upsert_source(store, "Alibaba Cloud", "https://help.aliyun.com/zh/model-studio/model-pricing")
+    vs._record_fetch(store, "Alibaba Cloud", last_fetched_at=1.0, last_status="ok", last_error=None,
+                     last_method="static-md", model_count=3, models=[
+                         {"model": "qwen3.8-max上下文缓存享有折扣", "input_price": 12.0, "output_price": 36.0, "currency": "CNY"},
+                         {"model": "wan2.7-t2v", "input_price": 1.0, "output_price": 4.0, "currency": "CNY"},
+                         {"model": "deepseek-v4-pro正式版", "input_price": 9.0, "output_price": 27.0, "currency": "CNY"},
+                     ])
+    sources = load_sources(store)
+    merged, _summary = merge_sources_into_catalog({"usd_cny_rate": 7.0, "models": {}}, sources, 7.0)
+    # qwen 清洗后进官方目录；deepseek 是托管他厂模型被品牌闸门拦；万相媒体模型被准入拦
+    assert set(merged["models"]) == {"qwen3.8max"}
+    assert merged["models"]["qwen3.8max"]["model"] == "qwen3.8-max"
+    full_merged, _summary = merge_sources_into_channel_catalog({"usd_cny_rate": 7.0, "models": {}}, sources, 7.0)
+    # 全量渠道目录：qwen 与托管的 deepseek 都在（干净名），万相不进
+    assert set(full_merged["models"]) == {"alibabacloud:qwen3.8max", "alibabacloud:deepseekv4pro"}
+    assert full_merged["models"]["alibabacloud:deepseekv4pro"]["model"] == "deepseek-v4-pro"
 
 
 def test_merge_skips_specials_and_snapshots_from_stale_cache(tmp_path: Path):

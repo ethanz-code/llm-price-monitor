@@ -89,6 +89,18 @@ def masked_ai(doc: dict[str, Any] | None) -> dict[str, Any]:
     return ai
 
 
+def masked_settings(doc: dict[str, Any] | None) -> dict[str, Any]:
+    """settings 文档的响应视图：*_secret 字段（mihomo 控制接口密钥等）替换为掩码。
+
+    持有控制接口密钥可切换整台机器的代理出口，与 AI 密钥同口径：完整值不出后端。
+    """
+    masked = dict(doc or {})
+    for key, value in list(masked.items()):
+        if str(key).endswith("_secret") and isinstance(value, str) and value:
+            masked[key] = mask_api_key(value)
+    return masked
+
+
 def track_monitor_model_removals(store: Store, incoming: dict[str, Any]) -> None:
     """保存监控清单时记录被移除的模型（monitor_models_dismissed）：
     目录刷新自动补模型时跳过它们，否则手动删掉的模型下轮又会被加回来。"""
@@ -112,14 +124,26 @@ def merge_ai_preserving_mask(stored: dict[str, Any] | None, incoming: dict[str, 
     return {**(stored or {}), **incoming}
 
 
+def merge_settings_preserving_mask(stored: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    """合并 settings：*_secret 入参等于当前掩码时视为「未修改」换回库中完整值；null/空串表示清除。"""
+    incoming = dict(incoming)
+    for key in list(incoming):
+        if not str(key).endswith("_secret"):
+            continue
+        stored_value = str((stored or {}).get(key) or "")
+        if stored_value and incoming.get(key) == mask_api_key(stored_value):
+            incoming[key] = stored_value
+    return {**(stored or {}), **incoming}
+
+
 def build_router(store: Store) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/settings")
     def get_settings() -> dict[str, Any]:
-        """管理员读取系统设置（AI / 通知等）；api_key 只回掩码，完整密钥不出后端。"""
+        """管理员读取系统设置（AI / 通知等）；api_key 与 *_secret 只回掩码，完整密钥不出后端。"""
         return {
-            "settings": store.get_document("settings") or {},
+            "settings": masked_settings(store.get_document("settings")),
             "ai": masked_ai(store.get_document("ai")),
         }
 
@@ -142,7 +166,7 @@ def build_router(store: Store) -> APIRouter:
             if body.settings is not None:
                 if "monitor_models" in body.settings:
                     track_monitor_model_removals(store, body.settings)
-                merged = {**(store.get_document("settings") or {}), **body.settings}
+                merged = merge_settings_preserving_mask(store.get_document("settings"), body.settings)
                 settings_from_raw(merged, resolve_env=False)
                 if "schedule" in merged:
                     schedule_from_raw(merged["schedule"])  # 调度间隔校验：非法输入 400

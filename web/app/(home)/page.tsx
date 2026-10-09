@@ -318,7 +318,7 @@ export default async function LandingPage() {
   const parentRows = orderByReleaseDesc(lowestPriceRowPerModel(records, rate), releaseByModel);
 
   // bento 小卡微缩示例的数据（全部真实数据，缺席时对应示例不渲染）：
-  // 调价 diff 取最近一条带新旧输入价的调价事件；探测色块取检测数据最多的站点；折扣取最新发布模型的行
+  // 调价 diff 取最近一条带新旧输入价的调价事件；探测色块每次刷新随机取一个有检测数据的站点；折扣取最新发布模型的行
   const demoEvent =
     (feed?.events ?? []).find(
       (event): event is EventRow =>
@@ -327,9 +327,9 @@ export default async function LandingPage() {
   const demoEventSite = demoEvent
     ? getSiteInfo(demoEvent.site_id, demoEvent.current?.source_url ?? demoEvent.previous?.source_url).name
     : null;
-  const demoBucketSite = [...sites].sort(
-    (a, b) => (bucketsBySite[b.id]?.length ?? 0) - (bucketsBySite[a.id]?.length ?? 0),
-  )[0];
+  // 只取色块够画（≥2 桶）的启用站随机挑一个：force-dynamic 下每次请求重渲染，刷新即换示例
+  const demoBucketCandidates = sites.filter((site) => site.enabled && (bucketsBySite[site.id]?.length ?? 0) >= 2);
+  const demoBucketSite = demoBucketCandidates[Math.floor(Math.random() * demoBucketCandidates.length)] ?? null;
   const demoBuckets = demoBucketSite ? (bucketsBySite[demoBucketSite.id] ?? null) : null;
   const demoBucketName = demoBucketSite ? getSiteInfo(demoBucketSite.id, demoBucketSite.sourceUrl).name : null;
   const demoDiscount = parentRows[0]?.discount ?? null;

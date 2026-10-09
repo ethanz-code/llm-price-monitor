@@ -10,6 +10,7 @@ import { VendorBadge } from "./CatalogTable";
 import { formatCount, formatIsoMinute, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import { useNarrow } from "@/lib/useNarrow";
+import { vendorDisplay } from "@/lib/vendorNames";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
 interface Row extends CatalogEntry {
@@ -36,7 +37,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true))
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${vendorDisplay(row.vendor)} ${row.name ?? ""}`, lower) : true))
       .sort(
         (a, b) =>
           vendorOrder(a.vendor, b.vendor) ||
@@ -53,7 +54,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
           <VendorBadge vendor={v} logo={row.logo} />
-          {v}
+          {vendorDisplay(v)}
         </span>
       ),
     },
@@ -182,11 +183,11 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
                 }}
               >
                 <VendorBadge vendor={row.vendor} logo={row.logo} />
-                {row.vendor}
+                {vendorDisplay(row.vendor)}
               </span>
               <span
                 className="mono"
-                title={row.name ? `${row.name}（${row.vendor}）` : row.model}
+                title={row.name ? `${row.name}（${vendorDisplay(row.vendor)}）` : row.model}
                 style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
               >
                 {row.model}

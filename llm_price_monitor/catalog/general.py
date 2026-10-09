@@ -25,7 +25,17 @@ _NAME_BLOCK_SUBSTR = (
 _NAME_BLOCK_TOKENS = frozenset({
     "role", "translation", "vision", "vl", "asr", "tts", "speech",
     "video", "image", "realtime", "voice", "live", "h3",
+    # 媒体生成产品线的形态标记（国内定价页普遍不标 modalities，只能靠名字拦）：
+    # 文生图 t2i、图生图 i2i、文生视频 t2v、图文生视频 it2v、图生视频 i2v、
+    # 参考图生视频 r2v、首尾帧生视频 kf2v、通用视频生成 text2video，
+    # 以及定向能力档（万相 vace、意图识别 intent、会话分析 analysis）
+    "t2i", "i2i", "t2v", "it2v", "i2v", "r2v", "kf2v", "vace",
+    "text2video", "intent", "analysis",
 })
+
+# 万相系生图/视频模型（wan2.7-t2v、wanx2.1-t2i-plus、wanx-v1）：整族都是媒体
+# 生成，名字前缀一刀切，不依赖形态标记凑齐
+_WAN_MEDIA_PREFIX = re.compile(r"^wan(?:x)?(?:\d|-)")
 
 # 日期后缀快照变体（对 casefold 后的名字做行尾匹配）：
 # - 2025-11-17 全日期 / 20240620 全数字全日期
@@ -55,6 +65,8 @@ def is_general_llm(entry: dict[str, Any]) -> bool:
         return False
     tokens = {token for token in re.split(r"[-_. ]+", name) if token}
     if tokens & _NAME_BLOCK_TOKENS:
+        return False
+    if _WAN_MEDIA_PREFIX.match(name):
         return False
     if _DATE_SUFFIX.search(name):
         return False

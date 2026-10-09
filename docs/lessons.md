@@ -9,7 +9,7 @@
 | 401 / 403 / WAF / Cookie / Cloudflare / 认证 / 登录态 | 本页 §1 + Serena 记忆 `dom_url_auth_constraint` |
 | 代理 / 出口 / Clash / 境外站 / 超时 / TLS 掐断 | 本页 §1 |
 | AI 输出截断 / max_tokens / 助手 token 爆炸 | 本页 §2 |
-| 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 | 本页 §3 |
+| 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 / ¥0 / 假免费 / 最低价 / 旧价不更新 | 本页 §3 |
 | 骨架屏 / 暗色 / 表格 / 窄屏 / 响应式 | 本页 §4 |
 | panic / char boundary / code-frame / dev 半死 / 改文件不生效 | 本页 §4 |
 | Docker / 构建 / 回滚 / APP_TAG / 端口 | 本页 §5 |
@@ -46,6 +46,7 @@
 | 换模型回退逻辑三处拷贝，改一处漏两处 | 合并为一套 helper | 提交 eccba2d |
 | 供应商报错天书，思考受限模型直接失败 | 错误可读化 + 自动换参重试 | 提交 3387d6a |
 | 助手单次提问 token 爆炸 | 数据摘要瘦身，消耗降约 88% | 提交 d2f626e |
+| 提示词模板示例值会被 AI 照抄：输出结构示例写 `"input_price": 0`，AI 抽不到价就把 0 抄进结果，而 "0" 字符几乎总在证据文本里，数字在证闸门拦不住；0/0 占位行以 candidate 落库后被前端最低价挑选选中，首页把无数据模型渲染成 ¥0 假免费价（DaiTuAI grok-4.7 等 10 条实测） | 模板示例值一律写 null 不写 0；AI 自报 unavailable 时在状态推导链之前强制清空价格/缓存价/pricing_rules；写 prompt 示例时先问"这个值被照抄了会怎样" | extractor.py unavailable 清价分支 |
 | AI 调用失败还扣每日次数 | 失败不扣次数 | 提交 2f6487b |
 
 ## 3. 价格与目录口径
@@ -62,6 +63,7 @@
 | AI 抽取轮次间表示法漂移：tier 里 `cache_create_price: null` 下一轮直接省略键，指纹当成两种价格，有效价一分没变也刷"变更"事件（DaiTuAI 一轮四连假事件，用户点名） | fingerprint 归一"空"的两种写法：dict 里 None 值键剔除与键缺失等价；有值↔缺失仍算真变更。凡跨轮比较的结构都要做同类归一 | report.py `fingerprint`；存量清理 `uv run price-admin prune-noop-events`（默认预览，--apply 才删） |
 | 厂商页「输入（命中缓存）/未命中/输出」三列表被 AI 抽错位：缓存命中价当成输入价（小米 mimo 官方价错 100 倍，站点折扣全被算成 40–60 倍，用户点名）；证据校验又被"0.036 包含 0.03"子串误匹配放行 | prompt 明确列对号规则（命中缓存进 cache_read、输入必取未命中列）+ 拆行规则；合并目录时加与既有基准的 0.01–20 倍偏差闸门（candidate 基准不受保护，留纠错通道） | ai_fallback.py `_AI_SYSTEM_PROMPT`；vendor_sources.py `_source_deviation_violation` |
 | 站点价合理性校验一轮就作废：官方价目录自身带错时真数据被误标"无数据"（AIHub365 案，用户点名） | 改两轮确认：首轮异常只挂 `metadata.sanity_suspect` 标记、价格照常展示，下轮复现才作废；作废不沿用可疑旧价 | pricing.py `_apply_price_sanity`；scans.py 作废分支 |
+| 0 被当成有效价贯穿全链路：`_has_price` 只判 `is not None`，0/0 双零占位行入库绕过"无价行不进快照"设计；前端 `hasUsablePrice`/最低价挑选同样不防 0，¥0 假免费价上首页。**判"有没有价"必须带 price_status 语义：0/0 只有 confirmed（真免费档）算数**；且旧价不能无限沿用——连续 3 轮无数据（响应缺席或解析不出价）就从快照摘除旧价发 group_removed（用户点名要实时，需认证/采集失败的整轮除外，那是我方问题） | pricing.py `_has_price`；scans.py `GROUP_REMOVED_MISSES = 3`；web/lib/priceRows.ts `hasUsablePrice`；存量 0/0 行由落库层无价行清扫自动摘除，无需手工清库 |
 
 ## 4. 前端
 
