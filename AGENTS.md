@@ -6,6 +6,7 @@
 - 部署/运维：docs/deploy/ai-runbook.md（事实卡、红线、故障速查）+ docs/deploy/docker-compose.md
 - 服务器现状档案（域名/证书/1Panel 站点/出口 IP，敏感不入公开仓库）：~/workspace/docs/私人资料/服务器/，部署到线上时与本项目 runbook 配套读
 - 采集与价格口径：docs/pricing.md；认证/反爬实测坑：Serena 记忆 `dom_url_auth_constraint`
+- 站点导入/编辑与渠道筛选口径：docs/sites.md（含 AI 浏览器代办 SOP）
 - UI 规范：docs/design-guide.md
 - 历史踩坑速查：docs/lessons.md（动手前先翻，别重踩）
 

@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { JsonLd } from "@/components/JsonLd";
 import { PageHeader } from "@/components/PageHeader";
-import { articleExcerpt, getArticle, getArticles } from "@/lib/articles";
+import { getArticle, getArticles } from "@/lib/articles";
 import { site } from "@/lib/copy";
 import { pageMetadata, siteOrigin } from "@/lib/seo";
 
@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const { slug } = await params;
   const article = getArticle(slug);
   if (!article) return {};
-  return pageMetadata(article.title, articleExcerpt(article, 80), `/articles/${article.slug}`);
+  return pageMetadata(article.title, article.subtitle, `/articles/${article.slug}`);
 }
 
 /** 外链新窗口打开，站内链接（/articles/...）原窗跳转 */
@@ -69,7 +69,7 @@ export default async function ArticlePage({ params }: { params: Promise<{ slug: 
           "@context": "https://schema.org",
           "@type": "Article",
           headline: article.title,
-          description: articleExcerpt(article, 80),
+          description: article.subtitle,
           datePublished: article.date,
           inLanguage: "zh-CN",
           mainEntityOfPage: `${origin}/articles/${article.slug}`,

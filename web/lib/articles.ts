@@ -2,8 +2,8 @@
  * 文章内容集中地：正文是 web/content/articles/<slug>.md 的 Markdown 文件，
  * 这里只负责加载与解析（frontmatter + 正文），页面用 react-markdown 渲染。
  * frontmatter 字段：title / subtitle / date；slug 取文件名。新增文章零配置。
- * 写作口径：新闻特稿腔，事实带出处，不喊口号不排比，段落长短错落；
- * 摘要不单独维护，见 articleExcerpt。
+ * 写作口径：像跟读者对话，事实带出处，不喊口号不排比；subtitle 就是对外的描述，
+ * 列表卡片、SEO metadata、结构化数据都用它，不单独维护摘要。
  *
  * 读取走 getArticles()（react cache 单请求去重）而不是模块级常量：
  * md 文件不在模块依赖图里，模块级求值会让 dev 模式下改 md 不生效（HMR 感知不到），
@@ -61,17 +61,4 @@ export const getArticles = cache((): Article[] =>
 
 export function getArticle(slug: string): Article | undefined {
   return getArticles().find((item) => item.slug === slug);
-}
-
-/** 摘要不单独维护：取正文首个段落，剥掉行内标记后按字数截断 */
-export function articleExcerpt(article: Article, max = 76): string {
-  const first = article.content
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .find((block) => block && !block.startsWith("#") && !block.startsWith("-") && !block.startsWith(">"));
-  const plain = (first ?? "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/`([^`]+)`/g, "$1");
-  return plain.length > max ? `${plain.slice(0, max)}……` : plain;
 }

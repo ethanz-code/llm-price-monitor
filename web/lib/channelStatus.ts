@@ -125,6 +125,23 @@ const STATUS_KEYS = ["status", "state", "health"];
 const NAME_KEYS = ["name", "channel", "model", "model_name", "id", "title", "key"];
 /** 纯容器键名：可以递归进入，但不能当作渠道名回退 */
 const FALLBACK_NAME_KEYS = new Set(["items", "channels", "data", "list", "models", "services", "result", "results"]);
+/** 非对话渠道关键词：生图与生视频渠道没有对话可用性可言，混进来既占渠道位又稀释可用率；
+ *  站点状态页只看对话/文本模型。通用词（图像/视频/image/video）之外，
+ *  按真实渠道名与主流生图/生视频模型名校准（sora/veo/kling/海螺……），站点换新模型名时往这里加。
+ *  注意别收过宽的词根：「seed」会误伤豆包 seed 文本模型，「wan」会误伤无关词，只收完整模型族名。 */
+const NON_CHAT_CHANNEL_WORDS = [
+  // 生图
+  "图像", "生图", "画图", "绘图", "绘画", "image", "flux", "midjourney", "dall",
+  // 生视频
+  "视频", "video", "veo", "sora", "seedance", "seedence", "kling", "可灵", "hailuo", "海螺",
+  "vidu", "runway", "pika", "luma", "pixverse", "即梦", "jimeng", "万相", "wanx", "t2v", "i2v",
+];
+
+/** 渠道名是否为生图/生视频渠道（关键词命中，忽略大小写）。 */
+function isNonChatChannel(name: string): boolean {
+  const lower = name.toLowerCase();
+  return NON_CHAT_CHANNEL_WORDS.some((word) => lower.includes(word));
+}
 /** 历史序列键名：不作为独立渠道递归，而是并成所属渠道的检测点 */
 const TIMELINE_KEYS = new Set(["timeline", "history", "checks", "events", "logs", "log", "uptime"]);
 const TIME_KEYS = ["checked_at", "checkedAt", "checked", "timestamp", "detected_at", "time", "at", "ts"];
@@ -259,7 +276,7 @@ function collectChannels(node: unknown, fallback: string | null, depth: number, 
       availability7d: availabilityPct(obj.availability_7d, obj.availability),
       dots: [{ status, ok: isUp(status), latency: findLatency(obj) }],
     };
-    out.push(own);
+    if (!isNonChatChannel(own.name)) out.push(own);
   } else {
     // 指标型条目：没有状态词，用数值成功率表达健康度（如 AIHub365 perf-metrics 的模型列表）。
     // 24h 汇总只是均值，最近一轮才接近“现在”，当前状态取最近一轮，汇总留给展示列；
@@ -282,7 +299,7 @@ function collectChannels(node: unknown, fallback: string | null, depth: number, 
         successRate24h: summaryRate,
         recentRates: rounds.length > 0 ? rounds : undefined,
       };
-      out.push(own);
+      if (!isNonChatChannel(own.name)) out.push(own);
     }
   }
   if (depth > 0) {

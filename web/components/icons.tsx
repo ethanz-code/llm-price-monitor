@@ -269,3 +269,39 @@ export function IconMail(p: IconProps) {
     </Stroke>
   );
 }
+
+export function IconMegaphone(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="m3 11 18-5v12L3 14v-3z" />
+      <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" />
+    </Stroke>
+  );
+}
+
+export function IconActivity(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </Stroke>
+  );
+}
+
+export function IconPercent(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="M19 5 5 19" />
+      <circle cx={6.5} cy={6.5} r={2.5} />
+      <circle cx={17.5} cy={17.5} r={2.5} />
+    </Stroke>
+  );
+}
+
+export function IconTag(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8Z" />
+      <circle cx={7} cy={7} r={0.8} fill="currentColor" stroke="none" />
+    </Stroke>
+  );
+}

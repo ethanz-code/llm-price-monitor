@@ -2,8 +2,9 @@
 
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { toast, Btn, Check, Empty, Modal, Switch, Skel, LoadingRows } from "./ui";
+import { IconActivity, IconMegaphone, IconPercent, IconTag } from "./icons";
 import { DajuSit } from "./DajuArt";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
@@ -208,17 +209,21 @@ export function AdminSites() {
     {
       key: "id",
       title: "站点",
-      // 站点名 + 公告/状态/倍率标注 + 报错图标的最小实宽，窄了标签会把名字挤换行
+      // 站点名 + 公告/状态/倍率图标 + 报错图标的最小实宽，窄了会把名字挤换行
       width: 230,
       render: (_value, row) => {
-        const site = getSiteInfo(row.id, typeof row.network?.url === "string" ? row.network.url : undefined);
-        // 已开启的扩展接口小标注：公告/渠道状态/倍率，扫一眼就知道每个站点配了哪些采集
-        const extraMarks: { label: string; tip: string }[] = [];
-        if (typeof row.notice?.url === "string" && row.notice.url) extraMarks.push({ label: "公告", tip: `站点公告：${row.notice.url}` });
-        if (typeof row.status?.url === "string" && row.status.url) extraMarks.push({ label: "状态", tip: `渠道状态：${row.status.url}` });
+        const priceUrl = typeof row.network?.url === "string" ? row.network.url : "";
+        const site = getSiteInfo(row.id, priceUrl || undefined);
+        // 采集范围小图标：价格/公告/渠道状态/倍率，扫一眼就知道每个站点配了哪些采集
+        const extraMarks: { label: string; tip: string; icon: ReactNode }[] = [];
+        if (priceUrl) extraMarks.push({ label: "价格", tip: `价格采集：${priceUrl}`, icon: <IconTag size={13} /> });
+        if (typeof row.notice?.url === "string" && row.notice.url)
+          extraMarks.push({ label: "公告", tip: `站点公告：${row.notice.url}`, icon: <IconMegaphone size={13} /> });
+        if (typeof row.status?.url === "string" && row.status.url)
+          extraMarks.push({ label: "状态", tip: `渠道状态：${row.status.url}`, icon: <IconActivity size={13} /> });
         if (typeof row.network?.ratio_url === "string" || (row.network?.ratio_url && typeof row.network.ratio_url === "object")) {
           const ratio = ratioUrlText(row);
-          if (ratio) extraMarks.push({ label: "倍率", tip: `倍率接口：${ratio}` });
+          if (ratio) extraMarks.push({ label: "倍率", tip: `倍率接口：${ratio}`, icon: <IconPercent size={13} /> });
         }
         const nameNode = (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
@@ -226,11 +231,12 @@ export function AdminSites() {
               {site.name}
             </span>
             {extraMarks.length > 0 && (
-              <span
-                title={extraMarks.map((mark) => mark.tip).join("\n")}
-                style={{ flexShrink: 0, fontSize: 11.5, color: "var(--text-3)", whiteSpace: "nowrap" }}
-              >
-                {extraMarks.map((mark) => mark.label).join("·")}
+              <span style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, color: "var(--text-3)" }}>
+                {extraMarks.map((mark) => (
+                  <span key={mark.label} title={mark.tip} aria-label={`已配置${mark.label}采集`} style={{ display: "inline-flex" }}>
+                    {mark.icon}
+                  </span>
+                ))}
               </span>
             )}
             {/* 三类采集最近一次的异常：红=失败，黄=需认证/没抓到数据；停用站点不提示 */}

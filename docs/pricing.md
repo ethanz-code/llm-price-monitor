@@ -275,7 +275,7 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 | --- | --- |
 | `id` | 站点标识 |
 | `adapter` | 采集方式，只有 `standard`；旧值 `browser` / `network` / `rate_base` 载入时自动归一为 `standard`（rate_base 双地址退化为单地址） |
-| `models` | 目标模型名字符串数组；俗称由 AI 从接口响应自动解析 |
+| `models` | 已废弃：目标模型统一在「检测模型」（`settings.monitor_models`）配置，站点级字段加载时静默丢弃 |
 | `network.url` | 价格接口完整 URL |
 | `network.ratio_url` | 可选倍率接口，返回 `{pricing: [{provider, model_display, rate}]}`；命中内嵌基准价表后按 实售价 = 基准价(USD) × rate 折算（模型级倍率优先，缺失回退厂商级），输出人民币（CNY） |
 | `network.params` / `network.headers` | 请求细节；header 值支持 `${ENV_VAR}` 展开 |
@@ -287,8 +287,9 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 
 ### 检测清单与站点维护
 
-- 检测哪些模型在站点管理页顶部「检测模型」统一配置（`settings.monitor_models`），所有站点共用一份；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，AI 提取模式让 AI 抽取页面上每个模型——大站会超出 AI 输入上限，慎用）。清单平时不用手动追新：目录刷新自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭）；手动删掉的模型不会再被自动加回。
+- 检测哪些模型在站点管理页顶部「检测模型」统一配置（`settings.monitor_models`），所有站点共用一份；通配符 `*` 全量采集已移除，配置校验直接报错，只收明确模型清单。清单平时不用手动追新：目录刷新自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭）；手动删掉的模型不会再被自动加回。
 - 存量站点配置想一次整理成当前结构（瘦身＋认证收口）：`uv run price-admin tidy-sites`。
+- 新站导入入口、站点编辑弹窗导览与「只采官方共享渠道」的渠道筛选口径见 [sites.md](sites.md)。
 - 站点配置支持整份迁移：站点管理页可导出全部站点为 JSON 文件（含凭证，注意保管），导入时逐个确认同名冲突。
 
 ### 站点认证与续签

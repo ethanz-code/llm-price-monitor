@@ -1,10 +1,11 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { JsonLd } from "@/components/JsonLd";
-import { articleExcerpt, getArticles } from "@/lib/articles";
+import { getArticles } from "@/lib/articles";
 import { pageMetadata, siteOrigin } from "@/lib/seo";
 
 /** 文章资讯列表页：不设可见页头（与数据列表页一致），只放卡片索引；正文在 /articles/<slug>。
+ *  卡片描述直接用 frontmatter 的 subtitle，列表与 SEO 一个口径。
  *  附 ItemList 结构化数据，让搜索与 AI 摘要拿到全部篇目。 */
 
 export const metadata: Metadata = pageMetadata(
@@ -31,7 +32,7 @@ export default async function ArticlesPage() {
             position: index + 1,
             name: item.title,
             url: `${origin}/articles/${item.slug}`,
-            description: articleExcerpt(item, 80),
+            description: item.subtitle,
           })),
         }}
       />
@@ -43,7 +44,7 @@ export default async function ArticlesPage() {
                 <h2>{item.title}</h2>
                 <span className="article-meta mono num">{item.date}</span>
               </div>
-              <p>{articleExcerpt(item)}</p>
+              <p>{item.subtitle}</p>
               <span className="landing-more">阅读全文 →</span>
             </Link>
           ))}

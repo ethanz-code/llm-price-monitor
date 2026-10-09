@@ -24,7 +24,7 @@
 | AI 张冠李戴：给页面上不存在的模型安上别的模型的真价（DaiTuAI 把 gpt-5.4-mini 的 ¥0.11/¥0.68 安给 step-3.5-flash，还过了 confirmed 校验）；模型名匹配也会被残留文案误判（已下线 Kimi 分组的 i18n 描述仍写着 kimi-k3，名字在证据但价格不存在） | 名字在证据 + 价格数字在证据双闸（数字以系统侧证据原文为准，AI 事后补写的引用不算自证）；数字形态补 JS 省前导零写法（.7）避免误杀；本轮没采到的价由快照沿用机制兜底，页面价格不闪没 | 提交见 git log |
 | 传输错误正则漏了 DNS 解析失败（`[Errno 8] nodename nor servname` 不含 connection/timeout 字样），本机网络瞬断的 warn 刷进异常卡片 | `_TRANSPORT_ERROR_RE` 补 nodename/getaddrinfo/name or service not known | 提交见 git log |
 | httpx 直采没有浏览器环境，DOM 页必须免登录；认证要显式配 headers/token_refresh | 无头浏览器是例外分支（`network.headless.enabled`），注入 Cookie/localStorage 后渲染再解析 | Serena 记忆；`browser_fetch.py` |
-| new-api 系站点 401：光有 Cookie 不够，还要 `New-Api-User` 头；Cookie 只挂公告 headers 时全站采不到 | Cookie 提升到站点级 `network.headers` 共享 | Serena 记忆 |
+| new-api 系站点 401：光有 Cookie 不够，还要 `New-Api-User` 头；Cookie 只挂公告 headers 时全站采不到 | 共享落点是**站点级 `request_headers`**（站点对象顶层，三腿共用）；`network.headers` 只有公告腿显式读（notice.py `_site_headers`），状态/价格腿不认——2026-10-07 A/B 实测 network.headers 版迁移状态腿 401、request_headers 版三腿 200 | Serena 记忆 |
 | Cloudflare WAF 403：多为缺 `Referer`/`Origin` 头，补齐后匿名也能过；别只报"可能需要认证" | 站点级 request_headers 配齐 Referer+Origin+Accept，看响应体里的真实 message | Serena 记忆 |
 | 采集客户端被 shell 环境变量代理劫持（Clash env） | `build_client` 显式传 transport；采集出口语义统一为"直连优先、代理兜底" | 提交 843bcd9 / 088c631 |
 | 境内服务器采不到国外站 | mihomo 兜底代理 sidecar（吃机场订阅），profile 默认不启、`.env` 一行启用；mihomo 必须 `allow-lan`；代理自带 healthcheck | docker-compose.md「采集兜底代理」 |

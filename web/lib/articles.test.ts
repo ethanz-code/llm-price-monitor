@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { articleExcerpt, getArticle, getArticles } from "./articles";
+import { getArticle, getArticles } from "./articles";
 
-/** Markdown 文章加载器：frontmatter 解析、正文标记、摘要提取 */
+/** Markdown 文章加载器：frontmatter 解析、正文标记、描述字段 */
 describe("articles markdown loader", () => {
   it("加载 content/articles 下全部文章，frontmatter 解析正确", () => {
     const all = getArticles();
@@ -13,20 +13,19 @@ describe("articles markdown loader", () => {
     expect(collect?.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  it("每篇文章都有非空描述（subtitle），列表卡片与 SEO 描述复用它", () => {
+    for (const article of getArticles()) {
+      expect(article.subtitle.length).toBeGreaterThan(8);
+      expect(article.subtitle).not.toMatch(/……$/); // 不再走首段截断，不应出现省略号
+    }
+  });
+
   it("正文保留 GFM 表格与行内代码标记，交给 react-markdown 渲染", () => {
     const collect = getArticle("how-we-collect-prices");
     expect(collect?.content).toContain("| 响应长什么样 |");
     expect(collect?.content).toContain("`New-Api-User`");
     const relay = getArticle("relay-station-traps");
     expect(relay?.content).toContain("> 信号有先后");
-  });
-
-  it("摘要取正文首个段落，剥掉行内标记", () => {
-    const relay = getArticle("relay-station-traps");
-    expect(articleExcerpt(relay!)).toMatch(/^44\.9 元包月/);
-    const collect = getArticle("how-we-collect-prices");
-    expect(articleExcerpt(collect!)).toMatch(/^llmprices\.cn 的价格不是人工抄的/);
-    expect(articleExcerpt(collect!, 10)).toHaveLength(12); // 截断 10 字 + 两位省略号
   });
 
   it("未知 slug 返回 undefined", () => {
