@@ -1,13 +1,13 @@
 # AI 部署必读（Server Runbook）
 
-> **给 AI 助手**：当用户把一台可 SSH 登录的服务器交给你，让你部署或维护 llm-price-monitor 时，先把本手册完整读完再动手。目标有两个：把项目部署好；不碰坏面板上已有的任何东西。
+> **给 AI 助手**：当用户把一台可 SSH 登录的服务器交给你，让你部署或维护 llmprices.cn 时，先把本手册完整读完再动手。目标有两个：把项目部署好；不碰坏面板上已有的任何东西。
 
 ## 0. 项目事实卡（直接采信，不要重新推断）
 
 | 事实 | 值 |
 | --- | --- |
 | 架构 | `api`（FastAPI + 内置定时采集，容器内 8437）+ `web`（Next.js，容器内 3000），`docker compose` 编排；另有可选 `proxy`（mihomo 机场兜底，`profiles: ["proxy"]` 默认不启动，`.env` 加 `COMPOSE_PROFILES=default,proxy` 启用） |
-| 镜像版本 | compose 引用 `llm-price-monitor/{api,web}:${APP_TAG:-local}`——`.env` 里 `APP_TAG=<git 短 SHA>` 就是线上版本号，`up -d --build` 构建即带标签，**回滚 = 改回上一版 APP_TAG + up -d**；不设置回退 local |
+| 镜像版本 | compose 引用 `llmprices/{api,web}:${APP_TAG:-local}`——`.env` 里 `APP_TAG=<git 短 SHA>` 就是线上版本号，`up -d --build` 构建即带标签，**回滚 = 改回上一版 APP_TAG + up -d**；不设置回退 local |
 | 对外端口 | 仅宿主 3000（前端）。8437 永不发布、永不放行公网 |
 | 数据 | `./var/monitor.db`（SQLite，bind mount）。备份它 = 备份一切 |
 | 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；`.env` 只放可选的读接口封锁令牌 |
@@ -124,6 +124,21 @@ git log --oneline -5
 git checkout <上一提交>
 docker compose up -d --build
 ```
+
+### 更名迁移（2026-10-06 一次性）
+
+项目更名为 llmprices.cn，compose 项目名与镜像名随之从 `llm-price-monitor` 改为 `llmprices`（见仓库 docker-compose.yml）。线上已按旧名部署的机器，直接 `git pull && up -d` 会因 3000 端口被旧容器占用而起不来，先做一次：
+
+```bash
+cd /opt/llm-price-monitor
+sqlite3 var/monitor.db ".backup 'var/backup-before-rename-$(date +%F).db'"
+git pull
+docker compose -p llm-price-monitor down   # 下线旧项目容器（数据在 ./var bind mount，不受影响）
+echo "APP_TAG=$(git rev-parse --short HEAD)" >> .env
+docker compose up -d --build
+```
+
+数据在 `./var`（相对 compose 文件目录），与项目名无关；`/opt` 目录名沿用即可，反代目标不受影响。旧镜像 `llm-price-monitor/{api,web}:*` 确认新容器正常后可 `docker image prune -f` 顺手清掉。
 
 
 ## 11. 大陆服务器构建排障（境内机器必读）

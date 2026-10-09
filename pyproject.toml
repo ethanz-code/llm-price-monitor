@@ -1,5 +1,5 @@
 [project]
-name = "llm-price-monitor"
+name = "llmprices.cn"
 version = "0.1.0"
 description = "Assay 试金：多中转站模型价格取证、监控与官方价审计"
 requires-python = ">=3.12,<3.14"

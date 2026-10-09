@@ -200,7 +200,7 @@ wheels = [
 ]
 
 [[package]]
-name = "llm-price-monitor"
+name = "llmprices-cn"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,4 +1,4 @@
-# llm-price-monitor 项目约定（AI 会话自动加载）
+# llmprices.cn 项目约定（AI 会话自动加载）
 
 ## 必读文档（按任务选读）
 

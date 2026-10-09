@@ -1,7 +1,7 @@
-# llm-price-monitor 生产部署编排：api（FastAPI 后端 + 内置调度）+ web（Next.js 前端）
+llmprices.cn 生产部署编排：api（FastAPI 后端 + 内置调度）+ web（Next.js 前端）
 # 使用步骤与运维手册见 docs/deploy/docker-compose.md；
 # 交给 AI 助手部署时，让它先读 docs/deploy/ai-runbook.md。
-name: llm-price-monitor
+name: llmprices
 
 # 镜像标签即版本号：.env 里设 APP_TAG=<git 短 SHA>（如 b5ef682）后 up -d --build，
 # 构建产物带版本标签，回滚=改回上一版 APP_TAG 再 up -d。不设置则默认 local。全部变量模板见 .env.example
@@ -12,7 +12,7 @@ services:
     build:
       context: .
       target: api
-    image: llm-price-monitor/api:${APP_TAG:-local}
+    image: llmprices/api:${APP_TAG:-local}
     container_name: price-monitor-api
     restart: unless-stopped
     volumes:
@@ -33,7 +33,7 @@ services:
     build:
       context: .
       target: web
-    image: llm-price-monitor/web:${APP_TAG:-local}
+    image: llmprices/web:${APP_TAG:-local}
     container_name: price-monitor-web
     restart: unless-stopped
     depends_on:

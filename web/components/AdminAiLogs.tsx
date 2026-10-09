@@ -1,9 +1,10 @@
 "use client";
 
-/** AI 请求日志：上方为调用统计（一行轻量数字 + 按天趋势/分布图表，口径为全部保留记录），
- *  下方为明细表（场景/模型/耗时/token 用量/错误），明细支持按场景与结果筛选。 */
+/** AI 请求日志：上方为调用统计（一行轻量数字 + 按天趋势/分布图表 + 用量推演 Popover，口径为全部保留记录），
+ *  下方为明细表（场景/模型/耗时/token 用量/错误），明细支持按场景与结果筛选、加载更多。 */
 
-import { useEffect, useState, type ReactNode } from "react";import {
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
   Bar,
   BarChart,
   CartesianGrid,
@@ -38,6 +39,8 @@ type AiLog = {
 };
 
 const SCENES = ["", "助手分类", "助手问答", "价格抽取", "公告提取", "token 分析"];
+// 明细分页大小：首屏与每次「加载更多」各拉这么多（接口上限 500）
+const LOGS_PAGE_SIZE = 200;
 const STATUSES = [
   { value: "", label: "全部结果" },
   { value: "ok", label: "成功" },
@@ -74,6 +77,81 @@ function ioRatioText(summary: AiLogSummary): string {
   if (!summary.prompt_tokens || !summary.completion_tokens) return "—";
   const ratio = summary.prompt_tokens / summary.completion_tokens;
   return ratio >= 1 ? `${ratio.toFixed(1)} : 1` : `1 : ${(1 / ratio).toFixed(1)}`;
+}
+
+/** token 用量推演：按近 7 天日均外推未来 30 天消耗，挂在统计口径行右侧的轻量 Popover。 */
+function TokenForecast({ daily }: { daily: DailyPoint[] }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (boxRef.current && event.target instanceof Node && boxRef.current.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  const days = Math.max(daily.length, 1);
+  const prompt = daily.reduce((sum, d) => sum + d.prompt_tokens, 0);
+  const completion = daily.reduce((sum, d) => sum + d.completion_tokens, 0);
+  const hasTokens = prompt + completion > 0;
+  const avgPrompt = Math.round(prompt / days);
+  const avgCompletion = Math.round(completion / days);
+
+  return (
+    <span ref={boxRef} style={{ position: "relative" }}>
+      <Btn variant="ghost" size="sm" onClick={() => setOpen(!open)}>
+        用量推演
+      </Btn>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="token 用量推演"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 8px)",
+            zIndex: 30,
+            width: 300,
+            background: "var(--panel)",
+            border: "var(--card-border)",
+            borderRadius: 12,
+            boxShadow: "var(--shadow-pop)",
+            padding: "12px 14px",
+            display: "grid",
+            gap: 8,
+            fontSize: 12.5,
+            textAlign: "left",
+          }}
+        >
+          {hasTokens ? (
+            <>
+              <div style={{ fontWeight: 500 }}>按近 7 天用量推算</div>
+              <div style={{ color: "var(--text-2)" }}>
+                日均输入 {formatCount(avgPrompt)} · 输出 {formatCount(avgCompletion)}，合计{" "}
+                {formatCount(avgPrompt + avgCompletion)} token
+              </div>
+              <div style={{ color: "var(--text-2)" }}>
+                照这个节奏，未来 30 天大约用{" "}
+                <span className="mono" style={{ color: "var(--text-1)" }}>
+                  {formatCount((avgPrompt + avgCompletion) * 30)}
+                </span>{" "}
+                token（输入 {formatCount(avgPrompt * 30)} · 输出 {formatCount(avgCompletion * 30)}）
+              </div>
+              <div style={{ color: "var(--text-3)", fontSize: 12 }}>
+                用量随站点数量和检查频率变化，这个数字只按近期平均估算，仅供参考。
+              </div>
+            </>
+          ) : (
+            <div style={{ color: "var(--text-2)" }}>近 7 天还没有 token 用量记录，先用几天再来推算。</div>
+          )}
+        </div>
+      )}
+    </span>
+  );
 }
 
 function CallsTooltip({ active, payload }: { active?: boolean; payload?: { payload?: DailyPoint }[] }) {
@@ -242,7 +320,7 @@ function LogDetailModal({ log, onClose }: { log: AiLog; onClose: () => void }) {
         {log.prompt_excerpt && (
           <div>
             <div style={{ color: "var(--text-3)", marginBottom: 4 }}>发送内容</div>
-            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+            <div style={{ background: "var(--panel-2)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
               {log.prompt_excerpt}
             </div>
           </div>
@@ -250,7 +328,7 @@ function LogDetailModal({ log, onClose }: { log: AiLog; onClose: () => void }) {
         {log.response_excerpt && (
           <div>
             <div style={{ color: "var(--text-3)", marginBottom: 4 }}>模型回复</div>
-            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+            <div style={{ background: "var(--panel-2)", borderRadius: 10, padding: "10px 12px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
               {log.response_excerpt}
             </div>
           </div>
@@ -264,6 +342,9 @@ export function AdminAiLogs() {
   const { lineColor, secondaryColor } = useChartTheme();
   const [summary, setSummary] = useState<AiLogSummary | null>(null);
   const [logs, setLogs] = useState<AiLog[]>([]);
+  // 明细按页加载：接口一次最多吐 500 条，超过的靠「加载更多」按 offset 续拉，total 用来判断还有没有
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   // 首次明细未回来前先画骨架，避免空表闪「还没有记录」的假空态
   const [logsReady, setLogsReady] = useState(false);
   const [scene, setScene] = useState("");
@@ -285,13 +366,14 @@ export function AdminAiLogs() {
 
   useEffect(() => {
     let alive = true;
-    const query = new URLSearchParams({ limit: "200" });
+    const query = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE) });
     if (scene) query.set("scene", scene);
     if (status) query.set("status", status);
-    apiSend<{ logs: AiLog[] }>(`/api/ai-logs?${query}`, "GET")
+    apiSend<{ logs: AiLog[]; total: number }>(`/api/ai-logs?${query}`, "GET")
       .then((data) => {
         if (alive) {
           setLogs(data.logs);
+          setTotal(data.total);
           setLogsReady(true);
         }
       })
@@ -301,7 +383,26 @@ export function AdminAiLogs() {
     };
   }, [scene, status]);
 
+  async function loadMoreLogs() {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const query = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(logs.length) });
+      if (scene) query.set("scene", scene);
+      if (status) query.set("status", status);
+      const data = await apiSend<{ logs: AiLog[]; total: number }>(`/api/ai-logs?${query}`, "GET");
+      setLogs((prev) => [...prev, ...data.logs]);
+      setTotal(data.total);
+    } catch {
+      toast("没加载出来，请再试一次");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   const hasCalls = (summary?.total ?? 0) > 0;
+  // 有 token 用量记录才展示推演入口；日志没记到 usage（供应商没返回）时不给按钮
+  const hasTokens = (summary?.total_tokens ?? 0) > 0;
   const successRate = summary ? summary.success_rate : null;
   // 失败 = 供应商报错且未被「报错判定」豁免的尝试；连接抖动与已忽略报错组不算失败也不进成功率分母
   const failure = summary ? summary.total - summary.ok - summary.transport - summary.ignored : 0;
@@ -405,9 +506,12 @@ export function AdminAiLogs() {
               </div>
             ))}
           </div>
-          <p style={{ color: "var(--text-3)", fontSize: 12, margin: 0 }}>
-            统计口径：保留期内每次请求尝试各记一条，成功率 = 成功尝试 ÷ 有效尝试。报错后自动换模型、换参数的尝试计入失败，误判的报错组可在「报错判定」里关掉；连接抖动（超时、SSL 断开）不算失败也不进分母；模型池全部报错记一条「整次失败」。
-          </p>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <p style={{ color: "var(--text-3)", fontSize: 12, margin: 0, flex: 1 }}>
+              统计口径：保留期内每次请求尝试各记一条，成功率 = 成功尝试 ÷ 有效尝试。报错后自动换模型、换参数的尝试计入失败，误判的报错组可在「报错判定」里关掉；连接抖动（超时、SSL 断开）不算失败也不进分母；模型池全部报错记一条「整次失败」。
+            </p>
+            {hasTokens && summary && <TokenForecast daily={summary.daily} />}
+          </div>
           <div className="panel" style={{ padding: "16px 20px 18px", display: "grid", gap: 28, gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
             <div>
               <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 8 }}>按天调用趋势</div>
@@ -510,6 +614,16 @@ export function AdminAiLogs() {
         />
         )}
       </div>
+      {logsReady && logs.length < total && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+          <span style={{ color: "var(--text-3)", fontSize: 12 }}>
+            已显示 {formatCount(logs.length)} / {formatCount(total)} 条
+          </span>
+          <Btn variant="ghost" size="sm" disabled={loadingMore} onClick={loadMoreLogs}>
+            {loadingMore ? "加载中…" : "加载更多"}
+          </Btn>
+        </div>
+      )}
     </div>
   );
 }

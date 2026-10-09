@@ -1,5 +1,5 @@
 {
-  "name": "llm-price-monitor-web",
+  "name": "llmprices-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {

@@ -13,8 +13,8 @@
 要求：Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)；使用 Web 界面另需 Node.js 与 npm。
 
 ```bash
-git clone https://github.com/ethanz-code/llm-price-monitor.git
-cd llm-price-monitor
+git clone https://github.com/ethanz-code/llmprices.cn.git
+cd llmprices.cn
 uv sync
 
 # 开发模式：前端热加载 + Python 改动自动重启，日常用这个

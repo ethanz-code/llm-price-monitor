@@ -202,7 +202,6 @@ export function EventDetailModal({
               maxHeight: 360,
               overflowY: "auto",
               padding: 12,
-              border: "1px solid var(--border)",
               borderRadius: 10,
               background: "var(--panel-2)",
             }}
@@ -225,7 +224,7 @@ export function EventDetailModal({
             {formatTime(event.detected_at)}
           </span>
         </div>
-        <div className="mono" style={{ fontSize: 13, color: "var(--text-2)", padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 10 }}>
+        <div className="mono" style={{ fontSize: 13, color: "var(--text-2)", padding: "8px 12px", borderRadius: 10, background: "var(--panel-2)" }}>
           {describeChange(event, rate)}
         </div>
         <div style={{ display: "grid", gap: 14 }}>

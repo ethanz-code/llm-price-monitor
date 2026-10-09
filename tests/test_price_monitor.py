@@ -3903,7 +3903,9 @@ def test_fallback_log_saves_raw_response_tail(monkeypatch):
         validate=json_content,
     )
     assert rows[0]["status"] == "fallback"
-    assert rows[0]["response_excerpt"] == bad_answer[-500:]
+    from llm_price_monitor.store import _AI_LOG_TEXT_CHARS
+
+    assert rows[0]["response_excerpt"] == bad_answer[-_AI_LOG_TEXT_CHARS:]
 
 
 def test_json_content_empty_answer_has_explicit_message():

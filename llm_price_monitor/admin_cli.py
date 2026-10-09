@@ -132,7 +132,7 @@ def import_sites(file: str, apply: bool, take: int, enabled: bool, force: bool) 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="llm-price-monitor 管理员工具（在仓库根目录运行）")
+    parser = argparse.ArgumentParser(description="llmprices.cn 管理员工具（在仓库根目录运行）")
     sub = parser.add_subparsers(dest="command")
     reset = sub.add_parser("reset-admin", help="重置管理员账号")
     reset.add_argument("--username", help="新用户名（默认保留现有用户名，无账号时默认 admin）")

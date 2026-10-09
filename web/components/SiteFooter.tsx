@@ -25,7 +25,7 @@ export function SiteFooter() {
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
               className="footer-icon"
-              href="https://github.com/ethanz-code/llm-price-monitor"
+              href="https://github.com/ethanz-code/llmprices.cn"
               target="_blank"
               rel="noreferrer"
               aria-label={footer.aria.github}

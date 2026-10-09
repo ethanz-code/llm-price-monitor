@@ -151,7 +151,7 @@ def _ensure_settings_defaults(store: Store) -> None:
 
 
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
-    app = FastAPI(title="llm-price-monitor", docs_url=None, redoc_url=None)
+    app = FastAPI(title="llmprices.cn", docs_url=None, redoc_url=None)
     app.state.config_path = config_path
     # 创建时才解析路径：create_app 常在测试中被 monkeypatch.chdir 包裹，模块级常量会绑错目录
     store = Store(Path(os.getenv("PRICE_MONITOR_DB") or DB_PATH))
@@ -242,7 +242,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="启动 llm-price-monitor Web 服务（API + 前端）")
+    parser = argparse.ArgumentParser(description="启动 llmprices.cn Web 服务（API + 前端）")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8437)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))

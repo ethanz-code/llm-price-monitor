@@ -1,4 +1,4 @@
-# llm-price-monitor Pricing
+# llmprices.cn Pricing
 
 > [!NOTE]
 > 价格相关的全部能力都在 [`llm_price_monitor/`](../llm_price_monitor/) 包内：多站点价格监控、单站点采集、官方价目录同步与折扣率计算。采集与折扣核心只依赖 `httpx`，API 层基于 FastAPI，通过 `price-web` 启动。

@@ -48,10 +48,9 @@ function LogDetails({ logs }: { logs: TaskDetail["logs"] }) {
   return (
     <details
       style={{
-        border: "1px solid var(--border)",
         borderRadius: 10,
         padding: "8px 12px",
-        background: "var(--bg)",
+        background: "var(--panel-2)",
       }}
     >
       <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-2)" }}>
@@ -236,10 +235,9 @@ export function SiteTestButton({ site, onDone }: { site: SiteConfig; onDone?: ()
           {running && task && (
             <div
               style={{
-                border: "1px solid var(--border)",
                 borderRadius: 10,
                 padding: "10px 14px",
-                background: "var(--bg)",
+                background: "var(--panel-2)",
                 display: "grid",
                 gap: 6,
               }}

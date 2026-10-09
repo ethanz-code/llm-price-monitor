@@ -88,8 +88,7 @@ function TaskLogModal({ taskId, onClose }: { taskId: string; onClose: () => void
             style={{
               maxHeight: 420,
               overflowY: "auto",
-            background: "var(--bg)",
-            border: "1px solid var(--border)",
+            background: "var(--panel-2)",
               borderRadius: 10,
               padding: "10px 12px",
               display: "grid",
