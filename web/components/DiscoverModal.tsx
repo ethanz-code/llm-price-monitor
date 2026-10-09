@@ -177,7 +177,7 @@ export function DiscoverModal({
     {
       key: "brief",
       title: "简介",
-      width: 366,
+      width: 490,
       ellipsis: true,
       mobileHide: true,
       render: (_v, row) => {
@@ -190,22 +190,6 @@ export function DiscoverModal({
           <span style={{ color: "var(--text-3)" }}>—</span>
         );
       },
-    },
-    {
-      key: "pricing",
-      title: "价格接口",
-      // 实宽要容下「公开 · 1486 模型」一行不折（92 会把「模型」挤到第二行）
-      width: 124,
-      render: (_v, row) =>
-        row.pricing_state === "public" ? (
-          <span style={{ color: "var(--text-2)" }}>
-            公开 · <span className="mono num">{row.models}</span> 模型
-          </span>
-        ) : (
-          <span style={{ color: "var(--text-3)" }}>
-            {row.pricing_state === "auth" ? "需登录" : row.pricing_state === "unknown" ? "未探测" : "没有"}
-          </span>
-        ),
     },
     {
       key: "state",
@@ -226,7 +210,7 @@ export function DiscoverModal({
     },
   ];
 
-  const pendingCount = data ? data.summary.online - data.summary.imported : 0;
+  const pendingCount = data ? data.summary.total - data.summary.imported : 0;
 
   return (
     <Modal open={open} onClose={onClose} title="从新站发现导入" width={920}>
@@ -234,7 +218,7 @@ export function DiscoverModal({
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
           <div style={{ minWidth: 0, flex: "1 1 240px", fontSize: 12, color: "var(--text-3)" }}>
             {data
-              ? `已收录 ${data.summary.total} · 已探测在线 ${data.summary.online} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（清单默认每日自动更新）`
+              ? `已收录 ${data.summary.total} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（清单默认每日自动更新）`
               : "自动收录的中转站清单（站点与简介），勾选即可导入（默认停用）；清单默认每日自动更新"}
           </div>
           <Btn size="sm" loading={refreshing} onClick={refresh}>
@@ -301,9 +285,9 @@ export function DiscoverModal({
               rowKey="host"
               columns={columns}
               rows={rows}
-              scrollX={720}
-              // 窄屏只剩 勾选44 + 站点216 + 价格接口124 + 操作120 ≈ 504
-              mobileScrollX={510}
+              scrollX={740}
+              // 窄屏只剩 勾选44 + 站点216 + 操作120 ≈ 380
+              mobileScrollX={390}
               dense
               paginated
               defaultPageSize={20}

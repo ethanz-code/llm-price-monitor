@@ -80,6 +80,23 @@ def attach_store(store: Any) -> None:
         _persist()
 
 
+def _slim_result(result: Any) -> Any:
+    """老任务归档用的结果摘要：列表换成 *_total 计数、嵌套字典丢弃，标量原样保留。
+
+    完整 result 里嵌着采集快照（状态采集一轮几十 KB），留 100 条能把 tasks 文档
+    撑到 10MB；前端列表只读 records 长度与 models_found，摘要足够。
+    """
+    if not isinstance(result, dict):
+        return result
+    slim: dict[str, Any] = {}
+    for key, value in result.items():
+        if isinstance(value, list):
+            slim[f"{key}_total"] = len(value)
+        elif not isinstance(value, dict):
+            slim[key] = value
+    return slim
+
+
 def _persist() -> None:
     """把最近的任务记录（含日志）写入存储；未接入存储时跳过。"""
     store = _store
@@ -90,7 +107,9 @@ def _persist() -> None:
         items = sorted(_tasks.values(), key=lambda item: str(item["started_at"]), reverse=True)
         snapshot = [dict(item, logs=list(item["logs"])) for item in items[:max_runs]]
         for index, entry in enumerate(snapshot):
-            if index >= KEEP_LOGGED_RUNS and entry["logs"]:
+            if index < KEEP_LOGGED_RUNS:
+                continue
+            if entry["logs"]:
                 entry["logs"] = [
                     {
                         "time": entry.get("finished_at") or entry["started_at"],
@@ -98,6 +117,8 @@ def _persist() -> None:
                         "level": "info",
                     }
                 ]
+            if entry.get("result") is not None:
+                entry["result"] = _slim_result(entry["result"])
     try:
         store.set_document("tasks", {"runs": snapshot})
     except Exception as exc:  # 落盘失败不阻断采集：日志属辅助信息，任务状态仍在内存可用

@@ -52,11 +52,8 @@ export default async function DiscoverPage() {
       {data && (
         <PageDigest
           items={[
-            { label: "已收录站点", value: formatCount(data.summary.total), title: "自动收录的中转站总数（含未探测）" },
-            { label: "已探测在线", value: formatCount(data.summary.online), title: "探测档案里站点接口可连通的数量" },
-            { label: "未探测", value: formatCount(data.summary.unprobed), title: "还没跑过探测的收录站，想探明价格接口用 CLI probe" },
+            { label: "已收录站点", value: formatCount(data.summary.total), title: "自动收录的中转站总数" },
             { label: "已在监控", value: formatCount(data.summary.imported), title: "已导入本站监控的站点数量" },
-            { label: "失联", value: formatCount(data.summary.dead), title: "探测档案里不可达的站，只留计数，不占下方列表" },
           ]}
         />
       )}

@@ -67,25 +67,9 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
         ),
     },
     {
-      title: (
-        <>
-          价格接口
-          <span className="thead-unit thead-unit-block">探明模型数</span>
-        </>
-      ),
-      dataIndex: "pricing_state",
-      width: 100,
-      render: (v: DiscoveryStation["pricing_state"], row) =>
-        v === "public" ? (
-          <span className="mono num">{row.models}</span>
-        ) : (
-          <span style={{ color: "var(--text-3)" }}>{v === "auth" ? "需登录" : v === "unknown" ? "未探测" : "没有"}</span>
-        ),
-    },
-    {
       title: "简介",
       dataIndex: "description",
-      width: 320,
+      width: 420,
       ellipsis: true,
       mobileHide: true,
       render: (_: string, row) => {
@@ -98,13 +82,6 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           <span style={{ color: "var(--text-3)" }}>—</span>
         );
       },
-    },
-    {
-      title: "面板",
-      dataIndex: "new_api",
-      width: 88,
-      mobileHide: true,
-      render: (v: boolean) => (v ? "new-api" : <span style={{ color: "var(--text-3)" }}>其他</span>),
     },
   ];
 
@@ -155,7 +132,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           paginated
           defaultPageSize={100}
           pageSizeStorageKey="discover-page-size"
-          scrollX={640}
+          scrollX={760}
           mobileScrollX={390}
           dense
           empty={

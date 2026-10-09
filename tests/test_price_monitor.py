@@ -229,15 +229,12 @@ def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkey
 
 
 def test_per_site_persist_and_hard_timeout(tmp_path: Path, monkeypatch):
-    """每站采完立即落库：后续站点被硬超时掐掉时，已完成站点的价格不随内存丢失；
-    挂死的站点以错误收场，不拖垮整轮。"""
-    seen: dict[str, bool] = {}
-
+    """每站采完立即落库：站点被硬超时掐掉时，已完成站点的价格不随内存丢失；
+    挂死的站点以错误收场，不拖垮整轮。网络阶段并行开工（并发槽限流），
+    落库仍按站点顺序在主线程完成。"""
     def collect(self, spec, *_args):
         if spec.id == "demo":
             return [PriceRecord("demo-model", 1.0, 2.0, "USD/1M tokens", "https://demo.test/pricing", 0, {})]
-        # 站点 2 开采时检查：站点 1 的价格必须已经落库（旧实现要等整轮结束才落库，这里会是 False）
-        seen["demo_persisted"] = "demo:demo-model:default" in store.latest_all()
         time.sleep(30)  # 模拟经代理挂死的连接：只会被硬超时掐掉，不会自己返回
         return []
 
@@ -256,7 +253,7 @@ def test_per_site_persist_and_hard_timeout(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("llm_price_monitor.report.SITE_HARD_TIMEOUT_SECONDS", 0.3)
     report = run_once(config, store=store, client=httpx.Client())
 
-    assert seen["demo_persisted"] is True
+    assert "demo:demo-model:default" in store.latest_all()  # demo 已落库，不随 stuck 超时丢失
     stuck = report.site_status["stuck"]
     assert stuck["status"] == "error" and "硬上限" in str(stuck["error"])
     assert set(store.latest_all()) == {"demo:demo-model:default"}

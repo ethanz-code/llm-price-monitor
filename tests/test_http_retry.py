@@ -4,10 +4,11 @@ import pytest
 
 from llm_price_monitor import egress, tasklog
 from llm_price_monitor.http_retry import (
-    _REPROBE_CONNECT_TIMEOUT_SECONDS,
+    DIRECT_CONNECT_TIMEOUT_SECONDS,
     RETRY_ATTEMPTS,
     FallbackTransport,
     RetryingTransport,
+    _DirectConnectCapTransport,
     build_client,
 )
 
@@ -167,7 +168,7 @@ def _fallback_client(direct_handler, proxied_handler) -> httpx.Client:
     return httpx.Client(
         timeout=5,
         transport=FallbackTransport(
-            direct=RetryingTransport(httpx.MockTransport(direct_handler)),
+            direct=RetryingTransport(_DirectConnectCapTransport(httpx.MockTransport(direct_handler))),
             proxied=RetryingTransport(httpx.MockTransport(proxied_handler)),
         ),
     )
@@ -251,24 +252,26 @@ def test_post_is_not_fallbacked():
     assert len(calls["direct"]) == 1 and len(calls["proxy"]) == 0
 
 
-def test_reprobe_injects_short_connect_timeout(monkeypatch):
-    seen = []
+def test_direct_leg_caps_connect_timeout_and_restores_request(monkeypatch):
+    """直连腿统一压短建连超时（发现被墙要快），读超时保持原值，且用完还原请求——
+    残留的短 connect 泄漏到代理腿会把代理本身建连慢的合法请求也掐死。"""
+    direct_seen = []
+    proxied_seen = []
 
     def direct(request):
-        seen.append(dict((request.extensions or {}).get("timeout") or {}))
-        return httpx.Response(200)
+        direct_seen.append(dict((request.extensions or {}).get("timeout") or {}))
+        raise httpx.ConnectError("connection reset", request=request)
 
     def proxied(request):
+        proxied_seen.append(dict((request.extensions or {}).get("timeout") or {}))
         return httpx.Response(200)
 
-    now = [1000.0]
-    monkeypatch.setattr(egress, "_now", lambda: now[0])
-    egress.mark_direct_failed("demo.test")
-    now[0] += egress.REPROBE_SECONDS + 1
+    monkeypatch.setattr("llm_price_monitor.http_retry.time.sleep", lambda _s: None)
     with _fallback_client(direct, proxied) as client:
         assert client.get("https://demo.test/p").status_code == 200
-    assert seen[0]["connect"] == _REPROBE_CONNECT_TIMEOUT_SECONDS  # 重探只压短连接超时
-    assert seen[0]["read"] == 5  # 其余超时保持请求原值
+    assert direct_seen[0]["connect"] == DIRECT_CONNECT_TIMEOUT_SECONDS
+    assert direct_seen[0]["read"] == 5  # 读超时保持请求原值
+    assert proxied_seen[0] == {"connect": 5, "read": 5, "write": 5, "pool": 5}  # 请求原超时未被污染
 
 
 def test_build_client_transport_variants(monkeypatch, spy_http_transport):

@@ -4318,9 +4318,9 @@ a.event-card {
   .hero-sky .pano-flatmap {
     width: 100vw;
     margin-left: calc(50% - 50vw);
-    /* 星图向上探进 header 区域，但整体略靠下（不全顶到视口顶），顶部由光晕补足 */
+    /* 星图贴回文案上方，只留一线空隙；header 背后的背景由光晕承担 */
     position: relative;
-    top: -64px;
+    top: -16px;
   }
 
   /* 氛围光晕同样上探到 header 区域，与星图连成一片 */

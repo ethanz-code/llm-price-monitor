@@ -30,7 +30,74 @@ from .health import (
 )
 from .persist import _persist_scan_results
 from .pricing import _apply_price_sanity, _backfill_rule_price, _carry_last_price, _filter_price_groups, _has_price, _sanity_context
-from .timeouts import _run_network_phase, _run_site_fetch
+from .timeouts import SITE_FETCH_CONCURRENCY, _run_site_fetch, start_network_phase
+
+
+def _build_network_phase(
+    spec: SiteSpec,
+    adapter: Any,
+    whitelist: list[str],
+    client: httpx.Client,
+    config: MonitorConfig,
+    user_agent: str,
+    store: Store | None,
+) -> Any:
+    """组装单站网络阶段（多地址合并 + 续签重采）。闭包只依赖入参、不引用外层循环变量，
+    供并行线程安全延迟执行。"""
+    def collect_all(site_spec: SiteSpec) -> tuple[list[PriceRecord], list[str]]:
+        site_records: list[PriceRecord] = []
+        site_by_key: dict[tuple[str | None, str | None], PriceRecord] = {}
+        site_errors: list[str] = []
+        for index, endpoint in enumerate([site_spec.network, *site_spec.networks]):
+            endpoint_spec = replace(site_spec, network=endpoint, networks=())
+            try:
+                endpoint_records = _filter_price_groups(
+                    adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai),
+                    whitelist,
+                )
+            except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
+                site_errors.append(f"{'主地址' if index == 0 else f'附加地址{index}'}: {exc}")
+                continue
+            # 同一模型+分组多地址命中时主地址优先；但主地址的"需认证/无数据"占位
+            # 不得挡掉附加地址的真价格（401 只说明该地址要登录，不代表分组没数据）
+            for record in endpoint_records:
+                key = (record.model, (record.metadata or {}).get("group"))
+                existing = site_by_key.get(key)
+                if existing is not None and (existing.price_status != "unavailable" or record.price_status == "unavailable"):
+                    continue
+                site_by_key[key] = record
+                if existing is None:
+                    site_records.append(record)
+                else:
+                    # 用下标原位替换：PriceRecord 值相等，按值 index 可能命中另一个相等对象
+                    for idx, item in enumerate(site_records):
+                        if item is existing:
+                            site_records[idx] = record
+                            break
+        return site_records, site_errors
+
+    def network_phase() -> tuple[list[PriceRecord], list[str]]:
+        phase_records, phase_errors = collect_all(spec)
+        # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
+        if spec.token_refresh and needs_refresh(phase_records):
+            tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
+            # 重采结果整体替换本轮记录与地址错误；续签失败或重采无数据时拿到的是续签前的
+            # "需认证"占位记录，保住该状态下面才会跳过分组下线判定（401 是我方凭证问题，
+            # 不代表分组真的下线）。错误列表不再被静默清空，重采阶段的地址失败照常上报。
+            phase_records, phase_errors = refresh_and_recollect(
+                spec,
+                phase_records,
+                collect=collect_all,
+                client=client,
+                timeout=config.settings.timeout,
+                user_agent=user_agent,
+                store=store,
+            )
+            if not phase_errors:
+                tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(phase_records)} 条价格")
+        return phase_records, phase_errors
+
+    return network_phase
 
 
 def _scan_prices(
@@ -55,15 +122,14 @@ def _scan_prices(
     site_status: dict[str, dict[str, Any]] = {}
     removed_keys: set[str] = set()
     touched_keys: set[str] = set()
-    enabled_count = sum(1 for spec in config.sites if spec.enabled)
+    enabled_specs = [spec for spec in config.sites if spec.enabled]
+    enabled_count = len(enabled_specs)
     scan_started = time.time()
-    tasklog.emit(f"开始价格采集：{enabled_count} 个站点")
-    done_count = 0
-    for spec in config.sites:
-        if not spec.enabled:
-            continue
-        done_count += 1
-        site_started = time.time()
+    tasklog.emit(f"开始价格采集：{enabled_count} 个站点（并发 {SITE_FETCH_CONCURRENCY}）")
+    # 网络阶段并行开工、按提交顺序处理落库：一个站卡满硬上限只占一个并发槽，
+    # 不再让排在后面的站陪等（串行时最坏 ⌊整轮⌋ = 站数 × 硬上限）
+    handles: dict[str, Any] = {}
+    for done_count, spec in enumerate(enabled_specs, 1):
         # 每站开始即落一行：整轮拖长时能直接看出卡在哪个站、卡在站点内哪一步之后
         tasklog.emit(f"[{spec.id}] 开始采集（第 {done_count}/{enabled_count} 站）")
         adapter = ADAPTERS.get(spec.adapter)
@@ -75,61 +141,15 @@ def _scan_prices(
         # 多地址站点：主地址 + networks 附加地址依次采集；同一模型重复命中时主地址优先
         # 分组白名单：status.groups 配置了就只保留选中分组的记录（含续签重采路径）
         whitelist = [str(item) for item in spec.status["groups"]] if isinstance(spec.status.get("groups"), list) else []
-
-        def collect_all(site_spec: SiteSpec) -> tuple[list[PriceRecord], list[str]]:
-            site_records: list[PriceRecord] = []
-            site_by_key: dict[tuple[str | None, str | None], PriceRecord] = {}
-            site_errors: list[str] = []
-            for index, endpoint in enumerate([site_spec.network, *site_spec.networks]):
-                endpoint_spec = replace(site_spec, network=endpoint, networks=())
-                try:
-                    endpoint_records = _filter_price_groups(
-                        adapter.collect(endpoint_spec, client, config.settings.timeout, user_agent, config.ai),
-                        whitelist,
-                    )
-                except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
-                    site_errors.append(f"{'主地址' if index == 0 else f'附加地址{index}'}: {exc}")
-                    continue
-                # 同一模型+分组多地址命中时主地址优先；但主地址的"需认证/无数据"占位
-                # 不得挡掉附加地址的真价格（401 只说明该地址要登录，不代表分组没数据）
-                for record in endpoint_records:
-                    key = (record.model, (record.metadata or {}).get("group"))
-                    existing = site_by_key.get(key)
-                    if existing is not None and (existing.price_status != "unavailable" or record.price_status == "unavailable"):
-                        continue
-                    site_by_key[key] = record
-                    if existing is None:
-                        site_records.append(record)
-                    else:
-                        # 用下标原位替换：PriceRecord 值相等，按值 index 可能命中另一个相等对象
-                        for idx, item in enumerate(site_records):
-                            if item is existing:
-                                site_records[idx] = record
-                                break
-            return site_records, site_errors
-
-        def network_phase() -> tuple[list[PriceRecord], list[str]]:
-            phase_records, phase_errors = collect_all(spec)
-            # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
-            if spec.token_refresh and needs_refresh(phase_records):
-                tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
-                # 重采结果整体替换本轮记录与地址错误；续签失败或重采无数据时拿到的是续签前的
-                # "需认证"占位记录，保住该状态下面才会跳过分组下线判定（401 是我方凭证问题，
-                # 不代表分组真的下线）。错误列表不再被静默清空，重采阶段的地址失败照常上报。
-                phase_records, phase_errors = refresh_and_recollect(
-                    spec,
-                    phase_records,
-                    collect=collect_all,
-                    client=client,
-                    timeout=config.settings.timeout,
-                    user_agent=user_agent,
-                    store=store,
-                )
-                if not phase_errors:
-                    tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(phase_records)} 条价格")
-            return phase_records, phase_errors
-
-        collected, collect_errors = _run_network_phase(network_phase, spec.id)
+        handles[spec.id] = start_network_phase(
+            _build_network_phase(spec, adapter, whitelist, client, config, user_agent, store), spec.id
+        )
+    for done_count, spec in enumerate(enabled_specs, 1):
+        handle = handles.get(spec.id)
+        if handle is None:
+            continue  # 未知适配器的站在开工轮已记过错误
+        site_started = time.time()
+        collected, collect_errors = handle.result()
         if collect_errors and not collected:
             message = "；".join(collect_errors)
             errors.append({"site_id": spec.id, "error": message})

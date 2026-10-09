@@ -196,11 +196,11 @@ export function AdminTasks() {
         const task = row.task;
         const hasErrors = (task.error_count ?? 0) > 0;
         if (task.status !== "done" || (!task.result && !hasErrors)) return null;
-        const result = task.result as { records?: unknown[]; models_found?: number } | undefined;
+        const result = task.result as { records?: unknown[]; records_total?: number; models_found?: number } | undefined;
         const countText =
           task.kind === "catalog-refresh"
             ? `找到 ${formatCount(result?.models_found ?? 0)} 条`
-            : `${formatCount((result?.records ?? []).length)} 条记录`;
+            : `${formatCount(result?.records_total ?? result?.records?.length ?? 0)} 条记录`;
         return (
           <span style={{ display: "grid", gap: 2 }}>
             {hasErrors && (

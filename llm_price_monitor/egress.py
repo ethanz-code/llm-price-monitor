@@ -47,14 +47,17 @@ def fallback_proxy() -> str | None:
 
 @dataclass(frozen=True)
 class DirectPlan:
-    """单个域名的直连决策：use_proxy=直接走代理；reprobe=放行一次直连探测。"""
+    """单个域名的直连决策：use_proxy=直接走代理；reprobe=失败标记过期，放行一次直连探测。"""
 
     use_proxy: bool
     reprobe: bool
 
 
 def plan(host: str) -> DirectPlan:
-    """给定域名该直连还是走代理；失败标记过期时返回 reprobe 让调用方短超时试探。"""
+    """给定域名该直连还是走代理；失败标记过期时返回 reprobe 放行一次直连探测。
+
+    探测请求与普通直连请求同路（直连腿统一压短建连超时），不再需要调用方单独注入短超时。
+    """
     key = _normalize(host)
     with _lock:
         failed_at = _failures.get(key)

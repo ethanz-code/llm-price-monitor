@@ -8,9 +8,10 @@ token 续签、AI 兜底等 POST 不盲重试，避免续签凭证被消费两�
 兜底代理地址按优先级取一处：标准代理环境变量（HTTPS_PROXY 等）优先，其次是
 系统设置里的 settings.fallback_proxy；配了哪个语义都一样——采集始终「直连优先、
 被墙兜底」：直连失败（连接类错误或 403/451）的域名记入失败记忆（egress.py），
-TTL 内直接走代理，TTL 过期放行一次短连接超时的直连重探。直连能通的站点
-（国内站等）永远不碰代理，兜底代理出口被目标站拒收也拖不垮直连。代理地址在
-构建 client 时捕获，面板改动从下一轮采集生效。
+TTL 内直接走代理，TTL 过期放行一次直连重探。直连腿统一压短建连超时（国内站
+建连是亚秒级，8 秒还建不起来基本就是黑洞式被墙），发现直连不通不必耗满整个
+采集超时；直连能通的站点（国内站等）永远不碰代理，兜底代理出口被目标站拒收
+也拖不垮直连。代理地址在构建 client 时捕获，面板改动从下一轮采集生效。
 """
 from __future__ import annotations
 
@@ -33,8 +34,10 @@ _PROXY_ENV_KEYS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP
 
 # 直连返回这些状态码视为「出口 IP 被目标站拒收」，同样切备用代理重试
 _FALLBACK_STATUS_CODES = frozenset({403, 451})
-# 失败记忆过期的直连重探把连接超时压到这个值，黑洞式被墙不至于白等整个采集周期
-_REPROBE_CONNECT_TIMEOUT_SECONDS = 8.0
+# 直连腿的建连超时：建连是 TCP+TLS 握手，国内直连站亚秒级完成，8 秒起不来就是
+# 黑洞式被墙（SYN 有去无回，等满 45s 超时也等不来结果），快速失败才能快速切代理；
+# 只压 connect，读超时保持请求原值，慢服务器不受影响
+DIRECT_CONNECT_TIMEOUT_SECONDS = 8.0
 # 本地构造的请求错误 / 连接池耗尽 / 无效 URL 与出口线路无关，切代理救不了
 _NO_FALLBACK_ERRORS = (httpx.LocalProtocolError, httpx.PoolTimeout, httpx.UnsupportedProtocol)
 
@@ -48,12 +51,25 @@ def _env_proxy() -> str | None:
     return None
 
 
-def _force_short_connect(request: httpx.Request) -> httpx.Request:
-    """给请求注入短连接超时（直连重探用）；read/write 等其余超时保持请求原值。"""
-    timeout = dict(request.extensions.get("timeout") or {})
-    timeout["connect"] = _REPROBE_CONNECT_TIMEOUT_SECONDS
-    request.extensions = {**request.extensions, "timeout": timeout}
-    return request
+class _DirectConnectCapTransport(httpx.BaseTransport):
+    """直连腿的建连超时上限：给经过的请求压短 connect 超时，其余超时保持原值。
+
+    请求对象是各腿共享的，直连腿失败后还要交给代理腿复用，用完必须还原，
+    否则压短的 connect 会泄漏到代理腿，把代理本身建连慢的合法请求也掐死。
+    """
+
+    def __init__(self, wrapped: httpx.BaseTransport) -> None:
+        self._wrapped = wrapped
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        original_extensions = request.extensions
+        timeout = dict(original_extensions.get("timeout") or {})
+        timeout["connect"] = DIRECT_CONNECT_TIMEOUT_SECONDS
+        request.extensions = {**original_extensions, "timeout": timeout}
+        try:
+            return self._wrapped.handle_request(request)
+        finally:
+            request.extensions = original_extensions
 
 
 class RetryingTransport(httpx.BaseTransport):
@@ -106,19 +122,15 @@ class FallbackTransport(httpx.BaseTransport):
         decision = egress.plan(host)
         if decision.use_proxy:
             return self._proxied.handle_request(request)
-        # 重探会原地注入 connect=8s 的短超时；代理腿建连慢于 8s 时这个残留会把
-        # 本能走通的兜底也掐死，重试前必须还原请求原超时
-        original_extensions = request.extensions
+        # 直连腿自带建连超时上限（_DirectConnectCapTransport），用完自行还原请求，
+        # 失败残留不会泄漏到代理腿
         try:
-            response = self._direct.handle_request(
-                _force_short_connect(request) if decision.reprobe else request
-            )
+            response = self._direct.handle_request(request)
         except httpx.TransportError as exc:
             if isinstance(exc, _NO_FALLBACK_ERRORS):
                 raise
             egress.mark_direct_failed(host)
             tasklog.emit(f"[{host}] 直连失败（{exc}），改走备用代理重试", "warn")
-            request.extensions = original_extensions
             return self._proxied.handle_request(request)
         if response.status_code in _FALLBACK_STATUS_CODES:
             egress.mark_direct_failed(host)
@@ -127,7 +139,6 @@ class FallbackTransport(httpx.BaseTransport):
                 "warn",
             )
             response.close()
-            request.extensions = original_extensions
             return self._proxied.handle_request(request)
         egress.mark_direct_ok(host)
         return response
@@ -156,14 +167,14 @@ def build_client(
             timeout=timeout,
             headers=headers,
             follow_redirects=follow_redirects,
-            transport=RetryingTransport(httpx.HTTPTransport()),
+            transport=RetryingTransport(_DirectConnectCapTransport(httpx.HTTPTransport())),
         )
     return httpx.Client(
         timeout=timeout,
         headers=headers,
         follow_redirects=follow_redirects,
         transport=FallbackTransport(
-            direct=RetryingTransport(httpx.HTTPTransport()),
+            direct=RetryingTransport(_DirectConnectCapTransport(httpx.HTTPTransport())),
             proxied=RetryingTransport(httpx.HTTPTransport(proxy=fallback_proxy)),
         ),
     )
