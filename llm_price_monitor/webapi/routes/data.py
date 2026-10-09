@@ -87,8 +87,12 @@ def build_router(store: Store) -> APIRouter:
 
     @router.get("/api/feed")
     def feed(events_limit: int = 200, notice_limit: int = 200) -> dict[str, Any]:
-        """统一事件流：价格事件与站点公告事件按时间合并排序，各自的全量总数单独给出。"""
-        price_events, price_total = store.read_events(limit=events_limit)
+        """统一事件流：价格事件与站点公告事件按时间合并排序，各自的全量总数单独给出。
+
+        分组下线事件只在库里留档（排查模型消失时查 price_events），不在任何页面展示：
+        首页、历史页、管理台共用本接口，在这里拦掉即全端隐藏。
+        """
+        price_events, price_total = store.read_events(limit=events_limit, exclude_kind="group_removed")
         notice_events, notice_total = store.read_notice_events(limit=notice_limit)
         return {
             "events": sorted([*price_events, *notice_events], key=lambda e: e["detected_at"], reverse=True),

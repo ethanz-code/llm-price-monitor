@@ -14,7 +14,8 @@
 - **AI 兜底**：非 New API 格式交给 AI 做证据抽取，结果过模型名、URL、价格数值三重校验，无法闭环时降级，不猜测。
 - **分组展开**：多分组（`enable_groups`）逐分组输出；分组倍率未公开时直接跳过，不伪造价格。
 - **站点公告存档**：随价格采集顺带抓取各站点公告（new-api 系默认 `/api/notice`，可配 `notice.url` 覆盖），并顺带读 `/api/status` 的 `announcements` 列表把多条公告分节拼入正文（拿不到则回落单条）；正文变化才存新版本并发事件；历史版本在站点检测页回看。
-- **官方原价对比**：官方列表价来自开源模型目录 [models.dev](https://models.dev)（Cloudflare CDN 直连，免搜索、免 AI、免密钥），折扣率以列表价为基准。
+- **官方原价对比**：官方列表价来自开源模型目录 [models.dev](https://models.dev)（Cloudflare CDN 直连，免搜索、免 AI、免密钥）；models.dev 的国内价格一律不取（时段价混装、非官方人民币标价），国内厂商的折扣基准只来自管理台「厂商定价源」抓取的官方定价页，配源前以国际站价为准并保留国际参考价。
+- **厂商定价源**：国内基准价的唯一来源。在管理台「厂商定价源」一键添加覆盖检测给出的推荐定价页/价格接口（如智谱的 bigmodel.cn 定价页），或手动配置任意厂商的公开定价页 URL（只填厂商名 + URL，无需鉴权）；抓取该页全部模型价格合并进官方目录（确定性解析优先、AI 兜底防幻觉）。源分区域：国内源（cn）作折扣基准，海外源（global）只补国际参考价（页面没标货币时按美元折算）。
 - **证据脱敏**：Authorization、Cookie、各类 token 自动脱敏；配置敏感值支持 `${ENV_VAR}` 引用。
 
 ## 模块结构
@@ -28,6 +29,8 @@ llm_price_monitor/
 ├── ai.py                 # AI 价格抽取与结果校验
 ├── config.py             # 强类型配置（JSON/数据库 → MonitorConfig）
 ├── evidence.py / matching.py / units.py / useragent.py
+├── page_price.py         # 通用定价页拉取：URL → 结构化模型价格（确定性解析优先、AI 兜底）
+│   ├── vendor_sources.py # 厂商定价源：国内价覆盖检测、定价源存取与目录合并
 ├── webapi/
 │   ├── app.py            # 应用组装：种子导入、鉴权中间件、按域挂载 APIRouter、CLI 入口
 │   ├── deps.py           # 路由共享小工具（配置加载、登录态、目录读取、汇率取值）
@@ -44,11 +47,13 @@ llm_price_monitor/
 
 ## 命令行入口
 
-已注册到 pyproject `[project.scripts]` 的唯一命令：
+已注册到 pyproject `[project.scripts]` 的命令：
 
 | 命令 | 用途 |
 | --- | --- |
 | `price-web` | 启动 Web 服务（FastAPI API 层），`--with-frontend` 同时拉起 Next.js 前端 |
+| `price-admin` | 管理员工具：重置管理员账号、整理存量站点配置 |
+| `price-page` | 通用定价页拉取：输入厂商定价页 URL，输出该页全部模型的结构化价格 |
 
 监控、官方价搜索、折扣计算等能力全部通过 HTTP API 使用
 （写接口需要管理员 session，见 README「鉴权」说明）：
@@ -75,7 +80,7 @@ llm_price_monitor/
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/collect -H 'Content-Type: application/json' -d '{"persist": true}'
+curl -X POST http://127.0.0.1:8437/api/collect -H 'Content-Type: application/json' -d '{"persist": true}'
 ```
 
 请求体常用字段：`site_id`（单站测试）、`persist`（默认 `false`，`true` 时把历史/快照/事件写入数据库）。响应是后台任务 id，用 `GET /api/tasks/{task_id}` 轮询结果。
@@ -83,23 +88,46 @@ curl -X POST http://127.0.0.1:8000/api/collect -H 'Content-Type: application/jso
 ### 2. 官方价目录同步
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/catalog/refresh
+curl -X POST http://127.0.0.1:8437/api/catalog/refresh
 ```
 
 - 数据来自 [models.dev](https://models.dev) 的 `api.json` 全量快照（Cloudflare CDN 分发，国内外服务器均可直连），无需任何密钥，通常几秒完成。
 - 定时拉取：空库启动或目录已过期（超过 24 小时未更新）时立即同步一次，之后每 24 小时定时重新拉取，无需手动维护。
-- 内置八家厂商白名单（OpenAI、Anthropic、Google、xAI、Zhipu AI、DeepSeek、Moonshot AI、Alibaba Cloud）：官方 lab 条目优先，`-cn` 国内渠道条目只为补缺（如 `moonshotai-cn` 独有的模型）。
-- 白名单外的平台条目（openrouter、vertex、coding-plan 等转售/托管渠道）不进官方价目录，坚持一手来源；但同一次同步会另存一份**全量渠道价目录**（`GET /api/catalog/all`），models.dev 所有厂商的带价模型都收录，在厂商定价页的「全量渠道」页签展示（`/catalog?view=all` 可直达），仅供比价，不参与折扣计算。
+- 内置七家厂商白名单（OpenAI、Anthropic、Google、xAI、Zhipu AI、Moonshot AI、Alibaba Cloud），只收国际站条目：models.dev 的国内渠道条目（`-cn` 后缀与国内平台渠道）两份目录都不收录，其价格时段分档缺失、且为他方汇率换算价，实测与官方人民币标价偏差大。
+- 管理台「厂商定价源」配置的定价页会在每次同步前抓取并合并：国内源命中条目的基准换成国内页价（原国际价退居 `list_global` 参考），models.dev 没有的模型作为新条目进表（`region: cn`）；海外源只给国内基准条目补 `list_global` 国际参考价，不动基准、不新增条目。
+- 白名单外的平台条目（openrouter、vertex、coding-plan 等转售/托管渠道）不进官方价目录，坚持一手来源；但同一次同步会另存一份**全量渠道价目录**（`GET /api/catalog/all`），models.dev 全部国际渠道的带价模型都收录（国内渠道条目同样剔除），在厂商定价页的「全量渠道」页签展示（`/catalog?view=all` 可直达），仅供比价，不参与折扣计算。
 - 无请求体；数据源不可达时任务失败，旧目录原样保留。
 
 ### 3. 折扣率计算
 
 ```bash
-curl http://127.0.0.1:8000/api/discount
+curl http://127.0.0.1:8437/api/discount
 ```
 
 - 常规：读数据库中的最新快照与官方价目录，零站点请求；汇率统一用目录快照自带值（与页面展示口径一致），快照缺失时才实时拉取。
 - 官方价目录不存在时返回 404，所以**必须先触发目录同步**。
+
+### 4. 拉取厂商定价页（price-page）
+
+输入一个厂商官方定价页 URL，输出该页全部模型的结构化价格（模型名/输入/输出/缓存价/币种/单位/原文引用），用于核对厂商官方价，与站点采集链路相互独立：
+
+```bash
+uv run price-page https://docs.bigmodel.cn/cn/guide/start/pricing.md
+uv run price-page <url> --out prices.json        # 写文件；省略 --out 打到 stdout
+```
+
+- 解析顺序：Markdown 表格（Mintlify 系文档站的 `.md` 页）→ HTML 表格 → JSON/压缩 JS 价格表，任一命中即停；JS 空壳页自动回退无头浏览器渲染，仍拿不到才走 AI 兜底
+- AI 兜底结果一律标 `candidate`，且模型名与价格数字必须在页面文本中字面出现（防幻觉）；`--no-ai` 关闭，AI 配置省略时读数据库设置，也可用 `--ai-base-url/--ai-api-key/--ai-model` 显式给
+- 币种按页面如实标注（元 → CNY、$ → USD），单位统一 `/1M tokens`，不做汇率折算；同一模型多上下文档第一行做基准、全部档位进 `tiers`
+- 一条价都没拿到时退出码 1，warnings 走 stderr
+
+### 5. 厂商定价源（管理台）
+
+目录不再收录 models.dev 的任何国内价格，国内厂商（无论 models.dev 是否收录、是否带国内站口径）都需要在这里配置国内定价页。管理台「厂商定价源」页提供覆盖检测与自定义抓取：
+
+- **覆盖检测**：按内置品牌表对照 models.dev 厂商清单，给出「已覆盖 / 仅国际口径 / 未收录」三档结论；推荐添加的厂商可一键带出厂商名与已核验的建议 URL。
+- **添加定价源**：填厂商名与公开定价页 URL（无需鉴权），「立即抓取」用 price-page 同款解析取回该页全部模型价格。
+- **合并进目录**：命中条目的基准换成国内页价（原国际价退居 `list_global` 参考），目录没有的模型新增条目；每次目录定时同步（默认 24h）都会先抓一遍定价源；停用/删除后自动触发目录刷新，回落到 models.dev 国际站基准。
 
 ## 监控输出结构
 
@@ -174,14 +202,15 @@ curl http://127.0.0.1:8000/api/discount
       "source_url": "https://platform.openai.com/docs/models",  // 厂商官方文档
       "description": "Flagship multimodal model ...",  // models.dev 收录的英文简介
       "family": "gpt-sol",         // models.dev 产品线家族
-      "limit": { "context": 1050000, "input": 922000, "output": 128000 },  // 上下文/最大输入/最大输出 token 上限
+      "limit": { "context": 1050000, "input": 922000, "output": 128437 },  // 上下文/最大输入/最大输出 token 上限
       "tier": "flagship"           // AI 档位：flagship 顶级（整行高亮）/ mainstream 主流 / null 其他；AI 不可用时缺省
     }
   }
 }
 ```
 
-- 只保留白名单厂商的官方 lab 条目，`-cn` 渠道只为补缺；平台转售条目（openrouter、vertex 等）不算折扣基准，见 `GET /api/catalog/all` 的全量渠道价目录。
+- 只保留白名单厂商的官方 lab 国际站条目，models.dev 国内渠道不收录；平台转售条目（openrouter、vertex 等）不算折扣基准，见 `GET /api/catalog/all` 的全量渠道价目录。
+- 部分模型另带长上下文分档价与音频价：`list_tiers`/`list_tiers_cny`（models.dev `tiers` 原结构，档内 `tier` 为分档条件，如 `{"type": "context", "size": 200000}` 表示 prompt 超 200K 后整请求按该档计费）、`list_audio`/`list_audio_cny`；上游没带的模型这些字段为 null。前端在厂商价列以小字展示（如 `>200K $10 / $60`、`音频 $6 / —`）。
 - 折扣基准统一为官方列表价；`list_cny` 与各处折扣计算共用目录快照汇率，保证页面展示与折扣口径一致。
 - `models` 顺序即展示顺序：厂商按权威清单排序（OpenAI → Anthropic → Google → xAI → Zhipu AI → DeepSeek → Moonshot → Alibaba Cloud），厂商内按发布时间倒序，最新在前。
 - `release_date` 是发布日期（缺失为 null），既在全量价格页展示，也是 AI 旗舰档位判定的输入：同产品线有更新代次或发布超过约 18 个月的旧代模型不会被高亮。

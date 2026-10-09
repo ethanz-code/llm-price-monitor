@@ -437,6 +437,8 @@ type RefreshOverride = Partial<{
   response_sample: string;
   access_token_field: string;
   refresh_token_field: string;
+  headers_text: string;
+  refresh_cookie_name: string;
 }>;
 
 /** 测试续签接口的成功返回：新 access_token 用于回填各处认证头，refresh_token 可能已被服务端换新 */
@@ -444,6 +446,7 @@ type RefreshTestResult = { access_token: string; refresh_token: string; refresh_
 
 /** 认证与续签子弹窗提交回主弹窗的字段集合 */
 type AuthFields = {
+  authToken: string;
   method: string;
   url: string;
   token: string;
@@ -451,6 +454,8 @@ type AuthFields = {
   sample: string;
   accessTokenField: string;
   refreshTokenField: string;
+  headersText: string;
+  cookieName: string;
 };
 
 /** 价格采集子弹窗提交回主弹窗的字段集合 */
@@ -573,7 +578,9 @@ function EntryCard({
         <span style={{ fontSize: 13.5, fontWeight: 550 }}>{title}</span>
         {configured && <span style={{ fontSize: 11, color: "var(--tone-green-text)" }}>已配置</span>}
       </span>
-      <span style={{ fontSize: 12, color: "var(--text-3)" }}>{desc}</span>
+      <span style={{ fontSize: 12, color: "var(--text-3)", wordBreak: "break-all" }} title={desc}>
+        {desc}
+      </span>
     </div>
   );
 }
@@ -747,11 +754,14 @@ function AuthSubModal({
   onCommit: (fields: AuthFields, rotation?: RefreshTestResult) => void;
   onClose: () => void;
 }) {
+  const [authToken, setAuthToken] = useState(initial.authToken);
   const [method, setMethod] = useState(initial.method);
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
   const [body, setBody] = useState(initial.body);
   const [sample, setSample] = useState(initial.sample);
+  const [headersRows, setHeadersRows] = useState<KvRow[]>(dictToRows(initial.headersText));
+  const [cookieName, setCookieName] = useState(initial.cookieName);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
@@ -760,6 +770,7 @@ function AuthSubModal({
   // AI 分析出的字段路径没有表单入口，展示出来让用户知道分析到了什么
   const accessTokenField = initial.accessTokenField;
   const refreshTokenField = initial.refreshTokenField;
+  const headersText = rowsToText(headersRows);
 
   // 续签即时校验：地址格式、请求体占位符、响应案例 JSON，填错当场提示不用等保存
   const urlError = url.trim() && !/^https?:\/\/\S+\.\S+/.test(url.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
@@ -784,8 +795,11 @@ function AuthSubModal({
     refresh_token: token,
     body,
     response_sample: sample,
+    headers_text: headersText,
+    refresh_cookie_name: cookieName,
   });
   const fields = (): AuthFields => ({
+    authToken,
     method,
     url,
     token,
@@ -793,6 +807,8 @@ function AuthSubModal({
     sample,
     accessTokenField,
     refreshTokenField,
+    headersText,
+    cookieName,
   });
 
   // 方法切到 POST 且请求体还空着时，自动填最常见的 JSON 模板，减少手写
@@ -838,6 +854,19 @@ function AuthSubModal({
     <Modal open onClose={onClose} title="认证与续签" width={640} footer={<SubModalFooter onCancel={onClose} onConfirm={commit} />}>
       <div style={{ display: "grid", gap: 14 }}>
         <div style={{ display: "grid", gap: 8 }}>
+          <span style={{ fontSize: 13.5 }}>站点令牌</span>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            站点级的 API Key，会自动加到价格、渠道状态、公告所有采集请求的认证头（默认 Authorization: Bearer …）；
+            公开接口留空。要换头名或前缀，去高级 JSON 调 auth_header / auth_prefix
+          </span>
+          <Input
+            value={authToken}
+            onChange={setAuthToken}
+            placeholder="sk-… 或令牌原文"
+            style={{ width: "100%" }}
+          />
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
           <span style={{ fontSize: 13.5 }}>Token 续签</span>
           <span style={{ fontSize: 12, color: "var(--text-3)" }}>
             站点认证 token 短效时，配一个续签接口：采集遇到"需认证"就自动调它换新 token 并重试
@@ -864,7 +893,7 @@ function AuthSubModal({
                 setToken(value);
                 setTestResult(null);
               }}
-              placeholder="Refresh Token，续签成功后会自动更新"
+              placeholder="Refresh Token（或 Cookie 值），续签成功后会自动更新"
               style={{ flex: 1, minWidth: 220 }}
             />
             <Input
@@ -878,6 +907,30 @@ function AuthSubModal({
             />
           </div>
           {bodyError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{bodyError}</span>}
+          <HeadersEditor
+            rows={headersRows}
+            onChange={(next) => {
+              setHeadersRows(next);
+              setTestResult(null);
+            }}
+            warningKeys={[]}
+            hint="只发给续签接口；凭据放在 Cookie 里的站点（如 new-api）填 cookie: new_api_refresh=${refresh_token}，续签后自动代入最新值"
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Input
+              value={cookieName}
+              onChange={(value) => {
+                setCookieName(value);
+                setTestResult(null);
+              }}
+              placeholder="轮换 Cookie 名，选填，如 new_api_refresh"
+              style={{ flex: 1, minWidth: 220 }}
+            />
+          </div>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            有的站点（new-api 系）Refresh Token 用一次就换新、新值只在响应 Set-Cookie 里：填了轮换
+            Cookie 名，续签后会自动接住新值接力续签，不用回浏览器重新抓
+          </span>
           <textarea
             className="input mono textarea"
             value={sample}
@@ -1123,7 +1176,7 @@ function PriceSubModal({
         <div style={{ display: "grid", gap: 14 }}>
           <SettingRow
             label="价格接口 URL"
-            hint="站点提供价格数据的接口地址；要带参数就直接拼在地址后面，如 ?page=1&lang=zh"
+            hint="填价格接口地址或网页地址都行；要带参数就直接拼在地址后面，如 ?page=1&lang=zh"
           >
             <Input
               value={url}
@@ -1218,6 +1271,45 @@ function JsonSubModal({
 /** 子弹窗标识：主弹窗同一时间最多打开一个 */
 type SubKey = "price" | "auth" | "status" | "notice" | "json";
 
+/** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面） */
+type CollectMode = "api" | "browser";
+
+/** 认证方式：无需认证 / 固定令牌 / 登录会话自动续签 */
+type AuthMode = "none" | "token" | "session";
+
+const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（无头浏览器）" };
+const AUTH_LABELS: Record<AuthMode, string> = { none: "无需认证", token: "固定令牌", session: "登录会话自动续签" };
+
+/**
+ * 已有配置 → 场景反推：配了续签是登录会话，配了站点令牌是固定令牌，开了无头是网页模式。
+ * 各接口请求头里手写的认证头不算——那是接口自己的配置，不是站点级认证，反推成"固定令牌"
+ * 会和「认证与续签」卡片的未配置状态自相矛盾。
+ */
+function sceneFromConfig(config: SiteConfig): { collect: CollectMode; auth: AuthMode } {
+  const auth: AuthMode =
+    config.token_refresh?.url || config.token_refresh?.refresh_cookie_name
+      ? "session"
+      : typeof config.auth_token === "string" && config.auth_token.trim() !== ""
+        ? "token"
+        : "none";
+  return { collect: config.network?.headless?.enabled === true ? "browser" : "api", auth };
+}
+
+/** 从采集地址取站点域名（new-api 型续签地址按它推导）；不是合法 URL 返回空串 */
+function originOf(text: string): string {
+  try {
+    return new URL(text.trim()).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** 地址太长时截断给入口卡片描述用；去掉协议头让有限宽度里能多看到路径 */
+function shortenUrlText(text: string, max = 46): string {
+  const bare = text.trim().replace(/^https?:\/\//, "");
+  return bare.length > max ? `${bare.slice(0, max)}…` : bare;
+}
+
 function SiteModal({
   initial,
   isNew,
@@ -1280,12 +1372,34 @@ function SiteModal({
   const [refreshTokenField, setRefreshTokenField] = useState(
     typeof initial.token_refresh?.refresh_token_field === "string" ? initial.token_refresh.refresh_token_field : "",
   );
+  // 续签专属请求头（cookie 型站点在这里放 new_api_refresh=${refresh_token}）与轮换 Cookie 名
+  const [refreshHeadersText, setRefreshHeadersText] = useState(() => dictToText(initial.token_refresh?.headers));
+  const [refreshCookieName, setRefreshCookieName] = useState(
+    typeof initial.token_refresh?.refresh_cookie_name === "string" ? initial.token_refresh.refresh_cookie_name : "",
+  );
   // 网页模式·无头浏览器表单草稿
   const [headless, setHeadless] = useState<HeadlessForm>(() => headlessFromConfig(initial));
   const [activeSub, setActiveSub] = useState<SubKey | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
+  // 当前场景从高级 JSON 实时派生：预填落进 JSON 后，场景下拉的选中值立即跟着变
+  const sceneNow = useMemo(() => {
+    try {
+      return sceneFromConfig(JSON.parse(advanced) as SiteConfig);
+    } catch {
+      return sceneFromConfig(initial);
+    }
+  }, [advanced, initial]);
+  // 「认证与续签」卡片的已配置状态：续签地址或站点令牌任一存在
+  const authTokenConfigured = useMemo(() => {
+    try {
+      const parsed = JSON.parse(advanced) as SiteConfig;
+      return typeof parsed.auth_token === "string" && parsed.auth_token.trim() !== "";
+    } catch {
+      return false;
+    }
+  }, [advanced]);
 
   // 续签即时校验：地址格式、请求体 JSON、响应案例 JSON，填错当场提示不用等保存
   const refreshUrlError = refreshUrl.trim() && !/^https?:\/\/\S+\.\S+/.test(refreshUrl.trim()) ? "地址要以 http(s):// 开头且带域名" : "";
@@ -1342,6 +1456,8 @@ function SiteModal({
     const atField = (overrides.access_token_field ?? accessTokenField).trim();
     const rtField = (overrides.refresh_token_field ?? refreshTokenField).trim();
     const sample = (overrides.response_sample ?? refreshSample).trim();
+    const cookieName = (overrides.refresh_cookie_name ?? refreshCookieName).trim();
+    const headers = textToDict(overrides.headers_text ?? refreshHeadersText);
     return {
       url: targetUrl,
       method: overrides.method ?? refreshMethod,
@@ -1350,18 +1466,22 @@ function SiteModal({
       ...(sample ? { response_sample: sample } : {}),
       ...(atField ? { access_token_field: atField } : {}),
       ...(rtField ? { refresh_token_field: rtField } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(cookieName ? { refresh_cookie_name: cookieName } : {}),
     };
   }
 
   function syncTokenRefresh(overrides: RefreshOverride = {}) {
     syncAdvanced((base) => {
       const next = tokenRefreshConfig(overrides);
-      if (next === null) {
+      if (!next) {
         // 清空地址多半是在改地址，此刻删整个 token_refresh 会连带丢掉 refresh_token/请求体；
         // 先不动 JSON，"地址为空 = 移除续签"留到保存时统一处理
         return base;
       }
-      const merged = base.token_refresh ? { ...base.token_refresh, ...next } : next;
+      const merged = { ...(base.token_refresh ?? {}), ...next } as SiteConfig["token_refresh"];
+      // 表单里清空了续签请求头 = 移除；merge 语义覆盖不掉旧键，这里显式删
+      if (merged && !("headers" in next) && "headers" in merged) delete merged.headers;
       return { ...base, token_refresh: merged };
     });
   }
@@ -1413,6 +1533,8 @@ function SiteModal({
     setRefreshSample(typeof refresh?.response_sample === "string" ? refresh.response_sample : "");
     setAccessTokenField(typeof refresh?.access_token_field === "string" ? refresh.access_token_field : "");
     setRefreshTokenField(typeof refresh?.refresh_token_field === "string" ? refresh.refresh_token_field : "");
+    setRefreshHeadersText(dictToText(refresh?.headers));
+    setRefreshCookieName(typeof refresh?.refresh_cookie_name === "string" ? refresh.refresh_cookie_name : "");
     setHeadless(headlessFromConfig(config));
   }
 
@@ -1477,6 +1599,9 @@ function SiteModal({
     setRefreshSample(fields.sample);
     setAccessTokenField(fields.accessTokenField);
     setRefreshTokenField(fields.refreshTokenField);
+    setRefreshHeadersText(fields.headersText);
+    setRefreshCookieName(fields.cookieName);
+    syncAdvanced((base) => ({ ...base, auth_token: fields.authToken.trim() || null }));
     syncTokenRefresh({
       method: fields.method,
       url: fields.url,
@@ -1485,6 +1610,8 @@ function SiteModal({
       response_sample: fields.sample,
       access_token_field: fields.accessTokenField,
       refresh_token_field: fields.refreshTokenField,
+      headers_text: fields.headersText,
+      refresh_cookie_name: fields.cookieName,
     });
     if (rotation) syncAdvanced((base) => applyRefreshResult(base, rotation));
     setActiveSub(null);
@@ -1497,6 +1624,11 @@ function SiteModal({
     setHeadless(next.headless);
     setRatioUrl(next.ratioUrl);
     setRatioHeadersText(next.ratioHeadersText);
+    // 先选了"登录会话"后填地址：续签地址为空时按站点域名自动补全（表单状态与 JSON 同步）
+    if (!refreshUrl.trim() && refreshCookieName.trim()) {
+      const origin = originOf(next.url);
+      if (origin) setRefreshUrl(`${origin}/api/user/auth/refresh`);
+    }
     syncAdvanced((base) => {
       const network = { ...(base.network ?? {}) } as Record<string, unknown>;
       applyEntryUrl(network, "url", next.url);
@@ -1532,7 +1664,13 @@ function SiteModal({
       } else {
         delete network.headless;
       }
-      return { ...base, network: network as SiteConfig["network"] };
+      const nextConfig = { ...base, network: network as SiteConfig["network"] };
+      const refresh = nextConfig.token_refresh;
+      if (refresh && !String(refresh.url ?? "").trim() && refresh.refresh_cookie_name) {
+        const origin = originOf(next.url);
+        if (origin) nextConfig.token_refresh = { ...refresh, url: `${origin}/api/user/auth/refresh` };
+      }
+      return nextConfig;
     });
     setActiveSub(null);
   }
@@ -1600,10 +1738,57 @@ function SiteModal({
 
   const headlessConfigured =
     headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0 || headless.headers.length > 0;
-  // 地址输入框旁的提示随网页模式切换：开无头浏览器后页面可以要登录
-  const urlHint = headless.enabled
-    ? "将用无头浏览器打开页面并注入上面的 Cookie 和登录信息，可采集需要登录的页面"
-    : "填价格接口地址或网页地址都行，系统会自动顺着页面找到价格数据；抓不到时会自动换无头浏览器再试一次（带上下面配置的 Cookie 和请求头）";
+
+  // 场景应用：只做预填，不删已填内容；真实配置始终以 JSON 字段为准。
+  // sceneNow 从高级 JSON 派生（含刚写入的预填），场景下拉的选中值据此实时更新
+  function applyCollectMode(next: CollectMode) {
+    if (next === "api") {
+      // 接口直采没有模板可预填，也不反向关掉已开的无头浏览器；解释一下为什么下拉没跟着变
+      if (headless.enabled) toast("场景跟着实际配置走：到「价格采集」里关掉无头浏览器，这里就会切回接口直采");
+      return;
+    }
+    if (headless.enabled) return;
+    const waitSeconds = headless.waitSeconds.trim() || "3";
+    setHeadless({ ...headless, enabled: true, waitSeconds });
+    syncAdvanced((base) => {
+      const network = { ...(base.network ?? {}) } as Record<string, unknown>;
+      const existing = network.headless !== null && typeof network.headless === "object" ? network.headless : {};
+      network.headless = { ...existing, enabled: true, wait_seconds: Number(waitSeconds) || 3 };
+      return { ...base, network: network as SiteConfig["network"] };
+    });
+  }
+
+  function applyAuthMode(next: AuthMode) {
+    // 首次切到登录会话：带出 new-api 型续签模板（域名从采集地址推导）；已配置或已填过的字段一律不动
+    if (next !== "session") {
+      // 固定令牌/无需认证没有模板可预填，也不反向清掉已配的认证；解释一下为什么下拉没跟着变
+      if (sceneNow.auth !== next) {
+        toast("场景跟着实际配置走：到「认证与续签」里填站点令牌或清空认证，这里会自动跟着变");
+      }
+      return;
+    }
+    if (refreshUrl.trim() || refreshCookieName.trim()) return;
+    const origin = originOf(url);
+    if (origin) setRefreshUrl(`${origin}/api/user/auth/refresh`);
+    else toast("采集地址还没填，续签地址会在填好后自动带出；现在可以直接进「认证与续签」贴凭据");
+    if (!refreshHeadersText.trim()) setRefreshHeadersText("cookie: new_api_refresh=${refresh_token}");
+    if (!refreshCookieName.trim()) setRefreshCookieName("new_api_refresh");
+    if (!accessTokenField.trim()) setAccessTokenField("data.access_token");
+    syncAdvanced((base) => {
+      if (base.token_refresh?.url) return base;
+      return {
+        ...base,
+        token_refresh: {
+          method: "POST",
+          url: origin ? `${origin}/api/user/auth/refresh` : "",
+          refresh_token: refreshToken,
+          headers: { cookie: "new_api_refresh=${refresh_token}" },
+          refresh_cookie_name: "new_api_refresh",
+          access_token_field: "data.access_token",
+        },
+      };
+    });
+  }
 
   async function save() {
     if (refreshUrlError || refreshBodyError || refreshSampleError) {
@@ -1687,17 +1872,47 @@ function SiteModal({
               style={{ width: "min(280px, 100%)" }}
             />
           </SettingRow>
-          <SettingRow label="采集地址" hint={urlHint}>
-            <Input
-              value={url}
-              onChange={(value) => {
-                setUrl(value);
-                syncAdvanced((base) => ({ ...base, network: { ...(base.network ?? {}), url: value.trim() || null } }));
-              }}
-              placeholder="https://example.com/api/pricing"
-              style={{ width: "min(360px, 100%)" }}
+          {/* 采集场景直接外显：改选即时预填对应模块（只预填不清已填），选中值从高级 JSON 实时派生 */}
+          <SettingRow
+            label="采集方式"
+            hint={
+              sceneNow.collect === "browser"
+                ? "用无头浏览器直接打开页面采集，可注入 Cookie 和登录信息，适合要登录才能看的页面；Cookie 等细节在「价格采集」里"
+                : "先当接口请求，抓到的是网页壳时自动换无头浏览器再试一次；一般站点选这个就够"
+            }
+          >
+            <Sel
+              value={sceneNow.collect}
+              onChange={(value) => applyCollectMode(value === "browser" ? "browser" : "api")}
+              options={(Object.keys(COLLECT_LABELS) as CollectMode[]).map((value) => ({
+                value,
+                label: COLLECT_LABELS[value],
+              }))}
+              style={{ width: "min(240px, 100%)" }}
             />
           </SettingRow>
+          <SettingRow
+            label="认证方式"
+            hint={
+              sceneNow.auth === "session"
+                ? "已按采集地址带出 new-api 型续签模板；到「认证与续签」贴上自己的 Refresh Token（Cookie 值）即可自动接力换新"
+                : sceneNow.auth === "token"
+                  ? "到「认证与续签」填站点令牌，所有采集请求会自动带上"
+                  : "公开接口不用认证；各接口请求头里手写过的凭证不受影响，之后要认证了再回来切"
+            }
+          >
+            <Sel
+              value={sceneNow.auth}
+              onChange={(value) =>
+                applyAuthMode(value === "session" ? "session" : value === "token" ? "token" : "none")
+              }
+              options={(Object.keys(AUTH_LABELS) as AuthMode[]).map((value) => ({ value, label: AUTH_LABELS[value] }))}
+              style={{ width: "min(240px, 100%)" }}
+            />
+          </SettingRow>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+            切场景只把常用填法带出来，已填过的内容不会被清掉；细节仍在下面各模块卡片里改
+          </span>
           <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
             <ModelMultiSelect
               value={models}
@@ -1729,18 +1944,18 @@ function SiteModal({
             )}
           </SettingRow>
 
-          {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿 */}
+          {/* 入口卡片：点击打开对应子弹窗，确定才写回草稿；价格采集卡片实时显示当前采集地址 */}
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))" }}>
             <EntryCard
               title="价格采集"
-              desc="价格接口、请求头、无头浏览器与倍率"
+              desc={url.trim() ? shortenUrlText(url) : "填价格接口或网页地址"}
               configured={Boolean(url.trim() || endpointHeadersText.trim() || headlessConfigured || ratioUrl.trim())}
               onClick={() => setActiveSub("price")}
             />
             <EntryCard
               title="认证与续签"
-              desc="填 Token 续签接口，token 失效自动换新"
-              configured={Boolean(refreshUrl.trim())}
+              desc="填站点令牌或续签接口，token 失效自动换新"
+              configured={Boolean(refreshUrl.trim()) || Boolean(authTokenConfigured)}
               onClick={() => setActiveSub("auth")}
             />
             <EntryCard
@@ -1788,6 +2003,7 @@ function SiteModal({
       {activeSub === "auth" && (
         <AuthSubModal
           initial={{
+            authToken: typeof initial.auth_token === "string" ? initial.auth_token : "",
             method: refreshMethod,
             url: refreshUrl,
             token: refreshToken,
@@ -1795,6 +2011,8 @@ function SiteModal({
             sample: refreshSample,
             accessTokenField,
             refreshTokenField,
+            headersText: refreshHeadersText,
+            cookieName: refreshCookieName,
           }}
           runTest={runRefreshTest}
           onCommit={commitAuth}

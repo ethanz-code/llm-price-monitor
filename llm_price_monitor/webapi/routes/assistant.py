@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from fastapi.responses import StreamingResponse
 
-from llm_price_monitor.ai import AIExtractionError, ai_stream_fallback, chat_content, request_with_model_fallback
+from llm_price_monitor.ai import AIExtractionError, ai_stream_fallback, chat_content, provider_error_detail, request_with_model_fallback
 from llm_price_monitor.config import ai_from_raw, settings_from_raw
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.deps import client_ip
@@ -28,6 +28,8 @@ _MAX_TEXT_CHARS = 200
 _MAX_CHANGES = 10
 # 随问题携带的最近对话轮数：再多 token 浪费、收益很小
 _MAX_HISTORY_TURNS = 6
+# 单条历史消息送进提示词的长度上限：助手长回答整段带上没有收益
+_MAX_HISTORY_CHARS = 500
 
 _SYSTEM_PROMPT = (
     "你是 LLM 价格监控平台的智能分析助手。回答要依据本平台采集的数据：监控站点（含站点地址）"
@@ -81,7 +83,12 @@ def recent_history(body: AskBody) -> list[HistoryTurn]:
 def history_text(turns: list[HistoryTurn]) -> str:
     if not turns:
         return ""
-    lines = [f"{'用户' if turn.role == 'user' else '助手'}：{turn.content.strip()}" for turn in turns]
+
+    def clip(text: str) -> str:
+        text = text.strip()
+        return text[:_MAX_HISTORY_CHARS] + "…" if len(text) > _MAX_HISTORY_CHARS else text
+
+    lines = [f"{'用户' if turn.role == 'user' else '助手'}：{clip(turn.content)}" for turn in turns]
     return "\n\n最近对话（供理解指代与上下文）：\n" + "\n".join(lines)
 
 
@@ -213,7 +220,7 @@ def build_router(store: Store) -> APIRouter:
             text = chat_content(response.json())
             action = str(json.loads(text[text.index("{"): text.rindex("}") + 1]).get("action") or "")
             return action if action in {"refuse", "general", "data"} else "data"
-        except (httpx.HTTPError, AIExtractionError, ValueError, json.JSONDecodeError, AttributeError):
+        except (httpx.HTTPError, AIExtractionError, ValueError, AttributeError):
             return "data"
 
     def build_prompt(action: str, question: str, turns: list[HistoryTurn]) -> tuple[str, str]:
@@ -244,7 +251,7 @@ def build_router(store: Store) -> APIRouter:
             _, response = request_with_model_fallback(config, system, user, json_mode=False, scene="助手问答")
             answer = chat_content(response.json())
         except httpx.HTTPStatusError as exc:
-            raise HTTPException(status_code=502, detail=f"AI 服务返回了错误（HTTP {exc.response.status_code}）：{exc.response.text[:200]}") from exc
+            raise HTTPException(status_code=502, detail=f"AI 服务返回了错误：{provider_error_detail(exc.response)}") from exc
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"AI 服务暂时连不上：{exc}") from exc
         except AIExtractionError as exc:
@@ -285,8 +292,9 @@ def build_router(store: Store) -> APIRouter:
                     yield emit({"delta": chunk})
                 record_quota(ip)
                 yield emit({"done": True})
-            except (httpx.HTTPError, AIExtractionError) as exc:
-                yield emit({"error": str(exc)})
+            except Exception as exc:
+                # SSE 出错必须转成错误帧送达前端：这里抛出去会直接掐断连接，用户只能看到"网络不顺畅"
+                yield emit({"error": str(exc) or type(exc).__name__})
 
         return StreamingResponse(frames(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

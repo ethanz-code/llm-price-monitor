@@ -5,4 +5,18 @@
 路由模块之间不互相导入。
 """
 
-from . import ai_logs, analytics, assistant, auth, catalog, collect, data, geo, settings, sites, status, submissions  # noqa: F401
+from . import (  # noqa: F401
+    ai_logs,
+    analytics,
+    assistant,
+    auth,
+    catalog,
+    collect,
+    data,
+    geo,
+    settings,
+    sites,
+    status,
+    submissions,
+    vendor_sources,
+)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -17,7 +18,7 @@ import httpx
 
 from llm_price_monitor import tasklog
 from llm_price_monitor.adapters import ADAPTERS
-from llm_price_monitor.config import ChangeKind, MonitorConfig, PriceMonitorError, SiteSpec
+from llm_price_monitor.config import AuthRequiredError, ChangeKind, MonitorConfig, PriceMonitorError, SiteSpec
 from llm_price_monitor.tracker import PriceRecord
 from llm_price_monitor.units import round2, tier_unit_per_1m
 from llm_price_monitor.useragent import choose_user_agent
@@ -25,7 +26,7 @@ from llm_price_monitor.catalog import discount as catalog_discount, fx as catalo
 from llm_price_monitor.notice import fetch_site_notice
 from llm_price_monitor.status import diff_status, fetch_site_status
 from llm_price_monitor.store import Store
-from llm_price_monitor.token_refresh import needs_refresh, refresh_and_recollect
+from llm_price_monitor.token_refresh import needs_refresh, refresh_and_recollect, refresh_and_retry_once
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,69 @@ def _merge_collect_status(store: Store, config: MonitorConfig, site_status: dict
         elif not spec.enabled:
             merged_status[spec.id] = {"status": "disabled", "error": None, "checked_at": None}
     store.set_document("collect_status", merged_status)
+
+
+def _merge_site_health(store: Store, section: str, entries: dict[str, dict[str, Any] | None]) -> None:
+    """把一类采集的逐站结果并入 site_collect_health：entry 为 None 表示该站本轮正常，清掉旧记录。"""
+    doc = dict(store.get_document("site_collect_health") or {})
+    for site_id, entry in entries.items():
+        site_doc = dict(doc.get(site_id) or {})
+        if entry is None:
+            site_doc.pop(section, None)
+        else:
+            site_doc[section] = entry
+        if site_doc:
+            doc[site_id] = site_doc
+        else:
+            doc.pop(site_id, None)
+    store.set_document("site_collect_health", doc)
+
+
+_TRANSPORT_ERROR_RE = re.compile(r"ssl\b|\beof\b|timed out|timeout|connection", re.IGNORECASE)
+
+
+def _is_transport_error(message: str) -> bool:
+    """网络传输层故障（SSL 握手中断、超时、连接被重置等）：多为环境抖动，不值得进健康档案惊动用户。"""
+    return bool(_TRANSPORT_ERROR_RE.search(message))
+
+
+def _merge_price_health(store: Store, config: MonitorConfig, site_status: dict[str, dict[str, Any]]) -> None:
+    """价格采集的逐站异常进健康档案：采集失败红、需认证/无数据黄，正常或停用清除。"""
+    entries: dict[str, dict[str, Any] | None] = {}
+    for spec in config.sites:
+        value = site_status.get(spec.id)
+        status = str(value.get("status")) if value else ""
+        if status == "error":
+            message = str(value.get("error") or "价格采集失败")
+            entries[spec.id] = (
+                None
+                if _is_transport_error(message)
+                else {
+                    "level": "error",
+                    "message": message,
+                    "time": float(value.get("checked_at") or time.time()),
+                }
+            )
+        elif status in {"auth_required", "no_data"}:
+            fallback = "需要登录才能看到价格" if status == "auth_required" else "本轮没抓到任何价格数据"
+            entries[spec.id] = {
+                "level": "warn",
+                "message": str(value.get("error") or fallback),
+                "time": float(value.get("checked_at") or time.time()),
+            }
+        else:
+            entries[spec.id] = None  # 正常或停用：不保留旧异常
+    _merge_site_health(store, "price", entries)
+
+
+def _section_health_entries(config: MonitorConfig, scan: SectionScan, fallback: str) -> dict[str, dict[str, Any] | None]:
+    """渠道状态/公告采集共用的逐站异常条目：本轮业务报错的进档案，传输层抖动与其余（正常/停用/未配置接口）清除。"""
+    errored = {str(item.get("site_id")): str(item.get("error") or fallback) for item in scan.errors}
+    errored = {site_id: message for site_id, message in errored.items() if not _is_transport_error(message)}
+    return {
+        spec.id: ({"level": "error", "message": errored[spec.id], "time": time.time()} if spec.id in errored else None)
+        for spec in config.sites
+    }
 
 
 def _has_price(row: dict[str, Any]) -> bool:
@@ -439,6 +503,26 @@ def _scan_statuses(
             continue
         try:
             status_record = fetch_site_status(spec, client, config.settings.timeout, user_agent, config.ai)
+        except AuthRequiredError as exc:
+            # 站点配了续签就换一次新 token 重试；没配续签的按普通失败处理
+            if not spec.token_refresh:
+                scan.errors.append({"site_id": spec.id, "error": f"渠道状态采集失败: {exc}"})
+                tasklog.emit(f"[{spec.id}] 渠道状态采集失败：{exc}", "error")
+                continue
+            tasklog.emit(f"[{spec.id}] 渠道状态返回需认证，尝试续签 token…")
+            status_record, retry_error = refresh_and_retry_once(
+                spec,
+                client=client,
+                timeout=config.settings.timeout,
+                user_agent=user_agent,
+                store=store,
+                attempt=lambda fresh: fetch_site_status(fresh, client, config.settings.timeout, user_agent, config.ai),
+            )
+            if retry_error is not None:
+                scan.errors.append({"site_id": spec.id, "error": f"渠道状态采集失败: {retry_error}"})
+                tasklog.emit(f"[{spec.id}] 渠道状态采集失败：{retry_error}", "error")
+                continue
+            tasklog.emit(f"[{spec.id}] token 已续签并重新采集渠道状态")
         except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
             scan.errors.append({"site_id": spec.id, "error": f"渠道状态采集失败: {exc}"})
             tasklog.emit(f"[{spec.id}] 渠道状态采集失败：{exc}", "error")
@@ -484,6 +568,30 @@ def _scan_notices(
             continue
         try:
             notice_record = fetch_site_notice(spec, client, config.settings.timeout, user_agent, ai=config.ai)
+        except AuthRequiredError as exc:
+            # 同渠道状态：配了续签就换新 token 重试一次，否则照常记错误
+            if not spec.token_refresh:
+                scan.errors.append({"site_id": spec.id, "error": f"站点公告采集失败: {exc}"})
+                scan.site_results.append({"site_id": spec.id, "outcome": "error", "content": ""})
+                tasklog.emit(f"[{spec.id}] 站点公告采集失败：{exc}", "error")
+                continue
+            tasklog.emit(f"[{spec.id}] 公告地址返回需认证，尝试续签 token…")
+            notice_record, retry_error = refresh_and_retry_once(
+                spec,
+                client=client,
+                timeout=config.settings.timeout,
+                user_agent=user_agent,
+                store=store,
+                attempt=lambda fresh: fetch_site_notice(
+                    fresh, client, config.settings.timeout, user_agent, ai=config.ai
+                ),
+            )
+            if retry_error is not None:
+                scan.errors.append({"site_id": spec.id, "error": f"站点公告采集失败: {retry_error}"})
+                scan.site_results.append({"site_id": spec.id, "outcome": "error", "content": ""})
+                tasklog.emit(f"[{spec.id}] 站点公告采集失败：{retry_error}", "error")
+                continue
+            tasklog.emit(f"[{spec.id}] token 已续签并重新采集公告")
         except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
             scan.errors.append({"site_id": spec.id, "error": f"站点公告采集失败: {exc}"})
             scan.site_results.append({"site_id": spec.id, "outcome": "error", "content": ""})
@@ -549,6 +657,7 @@ def scan_prices(
             store.append_events(changed_events)
             _persist_latest(store, latest, removed_keys=removed_keys)
             _merge_collect_status(store, config, site_status)
+            _merge_price_health(store, config, site_status)
         return MonitorReport(started, time.time(), records, changed_events, errors, site_status=site_status)
     finally:
         if own:
@@ -572,6 +681,7 @@ def scan_statuses(
         if persist and store is not None:
             store.append_status_records(scan.records)
             store.append_status_events(scan.events)
+            _merge_site_health(store, "status", _section_health_entries(config, scan, "渠道状态采集失败"))
         return scan
     finally:
         if own:
@@ -595,6 +705,7 @@ def scan_notices(
         if persist and store is not None:
             store.append_notice_records(scan.records)
             store.append_notice_events(scan.events)
+            _merge_site_health(store, "notice", _section_health_entries(config, scan, "站点公告采集失败"))
         return scan
     finally:
         if own:
@@ -630,6 +741,9 @@ def run_once(
             store.append_notice_records(notice_scan.records)
             store.append_notice_events(notice_scan.events)
             _merge_collect_status(store, config, site_status)
+            _merge_price_health(store, config, site_status)
+            _merge_site_health(store, "status", _section_health_entries(config, status_scan, "渠道状态采集失败"))
+            _merge_site_health(store, "notice", _section_health_entries(config, notice_scan, "站点公告采集失败"))
         return MonitorReport(
             started,
             time.time(),

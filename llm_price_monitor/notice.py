@@ -21,7 +21,7 @@ import httpx
 from llm_price_monitor.adapters import build_request_kwargs, http_error_message, resolve_endpoint
 from llm_price_monitor.ai import AIConfig, extract_notice_content
 from llm_price_monitor.tasklog import emit as tasklog_emit
-from llm_price_monitor.config import PriceMonitorError, SiteSpec
+from llm_price_monitor.config import AuthRequiredError, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import redact_url
 
 
@@ -66,7 +66,7 @@ def _fetch_announcements(
         return []
     try:
         entry = resolve_endpoint({"url": url, "headers": _site_headers(spec)}, spec=spec, label="notice")
-        response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+        response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="notice"))
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError, PriceMonitorError) as exc:
@@ -124,13 +124,13 @@ def fetch_site_notice(
     entry_headers = notice_config.get("headers")
     notice_config["headers"] = {**_site_headers(spec), **{str(k): str(v) for k, v in entry_headers.items()}} if isinstance(entry_headers, dict) else _site_headers(spec)
     entry = resolve_endpoint(notice_config, spec=spec, label="notice")
-    response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+    response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="notice"))
     if response.status_code == 404:
         if not explicit:
             return None  # 自动推导地址 404 = 站点没有公告接口，属常态，静默跳过
         raise PriceMonitorError("公告地址返回 HTTP 404，请检查 notice.url 是否正确")
     if response.status_code in {401, 403}:
-        raise PriceMonitorError(http_error_message("公告地址", response, auth_hint=True))
+        raise AuthRequiredError(http_error_message("公告地址", response, auth_hint=True))
     response.raise_for_status()
     content = ""
     parse = "json"

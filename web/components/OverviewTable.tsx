@@ -207,7 +207,12 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       width: 180,
       mobileHide: true,
       sorter: (a, b) => (a.discount?.input ?? 9) - (b.discount?.input ?? 9),
-      render: (_, row) => <DiscountBars discount={row.discount} />,
+      render: (_, row) => (
+        <span style={{ display: "inline-grid", gap: 3 }}>
+          <DiscountBars discount={row.discount} />
+          {row.discount?.region === "cn" && <ToneTag tone="green">国内基准</ToneTag>}
+        </span>
+      ),
     },
     {
       title: (

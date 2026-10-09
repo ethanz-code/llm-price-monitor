@@ -55,7 +55,7 @@ def _is_stale(entry: dict[str, Any], cutoff: date) -> bool:
 
 
 def ai_available(config: AIConfig) -> bool:
-    return bool(config.enabled and config.base_url and config.api_key and (config.models or config.model))
+    return bool(config.enabled and config.base_url and config.api_key and config.models)
 
 
 def tier_fingerprint(entry: dict[str, Any]) -> str:
@@ -171,7 +171,7 @@ def _chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | 
     """一次 JSON 对话请求（与 ai.AIPriceExtractor 同一套响应解析）。"""
     ai_model = config.pick_model()
     if not config.base_url or not ai_model:
-        raise AIExtractionError("ai.base_url 或 ai.model/ai.models 未配置")
+        raise AIExtractionError("ai.base_url 或 ai.models 未配置")
     own = client is None
     client = client or httpx.Client(timeout=config.timeout)
     try:

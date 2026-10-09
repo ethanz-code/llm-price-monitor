@@ -400,6 +400,86 @@ def test_scan_statuses_runs_independently_of_prices(tmp_path: Path, monkeypatch)
     assert report.status_records == []  # 独立价格采集不碰渠道状态
 
 
+def test_scan_statuses_renews_token_on_401_and_retries(tmp_path: Path):
+    """渠道状态撞 401：配了续签的站点换一次新 token 重试，成功则照常入库并把新 token 写回配置。"""
+    from llm_price_monitor.report import scan_statuses
+
+    site = {
+        "id": "demo",
+        "models": ["demo-model"],
+        "auth_token": "at_stale",
+        "network": {"url": "https://demo.test/api/pricing"},
+        "status": {"url": "https://demo.test/api/status"},
+        "token_refresh": {"url": "https://demo.test/api/user/auth/refresh", "refresh_token": "rt_x"},
+    }
+    config = _config_file(tmp_path, site)
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("demo", site)
+    seen_auth: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/refresh"):
+            return httpx.Response(200, json={"data": {"access_token": "at_new"}})
+        seen_auth.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != "Bearer at_new":
+            return httpx.Response(401, json={"success": False, "message": "未登录"})
+        return httpx.Response(200, json={"channels": [{"name": "gpt", "status": "up"}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        scan = scan_statuses(config, store=store, client=client)
+
+    assert scan.errors == []
+    assert scan.records[0]["data"]["channels"][0]["status"] == "up"
+    assert seen_auth == ["Bearer at_stale", "Bearer at_new"]  # 旧 token 撞 401，换新后重试成功
+    assert store.get_site_config("demo")["auth_token"] == "at_new"
+
+
+def test_fetch_site_status_carries_injected_credential(tmp_path: Path):
+    """渠道状态请求按「认证与续签」里配的规则带上凭证：这里配的是 Cookie 形式的 refresh token。"""
+    site = {
+        "id": "demo",
+        "models": ["demo-model"],
+        "auth_token": "at_now",
+        "network": {"url": "https://demo.test/api/pricing"},
+        "status": {"url": "https://demo.test/api/status"},
+        "token_refresh": {"url": "https://demo.test/auth/refresh", "refresh_token": "rt_now"},
+        "auth_inject": {"status": {"header": "cookie", "value": "new_api_refresh=${refresh_token}"}},
+    }
+    (spec,) = sites_from_raw([site])
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["cookie"] = request.headers.get("cookie")
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"channels": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_site_status(spec, client, 5.0, "ua/1")
+
+    assert seen["cookie"] == "new_api_refresh=rt_now"
+    assert seen["authorization"] is None  # 没配 Authorization 规则就不注入
+
+
+def test_scan_statuses_401_without_refresh_config_reports_error(tmp_path: Path):
+    """没配续签的站点撞 401 不尝试换新：只记一条采集错误，不额外发请求。"""
+    from llm_price_monitor.report import scan_statuses
+
+    config = _config_file(tmp_path, _site_raw_config({"url": "https://demo.test/status"}))
+    store = Store(tmp_path / "monitor.db")
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(401, json={"success": False, "message": "未登录"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        scan = scan_statuses(config, store=store, client=client)
+
+    assert scan.records == []
+    assert len(scan.errors) == 1 and "可能需要认证" in scan.errors[0]["error"]
+    assert paths == ["/status"]
+
+
 # ---------- 时间线增量裁剪与 diff 噪音 ----------
 
 def test_strip_status_delta_keeps_only_new_timeline_entries():

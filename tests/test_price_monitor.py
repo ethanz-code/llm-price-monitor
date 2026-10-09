@@ -5,10 +5,19 @@ import httpx
 import pytest
 
 from llm_price_monitor.adapters import ADAPTERS, NetworkAdapter, headers as _headers, network_pricing_records as _network_pricing_records
-from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor, NEWAPI_ONEAPI_PRICING_GUIDANCE, ai_content, ai_request, ping_model
+from llm_price_monitor.ai import (
+    AIExtractionError,
+    AIPriceExtractor,
+    NEWAPI_ONEAPI_PRICING_GUIDANCE,
+    ai_content,
+    ai_request,
+    ai_stream_fallback,
+    ping_model,
+    provider_error_detail,
+)
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec, load_config, sites_from_raw
 from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, target_page_text as _target_page_text
-from llm_price_monitor.report import classify, fingerprint, run_once, summary_row as _summary_row
+from llm_price_monitor.report import GROUP_REMOVED_MISSES, classify, fingerprint, run_once, summary_row as _summary_row
 from llm_price_monitor.store import Store
 from llm_price_monitor.useragent import BROWSER_USER_AGENTS, choose_user_agent
 from llm_price_monitor.tracker import PriceRecord
@@ -38,7 +47,7 @@ def _ai_request_body(spec, page_text, responses, *, page_sources=None, config=No
         captured["body"] = json.loads(request.read())
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"models": [], "cross_validation": {"status": "none", "conflicts": []}})}}]})
 
-    extractor = AIPriceExtractor(config or AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="k"))
+    extractor = AIPriceExtractor(config or AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
     extractor.extract(spec, page_text, responses, client=httpx.Client(transport=httpx.MockTransport(handler)), page_sources=page_sources)
     return captured["body"]
 
@@ -94,6 +103,23 @@ def test_group_whitelist_filters_collected_prices(tmp_path: Path, monkeypatch):
     report2 = run_once(config, store=store2, client=httpx.Client())
     assert len(report2.records) == 2
     assert set(store2.latest_all()) == {"demo:demo-model:svip", "demo:demo-model:default"}
+
+
+def test_distinct_price_groups_lists_collected_groups(tmp_path: Path):
+    """管理台分组白名单下拉的数据源：该站点已入库价格数据里出现过的分组名（去重升序，按站点隔离）。"""
+    store = Store(tmp_path / "monitor.db")
+    store.append_history(
+        [
+            {"site_id": "demo", "model": "m1", "metadata": {"group": "vip"}, "input_price": 1, "output_price": 2, "unit": "USD/1M tokens", "captured_at": 1.0},
+            {"site_id": "demo", "model": "m2", "metadata": {"group": "default"}, "input_price": 1, "output_price": 2, "unit": "USD/1M tokens", "captured_at": 2.0},
+            {"site_id": "demo", "model": "m3", "metadata": {"group": "vip"}, "input_price": 1, "output_price": 2, "unit": "USD/1M tokens", "captured_at": 3.0},
+            {"site_id": "demo", "model": "m4", "metadata": {}, "input_price": 1, "output_price": 2, "unit": "USD/1M tokens", "captured_at": 4.0},
+            {"site_id": "other", "model": "m1", "metadata": {"group": "svip"}, "input_price": 1, "output_price": 2, "unit": "USD/1M tokens", "captured_at": 5.0},
+        ]
+    )
+    assert store.distinct_price_groups("demo") == ["default", "vip"]
+    assert store.distinct_price_groups("other") == ["svip"]
+    assert store.distinct_price_groups("never-collected") == []
 
 
 def test_failed_collect_keeps_last_known_price_in_snapshot(tmp_path: Path, monkeypatch):
@@ -352,7 +378,7 @@ def test_network_adapter_uses_ai_alias_before_newapi_calculation(monkeypatch):
         models=(ModelTarget("informal-gpt"),),
         network={"url": "https://demo.test/api/pricing"},
     )
-    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", model="test-model", api_key="key")
+    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", models=("test-model",), api_key="key")
     client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
         "group_ratio": {"default": 1},
         "data": [{"model_name": "openai/gpt-5.6-sol", "enable_groups": ["default"], "model_ratio": 0.5, "completion_ratio": 2}],
@@ -420,7 +446,7 @@ def test_network_page_response_is_sent_to_ai_without_dom_or_browser(monkeypatch)
         text="<html><body>demo-model 输入价格 ¥1/M 输出价格 ¥2/M</body></html>",
         headers={"content-type": "text/html; charset=utf-8"},
     )))
-    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", model="test-model", api_key="key")
+    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", models=("test-model",), api_key="key")
     records = NetworkAdapter().collect(spec, client, 5, BROWSER_USER_AGENTS[0], ai)
     assert records[0].input_price == 1
     assert "demo-model" in seen["page_text"]
@@ -499,23 +525,11 @@ def test_repair_mojibake_handles_spaces_inside_corrupted_fragment():
     assert _repair_mojibake("GPT-5.6 Sol API å®žæ—¶ä»·æ ¼ï¼Œä¸Šä¸‹æ–‡é•¿åº¦") == "GPT-5.6 Sol API 实时价格，上下文长度"
 
 
-def test_ai_config_always_uses_config_values(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("PRICE_MONITOR_AI_BASE_URL", "https://env-ai.test/v1")
-    monkeypatch.setenv("PRICE_MONITOR_AI_MODEL", "env-model")
-    config = load_config(_write_config(tmp_path, {"ai": {"base_url": "", "model": ""}, "settings": {}, "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]}))
-    assert config.ai.base_url == ""
-    assert config.ai.model == ""
-
-    explicit = load_config(_write_config(tmp_path, {"ai": {"base_url": "https://config-ai.test/v1", "model": "config-model"}, "settings": {}, "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]}))
-    assert explicit.ai.base_url == "https://config-ai.test/v1"
-    assert explicit.ai.model == "config-model"
-
-
 def test_ai_models_list_is_parsed_and_pick_model_randomly_chooses_one(tmp_path: Path):
-    config = load_config(_write_config(tmp_path, {"ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b", "m-a", " "], "model": "m-c"}, "settings": {}, "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]}))
+    config = load_config(_write_config(tmp_path, {"ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b", "m-a", " "]}, "settings": {}, "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]}))
     assert config.ai.models == ("m-a", "m-b")
     for _ in range(20):
-        assert config.ai.pick_model() in {"m-a", "m-b", "m-c"}
+        assert config.ai.pick_model() in {"m-a", "m-b"}
 
 
 def test_ai_models_rejects_non_string_entries(tmp_path: Path):
@@ -533,7 +547,7 @@ def test_ai_api_format_is_validated(tmp_path: Path):
 
 
 def test_ai_request_builds_openai_responses_payload():
-    config = AIConfig(base_url="https://api.openai.com", model="gpt-x", api_key="sk-oai", api_format="openai_responses")
+    config = AIConfig(base_url="https://api.openai.com", models=("gpt-x",), api_key="sk-oai", api_format="openai_responses")
     url, headers, body = ai_request(config, "gpt-x", "系统提示", "用户内容")
     assert url == "https://api.openai.com/v1/responses"
     assert headers["authorization"] == "Bearer sk-oai"
@@ -562,7 +576,7 @@ def test_ai_content_parses_openai_responses_reply():
 
 
 def test_ai_request_builds_anthropic_messages_payload():
-    config = AIConfig(base_url="https://api.anthropic.com", model="claude-x", api_key="sk-ant", api_format="anthropic")
+    config = AIConfig(base_url="https://api.anthropic.com", models=("claude-x",), api_key="sk-ant", api_format="anthropic")
     url, headers, body = ai_request(config, "claude-x", "系统提示", "用户内容")
     assert url == "https://api.anthropic.com/v1/messages"
     assert headers["x-api-key"] == "sk-ant"
@@ -617,7 +631,7 @@ def test_ai_extractor_supports_anthropic_messages_format():
         return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps({"models": [], "cross_validation": {"status": "none", "conflicts": []}})}]})
 
     spec = SiteSpec(id="demo", models=(ModelTarget("demo-model"),))
-    config = AIConfig(base_url="https://api.anthropic.com", model="claude-x", api_key="k", api_format="anthropic")
+    config = AIConfig(base_url="https://api.anthropic.com", models=("claude-x",), api_key="k", api_format="anthropic")
     extractor = AIPriceExtractor(config)
     records = extractor.extract(spec, "", [{"url": "https://demo.test/api/price", "resource_type": "fetch", "status": 200, "payload": {"items": [{"name": "demo-model", "in": 1, "out": 2}]}}], client=httpx.Client(transport=httpx.MockTransport(handler)))
 
@@ -637,11 +651,65 @@ def test_ai_request_uses_random_model_from_models_list():
         assert body["model"] in {"m-a", "m-b"}
 
 
+def test_ai_stream_error_carries_response_body(monkeypatch):
+    """供应商在流式请求上回 HTTP 错误时，异常要带上响应体里的具体原因。
+
+    回归背景：流式响应未读正文就 raise_for_status，错误处理里取 .text 抛 ResponseNotRead，
+    把"403 免费额度耗尽"这类真实原因吞成了莫名的前端报错。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {"message": "Free quota exhausted", "code": "AllocationQuota.FreeTierOnly"}})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k", enable_thinking=False)
+    with pytest.raises(AIExtractionError) as exc_info:
+        list(ai_stream_fallback(config, "", "hi", scene="测试"))
+    # 透出的是解析后的报错要点，不是整段 JSON 原文
+    assert "Free quota exhausted" in str(exc_info.value)
+    assert '"error"' not in str(exc_info.value)
+
+
+def test_provider_error_detail_parses_each_provider_shape():
+    """任意供应商的错误形态都解析成 message 要点：JSON 递归找消息字段，HTML 剥标签，纯文本保留。"""
+    def response(body: str, status: int = 403) -> httpx.Response:
+        return httpx.Response(status, content=body.encode("utf-8"))
+
+    # OpenAI / DashScope：error.message + 语义错误码
+    assert provider_error_detail(response(
+        '{"error":{"message":"Free quota exhausted","type":"AllocationQuota.FreeTierOnly","code":null}}',
+    )) == "HTTP 403：Free quota exhausted（AllocationQuota.FreeTierOnly）"
+    # Anthropic：error.type 作错误码
+    assert provider_error_detail(response(
+        '{"type":"error","error":{"type":"not_found_error","message":"model not found"}}', 404,
+    )) == "HTTP 404：model not found（not_found_error）"
+    # Gemini：数字 code 与状态码重复，只展示语义 status
+    assert provider_error_detail(response(
+        '{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}', 429,
+    )) == "HTTP 429：Quota exceeded（RESOURCE_EXHAUSTED）"
+    # FastAPI 风格：顶层 detail 字符串
+    assert provider_error_detail(response('{"detail":"Not authenticated"}', 401)) == "HTTP 401：Not authenticated"
+    # new-api 风格：error 直接是字符串
+    assert provider_error_detail(response('{"error":"令牌额度已用完"}', 402)) == "HTTP 402：令牌额度已用完"
+    # Google 风格：errors 数组
+    assert provider_error_detail(response(
+        '{"error":{"errors":[{"message":"billing account missing"}]}}',
+    )) == "HTTP 403：billing account missing"
+    # FastAPI 校验错误：detail 是数组，递归取 msg
+    assert provider_error_detail(response(
+        '{"detail":[{"loc":["body","question"],"msg":"field required"}]}', 422,
+    )) == "HTTP 422：field required"
+    # 网关 HTML 错误页：剥掉标签
+    assert provider_error_detail(response("<html><body><h1>502 Bad Gateway</h1></body></html>", 502)) == "HTTP 502：502 Bad Gateway"
+    # 纯文本
+    assert provider_error_detail(response("服务繁忙，请稍后再试", 503)) == "HTTP 503：服务繁忙，请稍后再试"
+
+
 def test_ai_api_key_comes_from_config(tmp_path: Path):
     config = load_config(_write_config(tmp_path, {
         "ai": {
             "base_url": "https://config-ai.test/v1",
-            "model": "config-model",
+            "models": ["config-model"],
             "api_key": "secret",
         },
         "settings": {},
@@ -654,7 +722,7 @@ def test_ai_config_loads_bounded_non_thinking_output(tmp_path: Path):
     config = load_config(_write_config(tmp_path, {
         "ai": {
             "base_url": "https://config-ai.test/v1",
-            "model": "config-model",
+            "models": ["config-model"],
             "max_tokens": 1234,
             "enable_thinking": False,
         },
@@ -696,7 +764,7 @@ def test_browser_adapter_requires_explicit_target_model():
             httpx.Client(),
             1,
             BROWSER_USER_AGENTS[0],
-            AIConfig(base_url="https://ai.test/v1", model="test-model"),
+            AIConfig(base_url="https://ai.test/v1", models=("test-model",)),
         )
 
 
@@ -832,7 +900,7 @@ def test_ai_extractor_uses_page_and_response_evidence_without_auth_values():
         }
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="ai-secret"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
     client = httpx.Client(transport=httpx.MockTransport(handler))
     records = extractor.extract(
                 SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing?token=page-secret"}, models=(ModelTarget("demo-model"),)),
@@ -1033,7 +1101,7 @@ def test_ai_request_uses_model_list_only():
 
 
 def test_confirmed_accepts_model_list_page_and_network_evidence():
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="secret"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="secret"))
     result = {
         "models": [{
             "model": "gpt-5.6-sol",
@@ -1062,7 +1130,7 @@ def test_confirmed_accepts_model_list_page_and_network_evidence():
 
 
 def test_ai_result_keeps_canonical_model_and_observed_aliases():
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",)))
     records = extractor._records(
         SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}),
         {
@@ -1111,7 +1179,7 @@ other-model
 
 
 def test_ai_result_merges_context_tiers_and_keeps_unified_default_rule():
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",)))
     result = {
         "models": [
             {
@@ -1147,7 +1215,7 @@ def test_ai_result_merges_context_tiers_and_keeps_unified_default_rule():
 
 
 def test_ai_rule_only_status_is_preserved_for_grouped_prices():
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",)))
     result = {
         "models": [{
             "model": "demo-model",
@@ -1185,7 +1253,7 @@ def test_ai_extractor_rejects_unseen_api_evidence_url():
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model", api_key="secret"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="secret"))
     records = extractor.extract(SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),)), "demo-model 1 2", [{"url": "https://demo.test/api/price", "status": 200, "content_type": "application/json", "payload": {"model_name": "demo-model"}}], client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert records[0].price_status == "candidate"
 
@@ -1204,7 +1272,7 @@ def test_ai_extractor_does_not_treat_unrelated_json_as_price_evidence():
         }],
         "cross_validation": {"status": "matched", "conflicts": []},
     }
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", model="test-model"))
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",)))
 
     records = extractor._records(
         SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}),
@@ -1505,6 +1573,64 @@ def test_run_once_persists_per_site_collect_status(tmp_path: Path, monkeypatch):
     assert status["off"]["status"] == "disabled"
 
 
+def test_site_collect_health_tracks_latest_round(tmp_path: Path, monkeypatch):
+    """三类采集的逐站异常进 site_collect_health：失败红、需认证黄，下一轮正常自动清除。"""
+    import llm_price_monitor.report as report_module
+
+    state = {"fail_price": True, "fail_status": True, "auth_price": False}
+
+    def collect(adapter, spec, *_args):
+        if spec.id == "bad" and state["fail_price"]:
+            raise PriceMonitorError("网络价格接口返回 HTTP 500")
+        if spec.id == "good" and state["auth_price"]:
+            return [PriceRecord(
+                "demo-model", None, None, "CNY/1M tokens", "https://demo.test/pricing", 0,
+                {"pricing_kind": "auth_required", "error": "HTTP 401，可能需要认证"}, "unavailable", True,
+            )]
+        return [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {})]
+
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+
+    def fake_fetch_status(spec, *_args, **_kwargs):
+        if spec.id == "bad" and state["fail_status"]:
+            raise PriceMonitorError("渠道状态地址返回 HTTP 500")
+        return {"site_id": spec.id, "captured_at": 1.0, "source_url": "https://demo.test/status",
+                "http_status": 200, "parse": "ok", "data": {}}
+
+    monkeypatch.setattr(report_module, "fetch_site_status", fake_fetch_status)
+    monkeypatch.setattr(report_module, "fetch_site_notice", lambda *_args, **_kwargs: None)
+
+    config = load_config(_write_config(tmp_path, {
+        "settings": {"history_file": str(tmp_path / "history.jsonl"), "latest_file": str(tmp_path / "latest.json"), "event_file": str(tmp_path / "events.jsonl")},
+        "sites": [
+            {"id": "good", "models": ["demo-model"], "status": {"url": "https://demo.test/status"}},
+            {"id": "bad", "models": ["demo-model"], "status": {"url": "https://demo.test/status"}},
+            {"id": "off", "enabled": False, "models": ["demo-model"]},
+        ],
+    }))
+    store = Store(tmp_path / "monitor.db")
+
+    # 第一轮：bad 价格与渠道状态都失败，good 一切正常，停用站点不进档案
+    run_once(config, store=store, client=httpx.Client())
+    health = store.get_document("site_collect_health")
+    assert health["bad"]["price"]["level"] == "error" and "HTTP 500" in health["bad"]["price"]["message"]
+    assert health["bad"]["status"]["level"] == "error"
+    assert "good" not in health and "off" not in health
+
+    # 第二轮：bad 恢复即整站摘除；good 价格变需认证，黄色提示带着原因
+    state.update(fail_price=False, fail_status=False, auth_price=True)
+    run_once(config, store=store, client=httpx.Client())
+    health = store.get_document("site_collect_health")
+    assert "bad" not in health
+    assert health["good"]["price"]["level"] == "warn" and "401" in health["good"]["price"]["message"]
+    assert "status" not in health["good"] and "notice" not in health["good"]
+
+    # 第三轮：good 也恢复，档案清空
+    state.update(auth_price=False)
+    run_once(config, store=store, client=httpx.Client())
+    assert store.get_document("site_collect_health") == {}
+
+
 def test_rate_base_site_normalizes_to_standard_on_load():
     raw = {
         "id": "legacy",
@@ -1621,9 +1747,26 @@ def test_ai_ping_model_maps_http_errors_for_caller():
         ping_model(AIConfig(base_url="https://ai.test/v1"), "m-a", client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
+def test_ai_ping_model_retries_with_thinking_enabled_when_restricted():
+    """思考不可关的模型拒收 enable_thinking=false：连接测试翻参重试一次，返回模型回复。"""
+    seen = {}
 
-def test_group_removed_event_after_two_misses(tmp_path: Path, monkeypatch):
-    """分组连续两轮没出现才记 group_removed 并从快照摘除；单轮缺失不报（容忍抖动）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("enable_thinking") is False:
+            return httpx.Response(400, json={"error": {"message": "The value of the enable_thinking parameter is restricted to True."}})
+        seen["body"] = body
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    reply = ping_model(AIConfig(base_url="https://ai.test/v1"), "glm-5.3", client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert reply == "ok"
+    assert seen["body"]["enable_thinking"] is True
+
+
+
+def test_group_removed_event_after_six_misses(tmp_path: Path, monkeypatch):
+    """分组连续 GROUP_REMOVED_MISSES 轮没出现才记 group_removed 并从快照摘除；中途恢复则不报。"""
     groups = {"default", "vip"}
 
     def collect(*_args):
@@ -1641,15 +1784,43 @@ def test_group_removed_event_after_two_misses(tmp_path: Path, monkeypatch):
     assert len(store.latest_all()) == 2
 
     groups.discard("vip")
-    first = run_once(config, store=store, client=httpx.Client())
-    assert [event["kind"] for event in first.events] == []  # 第一轮缺失只计数
+    for _ in range(GROUP_REMOVED_MISSES - 1):
+        report = run_once(config, store=store, client=httpx.Client())
+        assert [event["kind"] for event in report.events] == []  # 阈值内只计数不报事件
     assert len(store.latest_all()) == 2
 
-    second = run_once(config, store=store, client=httpx.Client())
-    assert [event["kind"] for event in second.events] == ["group_removed"]
+    final = run_once(config, store=store, client=httpx.Client())
+    assert [event["kind"] for event in final.events] == ["group_removed"]
     assert list(store.latest_all()) == ["demo:demo-model:default"]
     removed = next(event for event in store.read_events(limit=10)[0] if event["kind"] == "group_removed")
     assert removed["previous"]["metadata"]["group"] == "vip"
+
+
+def test_group_removed_requires_consecutive_misses(tmp_path: Path, monkeypatch):
+    """缺失中途恢复一次就清零计数：累计而非连续的缺失不得累积成下线。"""
+    groups = {"default", "vip"}
+    absent = {"on": False}
+
+    def collect(*_args):
+        if absent["on"]:
+            return [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+        return [
+            PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": group})
+            for group in sorted(groups)
+        ]
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(config, store=store, client=httpx.Client())
+
+    for round_index in range(GROUP_REMOVED_MISSES * 2):
+        absent["on"] = round_index % 2 == 0  # 缺一轮、恢复一轮交替，计数每次被清零
+        report = run_once(config, store=store, client=httpx.Client())
+        assert [event["kind"] for event in report.events] == []
+    assert len(store.latest_all()) == 2
 
 
 def test_group_added_event_for_known_model(tmp_path: Path, monkeypatch):
@@ -1699,10 +1870,10 @@ def test_persist_false_scan_does_not_pollute_group_miss(tmp_path: Path, monkeypa
         run_once(config, store=store, client=httpx.Client(), persist=False)
     assert not store.get_document("group_miss")
 
-    first = run_once(config, store=store, client=httpx.Client())
-    assert [event["kind"] for event in first.events] == []  # 真实缺失第一轮只计数
-    second = run_once(config, store=store, client=httpx.Client())
-    assert [event["kind"] for event in second.events] == ["group_removed"]
+    for round_index in range(GROUP_REMOVED_MISSES):
+        report = run_once(config, store=store, client=httpx.Client())
+        expected = ["group_removed"] if round_index == GROUP_REMOVED_MISSES - 1 else []
+        assert [event["kind"] for event in report.events] == expected  # 测试轮次未计数，完整轮次按真实阈值判定
 
 def _refresh_site_config(tmp_path: Path, **site: object) -> Path:
     """带 token 续签配置的单站点 config：续签端点与价格接口都由 MockTransport 模拟。"""
@@ -1790,6 +1961,183 @@ def test_refresh_and_recollect_falls_back_to_placeholder_when_recollect_empty(mo
     assert any("未取到任何价格" in message for message in errors)
 
 
+def test_refresh_site_token_rotates_set_cookie_credential(tmp_path: Path):
+    """new-api 型轮换凭据：旧值一次有效、新值只在 Set-Cookie；回写后下一轮续签必须带上新值。"""
+    from llm_price_monitor import token_refresh
+
+    state = {"current": "sid1.secret1"}
+    seen_cookies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cookie = request.headers.get("cookie")
+        seen_cookies.append(cookie)
+        if cookie != f"new_api_refresh={state['current']}":
+            return httpx.Response(401, json={"success": False, "code": "AUTH_SESSION_REVOKED"})
+        next_value = f"sid1.secret{len(seen_cookies) + 1}"
+        state["current"] = next_value
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"access_token": f"at_{len(seen_cookies)}"}},
+            headers=[("Set-Cookie", f"new_api_refresh={next_value}; Path=/api/user/auth; HttpOnly")],
+        )
+
+    raw_site = {
+        "id": "aihub",
+        "models": ["m"],
+        "network": {"url": "https://aihub.test/api/pricing"},
+        "token_refresh": {
+            "url": "https://aihub.test/api/user/auth/refresh",
+            "method": "POST",
+            "headers": {"cookie": "new_api_refresh=${refresh_token}"},
+            "refresh_token": "sid1.secret1",
+            "refresh_cookie_name": "new_api_refresh",
+        },
+    }
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("aihub", raw_site)
+    (spec,) = sites_from_raw([raw_site])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        access, refresh = token_refresh.refresh_site_token(spec, client, timeout=5, user_agent="ua")
+        assert (access, refresh) == ("at_1", "sid1.secret2")
+        assert seen_cookies == ["new_api_refresh=sid1.secret1"]  # 请求带旧值，headers 占位符正确展开
+
+        token_refresh.persist_refreshed_config(store, "aihub", access, refresh)
+        (reloaded,) = sites_from_raw([store.get_site_config("aihub")])
+        access2, refresh2 = token_refresh.refresh_site_token(reloaded, client, timeout=5, user_agent="ua")
+
+    assert seen_cookies == ["new_api_refresh=sid1.secret1", "new_api_refresh=sid1.secret2"]
+    assert (access2, refresh2) == ("at_2", "sid1.secret3")
+
+
+def test_refresh_site_token_without_rotation_keeps_old_credential():
+    """不配 refresh_cookie_name 时行为不变：body 里没有新 refresh_token 就沿用旧值（不轮换的站点）。"""
+    from llm_price_monitor import token_refresh
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": True, "data": {"access_token": "at_new"}})
+
+    (spec,) = sites_from_raw([{
+        "id": "plain",
+        "models": ["m"],
+        "network": {"url": "https://plain.test/api/pricing"},
+        "token_refresh": {"url": "https://plain.test/auth/refresh", "refresh_token": "rt_old"},
+    }])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        access, refresh = token_refresh.refresh_site_token(spec, client, timeout=5, user_agent="ua")
+
+    assert (access, refresh) == ("at_new", "rt_old")
+
+
+def test_auth_inject_expands_credentials_per_target():
+    """凭证注入按目标展开：价格带 Authorization: Bearer ${access_token}，公告带 Cookie 里的 ${refresh_token}，
+    渠道状态不注入；值里的凭证变量续签换新后自动跟随。"""
+    from llm_price_monitor.adapters import auth_inject_headers
+
+    (spec,) = sites_from_raw([{
+        "id": "inject",
+        "models": ["m"],
+        "auth_token": "at_now",
+        "network": {"url": "https://demo.test/pricing"},
+        "token_refresh": {"url": "https://demo.test/auth/refresh", "refresh_token": "rt_now"},
+        "auth_inject": {
+            "price": {"header": "Authorization", "value": "Bearer ${access_token}"},
+            "notice": {"header": "cookie", "value": "new_api_refresh=${refresh_token}"},
+        },
+    }])
+
+    assert auth_inject_headers(spec, "price") == {"Authorization": "Bearer at_now"}
+    assert auth_inject_headers(spec, "notice") == {"cookie": "new_api_refresh=rt_now"}
+    assert auth_inject_headers(spec, "status") == {}  # 没配的处不注入
+
+    # 续签换新：同一份规则展开成新凭证
+    from dataclasses import replace
+
+    refreshed = replace(spec, auth_token="at_new", token_refresh={**spec.token_refresh, "refresh_token": "rt_new"})
+    assert auth_inject_headers(refreshed, "price") == {"Authorization": "Bearer at_new"}
+    assert auth_inject_headers(refreshed, "notice") == {"cookie": "new_api_refresh=rt_new"}
+
+
+def test_auth_inject_without_credential_reports_error():
+    """规则引用拿不到的凭证：Refresh Token 缺失明确报错（不静默发空 Cookie）；
+    Access Token 缺失则不注入——让请求照常发出、由 401 触发续签补上。"""
+    from llm_price_monitor.adapters import auth_inject_headers
+
+    (spec,) = sites_from_raw([{
+        "id": "fixed",
+        "models": ["m"],
+        "auth_token": "sk_fixed",
+        "network": {"url": "https://demo.test/pricing"},
+        "auth_inject": {"notice": {"header": "cookie", "value": "session=${refresh_token}"}},
+    }])
+    with pytest.raises(PriceMonitorError, match="没有 Refresh Token"):
+        auth_inject_headers(spec, "notice")
+
+    (no_token,) = sites_from_raw([{
+        "id": "none",
+        "models": ["m"],
+        "network": {"url": "https://demo.test/pricing"},
+        "auth_inject": {"price": {"header": "Authorization", "value": "Bearer ${access_token}"}},
+    }])
+    assert auth_inject_headers(no_token, "price") == {}  # 空凭证先不注入，等续签补上
+
+
+def test_legacy_config_injects_authorization_and_ignores_endpoint_auth():
+    """没配 auth_inject 的存量站点按老行为注入 Authorization（auth_header/auth_prefix 可改），
+    接口里写死的 Authorization 让位、非认证头照常带上；没配 auth_token 的站点不受影响。"""
+    from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+
+    (unified,) = sites_from_raw([{
+        "id": "unified",
+        "models": ["m"],
+        "auth_token": "at_site",
+        "network": {"url": "https://demo.test/pricing", "headers": {"Authorization": "Bearer at_stale", "referer": "https://demo.test"}},
+    }])
+    entry = resolve_endpoint(unified.network, spec=unified, label="network")
+    merged = build_request_kwargs(entry, unified, "ua/1", 5, target="price")["headers"]
+    assert merged["Authorization"] == "Bearer at_site"  # 站点令牌为准
+    assert merged["referer"] == "https://demo.test"  # 非认证头照常带上
+
+    (custom,) = sites_from_raw([{
+        "id": "custom",
+        "models": ["m"],
+        "auth_token": "at_site",
+        "auth_header": "X-Api-Key",
+        "auth_prefix": "",
+        "network": {"url": "https://demo.test/pricing"},
+    }])
+    entry = resolve_endpoint(custom.network, spec=custom, label="network")
+    assert build_request_kwargs(entry, custom, "ua/1", 5, target="price")["headers"]["X-Api-Key"] == "at_site"
+
+    (legacy,) = sites_from_raw([{
+        "id": "legacy",
+        "models": ["m"],
+        "network": {"url": "https://demo.test/pricing", "headers": {"Authorization": "Bearer at_own"}},
+    }])
+    entry = resolve_endpoint(legacy.network, spec=legacy, label="network")
+    assert build_request_kwargs(entry, legacy, "ua/1", 5, target="price")["headers"]["Authorization"] == "Bearer at_own"
+
+
+def test_ratio_endpoint_headers_do_not_override_injected_auth():
+    """倍率接口自带的请求头盖不过凭证注入的头，其余自定义头照常生效。"""
+    from llm_price_monitor.adapters import auth_inject_headers, build_request_kwargs, resolve_endpoint
+
+    (spec,) = sites_from_raw([{
+        "id": "ratio",
+        "models": ["m"],
+        "auth_token": "at_site",
+        "network": {"url": "https://demo.test/pricing"},
+    }])
+    entry = resolve_endpoint(spec.network, spec=spec, label="network")
+    base = build_request_kwargs(entry, spec, "ua/1", 5, target="price")["headers"]
+    injected_names = {name.casefold() for name in auth_inject_headers(spec, "price")}
+    extra = {"Authorization": "Bearer at_stale", "x-ratio": "1"}
+    merged = {**base, **{k: v for k, v in extra.items() if k.casefold() not in injected_names}}
+    assert merged["Authorization"] == "Bearer at_site"
+    assert merged["x-ratio"] == "1"
+
+
 def test_token_refresh_recollect_replaces_records_without_crashing(tmp_path: Path, monkeypatch):
     """回归：续签成功后重采。老代码在此抛 'list' object has no attribute 'requires_auth'，整轮采集白跑。"""
     seen_auth_tokens: list[str | None] = []
@@ -1827,7 +2175,7 @@ def test_token_refresh_with_empty_recollect_keeps_status_and_skips_group_removal
     run_once(config, store=store, client=_refresh_client())
     assert store.latest_all()["totokens:demo-model:default"]["input_price"] == 1
 
-    for _ in range(2):  # 连续两轮"续签成功但无数据"，正好踩到 group_removed 的判定阈值
+    for _ in range(GROUP_REMOVED_MISSES):  # 连续多轮"续签成功但无数据"：这些轮次不完整，不得累计成下线
         report = run_once(config, store=store, client=_refresh_client())
         assert [event["kind"] for event in report.events] == []
 
@@ -1855,7 +2203,7 @@ def test_partial_address_failure_skips_group_removal(tmp_path: Path, monkeypatch
     assert set(store.latest_all()) == {"totokens:demo-model:default", "totokens:demo-model:vip"}
 
     failing["on"] = True
-    for _ in range(2):  # 两轮都缺 vip：没有防护时第二轮就记 group_removed 并把 vip 摘掉
+    for _ in range(GROUP_REMOVED_MISSES):  # 多轮都缺 vip：没有防护时早就记 group_removed 并把 vip 摘掉
         run_once(config, store=store, client=_refresh_client())
     assert "totokens:demo-model:vip" in store.latest_all()
     assert not any(event["kind"] == "group_removed" for event in store.read_events(limit=20)[0])
@@ -1920,3 +2268,66 @@ def test_carry_last_price_keeps_auth_label_only_for_auth_placeholders():
         previous,
     )
     assert auth["requires_auth"] is True
+
+
+def _fake_jwt(exp: int) -> str:
+    """构造只有 exp 有效负载的假 JWT：base64url 三段式，足够 canonical_site_config 读取 exp。"""
+    import base64
+    import json
+
+    def part(data: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{part({'alg': 'HS256'})}.{part({'exp': exp})}.sig"
+
+
+def test_canonical_site_config_slims_and_unifies_auth():
+    """整理存量配置：瘦身＋把最新的手写 JWT 收编为站点级 auth_token，其余手写认证头移除。"""
+    from llm_price_monitor.config import canonical_site_config
+
+    old_token, new_token = _fake_jwt(exp=1000), _fake_jwt(exp=2000)
+    config = {
+        "id": "x",
+        "adapter": "standard",
+        "enabled": True,
+        "auth_token": None,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "cookie": None,
+        "cookies": {},
+        "network": {"url": "https://x.test/api/pricing", "params": {}, "headers": {"Authorization": f"Bearer {old_token}", "referer": "https://x.test"}},
+        "status": {"url": "https://x.test/api/metrics", "headers": {"Authorization": f"Bearer {new_token}"}},
+        "notice": {"url": "https://x.test/api/notice"},
+    }
+    canonical, notes = canonical_site_config(config)
+    assert canonical == {
+        "id": "x",
+        "enabled": True,  # 启用态始终落库：管理台行内判断直接读它
+        "auth_token": new_token,  # 两份手写 JWT 里 exp 新的那份收编
+        "network": {"url": "https://x.test/api/pricing", "headers": {"referer": "https://x.test"}},
+        "status": {"url": "https://x.test/api/metrics"},
+        "notice": {"url": "https://x.test/api/notice"},
+    }
+    assert any("收编" in note for note in notes)
+
+    # 已有 auth_token 时以它为准：手写头只删不收编
+    config["auth_token"] = "site-token"
+    canonical, notes = canonical_site_config(config)
+    assert canonical["auth_token"] == "site-token"
+    assert any("以它为准" in note for note in notes)
+
+
+def test_canonical_site_config_pops_response_sample_residue():
+    """token_refresh 里残留的 response_sample（只在保存时供 AI 分析）整理时清掉；清空后整个键移除。"""
+    from llm_price_monitor.config import canonical_site_config
+
+    config = {
+        "id": "x",
+        "token_refresh": {"url": "https://x.test/auth/refresh", "response_sample": '{"data": {"access_token": "t"}}'},
+    }
+    canonical, notes = canonical_site_config(config)
+    assert canonical == {"id": "x", "token_refresh": {"url": "https://x.test/auth/refresh"}}
+    assert any("response_sample" in note for note in notes)
+
+    canonical, _ = canonical_site_config({"id": "x", "token_refresh": {"response_sample": "{}"}})
+    assert canonical == {"id": "x"}

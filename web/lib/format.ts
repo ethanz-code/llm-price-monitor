@@ -262,6 +262,7 @@ const TASK_KIND_LABELS: Record<string, string> = {
   "collect-status": "渠道状态采集",
   "collect-notice": "站点公告采集",
   "catalog-refresh": "厂商定价刷新",
+  "vendor-source-refresh": "厂商定价源抓取",
 };
 
 /** 后台任务类型的展示名。 */

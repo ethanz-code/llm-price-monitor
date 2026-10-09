@@ -9,10 +9,16 @@ import { TermTip } from "./TermTip";
 import { ToneTag } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
-import type { CatalogData, CatalogEntry } from "@/lib/types";
+import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 
 interface Row extends CatalogEntry {
   key: string;
+}
+
+/** 分档条件 → 展示标签（models.dev 目前只有上下文阈值档，如 >200K）。 */
+function tierLabel(tier: PriceTier["tier"]): string {
+  if (tier?.type === "context" && tier.size) return `>${formatTokens(tier.size)}`;
+  return "分档";
 }
 
 /** 厂商显示名 → vendor-logos.ts 的 slug key；新厂商未收录时回落首字母徽标。 */
@@ -95,10 +101,11 @@ export function CatalogTable({ data }: { data: CatalogData }) {
       title: "厂商",
       dataIndex: "vendor",
       width: 170,
-      render: (v: string) => (
+      render: (v: string, row: Row) => (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 550, whiteSpace: "nowrap" }}>
           <VendorBadge vendor={v} />
           {v}
+          {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
         </span>
       ),
     },
@@ -134,8 +141,38 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         isFreePrice(row.list) ? (
           <ToneTag tone="green">免费</ToneTag>
         ) : (
-          <span className="mono num" style={{ fontWeight: 550 }}>
-            ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
+          <span style={{ display: "inline-grid", gap: 2, justifyItems: "end" }}>
+            <span className="mono num" style={{ fontWeight: 550 }}>
+              ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
+            </span>
+            {(row.list_tiers ?? []).map((t, i) => (
+              <span
+                key={i}
+                className="mono num"
+                title="长上下文分档价：prompt 超过阈值后，整个请求按该档计费"
+                style={{ fontSize: 11.5, color: "var(--text-3)" }}
+              >
+                {tierLabel(t.tier)} ${formatPrice(t.input)} / ${formatPrice(t.output)}
+              </span>
+            ))}
+            {row.list_audio && (
+              <span
+                className="mono num"
+                title="音频输入/输出价"
+                style={{ fontSize: 11.5, color: "var(--text-3)" }}
+              >
+                音频 ${formatPrice(row.list_audio?.input)} / ${formatPrice(row.list_audio?.output)}
+              </span>
+            )}
+            {row.list_global && (
+              <span
+                className="mono num"
+                title="同厂商国际站列表价（参考）"
+                style={{ fontSize: 11.5, color: "var(--text-3)" }}
+              >
+                国际 ${formatPrice(row.list_global?.input)} / ${formatPrice(row.list_global?.output)}
+              </span>
+            )}
           </span>
         ),
     },
@@ -227,7 +264,7 @@ export function CatalogTable({ data }: { data: CatalogData }) {
   ];
 
   return (
-    <div className="section-gap rise-in" style={{ display: "grid", gap: 16 }}>
+    <div className="rise-in" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <Input
           placeholder="搜索模型或厂商"

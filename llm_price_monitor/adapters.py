@@ -18,7 +18,14 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from llm_price_monitor.ai import AIExtractionError, AIPriceExtractor
-from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec
+from llm_price_monitor.config import (
+    ACCESS_TOKEN_VAR,
+    AIConfig,
+    REFRESH_TOKEN_VAR,
+    ModelTarget,
+    PriceMonitorError,
+    SiteSpec,
+)
 from llm_price_monitor.evidence import is_preferred_response_url, payload_hash, redact_url
 from llm_price_monitor.matching import resolve_site_names
 from llm_price_monitor.tracker import (
@@ -44,18 +51,65 @@ class Adapter(Protocol):
 
 
 def headers(spec: SiteSpec, user_agent: str) -> dict[str, str]:
+    """站点级静态请求头（request_headers + UA + 站点 Cookie）。
+
+    凭证不在这里：它由 auth_inject_headers 按采集目标（价格/状态/公告）注入，
+    同一份 token 可以在不同目标上塞成不同的头。
+    """
     result = {**spec.request_headers, "user-agent": user_agent}
-    if spec.auth_token:
-        secret = spec.auth_token
-        if not secret:
-            raise PriceMonitorError("配置文件 auth_token 未配置")
-        result[spec.auth_header] = f"{spec.auth_prefix}{secret}"
     if spec.cookie:
         cookie = spec.cookie
         if not cookie:
             raise PriceMonitorError("配置文件 cookie 未配置")
         result["cookie"] = cookie
     return result
+
+
+def auth_inject_headers(spec: SiteSpec, target: str) -> dict[str, str]:
+    """按「认证与续签」里配的规则，把凭证展开成该采集目标的请求头（target 见 AUTH_INJECT_TARGETS）。
+
+    没配 auth_inject 的老配置按老行为注入 Authorization（auth_header/auth_prefix 可改），
+    存量站点不改配置就能继续跑。值里的 ${access_token}/${refresh_token} 先展开成当前凭证，
+    再交给环境变量展开——顺序不能反，否则这两个占位符会被当成未设置的环境变量直接抛错。
+
+    还没拿到 Access Token 的站点（新站点或刚清空）不注入：请求照常发出、由 401 触发续签补上，
+    否则这条"空凭证 → 采集 → 续签"的引导链会被自己拦死。
+    """
+    rules = spec.auth_inject or {}
+    if not rules:
+        legacy = _legacy_auth_rule(spec)
+        rules = {target: legacy} if legacy else {}
+    rule = rules.get(target)
+    if not isinstance(rule, dict):
+        return {}
+    header = str(rule.get("header") or "").strip()
+    if not header:
+        return {}
+    value = str(rule.get("value") or "")
+    if ACCESS_TOKEN_VAR in value and not spec.auth_token:
+        return {}
+    return {header: _expand_credential_vars(spec, value)}
+
+
+def _legacy_auth_rule(spec: SiteSpec) -> dict[str, str] | None:
+    """auth_inject 出现之前的行为：站点有 auth_token 就注入 Authorization: Bearer <token>。"""
+    if not spec.auth_token:
+        return None
+    return {"header": spec.auth_header, "value": f"{spec.auth_prefix}{ACCESS_TOKEN_VAR}"}
+
+
+def _expand_credential_vars(spec: SiteSpec, value: str) -> str:
+    """${access_token}/${refresh_token} → 当前凭证值；引用不到的凭证明确报错，不静默发空值。"""
+    if ACCESS_TOKEN_VAR in value:
+        value = value.replace(ACCESS_TOKEN_VAR, spec.auth_token or "")
+    if REFRESH_TOKEN_VAR in value:
+        refresh_token = str((spec.token_refresh or {}).get("refresh_token") or "")
+        if not refresh_token:
+            raise PriceMonitorError(
+                f"站点 {spec.id} 的凭证注入引用了 {REFRESH_TOKEN_VAR}，但当前认证方式没有 Refresh Token（只有「登录会话自动续签」才有）"
+            )
+        value = value.replace(REFRESH_TOKEN_VAR, refresh_token)
+    return expand_header_value(value)
 
 
 def expand_header_value(value: str) -> str:
@@ -137,10 +191,23 @@ def resolve_endpoint(value: Any, *, spec: SiteSpec, label: str) -> EndpointReque
     )
 
 
-def build_request_kwargs(entry: EndpointRequest, spec: SiteSpec, user_agent: str, timeout: float) -> dict[str, Any]:
-    """站点级认证/Cookie 头与入口级 headers 合成 httpx 请求参数。"""
+def build_request_kwargs(
+    entry: EndpointRequest, spec: SiteSpec, user_agent: str, timeout: float, *, target: str
+) -> dict[str, Any]:
+    """站点级认证/Cookie 头与入口级 headers 合成 httpx 请求参数。
+
+    凭证注入的头（见 auth_inject_headers）最后落地，且入口级 headers 里的同名头一律让位：
+    接口里写死的旧 token 会盖回旧值、续签换新也追不上，认证只走「认证与续签」一处。
+    """
+    injected = auth_inject_headers(spec, target)
+    shadowed = {name.casefold() for name in injected} | ({"authorization"} if spec.auth_token else set())
     request_headers = headers(spec, user_agent)
-    request_headers.update({str(key): expand_header_value(str(value)) for key, value in entry.headers.items()})
+    request_headers.update({
+        str(key): expand_header_value(str(value))
+        for key, value in entry.headers.items()
+        if str(key).casefold() not in shadowed
+    })
+    request_headers.update(injected)
     if spec.cookies and "cookie" not in request_headers:
         request_headers["cookie"] = "; ".join(f"{key}={value}" for key, value in spec.cookies.items())
     return {"params": entry.params, "headers": request_headers, "timeout": timeout}
@@ -419,14 +486,14 @@ class NetworkAdapter:
             # 无头请求带上与 HTTP 链路相同的自定义请求头，两条链路指纹一致
             headers = {
                 name: value
-                for name, value in build_request_kwargs(entry, spec, user_agent, timeout)["headers"].items()
+                for name, value in build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"].items()
                 if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
             }
             response: Any = _BrowserPageResponse(
                 entry.url, fetch_page_html(entry.url, headless_config, user_agent, extra_headers=headers),
             )
         else:
-            response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout))
+            response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="price"))
         if response.status_code in {401, 403}:
             reason = (
                 http_error_message("网络价格接口", response, auth_hint=True)
@@ -561,7 +628,7 @@ class NetworkAdapter:
         ai_page_text = response.text
         ai_captured = [captured]
         if not (entries and any(_entry_matches_targets(item, spec) for item in entries)) and _looks_like_html(response.text):
-            chunk_headers = build_request_kwargs(entry, spec, user_agent, timeout)["headers"]
+            chunk_headers = build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"]
             hit = _search_price_chunk(spec, client, entry.url, chunk_headers, timeout, response.text)
             if hit is not None and hit.entries is not None:
                 entries = hit.entries
@@ -635,7 +702,7 @@ class NetworkAdapter:
         headless_config = network.get("headless") if isinstance(network.get("headless"), dict) else {}
         headers = {
             name: value
-            for name, value in build_request_kwargs(entry, spec, user_agent, timeout)["headers"].items()
+            for name, value in build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"].items()
             if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
         }
         try:
@@ -859,9 +926,14 @@ def _rate_resolver(
 
     接口行形如 {provider, model_display, rate}；倍率先按模型显示名匹配，
     缺失时回退厂商级。返回的 resolve_rate 交给 _records_from_base_entries 消费。
-    extra_headers 是倍率接口自己的独立请求头，盖过站点级认证头里的同名键。
+    extra_headers 是倍率接口自己的独立请求头；凭证注入用到的头名一律以注入为准。
     """
-    request_headers = {**build_request_kwargs(entry, spec, user_agent, timeout)["headers"], **(extra_headers or {})}
+    base_headers = build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"]
+    injected_names = {name.casefold() for name in auth_inject_headers(spec, "price")}
+    request_headers = {
+        **base_headers,
+        **{str(key): value for key, value in (extra_headers or {}).items() if str(key).casefold() not in injected_names},
+    }
     response = client.get(ratio_url, headers=request_headers, timeout=timeout)
     try:
         response.raise_for_status()

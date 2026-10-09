@@ -8,6 +8,8 @@ export interface DiscountInfo {
   official_input_cny: number | null;
   official_output_cny: number | null;
   source_url: string;
+  /** 折扣基准口径：cn=国内站官方价 / global=国际站官方价；旧快照无此字段 */
+  region?: "cn" | "global" | null;
 }
 
 export interface PriceRecord {
@@ -91,6 +93,14 @@ export interface HistoryListData {
   rate?: number;
 }
 
+/** 长上下文分档价档位：tier 是分档条件（models.dev 目前只有 context 阈值档，如 {type:"context", size:200000}）。 */
+export interface PriceTier {
+  input?: number | null;
+  output?: number | null;
+  cache_read?: number | null;
+  tier?: { type?: string; size?: number } | null;
+}
+
 export interface CatalogEntry {
   found: boolean;
   model: string;
@@ -107,6 +117,14 @@ export interface CatalogEntry {
   cache?: { read?: number | null; write?: number | null };
   /** 缓存价的快照汇率人民币折算，口径与 list_cny 一致 */
   cache_cny?: { read?: number | null; write?: number | null };
+  /** 长上下文分档价（USD/1M tokens，models.dev tiers 原结构）：prompt 超过阈值后整请求按该档计费；上游仅部分模型带 */
+  list_tiers?: PriceTier[] | null;
+  /** 分档价的快照汇率人民币折算，口径同 list_cny */
+  list_tiers_cny?: PriceTier[] | null;
+  /** 音频输入/输出价（USD/1M tokens）；仅音频模型带，缺失为 null */
+  list_audio?: { input?: number | null; output?: number | null } | null;
+  /** 音频价的快照汇率人民币折算，口径同 list_cny */
+  list_audio_cny?: { input?: number | null; output?: number | null } | null;
   source_url?: string;
   description?: string;
   /** 简介的中文翻译（AI 随目录同步翻译；AI 未配置或未轮到时为空，回落英文原文） */
@@ -121,6 +139,12 @@ export interface CatalogEntry {
   release_date?: string | null;
   /** AI 档位判定：flagship 顶级（整行高亮）/ mainstream 主流（名称旁 Tag）/ null 其他；AI 不可用时缺省 */
   tier?: "flagship" | "mainstream" | null;
+  /** 官方价基准口径：cn=国内站官方价（厂商定价源或 -cn 渠道），global=国际站官方价 */
+  region?: "cn" | "global";
+  /** 同厂商国际站的列表价参考（国内基准确立后保留），口径同 list */
+  list_global?: { input?: number; output?: number };
+  /** 国际参考价的快照汇率人民币折算，口径同 list_cny */
+  list_global_cny?: { input?: number | null; output?: number | null };
 }
 
 export interface CatalogData {
@@ -209,23 +233,88 @@ export interface SiteConfig {
     /** 响应里 token 的字段路径（如 data.access_token）；留空自动探测 data.access_token / access_token */
     access_token_field?: string;
     refresh_token_field?: string;
+    /** 轮换 Cookie 名（如 new_api_refresh）：这类站点旧凭据一次有效、新值只在响应 Set-Cookie 里，续签后自动接力 */
+    refresh_cookie_name?: string;
     refresh_token: string;
   } | null;
-  enabled?: boolean;
+  /** 凭证注入：把认证与续签里的 token 塞进价格/渠道状态/公告三处请求，一条规则 = 头名 + 值模板。
+   *  值里可用 ${access_token} / ${refresh_token}，续签换新后自动展开成新值；
+   *  头名填 cookie 就是塞进 Cookie（如值 new_api_refresh=${refresh_token}）。没配的处不注入。 */
+  auth_inject?: Record<string, { header?: string; value?: string } | null> | null;
+  /** 后端保存时始终落库（slim_site_config 保留该字段），可放心用于行内启用判断 */
+  enabled: boolean;
   [key: string]: unknown;
 }
 
 export interface SitesData {
   sites: SiteConfig[];
-  collect_status?: Record<string, SiteStatus>;
-  /** 站点 id → 配了却始终没采到价的目标模型名 */
-  unpriced_models?: Record<string, string[]>;
+  /** 站点 id → 三类采集各自的最近一次异常（正常时对应节不存在） */
+  site_health?: Record<string, SiteCollectHealth>;
 }
+
+/** 一类采集最近一次的异常：报错红、需认证/无数据黄；下一轮采集正常即清除。 */
+export interface SiteCollectIssue {
+  level: "error" | "warn";
+  message: string;
+  time: number;
+}
+
+/** 站点采集健康档案：price/status/notice 三个可缺省的异常节。 */
+export type SiteCollectHealth = Partial<Record<"price" | "status" | "notice", SiteCollectIssue>>;
 
 /** 系统设置文档：settings/ai 两段，键名与配置文件一致。 */
 export interface SettingsData {
   settings: Record<string, unknown>;
   ai: Record<string, unknown>;
+}
+
+/** 厂商定价页抓到的单个模型价格（page-price 输出，价格按页面标价币种）。 */
+export interface VendorSourceModel {
+  model: string;
+  model_key: string;
+  input_price?: number | null;
+  output_price?: number | null;
+  cache_read_price?: number | null;
+  currency?: string | null;
+  unit?: string;
+  /** 同模型多档价格：AI 抽取带 name（如 高峰时段/空闲时段，含时段定义），静态解析带 context（上下文档位）；第一项为基准档 */
+  tiers?: { name?: string | null; context?: string | null; input_price?: number; output_price?: number }[];
+  source_url?: string;
+  quote?: string;
+  /** ai 来源的价格为 candidate（待复核），静态解析无此字段 */
+  price_status?: string;
+}
+
+/** 管理台「厂商定价源」：一个厂商的公开定价页配置与最近抓取状态。 */
+export interface VendorPricingSource {
+  vendor: string;
+  url: string;
+  enabled: boolean;
+  /** 区域：cn=国内折扣基准 / global=国际参考价；存量记录缺省按国内处理 */
+  region?: "cn" | "global";
+  last_fetched_at?: number | null;
+  last_status?: "ok" | "empty" | "failed" | null;
+  last_error?: string | null;
+  /** 抓取方式：static-md / static-html / static-json / headless-* / ai */
+  last_method?: string | null;
+  model_count?: number | null;
+  /** 仅详情接口返回；列表接口不带 */
+  models?: VendorSourceModel[] | null;
+}
+
+/** models.dev 对国内厂商国内价的覆盖检测记录。 */
+export interface VendorSourceDetection {
+  vendor: string;
+  /** has_cn=已覆盖 / missing_cn=仅国际口径（推荐添加）/ not_listed=未收录（推荐添加） */
+  verdict: "has_cn" | "missing_cn" | "not_listed";
+  providers: string[];
+  models_total: number;
+  models_priced: number;
+  /** 推荐采集地址（人工核验过），kind=web 网页页 / json 价格接口；一键添加时预填 */
+  suggestions?: { kind: "web" | "json"; url: string }[];
+  note?: string;
+  source_added: boolean;
+  source_enabled?: boolean | null;
 }
 
 export interface TasksData {

@@ -8,19 +8,31 @@
         "refresh_token": "rt_xxx",
         "access_token_field": "data.access_token"  # 可选；管理面板保存时由 AI 从响应案例分析得出
     }
-请求头 = 站点通用请求头（request_headers）打底；响应解析优先用配置的字段路径，
-否则自动探测 data.access_token / access_token，响应里带新 refresh_token 时一并换新。
+请求头 = 站点通用请求头（request_headers）打底；headers 值同样支持 ${refresh_token} 占位，
+cookie 型站点（如 new-api）写成 "new_api_refresh=${refresh_token}" 即可自动代入；
+响应解析优先用配置的字段路径，否则自动探测 data.access_token / access_token，
+响应里带新 refresh_token 时一并换新。
+
+轮换型凭据（new-api 的 new_api_refresh）：旧值用一次就作废，新值只经响应 Set-Cookie
+下发、body 里没有。配置 "refresh_cookie_name": "new_api_refresh" 后，续签会从 Set-Cookie
+提取新值回写 refresh_token，下次请求 headers 里的占位符自动展开成新值，接力续签。
+
+触发时机：价格采集按"需认证占位记录"判定，渠道状态与公告按接口返回 401/403 判定，
+三者都用新 access_token 重试一次；access_token 落到站点级 auth_token，
+价格/状态/公告的请求头因此统一带上 Authorization。
 """
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import httpx
 
 from llm_price_monitor.adapters import expand_header_value
 from llm_price_monitor.config import PriceMonitorError, SiteSpec
 from llm_price_monitor.tracker import PriceRecord
+
+T = TypeVar("T")
 
 
 def needs_refresh(collected: list[PriceRecord]) -> bool:
@@ -45,21 +57,36 @@ def _dig_token(payload: dict[str, Any], configured: Any, fallbacks: tuple[str, .
     return None
 
 
+def _cookie_from_response(response: httpx.Response, name: Any) -> str | None:
+    """从响应 Set-Cookie 里取轮换后的新凭据；new-api 型站点的新 refresh token 只经这里下发。"""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    for header in response.headers.get_list("set-cookie"):
+        cookie_name, sep, value = header.split(";", 1)[0].strip().partition("=")
+        if sep and cookie_name.strip() == name.strip() and value:
+            return value
+    return None
+
+
 def refresh_site_token(spec: SiteSpec, client: httpx.Client, timeout: float, user_agent: str) -> tuple[str, str]:
     """执行续签请求，返回 (新 access_token, 新 refresh_token)。失败抛 PriceMonitorError。"""
     config = spec.token_refresh
     method = str(config.get("method") or "POST").upper()
     url = str(config["url"]).strip()
+    refresh_token = str(config.get("refresh_token") or "")
     params = {str(k): expand_header_value(str(v)) for k, v in (config.get("params") or {}).items()}
-    # 请求头 = 站点通用请求头打底，历史遗留的续签专属 headers 可覆盖
+    # 请求头 = 站点通用请求头打底，历史遗留的续签专属 headers 可覆盖；
+    # ${refresh_token} 必须先于环境变量展开——占位符名符合环境变量模式，
+    # 交给 expand_header_value 会被当成未设置的变量直接抛错
+    expand = lambda value: expand_header_value(value.replace("${refresh_token}", refresh_token))
     extra_headers = {
-        **{str(k): expand_header_value(str(v)) for k, v in spec.request_headers.items()},
-        **{str(k): expand_header_value(str(v)) for k, v in (config.get("headers") or {}).items()},
+        **{str(k): expand(str(v)) for k, v in spec.request_headers.items()},
+        **{str(k): expand(str(v)) for k, v in (config.get("headers") or {}).items()},
     }
     body_template = config.get("body")
     kwargs: dict[str, Any] = {"params": params, "headers": extra_headers, "timeout": timeout}
     if body_template is not None and method != "GET":
-        kwargs["content"] = body_template.replace("${refresh_token}", str(config.get("refresh_token") or ""))
+        kwargs["content"] = body_template.replace("${refresh_token}", refresh_token)
         kwargs["headers"] = {**extra_headers, **({} if extra_headers else {"content-type": "application/json"})}
     response = client.request(method, url, **kwargs)
     if response.status_code in {401, 403}:
@@ -73,8 +100,12 @@ def refresh_site_token(spec: SiteSpec, client: httpx.Client, timeout: float, use
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         message = payload.get("message") or data.get("message")
         raise PriceMonitorError(f"续签接口响应中没有 access_token{f'：{message}' if message else ''}")
-    new_refresh = _dig_token(payload, config.get("refresh_token_field"), ("data.refresh_token", "refresh_token"))
-    return str(access_token), str(new_refresh or config.get("refresh_token") or "")
+    # 新 refresh token 优先取 Set-Cookie（轮换型站点 body 里没有），再退回 body 字段路径；都没有则沿用旧值
+    new_refresh = (
+        _cookie_from_response(response, config.get("refresh_cookie_name"))
+        or _dig_token(payload, config.get("refresh_token_field"), ("data.refresh_token", "refresh_token"))
+    )
+    return str(access_token), str(new_refresh or refresh_token)
 
 
 def refreshed_spec(spec: SiteSpec, access_token: str, refresh_token: str) -> SiteSpec:
@@ -95,19 +126,27 @@ def _retokenize_value(value: str, token: str) -> str:
 def _synced_endpoint(endpoint: Any, token: str, auth_header: str) -> Any:
     """把 endpoint 配置 headers 里写死的认证头同步成新 token；没有认证头则原样返回。
 
+    network 条目下还可能挂着倍率接口（ratio_url）自己的一套请求头，一并同步。
     Cookie 不在同步范围：会话凭据续签拿不到，写死了只能手动维护。
     """
     if not isinstance(endpoint, dict):
         return endpoint
-    headers = endpoint.get("headers")
-    if not isinstance(headers, dict):
-        return endpoint
+    synced: dict[str, Any] = {}
+    if isinstance(endpoint.get("headers"), dict):
+        synced["headers"] = _retokenized_headers(endpoint["headers"], token, auth_header)
+    ratio = endpoint.get("ratio_url")
+    if isinstance(ratio, dict) and isinstance(ratio.get("headers"), dict):
+        synced["ratio_url"] = {**ratio, "headers": _retokenized_headers(ratio["headers"], token, auth_header)}
+    return {**endpoint, **synced} if synced else endpoint
+
+
+def _retokenized_headers(headers: dict[str, Any], token: str, auth_header: str) -> dict[str, Any]:
+    """headers 里的认证头换成新 token，其余键原样保留。"""
     auth_names = {auth_header.lower(), "authorization"}
-    synced = {
+    return {
         key: (_retokenize_value(value, token) if key.lower() in auth_names and isinstance(value, str) else value)
         for key, value in headers.items()
     }
-    return {**endpoint, "headers": synced}
 
 
 def _with_access_token(spec: SiteSpec, access_token: str) -> SiteSpec:
@@ -137,6 +176,33 @@ def persist_refreshed_config(store: Any, site_id: str, access_token: str, refres
         "token_refresh": {**(config.get("token_refresh") or {}), "refresh_token": refresh_token},
     }
     store.upsert_site(site_id, updated)
+
+
+def refresh_and_retry_once(
+    spec: SiteSpec,
+    *,
+    client: httpx.Client,
+    timeout: float,
+    user_agent: str,
+    store: Any | None,
+    attempt: Callable[[SiteSpec], T],
+) -> tuple[T | None, str | None]:
+    """接口返回 401/403 时用续签换来的新 token 重试一次，供渠道状态/公告采集使用。
+
+    与 refresh_and_recollect 的分工：那条链路按"需认证占位记录"判定并整体替换本轮价格；
+    这条只在真正撞上 auth 失败时才换新。返回 (结果, 错误说明)，两者恰好有一个为 None——
+    attempt 返回 None 是合法结果（公告接口不存在），调用方以错误说明区分成功与失败。
+    """
+    try:
+        access_token, refresh_token = refresh_site_token(spec, client, timeout, user_agent)
+    except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
+        return None, f"token 续签失败：{exc}"
+    if store is not None:
+        persist_refreshed_config(store, spec.id, access_token, refresh_token)
+    try:
+        return attempt(refreshed_spec(spec, access_token, refresh_token)), None
+    except (PriceMonitorError, httpx.HTTPError, ValueError) as exc:
+        return None, f"token 续签成功但重新采集失败：{exc}"
 
 
 def refresh_and_recollect(
