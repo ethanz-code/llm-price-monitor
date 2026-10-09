@@ -57,6 +57,10 @@ def build_router(store: Store) -> APIRouter:
         now = time.time()
         ip = client_ip(request)
         with feedback_lock:  # 同步路由跑线程池，读-判-写必须整体原子
+            if len(feedback_hits) > 1024:  # 时间窗只进不出，攒大了压缩一次：窗口内已无记录的 IP 直接清掉
+                alive = {key: [t for t in hits if now - t < 60] for key, hits in feedback_hits.items()}
+                feedback_hits.clear()
+                feedback_hits.update({key: hits for key, hits in alive.items() if hits})
             recent = [t for t in feedback_hits.get(ip, []) if now - t < 60]
             if len(recent) >= 3:
                 raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")
@@ -87,6 +91,10 @@ def build_router(store: Store) -> APIRouter:
         now = time.time()
         key = (ip, path)
         with track_lock:  # 同步路由跑线程池，去重与限速的读-判-写必须整体原子
+            if len(track_hits) > 1024:  # 时间窗只进不出，攒大了压缩一次：窗口内已无记录的 IP 直接清掉
+                alive = {key: [t for t in hits if now - t < 60] for key, hits in track_hits.items()}
+                track_hits.clear()
+                track_hits.update({key: hits for key, hits in alive.items() if hits})
             if now - visit_hits.get(key, 0.0) < 30:
                 return {"ok": True}
             visit_hits[key] = now

@@ -106,6 +106,9 @@ class FallbackTransport(httpx.BaseTransport):
         decision = egress.plan(host)
         if decision.use_proxy:
             return self._proxied.handle_request(request)
+        # 重探会原地注入 connect=8s 的短超时；代理腿建连慢于 8s 时这个残留会把
+        # 本能走通的兜底也掐死，重试前必须还原请求原超时
+        original_extensions = request.extensions
         try:
             response = self._direct.handle_request(
                 _force_short_connect(request) if decision.reprobe else request
@@ -115,6 +118,7 @@ class FallbackTransport(httpx.BaseTransport):
                 raise
             egress.mark_direct_failed(host)
             tasklog.emit(f"[{host}] 直连失败（{exc}），改走备用代理重试", "warn")
+            request.extensions = original_extensions
             return self._proxied.handle_request(request)
         if response.status_code in _FALLBACK_STATUS_CODES:
             egress.mark_direct_failed(host)
@@ -123,6 +127,7 @@ class FallbackTransport(httpx.BaseTransport):
                 "warn",
             )
             response.close()
+            request.extensions = original_extensions
             return self._proxied.handle_request(request)
         egress.mark_direct_ok(host)
         return response

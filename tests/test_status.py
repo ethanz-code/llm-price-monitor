@@ -632,3 +632,27 @@ def test_store_status_delta_append_and_compact(tmp_path):
     # 噪音 change 被清洗，真实状态变化保留
     events, _ = store.read_status_events(site_id="a")
     assert events[0]["changes"] == [noisy_changes[1]]
+
+
+def test_store_status_per_site_max_records_samples_and_keeps_latest(tmp_path: Path):
+    """per_site 模式同样兑现 max_records：总量超限时按 id 均匀抽样，
+    且每站最新一条无条件保留（首页/详情页的「最新时段」直接消费它）。"""
+    store = Store(tmp_path / "monitor.db")
+    for i in range(20):
+        store.append_status_records([
+            {"site_id": "a", "captured_at": float(i), "data": {"n": i}},
+            {"site_id": "b", "captured_at": float(i), "data": {"n": i}},
+        ])
+    records, total = store.read_status(per_site=400, max_records=10)
+    assert total == 40
+    # 40 条抽到 ~10 条，加上每站保底最新一条（本例 b 的最新已在抽样里，只补 a 的）
+    assert 10 <= len(records) <= 12
+    latest_by_site: dict[str, dict] = {}
+    for row in records:  # 返回按 id 升序，同站最后一条即最新
+        latest_by_site[row["site_id"]] = row
+    assert latest_by_site["a"]["data"]["n"] == 19
+    assert latest_by_site["b"]["data"]["n"] == 19
+
+    # 不超限时不抽样，逐条返回
+    full, full_total = store.read_status(per_site=400, max_records=100)
+    assert full_total == 40 and len(full) == 40

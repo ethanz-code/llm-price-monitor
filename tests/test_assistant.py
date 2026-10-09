@@ -614,3 +614,34 @@ def test_ask_retries_same_model_when_thinking_restricted(workspace: Path, monkey
     # 翻参重试在日志里记为独立的 param_retry 状态，不与换模型重试（fallback）混淆
     assert store.read_ai_logs(status="param_retry")[1] == 2
     assert store.read_ai_logs(status="fallback")[1] == 0
+
+
+def test_ask_general_empty_answer_fails_without_consuming_quota(workspace: Path, monkeypatch):
+    """general 通道模型 200 但零文本（内容过滤/思考烧尽）：按 AI 失败返回 502，
+    不产出空气泡、不扣当日配额——与 data 路径及「AI 失败不扣次数」口径一致。"""
+    gate_actions = ["general", "data"]
+    stream_calls: list[list[Any] | None] = []
+
+    def fake_post(url: str, *, headers: dict, json: dict, timeout: float) -> _GateResponse:
+        return _GateResponse(f'{{"action": "{gate_actions.pop(0)}"}}')
+
+    def fake_events(config, messages, tools, *, scene, **kwargs):
+        stream_calls.append(tools)
+        if len(stream_calls) == 1:  # general 通道首轮：模型 200 但一个 delta 都没有
+            yield _finish()
+            return
+        yield {"type": "delta", "text": "demo-model 输入 5.0 USD/1M tokens。"}
+        yield _finish()
+
+    monkeypatch.setattr(assistant.httpx, "Client", lambda *args, **kwargs: _GateHttpClient(fake_post))
+    monkeypatch.setattr(assistant, "ai_stream_messages_fallback", fake_events)
+    client = TestClient(create_app(_config(workspace)))
+    _enable_ai(client)
+    client.app.state.store.set_document("settings", {"assistant_daily_limit": 1})
+
+    res = client.post("/api/assistant/ask", json={"question": "你好呀"})
+    assert res.status_code == 502
+    assert "空回答" in res.json()["detail"]
+    # 空回答不扣次数：当日额度还剩 1 次，正常数据提问仍能成功
+    res2 = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
+    assert res2.status_code == 200 and "demo-model" in res2.json()["answer"]

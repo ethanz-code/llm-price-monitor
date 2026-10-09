@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from typing import Callable
 
 # 直连失败后改走代理的时长（秒）；过期后放行一次直连探测，成功即切回
 REPROBE_SECONDS = 3600
+
+_log = logging.getLogger("llm_price_monitor.egress")
 
 _now = time.time
 _provider: Callable[[], str | None] | None = None
@@ -31,12 +34,13 @@ def configure_provider(provider: Callable[[], str | None] | None) -> None:
 
 
 def fallback_proxy() -> str | None:
-    """当前生效的备用代理地址；未配置或读取失败返回 None（采集永不因配置读取挂掉）。"""
+    """当前生效的备用代理地址；未配置返回 None（采集永不因配置读取挂掉）。"""
     if _provider is None:
         return None
     try:
         value = _provider()
-    except Exception:
+    except Exception as cause:  # noqa: BLE001 —— 配置读取失败按未配置处理，但必须留痕可排查
+        _log.warning("备用代理配置读取失败，本轮按未配置处理（被墙域名将直连重试）: %s", cause)
         return None
     return str(value or "").strip() or None
 

@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -1948,3 +1949,42 @@ def test_vendor_sources_seeded_on_first_boot(workspace: Path, monkeypatch):
     assert [s["vendor"] for s in sources] == ["Zhipu AI"]
     assert sources[0]["note"] == "bigmodel.cn 官方定价页，人民币标价直接作为国内基准"
     assert sources[0]["enabled"] is True and sources[0]["region"] == "cn"
+
+
+def test_admin_get_routes_denied_to_anonymous_by_default(workspace: Path, monkeypatch):
+    """默认模式（未设 internal token）下的门禁守卫：除访客公开面外，
+    遍历全部 GET 路由断言匿名一律 401——新增管理端点忘挂 admin_get_paths 白名单时
+    这里先红（此前 /api/settings/proxy-status 就这样漏过一次）。"""
+    from fastapi.routing import APIRoute
+
+    monkeypatch.delenv("PRICE_WEB_INTERNAL_TOKEN", raising=False)
+    app = create_app(_config(workspace))
+    client = TestClient(app)
+    # 访客公开面：页面数据读接口 + 健康检查/登录态/助手状态；其余 GET 一律管理员专属
+    public_gets = {
+        "/api/health", "/api/auth/state", "/api/assistant/status",
+        "/api/meta", "/api/overview", "/api/latest", "/api/feed", "/api/history",
+        "/api/status", "/api/status/latest", "/api/status/events", "/api/notice",
+        "/api/rankings", "/api/catalog", "/api/catalog/all", "/api/geo",
+    }
+
+    def all_api_routes() -> list[APIRoute]:
+        # FastAPI 的 include_router 挂成 _IncludedRouter，真正的路由在其 original_router 里
+        found: list[APIRoute] = []
+        for route in app.routes:
+            if isinstance(route, APIRoute):
+                found.append(route)
+            elif type(route).__name__ == "_IncludedRouter":
+                found.extend(sub for sub in route.original_router.routes if isinstance(sub, APIRoute))
+        return found
+
+    admin_gets = [
+        route.path
+        for route in all_api_routes()
+        if "GET" in route.methods and route.path.startswith("/api") and route.path not in public_gets
+    ]
+    assert admin_gets, "守卫自身失效：管理 GET 面为空，枚举不到任何路径"
+    for path in admin_gets:
+        concrete = re.sub(r"\{[^}]+\}", "x", path)
+        status = client.get(concrete).status_code
+        assert status == 401, f"{path} 对匿名返回 {status}，管理读接口漏出门禁白名单"

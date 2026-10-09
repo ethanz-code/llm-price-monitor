@@ -2013,9 +2013,10 @@ html:not([data-theme="dark"]) .panel {
 }
 
 [data-theme="dark"] .hero::before {
+  /* 近黑底上带色相的光晕会糊成脏色（062fa0a 同一教训），暗色改中性冷光只留亮度层次 */
   background:
-    radial-gradient(52% 62% at 26% 42%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 72%),
-    radial-gradient(circle at 50% 0, color-mix(in srgb, var(--accent) 5%, transparent), transparent 55%);
+    radial-gradient(52% 62% at 26% 42%, rgba(255, 255, 255, 0.05), transparent 72%),
+    radial-gradient(circle at 50% 0, rgba(255, 255, 255, 0.03), transparent 55%);
 }
 
 [data-theme="dark"] .hero::after {
@@ -2544,17 +2545,35 @@ html:not([data-theme="dark"]) .panel {
   animation: globe-in 1.1s var(--ease) both;
 }
 
+/* 进场第二段：整球从左侧屏外滑入落位（mask 在球层上，随层一起移动不会被裁）；
+   绑 canvas 的 is-ready，WebGL 首帧就绪才开始——加载骨架层没有 canvas，不会触发 */
+@keyframes globe-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-72px) scale(0.96);
+  }
+}
+
+.pano-globe-layer:has(canvas.is-ready) {
+  animation: globe-arrive 1.15s var(--ease) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pano-globe canvas,
   .pano-globe canvas.is-ready {
     animation: none;
     opacity: 1;
   }
+
+  .pano-globe-layer:has(canvas.is-ready) {
+    animation: none;
+  }
 }
 
 .pano-globe-layer {
   position: relative;
-  width: min(100%, 500px);
+  /* 球层贴满 hero 球列（桌面 540 / ≥1441 大屏 620），球随列放大成首屏主视觉 */
+  width: min(100%, 580px);
   justify-self: center;
   aspect-ratio: 1;
   -webkit-mask-image: radial-gradient(
@@ -2575,6 +2594,14 @@ html:not([data-theme="dark"]) .panel {
   background: radial-gradient(
     circle,
     color-mix(in srgb, var(--accent) 10%, transparent),
+    transparent 68%
+  );
+}
+
+[data-theme="dark"] .pano-globe-layer::before {
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.06),
     transparent 68%
   );
 }
@@ -5043,7 +5070,7 @@ a.event-card {
 [data-theme="dark"] .landing-cta::after {
   background: radial-gradient(
     46% 58% at 50% 50%,
-    color-mix(in srgb, var(--accent) 9%, transparent),
+    rgba(255, 255, 255, 0.05),
     transparent 74%
   );
 }
@@ -5410,6 +5437,12 @@ a.event-card {
   border-radius: 4px;
   background: color-mix(in srgb, var(--text-1) 3%, transparent);
   color: var(--text-1);
+}
+
+/* pre-wrap 继承自 .ai-msg（为用户消息的换行保留）：markdown 输出里块级元素间
+   的源码换行会被原样显示成空行，间距翻倍，这里恢复折叠，代码块由 UA 样式保持 pre */
+.ai-markdown {
+  white-space: normal;
 }
 
 .ai-markdown > :first-child {

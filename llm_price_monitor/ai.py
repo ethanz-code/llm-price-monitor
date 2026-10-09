@@ -441,13 +441,15 @@ def request_with_model_fallback(
                     response.raise_for_status()
                     duration_ms = int((time.monotonic() - started) * 1000)
                     payload: dict[str, Any] = {}
+                    parse_error: str | None = None
                     try:
                         payload = response.json()
                         prompt_tokens, completion_tokens, total_tokens = _usage_tokens(config.api_format, payload)
                         answer = ai_content(config.api_format, payload)
-                    except Exception:
+                    except Exception as cause:
                         prompt_tokens = completion_tokens = total_tokens = None
                         answer = None
+                        parse_error = str(cause)
                     if validate is not None:
                         try:
                             validate(answer or "")
@@ -458,6 +460,10 @@ def request_with_model_fallback(
                             duration_ms = int((time.monotonic() - started) * 1000)
                             finish = _finish_reason(config.api_format, payload)
                             detail = str(exc) + (f"｜finish={finish}" if finish else "")
+                            if parse_error:
+                                # 响应根本不是 JSON（网关返回 HTML/空体等）与模型输出空正文是两类问题，
+                                # 原始解析异常必须进日志，否则换模型救不了也查不出方向
+                                detail = f"响应解析失败（{parse_error}）｜{detail}"
                             truncated = completion_tokens is not None and completion_tokens >= request_limit
                             nonempty = bool(answer and answer.strip())
                             raw_tail = (answer or "")[-_RESPONSE_TAIL_CHARS:] or None

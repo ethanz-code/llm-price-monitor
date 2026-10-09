@@ -42,7 +42,7 @@ function SiteSubmitModal({ open, onClose }: { open: boolean; onClose: () => void
     <Modal
       open={open}
       onClose={onClose}
-      title="提交监控站点"
+      title="提交站点，加入检测"
       footer={
         <Btn variant="primary" loading={sending} disabled={!valid} onClick={submit}>
           提交站点
@@ -55,8 +55,8 @@ function SiteSubmitModal({ open, onClose }: { open: boolean; onClose: () => void
         <Input
           value={models}
           onChange={setModels}
-          placeholder="想监控的模型（选填，逗号分隔）"
-          ariaLabel="想监控的模型"
+          placeholder="想检测的模型（选填，逗号分隔）"
+          ariaLabel="想检测的模型"
         />
         <Input value={contact} onChange={setContact} placeholder="联系方式（选填，方便反馈接入结果）" ariaLabel="联系方式" />
       </div>

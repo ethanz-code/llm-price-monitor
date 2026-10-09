@@ -417,13 +417,13 @@ def _scan_prices(
     store: Store | None,
     latest: dict[str, dict[str, Any]],
     persist: bool = True,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], set[str], set[str]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """价格采集主体：逐站点走适配器，与上次快照比对生成事件。
 
-    返回 (records, history_rows, events, errors, site_status, removed_keys, touched_keys)；
-    history_rows 只含本次真正取到价的记录——沿用上次价的占位行与无数据的跳过行都不写历史；
-    removed_keys 是本轮分组下线从快照摘除的 key，需要从数据库显式删行；
-    touched_keys 是本轮实际写过快照的 key，落库时只写这些，防止与并行采集互相回写覆盖。
+    返回 (records, events, errors, site_status)；持久化在本函数内逐站完成——
+    history_rows 只含本次真正取到价的记录（沿用上次价的占位行与无数据的跳过行都不写历史）、
+    removed_keys 是分组下线要从快照摘除的 key、touched_keys 是本轮真正写过快照的 key
+    （防止与并行采集互相回写覆盖），三者只进落库链路，不再外传给调用方。
     """
     records: list[dict[str, Any]] = []
     history_rows: list[dict[str, Any]] = []
@@ -600,7 +600,7 @@ def _scan_prices(
         else:
             tasklog.emit(f"[{spec.id}] 价格采集成功：{len(collected)} 条价格，{site_changed} 处变化，{time.time() - site_started:.1f}s")
     tasklog.emit(f"价格采集完成：{len(records)} 条记录，{len(errors)} 个错误，{time.time() - scan_started:.1f}s")
-    return records, history_rows, events, errors, site_status, removed_keys, touched_keys
+    return records, events, errors, site_status
 
 
 # 分组连续缺失这么多次才判定"下线"：站点换分组清单、临时调整常态发生，
@@ -933,7 +933,7 @@ def scan_prices(
     client = client or build_client()
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status, removed_keys, touched_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)
+        records, events, errors, site_status = _scan_prices(config, client, selected_user_agent, store, latest, persist)
         # price_status 在确认/规则/无数据之间抖动不代表价格真的变了，这类事件不落库
         changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
@@ -1018,7 +1018,7 @@ def run_once(
     client = client or build_client()
     latest = store.latest_all() if store is not None else {}
     try:
-        records, history_rows, events, errors, site_status, removed_keys, touched_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)
+        records, events, errors, site_status = _scan_prices(config, client, selected_user_agent, store, latest, persist)
         status_scan = _scan_statuses(config, client, selected_user_agent, store)
         notice_scan = _scan_notices(config, client, selected_user_agent, store)
         errors = [*errors, *status_scan.errors, *notice_scan.errors]

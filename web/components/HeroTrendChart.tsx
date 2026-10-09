@@ -13,7 +13,7 @@ import {
 import { Sel } from "./ui";
 import { DajuYarn } from "./DajuArt";
 import { ChartBubble, useChartTheme } from "./chartTheme";
-import { currencySymbol, formatPrice, formatTime, toCnyPrice } from "@/lib/format";
+import { formatPrice, formatTime, toCnyPrice } from "@/lib/format";
 import type { TrendRecord } from "@/lib/types";
 
 interface TrendPoint {
@@ -94,10 +94,11 @@ export function HeroTrendChart({
     );
   }
 
-  // 全站混合报价：有汇率时统一折成 CNY；没有汇率则只能画同单位的站点， symbol 跟随多数单位
+  // 全站混合报价：有汇率时统一折成 CNY；没有汇率（目录未生成的初始期）各站原币不可比，
+  // 不标币种符号也不声称美元单位，避免把 CNY 原值标成美元价
   const converted = rate != null;
-  const symbol = converted ? "¥" : currencySymbol("USD");
-  const unitLabel = converted ? "CNY/1M tokens（按汇率折算）" : "USD/1M tokens";
+  const symbol = converted ? "¥" : "";
+  const unitLabel = converted ? "CNY/1M tokens（按汇率折算）" : "原币 /1M tokens（未折算）";
   const last = series.points[series.points.length - 1];
 
   function HeroTooltip({ active, payload }: { active?: boolean; payload?: { payload?: { label?: string; min?: number } }[] }) {

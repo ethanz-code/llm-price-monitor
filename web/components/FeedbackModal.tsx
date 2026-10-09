@@ -48,7 +48,7 @@ export function FeedbackModal({ open, onClose }: { open: boolean; onClose: () =>
           rows={5}
           maxLength={MAX_CONTENT}
           aria-label="建议内容"
-          placeholder="功能建议、数据纠错、想监控的站点…"
+          placeholder="功能建议、数据纠错、想检测的站点…"
           value={content}
           onChange={(event) => setContent(event.target.value)}
         />

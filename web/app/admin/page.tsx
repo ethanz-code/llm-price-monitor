@@ -62,7 +62,7 @@ export default async function AdminOverviewPage() {
     : null;
 
   const kpis: { label: string; value: string; hint: ReactNode; color?: string; tip?: TermKey }[] = [
-    { label: "监控站点", value: formatCount(siteIds.size), hint: "个" },
+    { label: "检测站点", value: formatCount(siteIds.size), hint: "个" },
     { label: "价格记录", value: formatCount(records.length), hint: "条" },
     { label: "事件总数", value: formatCount((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "条" },
     {
@@ -99,7 +99,7 @@ export default async function AdminOverviewPage() {
     <>
       {/* 后台各页均为面板式布局，页首标题只保留给读屏软件 */}
       <h1 className="sr-only">控制台</h1>
-      {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="稍后再试，或检查服务是否已启动。" />}
+      {error && <SiteAlert title="暂时读不到数据" detail={error} fix="稍后再试，或检查服务是否已启动。" />}
       <div className="dash-grid">
         <div className="dash-main">
           <div className="dash-stats">
@@ -205,7 +205,7 @@ export default async function AdminOverviewPage() {
             <li>
               <span className="guide-icon"><IconPlus size={15} /></span>
               <div>
-                <div className="guide-title">1 · 添加监控站点</div>
+                <div className="guide-title">1 · 添加检测站点</div>
                 <p>填写中转站的价格接口地址与目标模型，支持请求头、分组倍率等高级配置。</p>
               </div>
               <Link href="/admin/sites" className="guide-link">去添加 →</Link>

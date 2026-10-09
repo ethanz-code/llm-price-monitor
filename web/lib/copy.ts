@@ -30,6 +30,10 @@ export const nav = {
   },
 };
 
+/** Bento 小卡图标键：与首页 BENTO_ICONS 映射（components/icons.tsx 的导出名）一一对应，
+ *  加新键必须两边同步，类型约束让漏改在编译期报错而不是渲染期崩页面 */
+export type BentoIconKey = "sync" | "monitor" | "aim";
+
 /** 首页 */
 export const home = {
   /** Hero 大标题静态两行，第二行开头两个字走品牌色（见 components/HeroType.tsx） */
@@ -79,7 +83,7 @@ export const home = {
         title: "折扣一眼看清",
         desc: "厂商官方定价摆在旁边，中转站标价折到几折，不用自己按计算器。",
       },
-    ],
+    ] satisfies { icon: BentoIconKey; title: string; desc: string }[],
   },
   viewAll: "查看全部 →",
   viewAllEvents: "全部事件 →",

@@ -58,7 +58,8 @@ services:
   # 端口不发布，仅在 compose 容器网络内可达，公网摸不到；面板地址填 http://proxy:7890。
   proxy:
     profiles: ["proxy"]
-    image: metacubex/mihomo:latest
+    # 钉具体版本与 APP_TAG 同一纪律：latest 上游发版即突变且无法回滚；升级时改这里再 up -d
+    image: metacubex/mihomo:v1.19.32
     container_name: price-monitor-proxy
     restart: unless-stopped
     volumes:

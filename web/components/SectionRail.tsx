@@ -12,12 +12,16 @@ const RAIL_ITEMS = [
 ];
 
 export function SectionRail() {
+  // 最新价格/模型榜单是条件区块（还没有数据时整节不渲染）：
+  // 挂载后按实际存在的区块裁剪导航，锚点目标不存在的不上，避免点了没反应的死链接
+  const [items, setItems] = useState(RAIL_ITEMS);
   const [active, setActive] = useState("");
 
   useEffect(() => {
     const sections = RAIL_ITEMS.map((item) => document.getElementById(item.id)).filter(
       (el): el is HTMLElement => el != null,
     );
+    setItems(RAIL_ITEMS.filter((item) => document.getElementById(item.id) != null));
     if (sections.length === 0) return;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -27,7 +31,7 @@ export function SectionRail() {
         if (current) setActive(current.target.id);
       },
       // 视口上部为判定带：滚过即切到下一区块
-      { rootMargin: "-15% 0px -70% 0px" },
+      { rootMargin: "-15% 0px -70% 0%" },
     );
     sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
@@ -35,7 +39,7 @@ export function SectionRail() {
 
   return (
     <nav className="section-rail" aria-label="页面区块">
-      {RAIL_ITEMS.map((item) => (
+      {items.map((item) => (
         <a
           key={item.id}
           href={`#${item.id}`}

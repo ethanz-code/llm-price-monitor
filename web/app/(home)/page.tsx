@@ -85,18 +85,22 @@ const TILE_DOT_TONE: Record<RateLevel, string> = {
 /** 行列表封顶：首页只列这么多行，其余进「还有 N 个站点」链接 */
 const SITE_ROW_MAX = 18;
 
+/** 最新事件侧栏展示条数：feed 取 8 条折叠后截到这里，渲染处直接整组上 */
+const LATEST_EVENTS_SHOWN = 5;
+
 async function loadLanding(): Promise<LandingData> {
   try {
     // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
-    const [overview, meta, feed, status, geo, rankings, catalog] = await Promise.all([
+    const [overview, meta, feed, status, geo, rankings, catalog, history] = await Promise.all([
       apiGet<OverviewData>("/api/overview", undefined, PUBLIC_REVALIDATE),
       apiGet<MetaData>("/api/meta", undefined, PUBLIC_REVALIDATE),
       apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8", undefined, PUBLIC_REVALIDATE).catch(() => null),
-      // 与站点检测详情页同口径：最近 7 天、每站最近 400 条（截断不抽样），
-      // 星球/轮播要取「最新时段区块平均率」，必须和详情页拿到同一段序列。
+      // 与站点检测详情页同口径：最近 7 天、每站最近 400 条；再给全量行数上限——
+      // 站点多时 400×N 条状态快照体积失控（5 站 7 天实测约 9MB），按 id 均匀抽样到
+      // 600 条封顶（每站最新一条始终保留，时段桶均值仍是全量分布的近似）
       // since 对齐到分钟：60s 缓存窗口内 URL 稳定，fetch 缓存才能命中
       apiGet<{ records: StatusSnapshot[] }>(
-        `/api/status?per_site=400&since=${Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60}`,
+        `/api/status?per_site=400&since=${Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60}&max_records=600`,
         undefined,
         PUBLIC_REVALIDATE,
       ).catch(() => ({ records: [] as StatusSnapshot[] })),
@@ -104,14 +108,9 @@ async function loadLanding(): Promise<LandingData> {
       apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo", undefined, PUBLIC_REVALIDATE).catch(() => ({ geo: {} })),
       apiGet<RankingsData>("/api/rankings", undefined, PUBLIC_REVALIDATE).catch(() => null),
       apiGet<CatalogData>("/api/catalog", undefined, PUBLIC_REVALIDATE).catch(() => null),
+      // hero 折线是装饰位：拉取失败只影响图表兜底回插画，不阻塞整页报错；与其余取数同走 60s 缓存
+      apiGet<HistoryListData>("/api/history?limit=1000", undefined, PUBLIC_REVALIDATE).catch(() => null),
     ]);
-    // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
-    let history: HistoryListData | null;
-    try {
-      history = await apiGet<HistoryListData>("/api/history?limit=1000");
-    } catch {
-      history = null;
-    }
     return { overview, meta, feed, history, status: status.records, geo: geo.geo, rankings, catalog, error: null };
   } catch (cause) {
     return {
@@ -179,7 +178,7 @@ export default async function LandingPage() {
   const rate = overview?.catalog?.usd_cny_rate ?? null;
   // 最新事件侧栏与事件追踪页同一套折叠口径（同站同模型同类 120s 内折一张卡），
   // 原始事件按「站点+模型+分组」入库，不折叠会同模型并排出几条看起来一样的行；公告事件没有模型行，展示公告摘要
-  const latestEventGroups = foldEvents(feed?.events ?? []).slice(0, 4);
+  const latestEventGroups = foldEvents(feed?.events ?? []).slice(0, LATEST_EVENTS_SHOWN);
   const historyRecords = history?.records ?? [];
 
   // 站点检测档案：可用率序列供星球悬停与行列表状态共用；
@@ -325,7 +324,7 @@ export default async function LandingPage() {
                 </div>
               </Link>
               {home.introBento.items.map((item) => {
-                const Icon = BENTO_ICONS[item.icon as keyof typeof BENTO_ICONS];
+                const Icon = BENTO_ICONS[item.icon];
                 return (
                   <div key={item.title} className="bento-card">
                     <span className="bento-icon" aria-hidden>
@@ -376,7 +375,7 @@ export default async function LandingPage() {
               </div>
               {latestEventGroups.length > 0 ? (
                 <div className="landing-events">
-                  {latestEventGroups.slice(0, 5).map((group, index) => {
+                  {latestEventGroups.map((group, index) => {
                     const event = group[0];
                     const meta = eventMeta(event.kind);
                     const site = isNoticeEvent(event)

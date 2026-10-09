@@ -16,7 +16,7 @@ type Step = 1 | 2 | 3 | 4;
 const STEPS: { id: Step; label: string }[] = [
   { id: 1, label: "创建账号" },
   { id: 2, label: "配置密钥" },
-  { id: 3, label: "监控模型" },
+  { id: 3, label: "检测模型" },
   { id: 4, label: "开始使用" },
 ];
 
@@ -45,7 +45,7 @@ export default function SetupPage() {
       <div className="auth-card auth-card-wide">
         <LogoMark size={36} />
         <h1 className="auth-title">开始使用</h1>
-        <p className="auth-sub">首次运行需完成四步：创建管理员账号、配置必需的密钥、选择要检测的模型、添加要监控的站点。</p>
+        <p className="auth-sub">首次运行需完成四步：创建管理员账号、配置必需的密钥、选择要检测的模型、添加要检测的站点。</p>
         <ol className="setup-steps">
           {STEPS.map((item) => (
             <li key={item.id} className={item.id === step ? "on" : item.id < step ? "done" : ""}>
@@ -236,7 +236,7 @@ function StepModels({ onDone, onSkip }: { onDone: () => void; onSkip: () => void
         </p>
         <div className="setup-keys-fields">
           <label className="auth-field">
-            <span>监控模型（逗号分隔，留空则自动添加各厂商最新模型）</span>
+            <span>检测模型（逗号分隔，留空则自动添加各厂商最新模型）</span>
             <Input value={models} onChange={setModels} placeholder="gpt-5.6, claude-sonnet-5, glm-5.3…" />
           </label>
         </div>
@@ -257,7 +257,7 @@ function StepModels({ onDone, onSkip }: { onDone: () => void; onSkip: () => void
 /* ---------- 第 4 步：完成 ---------- */
 
 const NEXT_STEPS = [
-  { title: "添加监控站点", text: "在「站点管理」里新增中转站的价格接口地址与登录凭证。", href: "/admin/sites", label: "去添加站点" },
+  { title: "添加检测站点", text: "在「站点管理」里新增中转站的价格接口地址与登录凭证。", href: "/admin/sites", label: "去添加站点" },
   { title: "等待自动采集", text: "系统会按「系统设置」里的频率自动采集，第一次价格数据很快就有。", href: "/admin/tasks", label: "看采集任务" },
 ];
 
@@ -286,10 +286,10 @@ function StepDone() {
   return (
     <div className="setup-done">
       {autoFill === "running" && (
-        <p className="auth-hint">正在同步官方目录，各厂商最新发布的模型将自动添加至监控清单。</p>
+        <p className="auth-hint">正在同步官方目录，各厂商最新发布的模型将自动添加至检测清单。</p>
       )}
       {autoFill === "manual" && (
-        <p className="auth-hint">尚未配置监控模型：可在「站点管理」顶部添加要检测的模型。</p>
+        <p className="auth-hint">还没选要检测的模型：可在「站点管理」顶部添加。</p>
       )}
       <ul>
         {NEXT_STEPS.map((item) => (

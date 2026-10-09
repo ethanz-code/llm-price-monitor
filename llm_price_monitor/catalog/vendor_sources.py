@@ -678,19 +678,6 @@ def refresh_all_sources(store: Any, *, timeout: float, ai_config: AIConfig | Non
     }
 
 
-def remerge_catalog(store: Any) -> dict[str, Any]:
-    """用当前源配置就地重合并官方价目录（删除/停用源后的快速恢复路径）。"""
-    catalog = store.get_document("catalog")
-    if not isinstance(catalog, dict):
-        return {"matched": 0, "added": 0, "referenced": 0, "skipped": []}
-    rate = _catalog_rate(catalog)
-    if not rate:
-        return {"matched": 0, "added": 0, "referenced": 0, "skipped": [], "error": "无可用汇率"}
-    merged, summary = merge_sources_into_catalog(catalog, load_sources(store), rate)
-    store.set_document("catalog", merged)
-    return summary
-
-
 __all__ = [
     "VENDOR_SOURCES_DOCUMENT",
     "DOMESTIC_BRANDS",
@@ -703,7 +690,6 @@ __all__ = [
     "refresh_and_merge",
     "merge_sources_into_catalog",
     "merge_sources_into_channel_catalog",
-    "remerge_catalog",
     "validate_source",
     "validate_region",
 ]

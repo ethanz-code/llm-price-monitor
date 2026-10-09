@@ -619,8 +619,8 @@ function RankListSkeleton() {
   );
 }
 
-/** 首页骨架：hero（左球 + 右文案 + 两排节点轮播）+ 能力总览 + 采集流水线 + 使用场景
- *  + 最新价表 + 趋势/事件两栏 + 站点卡 + 榜单速览 + 数据来源 + FAQ + CTA，节次与真实页一致，换入不跳版。 */
+/** 首页骨架：hero（左球 + 右文案 + 两排节点轮播）+ Bento 介绍 + 最新价表
+ *  + 趋势/事件两栏 + 站点卡 + 榜单速览 + FAQ + CTA，节次与真实页一致，换入不跳版。 */
 export function LandingLoading() {
   return (
     <div className="page landing">
@@ -688,7 +688,7 @@ export function LandingLoading() {
       {/* Bento 产品介绍骨架：1 大 + 3 小 */}
       <section className="landing-section" aria-hidden>
         <div className="bento-grid">
-          <div className="bento-card bento-card--wide">
+          <div className="bento-card bento-card--feature">
             <Skel w={170} h={16} />
             <Skel w="62%" h={12} delay={60} />
           </div>

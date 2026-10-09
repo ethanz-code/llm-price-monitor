@@ -54,6 +54,10 @@ def build_router(store: Store) -> APIRouter:
         now = time.time()
         ip = client_ip(request)
         with submit_lock:  # 同步路由跑线程池，读-判-写必须整体原子
+            if len(submit_hits) > 1024:  # 时间窗只进不出，攒大了压缩一次：窗口内已无记录的 IP 直接清掉
+                alive = {key: [t for t in hits if now - t < 60] for key, hits in submit_hits.items()}
+                submit_hits.clear()
+                submit_hits.update({key: hits for key, hits in alive.items() if hits})
             recent = [t for t in submit_hits.get(ip, []) if now - t < 60]
             if len(recent) >= SUBMIT_MAX_PER_MINUTE:
                 raise HTTPException(status_code=429, detail="提交过于频繁，请稍后再试")

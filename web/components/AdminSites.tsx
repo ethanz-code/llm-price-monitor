@@ -103,7 +103,7 @@ export function AdminSites() {
       setMonitorModels(next);
       flashSaved();
     } catch (error) {
-      toast(`监控模型保存失败: ${errorText(error)}`);
+      toast(`检测模型保存失败: ${errorText(error)}`);
     }
   }
 
@@ -315,8 +315,8 @@ export function AdminSites() {
       <div className="panel" style={{ padding: "10px 16px", marginBottom: 10, display: "grid", gap: 8 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 200px) 1fr", gap: 12, alignItems: "start" }}>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 550 }}>监控模型</div>
-            <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>全部站点共用；列出要监控的模型名</div>
+            <div style={{ fontSize: 13, fontWeight: 550 }}>检测模型</div>
+            <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>全部站点共用；列出要检测的模型名</div>
           </div>
           <div style={{ minWidth: 0 }}>
             {monitorModels === null ? <Skel w={130} h={13} /> : <ModelMultiSelect value={monitorModels} onChange={saveMonitorModels} />}
@@ -380,7 +380,7 @@ export function AdminSites() {
               <Empty
                 icon={<DajuSit width={30} />}
                 title="还没有站点"
-                description="添加第一个监控目标后，这里会展示各站点与模型的采集状态。"
+                description="添加第一个检测目标后，这里会展示各站点与模型的采集状态。"
                 action={
                   <span style={{ display: "inline-flex", gap: 10 }}>
                     <Btn size="sm" onClick={() => setEditing({ config: siteSkeleton(), isNew: true })}>

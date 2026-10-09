@@ -418,7 +418,7 @@ export function AssistantDock() {
             </span>
             <div className="ai-drawer-title">
               <strong>智能分析助手</strong>
-              <span>{model ?? "盯价格、查渠道，随时问"}</span>
+              <span>{model ?? "检测价格、查渠道，随时问"}</span>
             </div>
             <button
               type="button"
@@ -485,7 +485,7 @@ export function AssistantDock() {
                   <svg width={44} height={44} viewBox="0 0 64 64" aria-hidden>
                     <DajuPeek shape="circle" />
                   </svg>
-                  <p>喵，我是智能分析助手，帮你盯价格。</p>
+                  <p>喵，我是智能分析助手，帮你检测价格变化。</p>
                   <span>比价、看走势、查渠道状态，从这些问题开始：</span>
                 </div>
                 {visibleSuggestions.map((question) => (

@@ -1180,8 +1180,8 @@ class Store:
             total = int(conn.execute(f"SELECT COUNT(*) FROM status_records {since_clause}", since_params).fetchone()[0])
             rows = conn.execute(
                 f"""
-                SELECT payload FROM (
-                    SELECT id, payload, ROW_NUMBER() OVER (PARTITION BY site_id ORDER BY id DESC) AS rn
+                SELECT site_id, id, payload FROM (
+                    SELECT site_id, id, payload, ROW_NUMBER() OVER (PARTITION BY site_id ORDER BY id DESC) AS rn
                     FROM status_records {since_clause}
                 )
                 WHERE rn <= ?
@@ -1189,6 +1189,18 @@ class Store:
                 """,
                 (*since_params, per_site),
             ).fetchall()
+        if max_records is not None and len(rows) > max_records:
+            max_records = max(1, min(max_records, _MAX_ROW_LIMIT))
+            # 与 _read_rows 同口径按 id 取模均匀抽样（stride 由行数推出，保留分布形状）；
+            # 每站最新一条无条件保留——首页/详情页的「最新时段」直接消费它，不能被抽走
+            stride = -(-len(rows) // max_records)
+            keep: dict[int, Any] = {row["id"]: row for row in rows if row["id"] % stride == 0}
+            seen_sites: set[str] = set()
+            for row in reversed(rows):
+                if row["site_id"] not in seen_sites:
+                    seen_sites.add(row["site_id"])
+                    keep.setdefault(row["id"], row)
+            rows = sorted(keep.values(), key=lambda row: row["id"])
         return [json.loads(row["payload"]) for row in rows], total
 
     def latest_status_all(self) -> dict[str, dict[str, Any]]:

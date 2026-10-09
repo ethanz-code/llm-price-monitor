@@ -52,7 +52,7 @@ uv run price-web --with-frontend
 
 请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）支持 `${access_token}`/`${refresh_token}` 凭证占位符，展开成「认证与续签」的当前凭证，续签换新后自动跟着变；其余文本原样保留，不做环境变量注入。注意直采请求头不认凭证占位符——认证走「认证与续签」的凭证注入配置，或写死旧 token 由续签自动回写。
 
-要监控哪些模型在站点管理页顶部「监控模型」统一配置（`settings.monitor_models`），所有站点共用一份，不再按站点单独配置；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，网页/AI 提取模式让 AI 抽取页面上的每一个模型——大站会超出 AI 输入上限，慎用）。清单平时不用手动追新：目录刷新会自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭自动维护）；手动删掉的模型不会再被自动加回。
+要检测哪些模型在站点管理页顶部「检测模型」统一配置（`settings.monitor_models`），所有站点共用一份，不再按站点单独配置；填 `*` 表示全量采集（接口直采从定价响应现场展开全部模型，网页/AI 提取模式让 AI 抽取页面上的每一个模型——大站会超出 AI 输入上限，慎用）。清单平时不用手动追新：目录刷新会自动补进各厂商最新发布的通用对话模型（国内定价源厂商按定价页顺序每家留前几个），发布超过 3 个月的旧模型自动移出（`settings.monitor_model_max_age_months`，填 0 关闭自动维护）；手动删掉的模型不会再被自动加回。
 
 部署在境内服务器、部分站点直连不了时，在管理面板「系统设置 → 采集出口」填一个 http(s) 备用代理地址（`settings.fallback_proxy`，如 `http://172.17.0.1:7890`，要认证写成 `http://user:pass@host:port`；填完点「测试连通」可验证代理通不通并显示出口 IP）：采集始终先走直连，直连失败（超时/重置/被目标站拒收）的站点自动改走代理继续采，恢复后自动切回；国内能直连的站点永远不走代理。Docker 部署时代理客户端跑在宿主机的话，地址写 `http://172.17.0.1:7890`（容器里的 127.0.0.1 不是宿主机）。无头浏览器渲染同一站点时跟随同一出口选择。
 
@@ -119,12 +119,12 @@ new-api 会话规则（见 [QuantumNous/new-api](https://github.com/QuantumNous/
 | `GET /api/rankings` | 公开 | 模型榜单（Artificial Analysis 排名/智能指数/速度/延迟，每日定时同步） |
 | `GET /api/geo` | 公开 | 逐站点解析公网 IP 归属地（带缓存），供首页监控地球使用 |
 | `GET /api/assistant/status`、`POST /api/assistant/ask`（含 `/stream` 流式） | 公开（按 IP 每日限次） | AI 智能助手：基于平台采集的站点、价格与状态数据答问，未配置 AI 时入口隐藏 |
-| `POST /api/site-submissions` | 公开（按 IP 限次） | 访客提交监控站点申请；管理员经 `GET /api/admin/site-submissions` 查看，配置了 WxPusher 时每条新提交推送到微信 |
+| `POST /api/site-submissions` | 公开（按 IP 限次） | 访客提交站点检测申请；管理员经 `GET /api/admin/site-submissions` 查看，配置了 WxPusher 时每条新提交推送到微信 |
 | `POST /api/setup` | 公开 | 首次设置：创建管理员账号（仅库里没有账号时可用） |
 | `POST /api/auth/login` / `POST /api/auth/logout` | 公开 | 登录签发 30 天会话 cookie / 登出清除 |
 | `GET /api/tasks`、`GET /api/tasks/{id}` | 公开 | 后台任务列表与进度 |
 | `POST /api/collect` | 管理员 | 触发采集（AI 兜底始终启用），结果附带官方价折扣 |
-| `POST /api/catalog/refresh` | 管理员 | 同步官方价目录并一条龙维护：models.dev 快照 + 已配置厂商定价源合并 + 中文简介 + 监控清单自动补新与超期清理（免密钥） |
+| `POST /api/catalog/refresh` | 管理员 | 同步官方价目录并一条龙维护：models.dev 快照 + 已配置厂商定价源合并 + 中文简介 + 检测清单自动补新与超期清理（免密钥） |
 | `POST /api/rankings/refresh` | 管理员 | 抓取 Artificial Analysis 榜单页并解析落库 |
 | `GET /api/vendor-sources`（含 `/detection`）、`POST /api/vendor-sources`、`PUT/DELETE /api/vendor-sources/{vendor}`、`POST /api/vendor-sources/{vendor}/refresh` | 管理员 | 厂商定价源：国内价覆盖检测、配置厂商国内定价页并抓取合并进官方目录 |
 | `GET /api/settings` / `PUT /api/settings` | 管理员 | 系统设置（AI、WxPusher 通知） |

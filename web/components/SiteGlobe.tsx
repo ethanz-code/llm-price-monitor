@@ -302,7 +302,7 @@ export function SiteGlobe({
 
   return (
     <div className="pano-globe">
-      <canvas ref={canvasRef} aria-label="监控站点地球：站点按服务器所在地落点，悬停查看，点击进入检测档案" />
+      <canvas ref={canvasRef} aria-label="检测站点地球：站点按服务器所在地落点，悬停查看，点击进入检测档案" />
       {located.map((site) => {
         const anchor = `--cobe-${MARKER_ID(site.id)}`;
         const level = site.availability != null ? rateLevel(site.availability) : null;

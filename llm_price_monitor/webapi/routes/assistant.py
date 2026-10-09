@@ -579,7 +579,11 @@ def _general_events(config: Any, question: str, turns: list[HistoryTurn]) -> Ite
         if event["type"] == "delta":
             parts.append(event["text"])
             yield ("delta", event["text"])
-    yield ("answer", "".join(parts))
+    # 与 data 路径同口径：空回答按 AI 失败处理（502/错误帧），不产出 answer 也不扣配额
+    answer = "".join(parts)
+    if not answer.strip():
+        raise AIExtractionError("AI 返回了空回答")
+    yield ("answer", answer)
 
 
 def build_router(store: Store) -> APIRouter:

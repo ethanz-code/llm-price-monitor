@@ -188,14 +188,14 @@ def fetch_catalogs(
     now = time.time()
 
     official: dict[str, dict[str, Any]] = {}
-    # 厂商块按元组顺序（决定前端厂商清单顺序）；块内国内站条目优先处理，
-    # 先到先得使 -cn 成为折扣基准，同厂商被顶掉的国际站条目退居 list_global 参考价。
-    # 跨厂商同名模型仍按厂商块顺序先到先得（如 kimi-k3 取月之暗面而非阿里转售价）。
+    # 厂商块按元组顺序（决定前端厂商清单顺序）；白名单只收国际站条目，
+    # 国内折扣基准由「厂商定价源」抓官方定价页后合并覆盖（见 merge_sources_into_catalog）。
+    # 跨厂商同名模型按厂商块顺序先到先得（如 kimi-k3 取月之暗面而非阿里转售价）。
     blocks: dict[str, list[tuple[str, str]]] = {}
     for provider_id, vendor, region in DEFAULT_PROVIDERS:
         blocks.setdefault(vendor, []).append((provider_id, region))
     for vendor, providers in blocks.items():
-        for provider_id, region in sorted(providers, key=lambda item: item[1] != "cn"):
+        for provider_id, region in providers:
             provider = snapshot.get(provider_id)
             provider_models = provider.get("models") if isinstance(provider, dict) else None
             if not isinstance(provider_models, dict):
@@ -217,19 +217,13 @@ def fetch_catalogs(
                 # （gpt-4o-2024-05-13、claude-sonnet-4-5-20250929 这类）不作为基准价
                 if not is_general_llm({"model": str(model_id), "modalities": model.get("modalities")}):
                     continue
-                input_price, output_price = cost.get("input"), cost.get("output")
                 key = normalize.model_key(str(model_id))
                 if not key:
                     continue
                 existing = official.get(key)
                 if existing is not None:
-                    # 同厂商国内站条目已占位：国际站条目保留为参考价，同行双价
-                    if existing["vendor"] == vendor and existing.get("region") == "cn" and region == "global":
-                        existing["list_global"] = {"input": input_price, "output": output_price}
-                        existing["list_global_cny"] = {
-                            "input": normalize.round2(input_price * rate) if input_price is not None else None,
-                            "output": normalize.round2(output_price * rate) if output_price is not None else None,
-                        }
+                    # 白名单渠道已全部是国际站口径，同名条目按厂商块顺序先到先得；
+                    # 国内价覆盖（含 list_global 参考价回填）在厂商定价源合并时做
                     continue
                 official[key] = _entry(str(model_id), model, vendor, region, rate, source_url)
 

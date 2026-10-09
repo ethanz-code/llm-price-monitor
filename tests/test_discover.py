@@ -1,7 +1,15 @@
-"""price-discover 纯函数测试：链接归一、域名转 id、README 表格解析、pricing 响应判读。"""
+"""price-discover 测试：链接归一、域名转 id、README 表格解析、pricing 响应判读，
+以及 probe 落盘链路（--take 只预览不落盘 / 全量落盘 / 重测增量合并）与 harvest 源选择。"""
+import asyncio
+import json
+from pathlib import Path
+
 import pytest
 
+import llm_price_monitor.discover as discover_mod
 from llm_price_monitor.discover import (
+    SOURCE_KEYS,
+    Candidate,
     build_importable,
     classify_pricing,
     harvest_html_links,
@@ -114,3 +122,138 @@ def test_harvest_html_links_skips_own_host_and_cleans_backslash():
     rows = harvest_html_links(html, source="nav-site", own_host="nav.example.com")
     assert [r.host for r in rows] == ["a.example.com"]
     assert harvest_html_links(r"https://b.example.com\/x", source="s", own_host="s.com")[0].host == "b.example.com"
+
+
+# ---------- probe 落盘链路与 harvest 源选择（run_probe / run_harvest） ----------
+
+
+def _write_candidates(out_dir: Path, *cands: Candidate) -> None:
+    payload = {"generated_at": "x", "count": len(cands), "candidates": [cand.__dict__ for cand in cands]}
+    (out_dir / "candidates.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _probed_row(url: str, *, ok: bool = True, models: int = 10) -> dict:
+    return {
+        "name": url, "url": url, "sources": [], "note": "",
+        "new_api": ok, "pricing_ok": ok, "models": models if ok else 0,
+        "auth_required": False, "error": "",
+    }
+
+
+def test_run_probe_take_preview_keeps_full_results(tmp_path: Path, monkeypatch):
+    """--take 部分探测只预览：只探测前 N 个候选，全量结果文件必须原样保留，
+    防止小样本静默覆盖上一轮全量 probed/importable（曾出过的事故，此为回归守卫）。"""
+    out = tmp_path / "discovery"
+    out.mkdir()
+    monkeypatch.setattr(discover_mod, "OUT_DIR", out)
+    _write_candidates(
+        out,
+        Candidate("a-llm.example", "https://a-llm.example", "A"),
+        Candidate("b-llm.example", "https://b-llm.example", "B"),
+        Candidate("c-llm.example", "https://c-llm.example", "C"),
+    )
+    sentinel_probed = '{"generated_at": "sentinel", "results": []}'
+    sentinel_importable = '[{"id": "sentinel"}]'
+    (out / "probed.json").write_text(sentinel_probed, encoding="utf-8")
+    (out / "importable.json").write_text(sentinel_importable, encoding="utf-8")
+
+    seen: list[list[str]] = []
+
+    async def fake_probe(candidates, concurrency, timeout, proxy):
+        seen.append([cand.host for cand in candidates])
+        return [_probed_row(cand.url) for cand in candidates]
+
+    monkeypatch.setattr(discover_mod, "probe", fake_probe)
+    asyncio.run(discover_mod.run_probe(take=2, concurrency=2, timeout=1.0, proxy=None, retry_failed=False))
+
+    assert seen == [["a-llm.example", "b-llm.example"]]  # 只探测前 take 个
+    assert (out / "probed.json").read_text(encoding="utf-8") == sentinel_probed
+    assert (out / "importable.json").read_text(encoding="utf-8") == sentinel_importable
+
+
+def test_run_probe_full_run_writes_results(tmp_path: Path, monkeypatch):
+    """全量探测（take=0）正常落盘：明细含失败项，importable 只含可用站且默认停用。"""
+    out = tmp_path / "discovery"
+    out.mkdir()
+    monkeypatch.setattr(discover_mod, "OUT_DIR", out)
+    _write_candidates(out, Candidate("a-llm.example", "https://a-llm.example", "A"))
+
+    async def fake_probe(candidates, concurrency, timeout, proxy):
+        return [_probed_row("https://a-llm.example"), _probed_row("https://dead.example", ok=False)]
+
+    monkeypatch.setattr(discover_mod, "probe", fake_probe)
+    monkeypatch.setattr(discover_mod, "existing_site_hosts", lambda: {})
+    asyncio.run(discover_mod.run_probe(take=0, concurrency=2, timeout=1.0, proxy=None, retry_failed=False))
+
+    results = json.loads((out / "probed.json").read_text(encoding="utf-8"))["results"]
+    assert {row["url"] for row in results} == {"https://a-llm.example", "https://dead.example"}
+    importable = json.loads((out / "importable.json").read_text(encoding="utf-8"))
+    assert importable == [
+        {
+            "id": "a-llm",
+            "network": {"url": "https://a-llm.example/api/pricing"},
+            "notice": {"url": "https://a-llm.example/api/status"},
+            "enabled": False,
+        }
+    ]
+
+
+def test_run_probe_retry_failed_merges_stale_ok(tmp_path: Path, monkeypatch):
+    """--retry-failed 只重测失败项：上轮已通过的保留原样，与捞回结果合并落盘。"""
+    out = tmp_path / "discovery"
+    out.mkdir()
+    monkeypatch.setattr(discover_mod, "OUT_DIR", out)
+    _write_candidates(
+        out,
+        Candidate("a-llm.example", "https://a-llm.example", "A"),
+        Candidate("b-llm.example", "https://b-llm.example", "B"),
+    )
+    (out / "probed.json").write_text(
+        json.dumps({
+            "generated_at": "x",
+            "results": [_probed_row("https://a-llm.example"), _probed_row("https://b-llm.example", ok=False)],
+        }),
+        encoding="utf-8",
+    )
+
+    async def fake_probe(candidates, concurrency, timeout, proxy):
+        assert [cand.host for cand in candidates] == ["b-llm.example"]  # 只重测上轮失败项
+        return [_probed_row("https://b-llm.example")]
+
+    monkeypatch.setattr(discover_mod, "probe", fake_probe)
+    monkeypatch.setattr(discover_mod, "existing_site_hosts", lambda: {})
+    asyncio.run(discover_mod.run_probe(take=0, concurrency=2, timeout=1.0, proxy=None, retry_failed=True))
+
+    results = json.loads((out / "probed.json").read_text(encoding="utf-8"))["results"]
+    assert {row["url"] for row in results} == {"https://a-llm.example", "https://b-llm.example"}
+    assert all(row["pricing_ok"] for row in results)  # 捞回项与保留项都可用
+
+
+def test_run_harvest_only_selection_and_incremental_merge(tmp_path: Path, monkeypatch):
+    """缺省只跑 zuiquanapi 单源，--only/all 按名展开，未知源拒绝；
+    候选池与上轮增量合并——本轮没拉到的旧站不会被挤掉。"""
+    out = tmp_path / "discovery"
+    out.mkdir()
+    monkeypatch.setattr(discover_mod, "OUT_DIR", out)
+    seen_only: list[set[str]] = []
+
+    async def fake_harvest(proxy, only=None):
+        seen_only.append(set(only or ()))
+        return [Candidate("fresh.example", "https://fresh.example", "Fresh", ["zuiquanapi"])]
+
+    monkeypatch.setattr(discover_mod, "harvest", fake_harvest)
+
+    asyncio.run(discover_mod.run_harvest(None, None))
+    assert seen_only[-1] == {"zuiquanapi"}  # 缺省单源，不再全源跑
+    asyncio.run(discover_mod.run_harvest(None, "all"))
+    assert seen_only[-1] == set(SOURCE_KEYS)
+    asyncio.run(discover_mod.run_harvest(None, "awesome-api-proxy,apisou"))
+    assert seen_only[-1] == {"awesome-api-proxy", "apisou"}
+    with pytest.raises(SystemExit):
+        asyncio.run(discover_mod.run_harvest(None, "nope"))
+
+    # 增量合并：上轮池里的站在本轮源里拉不到，也必须留在池子里
+    _write_candidates(out, Candidate("old.example", "https://old.example", "Old", ["github-nav"]))
+    asyncio.run(discover_mod.run_harvest(None, None))
+    merged = json.loads((out / "candidates.json").read_text(encoding="utf-8"))["candidates"]
+    assert {cand["host"] for cand in merged} == {"old.example", "fresh.example"}
