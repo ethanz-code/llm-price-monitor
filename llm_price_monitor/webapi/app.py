@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from llm_price_monitor.browser_setup import ensure_browser_ready
 from llm_price_monitor.catalog import jsonio, vendor_sources
 from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, MonitorSettings, config_from_store
-from llm_price_monitor import ai
+from llm_price_monitor import ai, egress
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth, routes, scheduler, tasks
 from llm_price_monitor.webapi.deps import is_admin
@@ -153,6 +153,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     _ensure_settings_defaults(store)
     _ensure_schedule_defaults(store)
     tasks.attach_store(store)  # 历史任务连同日志落 SQLite，重启后仍可查看
+    # 采集备用代理地址实时读系统设置：面板保存即生效，下一轮采集换用，无需重启
+    egress.configure_provider(lambda: (store.get_document("settings") or {}).get("fallback_proxy"))
     app.state.store = store
 
     app.add_middleware(
@@ -164,7 +166,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     # 管理员专属的读路径（其余 GET 公开浏览）；写方法一律需要管理员。
     # /api/tasks/{task_id}、/api/sites/{site_id}/groups 为动态路径，另行按前缀匹配
-    admin_get_paths = {"/api/settings", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions", "/api/vendor-sources", "/api/vendor-sources/detection"}
+    admin_get_paths = {"/api/settings", "/api/settings/proxy-status", "/api/sites", "/api/docs/readme", "/api/tasks", "/api/analytics/summary", "/api/analytics/logs", "/api/ai-logs", "/api/ai-logs/summary", "/api/admin/site-submissions", "/api/vendor-sources", "/api/vendor-sources/detection"}
     admin_get_prefixes = ("/api/tasks/", "/api/sites/", "/api/vendor-sources/")
     # 公开读接口封锁：部署时设置 PRICE_WEB_INTERNAL_TOKEN 后，数据读接口只对
     # 携带令牌的服务端渲染请求（Next 直连）或管理员会话开放，匿名浏览器请求

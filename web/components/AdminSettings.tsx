@@ -90,11 +90,11 @@ function SecretInput({
   );
 }
 
-type TestTarget = "ai" | "wxpusher";
+type TestTarget = "ai" | "wxpusher" | "proxy";
 
 type TestOutcome = { ok: boolean; text: string };
 
-type TestResponse = { elapsed_ms: number; model?: string; reply?: string };
+type TestResponse = { elapsed_ms: number; model?: string; reply?: string; exit_ip?: string };
 
 type ModelProbeResult = { model: string; ok: boolean; reply?: string; error?: string; duration_ms: number };
 
@@ -122,6 +122,9 @@ function resultText(target: TestTarget, data: TestResponse): string {
   if (target === "ai") {
     const reply = data.reply ? ` · 回复「${data.reply.slice(0, 20)}」` : "";
     return `✓ 连通 · ${data.model} · ${ms}${reply}`;
+  }
+  if (target === "proxy") {
+    return `✓ 连通 · ${ms}${data.exit_ip ? ` · 出口 IP ${data.exit_ip}` : ""}`;
   }
   return `✓ 测试消息已发送 · ${ms}`;
 }
@@ -174,6 +177,7 @@ export function AdminSettings() {
   const [maxLogLines, setMaxLogLines] = useState("");
   const [assistantDailyLimit, setAssistantDailyLimit] = useState("");
   const [assistantHourlyLimit, setAssistantHourlyLimit] = useState("");
+  const [fallbackProxy, setFallbackProxy] = useState("");
   const [aiMaxInputChars, setAiMaxInputChars] = useState("");
   const [aiMaxTokens, setAiMaxTokens] = useState("");
   const [saving, setSaving] = useState(false);
@@ -235,6 +239,7 @@ export function AdminSettings() {
             ? String(loaded.settings.assistant_hourly_limit)
             : "",
         );
+        setFallbackProxy(typeof loaded.settings.fallback_proxy === "string" ? loaded.settings.fallback_proxy : "");
     } catch {
       setData({ settings: {}, ai: {} });
     }
@@ -300,8 +305,15 @@ export function AdminSettings() {
       toast("AI 助手每小时提问上限需是不小于 0 的整数（0 为不限制）");
       return;
     }
+    // 备用代理留空 = 不启用；填了就必须是完整 http(s) 地址，后端还会再校验一遍
+    const proxyText = fallbackProxy.trim();
+    if (proxyText && !/^https?:\/\//i.test(proxyText)) {
+      toast("采集备用代理需以 http:// 或 https:// 开头，留空表示不启用");
+      return;
+    }
     const settings = {
       ...data.settings,
+      fallback_proxy: proxyText || null,
       wxpusher_app_token: wxToken.trim() || null,
       wxpusher_uid: wxUid.trim() || null,
       schedule: scheduleOut,
@@ -370,6 +382,7 @@ export function AdminSettings() {
         settings: {
           wxpusher_app_token: wxToken.trim() || null,
           wxpusher_uid: wxUid.trim() || null,
+          fallback_proxy: fallbackProxy.trim() || null,
         },
         ai: {
           base_url: aiBaseUrl.trim(),
@@ -476,6 +489,28 @@ export function AdminSettings() {
                 />
               </SettingRow>
             ))}
+          </SettingsSection>
+          <SettingsSection
+            title="采集出口"
+            description="直连不了的站点（被墙或限制访问）自动改走这个代理继续采集，国内能直连的站点永远不走代理。留空表示不启用"
+            result={results.proxy}
+          >
+            <SettingRow
+              label="备用代理地址"
+              hint="填 http(s) 代理地址，例如 http://172.17.0.1:7890（Docker 部署时填宿主机上代理客户端的地址，本机开发填 http://127.0.0.1:7890）；要认证就写成 http://user:pass@host:port。保存后从下一轮采集生效"
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Input
+                  value={fallbackProxy}
+                  onChange={setFallbackProxy}
+                  placeholder="留空 = 不启用"
+                  style={{ width: 260, maxWidth: "100%" }}
+                />
+                <Btn size="sm" loading={testing === "proxy"} onClick={() => runTest("proxy")}>
+                  测试连通
+                </Btn>
+              </div>
+            </SettingRow>
           </SettingsSection>
           <SettingsSection
             title="数据保留"

@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from llm_price_monitor.adapters import ADAPTERS, NetworkAdapter, headers as _headers, network_pricing_records as _network_pricing_records
+from llm_price_monitor.adapters import ADAPTERS, NetworkAdapter, headers as _headers, network_pricing_records as _network_pricing_records, parse_base_price_entries
 from llm_price_monitor.ai import (
     AIExtractionError,
     AIPriceExtractor,
@@ -96,6 +96,81 @@ def test_slim_pricing_payload_keeps_non_newapi_intact():
     assert _slim_pricing_payload(payload) == payload
 
 
+def _micro_usd_row(mid: str, role: str, comp: str, usd: int, *, active: bool = True, unit: str = "per_1m_tokens") -> str:
+    row = (
+        f'{{"id":1,"modelId":"{mid}","role":"{role}","billingMode":"token","component":"{comp}",'
+        f'"unit":"{unit}","tierLabel":"","priceMicroUsd":{usd},"active":{"true" if active else "false"}}}'
+    )
+    return row
+
+
+def _micro_usd_rsc(rows: list[str], *, level: int = 1) -> str:
+    """按 RSC 转义层级包一层：level=1 对应 \\" 前缀，level=2 对应 \\\\" 前缀。"""
+    body = ",".join(rows)
+    if level == 1:
+        body = body.replace('"', '\\"')
+    else:
+        body = body.replace('"', '\\\\"')
+    return f'<!doctype html><script>self.__next_f.push([1,"{body}"])</script>'
+
+
+def test_parse_micro_usd_entries_prefers_sell_group_and_converts_micro_usd():
+    rows = [
+        _micro_usd_row("anthropic/claude-opus-5-5", "official", "input", 4000000),
+        _micro_usd_row("anthropic/claude-opus-5-5", "official", "output", 20000000),
+        _micro_usd_row("anthropic/claude-opus-5-5", "sell", "cache_read", 40000),
+        _micro_usd_row("anthropic/claude-opus-5-5", "sell", "input", 800000),
+        _micro_usd_row("anthropic/claude-opus-5-5", "sell", "output", 4000000),
+    ]
+    entries = parse_base_price_entries(_micro_usd_rsc(rows))
+    assert len(entries) == 1
+    entry = entries[0]
+    # 站点售价取 sell 组；微美元换算成 USD/1M tokens
+    assert entry["input"] == 0.8
+    assert entry["output"] == 4.0
+    assert entry["cache_read"] == 0.04
+    assert entry["provider"] == "anthropic"
+    assert "anthropic/claude-opus-5-5" in entry["models"]
+
+
+def test_parse_micro_usd_entries_skips_models_without_sell_input_output():
+    rows = [
+        # 只有官方组：站点没挂售，不产出条目
+        _micro_usd_row("a/only-official", "official", "input", 1000000),
+        _micro_usd_row("a/only-official", "official", "output", 2000000),
+        # 售组缺 output：不完整，跳过
+        _micro_usd_row("a/no-output", "sell", "input", 300000),
+        _micro_usd_row("a/no-output", "sell", "cache_read", 30000),
+        # 非按 token 计价 / 未上架的行不算数
+        _micro_usd_row("a/per-image", "sell", "input", 500000, unit="per_image"),
+        _micro_usd_row("a/inactive", "sell", "input", 500000, active=False),
+        _micro_usd_row("a/inactive", "sell", "output", 900000, active=False),
+    ]
+    assert parse_base_price_entries(_micro_usd_rsc(rows)) == []
+
+
+def test_parse_micro_usd_entries_handles_double_escaped_and_dedupes():
+    row = _micro_usd_row("anthropic/claude-sonnet-5", "sell", "input", 400000)
+    row_out = _micro_usd_row("anthropic/claude-sonnet-5", "sell", "output", 2000000)
+    text = _micro_usd_rsc([row, row_out], level=1) + _micro_usd_rsc([row], level=2)
+    entries = parse_base_price_entries(text)
+    assert len(entries) == 1
+    assert entries[0]["input"] == 0.4
+    assert entries[0]["output"] == 2.0
+
+
+def test_parse_micro_usd_entries_matches_targets_via_full_or_short_id():
+    from llm_price_monitor.adapters import _entry_matches_targets
+
+    spec = SiteSpec(id="hao", models=(ModelTarget("claude-opus-5-5"),))
+    rows = [
+        _micro_usd_row("anthropic/claude-opus-5-5", "sell", "input", 800000),
+        _micro_usd_row("anthropic/claude-opus-5-5", "sell", "output", 4000000),
+    ]
+    entry = parse_base_price_entries(_micro_usd_rsc(rows))[0]
+    assert _entry_matches_targets(entry, spec)
+
+
 def test_ai_request_slims_newapi_pricing_evidence():
     spec = SiteSpec(
         id="wild",
@@ -151,6 +226,41 @@ def test_monitor_writes_snapshot_and_detects_price_change(tmp_path: Path, monkey
     assert [event["kind"] for event in second.events] == ["changed"]
     assert store.count_history() == 2
     assert len(store.latest_all()) == 1
+
+
+def test_per_site_persist_and_hard_timeout(tmp_path: Path, monkeypatch):
+    """每站采完立即落库：后续站点被硬超时掐掉时，已完成站点的价格不随内存丢失；
+    挂死的站点以错误收场，不拖垮整轮。"""
+    seen: dict[str, bool] = {}
+
+    def collect(self, spec, *_args):
+        if spec.id == "demo":
+            return [PriceRecord("demo-model", 1.0, 2.0, "USD/1M tokens", "https://demo.test/pricing", 0, {})]
+        # 站点 2 开采时检查：站点 1 的价格必须已经落库（旧实现要等整轮结束才落库，这里会是 False）
+        seen["demo_persisted"] = "demo:demo-model:default" in store.latest_all()
+        time.sleep(30)  # 模拟经代理挂死的连接：只会被硬超时掐掉，不会自己返回
+        return []
+
+    config_raw = _config(tmp_path)
+    config_raw["sites"].append({
+        "id": "stuck",
+        "adapter": "standard",
+        "model_list_url": "https://stuck.test/pricing",
+        "models": ["stuck-model"],
+    })
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config_raw), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    monkeypatch.setattr("llm_price_monitor.report.SITE_HARD_TIMEOUT_SECONDS", 0.3)
+    report = run_once(config, store=store, client=httpx.Client())
+
+    assert seen["demo_persisted"] is True
+    stuck = report.site_status["stuck"]
+    assert stuck["status"] == "error" and "硬上限" in str(stuck["error"])
+    assert set(store.latest_all()) == {"demo:demo-model:default"}
+    assert [row["site_id"] for row in report.records] == ["demo"]
 
 
 def test_group_whitelist_filters_collected_prices(tmp_path: Path, monkeypatch):
@@ -3239,6 +3349,21 @@ def test_monitor_models_wildcard_rejected():
         settings_from_raw({"monitor_models": ["*"]}, resolve_env=False)
     with pytest.raises(ValueError, match='不再支持通配符'):
         settings_from_raw({"monitor_models": ["*", "demo-model"]}, resolve_env=False)
+
+
+def test_settings_fallback_proxy_validation():
+    from llm_price_monitor.config import settings_from_raw
+
+    parsed = settings_from_raw({"fallback_proxy": " http://172.17.0.1:7890 "}, resolve_env=False)
+    assert parsed.fallback_proxy == "http://172.17.0.1:7890"
+    # 带认证的写法合法（账号密码随后按所在消费方拆分）
+    assert settings_from_raw({"fallback_proxy": "http://user:pass@host:7890"}, resolve_env=False).fallback_proxy == "http://user:pass@host:7890"
+    assert settings_from_raw({"fallback_proxy": None}, resolve_env=False).fallback_proxy is None
+    assert settings_from_raw({"fallback_proxy": ""}, resolve_env=False).fallback_proxy is None
+    with pytest.raises(ValueError, match="fallback_proxy"):
+        settings_from_raw({"fallback_proxy": "socks5://127.0.0.1:7890"}, resolve_env=False)
+    with pytest.raises(ValueError, match="fallback_proxy"):
+        settings_from_raw({"fallback_proxy": "172.17.0.1:7890"}, resolve_env=False)
 
 
 def test_ai_extract_without_models_still_fails():

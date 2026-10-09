@@ -21,6 +21,39 @@ from llm_price_monitor.webapi.seed import MODES, apply_seed
 PROBE_TIMEOUT_SECONDS = 15.0
 PROBE_MAX_BATCH = 40
 
+# 备用代理实测：204 端点判连通（轻、稳、大陆直连必失败，正好证明代理在工作），
+# 出口 IP 尽力而为（拿不到不影响连通结论）
+PROXY_TEST_TIMEOUT_SECONDS = 12.0
+# 侧栏状态条的探测超时：给页面加载用的，比手动测试更短
+PROXY_STATUS_TIMEOUT_SECONDS = 8.0
+_PROXY_TEST_URL = "https://www.gstatic.com/generate_204"
+_PROXY_EXIT_IP_URL = "https://api.ipify.org?format=json"
+
+
+def probe_proxy(
+    proxy_url: str, *, transport: httpx.BaseTransport | None = None, timeout: float = PROXY_TEST_TIMEOUT_SECONDS
+) -> dict[str, Any]:
+    """从服务器出发经代理实测出口：连通判定 + 尽力获取出口 IP；失败抛 ValueError。
+    transport 仅供测试注入请求替身，注入时不带 proxy 参数（两者互斥）。"""
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "trust_env": False}
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    else:
+        client_kwargs["proxy"] = proxy_url
+    try:
+        with httpx.Client(**client_kwargs) as client:
+            started = time.monotonic()
+            response = client.get(_PROXY_TEST_URL)
+            response.raise_for_status()
+            elapsed = round((time.monotonic() - started) * 1000)
+            try:
+                exit_ip = str(client.get(_PROXY_EXIT_IP_URL).json().get("ip") or "") or None
+            except (httpx.HTTPError, ValueError):
+                exit_ip = None
+    except httpx.HTTPError as exc:
+        raise ValueError(f"经代理连不通外网（检查代理客户端是否在跑、地址是否可达）：{exc}") from exc
+    return {"ok": True, "elapsed_ms": elapsed, "exit_ip": exit_ip}
+
 
 class SettingsBody(BaseModel):
     settings: dict[str, Any] | None = None
@@ -32,7 +65,7 @@ class SeedBody(BaseModel):
 
 
 class SettingsTestBody(BaseModel):
-    target: Literal["ai", "wxpusher"]
+    target: Literal["ai", "wxpusher", "proxy"]
     settings: dict[str, Any] | None = None
     ai: dict[str, Any] | None = None
 
@@ -90,6 +123,18 @@ def build_router(store: Store) -> APIRouter:
             "ai": masked_ai(store.get_document("ai")),
         }
 
+    @router.get("/api/settings/proxy-status")
+    def get_proxy_status() -> dict[str, Any]:
+        """管理员查看采集备用代理的实时连通状态；每次调用实发探测，结果不缓存。"""
+        proxy_url = str((store.get_document("settings") or {}).get("fallback_proxy") or "").strip()
+        if not proxy_url:
+            return {"configured": False}
+        try:
+            result = probe_proxy(proxy_url, timeout=PROXY_STATUS_TIMEOUT_SECONDS)
+        except ValueError as exc:
+            return {"configured": True, "ok": False, "error": str(exc)}
+        return {"configured": True, "ok": True, "elapsed_ms": result["elapsed_ms"], "exit_ip": result.get("exit_ip")}
+
     @router.put("/api/settings")
     def update_settings(body: SettingsBody) -> dict[str, Any]:
         """合并保存系统设置；保存前用配置构建器做类型校验，非法输入返回 400。"""
@@ -146,6 +191,12 @@ def build_router(store: Store) -> APIRouter:
                 model = ai_config.models[0]
                 reply = ping_model(ai_config, model)
                 return {"ok": True, "elapsed_ms": elapsed_ms(), "model": model, "reply": reply}
+            if body.target == "proxy":
+                proxy_url = str(merged_settings.get("fallback_proxy") or "").strip()
+                if not proxy_url:
+                    raise ValueError("请先填写备用代理地址")
+                result = probe_proxy(proxy_url)
+                return {"ok": True, "elapsed_ms": result["elapsed_ms"], "exit_ip": result.get("exit_ip")}
             token = str(merged_settings.get("wxpusher_app_token") or "").strip()
             if not token:
                 raise ValueError("请先填写 WxPusher App Token")

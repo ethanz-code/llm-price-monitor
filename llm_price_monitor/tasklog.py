@@ -17,6 +17,11 @@ def bind(sink: Callable[[str, str], None]) -> None:
     _local.sink = sink
 
 
+def current_sink() -> Callable[[str, str], None] | None:
+    """读当前线程已绑定的日志出口：采集挪进子线程时由子线程重新 bind 转发日志。"""
+    return getattr(_local, "sink", None)
+
+
 def unbind() -> None:
     """解除当前线程的日志出口绑定。"""
     _local.sink = None

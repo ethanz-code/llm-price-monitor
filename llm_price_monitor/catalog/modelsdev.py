@@ -21,6 +21,8 @@ from typing import Any
 import httpx
 
 from . import fx, normalize
+from .brands import is_hosted_model
+from ..http_retry import build_client
 
 MODELSDEV_API_URL = "https://models.dev/api.json"
 
@@ -93,7 +95,7 @@ def _fetch_snapshot(
     transport: httpx.BaseTransport | None = None,
 ) -> tuple[dict[str, Any], float, str]:
     """拉取 models.dev api.json 快照与 USD→CNY 汇率；快照为空视为异常。"""
-    with httpx.Client(follow_redirects=True, timeout=30, transport=transport) as client:
+    with build_client(timeout=30, transport=transport) as client:
         response = client.get(MODELSDEV_API_URL)
         response.raise_for_status()
         snapshot = response.json()
@@ -206,6 +208,10 @@ def fetch_catalogs(
                     continue
                 if cost.get("input") is None and cost.get("output") is None:
                     continue  # 没有官方定价（已下线/未公布），无法作为折扣基准
+                # 平台渠道下的托管/转售条目（如 alibaba 渠道下的 deepseek/kimi）不进
+                # 官方目录，官方基准只收各 lab 自研模型；识别不出视为本店自研保留
+                if is_hosted_model(str(model_id), vendor):
+                    continue
                 input_price, output_price = cost.get("input"), cost.get("output")
                 key = normalize.model_key(str(model_id))
                 if not key:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconCheck } from "../icons";
 import { apiSend } from "@/lib/api";
 import { looseIncludes } from "@/lib/format";
@@ -235,9 +235,12 @@ function TagMultiSelect({
   );
 }
 
-/** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加。 */
+/** 目标模型多选：搜索勾选 models.dev 官方目录，目录外的名字输入后回车添加；
+ *  已选清单与下拉同序（发布日期倒序、同日期按名称），目录外自定义的当没日期垫底。 */
 function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
   const [options, setOptions] = useState<MultiOption[] | null>(null);
+  // 模型名 → 发布日期：已选清单按与下拉同款规则排序时查用
+  const [releaseById, setReleaseById] = useState<ReadonlyMap<string, string>>(new Map());
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -245,17 +248,19 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     apiSend<CatalogData>("/api/catalog", "GET")
       .then((data) => {
         if (cancelled) return;
+        const dated = Object.values(data.models ?? {})
+          .filter((entry) => typeof entry.model === "string" && entry.model)
+          .map((entry) => ({
+            id: entry.model,
+            // 发布日期倒序：新模型排前面；没标日期的按字母垫底
+            release: typeof entry.release_date === "string" ? entry.release_date : "",
+            note: [entry.name ?? "", entry.vendor ?? ""].filter(Boolean).join(" · ") || undefined,
+          }));
+        setReleaseById(new Map(dated.map(({ id, release }): [string, string] => [id, release])));
         setOptions(
-          Object.values(data.models ?? {})
-            .filter((entry) => typeof entry.model === "string" && entry.model)
-            .map((entry) => ({
-              id: entry.model,
-              // 发布日期倒序：新模型排前面；没标日期的按字母垫底
-              release: typeof entry.release_date === "string" ? entry.release_date : "",
-              note: [entry.name ?? "", entry.vendor ?? ""].filter(Boolean).join(" · ") || undefined,
-            }))
+          dated
             .sort((a, b) => b.release.localeCompare(a.release) || a.id.localeCompare(b.id))
-            .map(({ id, release: _release, note }) => ({ id, note })),
+            .map(({ id, note }) => ({ id, note })),
         );
       })
       .catch(() => {
@@ -268,10 +273,22 @@ function ModelMultiSelect({ value, onChange }: { value: string[]; onChange: (nex
     };
   }, []);
 
+  /** 已选清单按目录同款规则排序：发布日期倒序、同日期按名称，目录外的当没日期垫底。
+   *  显示与保存都过它：存量乱序打开页面即归位，编辑保存落库的也是同一套顺序。 */
+  const sortModels = useCallback(
+    (list: string[]) =>
+      list
+        .map((id) => ({ id, release: releaseById.get(id) ?? "" }))
+        .sort((a, b) => b.release.localeCompare(a.release) || a.id.localeCompare(b.id))
+        .map(({ id }) => id),
+    [releaseById],
+  );
+  const sortedValue = useMemo(() => sortModels(value), [sortModels, value]);
+
   return (
     <TagMultiSelect
-      value={value}
-      onChange={onChange}
+      value={sortedValue}
+      onChange={(next) => onChange(sortModels(next))}
       options={options}
       failed={failed}
       width="100%"

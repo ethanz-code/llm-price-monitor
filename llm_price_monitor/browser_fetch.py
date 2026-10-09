@@ -3,9 +3,10 @@
 仅在站点配置启用 network.headless 时使用；playwright 延迟导入，未安装不影响其他采集路径。
 """
 import json
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .config import ACCESS_TOKEN_VAR, REFRESH_TOKEN_VAR, PriceMonitorError, SiteSpec
+from . import egress
 
 
 def _expand_login_value(value: str, *, auth_token: str, refresh_token: str) -> str | None:
@@ -21,6 +22,18 @@ def _expand_login_value(value: str, *, auth_token: str, refresh_token: str) -> s
             f"登录态值引用了 {REFRESH_TOKEN_VAR}，但当前认证方式没有 Refresh Token（只有「登录会话自动续签」才有）"
         )
     return value.replace(ACCESS_TOKEN_VAR, auth_token).replace(REFRESH_TOKEN_VAR, refresh_token)
+
+
+def _chromium_proxy(proxy_url: str) -> dict[str, str]:
+    """把代理地址转成 Playwright 的 proxy 形态：认证不写在 server 里，
+    拆成独立 username/password（支持 http://user:pass@host:port 写法，值按 URL 解码）。"""
+    parsed = urlsplit(proxy_url)
+    proxy = {"server": f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}"}
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    return proxy
 
 
 def fetch_page_html(
@@ -59,7 +72,12 @@ def fetch_page_html(
     browser = None
     try:
         playwright = sync_playwright().start()
-        browser = playwright.chromium.launch(headless=True)
+        # 出口跟随直连失败记忆（只读不写）：被墙站的无头渲染直接带代理，不再白撞一次墙；
+        # 失败标记由 HTTP 直采链路维护，两条链路对同一域名的出口选择保持一致
+        proxy_server = egress.fallback_proxy() if egress.plan(host).use_proxy else None
+        browser = playwright.chromium.launch(
+            headless=True, proxy=_chromium_proxy(proxy_server) if proxy_server else None
+        )
         # UA 与 HTTP 采集路径保持一致，避免同一站点两条链路指纹不一致触发风控
         context = browser.new_context(user_agent=user_agent) if user_agent else browser.new_context()
         if cookies:

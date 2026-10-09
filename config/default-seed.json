@@ -14,6 +14,7 @@
     "max_task_log_lines": 500,
     "assistant_daily_limit": 10,
     "assistant_hourly_limit": 10,
+    "fallback_proxy": null,
     "schedule": {
       "price": 180,
       "status": 5,

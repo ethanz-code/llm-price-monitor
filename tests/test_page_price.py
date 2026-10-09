@@ -275,6 +275,73 @@ def test_parse_html_broken_markup_returns_none() -> None:
     assert parse_html_tables("<html><table><tr><td>残缺", "https://x") is None
 
 
+# 仿 api-docs.deepseek.com/zh-cn/quick_start/pricing 的真实结构：模型名当列头的
+# 转置规格表，规格行、价格区（计费类别 × 时段，rowspan 让时段行缺类别格）、
+# 上下文行 colspan 合并、并发行是纯数字（无币种标识，不当价格）
+DEEPSEEK_TRANSPOSED_HTML = """<html><body><table>
+  <tr><th>模型</th><th>deepseek-flash(1)</th><th>deepseek-v4-pro</th></tr>
+  <tr><td>BASE URL (OpenAI 格式)</td><td colspan="2">https://api.deepseek.com</td></tr>
+  <tr><td>模型版本</td><td>DeepSeek-V4.1-Flash</td><td>DeepSeek-V4-Pro-0813</td></tr>
+  <tr><td>上下文长度</td><td colspan="2">1M</td></tr>
+  <tr><td>并发限制(3)</td><td>2500</td><td>500</td></tr>
+  <tr><td>价格(2)</td><td>百万tokens输入（缓存命中）</td><td>空闲时段</td><td>0.02元</td><td>0.15元</td></tr>
+  <tr><td>高峰时段</td><td>0.04元</td><td>0.30元</td></tr>
+  <tr><td>百万tokens输入（缓存未命中）</td><td>空闲时段</td><td>1元</td><td>4.5元</td></tr>
+  <tr><td>高峰时段</td><td>2元</td><td>9.0元</td></tr>
+  <tr><td>百万tokens输出</td><td>空闲时段</td><td>4元</td><td>13.5元</td></tr>
+  <tr><td>高峰时段</td><td>8元</td><td>27.0元</td></tr>
+</table></body></html>"""
+
+
+def test_parse_html_transposed_grid_composes_baseline() -> None:
+    """转置规格表：价格按列对齐到模型，基准组合输入取缓存未命中高峰、输出/缓存取高峰档。"""
+    records = parse_html_tables(DEEPSEEK_TRANSPOSED_HTML, "https://api-docs.deepseek.com/zh-cn/quick_start/pricing")
+    assert records is not None
+    assert [record["model_key"] for record in records] == ["deepseekflash", "deepseekv4pro"]
+    pro = by_key(records, "deepseekv4pro")
+    assert (pro["input_price"], pro["output_price"], pro["cache_read_price"]) == (9.0, 27.0, 0.3)
+    assert pro["currency"] == "CNY"
+    assert pro["context"] == "1M"
+    assert "price_status" not in pro  # 静态解析不走 AI，不带待复核标记
+    assert len(pro["tiers"]) == 6
+    assert ("百万tokens输入（缓存未命中） 高峰时段", 9.0, None, None) in [
+        (tier["name"], tier["input_price"], tier["output_price"], tier["cache_read_price"])
+        for tier in pro["tiers"]
+    ]
+    flash = by_key(records, "deepseekflash")
+    assert (flash["input_price"], flash["output_price"], flash["cache_read_price"]) == (2.0, 8.0, 0.04)
+
+
+def test_parse_html_transposed_skips_misaligned_price_rows() -> None:
+    """价格个数与模型列数对不上的行（colspan 错位）整行不猜，其余行照常入库。"""
+    records = parse_html_tables(
+        """<html><body><table>
+          <tr><th>模型</th><th>deepseek-flash</th><th>deepseek-v4-pro</th></tr>
+          <tr><td>百万tokens输入（缓存命中）</td><td>0.02元</td><td>0.15元</td></tr>
+          <tr><td>百万tokens输入（缓存未命中）</td><td>1元</td><td>4.5元</td></tr>
+          <tr><td>高峰时段</td><td>2元</td></tr>
+          <tr><td>百万tokens输出</td><td>4元</td><td>8元</td></tr>
+        </table></body></html>""",
+        "https://x",
+    )
+    assert records is not None
+    flash = by_key(records, "deepseekflash")
+    assert (flash["input_price"], flash["output_price"], flash["cache_read_price"]) == (1.0, 4.0, 0.02)
+    assert len(flash["tiers"]) == 3  # 错位的高峰行被丢弃，其余三档保留
+    pro = by_key(records, "deepseekv4pro")
+    assert (pro["input_price"], pro["output_price"], pro["cache_read_price"]) == (4.5, 8.0, 0.15)
+
+
+def test_transposed_grid_rejects_attribute_header() -> None:
+    """列头是属性列（输入/输出等）的表是普通价目表，转置解读不认。"""
+    records = page_price._records_from_transposed_grid(
+        ["模型", "输入单价（元/百万 tokens）", "输出单价（元/百万 tokens）"],
+        [["deepseek-flash", "1元", "4元"]],
+        source_url="https://x",
+    )
+    assert records is None
+
+
 def test_parse_json_entries() -> None:
     records = parse_json_entries(JSON_PAGE, "https://example.com/api/pricing")
     assert records is not None
@@ -480,6 +547,63 @@ def test_fetch_ai_standard_tier_by_name_when_unmarked():
     record = result["models"][0]
     assert (record["input_price"], record["output_price"]) == (6.0, 12.0)
     assert len(record["tiers"]) == 2
+
+
+def test_fetch_ai_composes_baseline_from_split_categories():
+    """输入按缓存命中/未命中分行、输出单列时（DeepSeek 形态），基准按计费类别组合：
+    输入取缓存未命中高峰、输出取输出高峰、缓存命中价取缓存命中高峰，tiers 明细保留。"""
+    page = (
+        "价格 deepseek-flash deepseek-v4-pro\n"
+        "百万tokens输入（缓存命中）空闲时段 0.02元 0.15元、高峰时段 0.04元 0.30元\n"
+        "百万tokens输入（缓存未命中）空闲时段 1元 4.5元、高峰时段 2元 9.0元\n"
+        "百万tokens输出 空闲时段 4元 13.5元、高峰时段 8元 27.0元\n"
+        "空闲时段价格为高峰时段价格的一半。"
+    )
+    transport = _transport_with_ai(page, [{
+        "model": "deepseek-flash",
+        "tiers": [
+            {"name": "输入（缓存命中）空闲时段", "input": 0.02, "output": None, "cache_read": 0.02},
+            {"name": "输入（缓存命中）高峰时段", "input": 0.04, "output": None, "cache_read": 0.04},
+            {"name": "输入（缓存未命中）空闲时段", "input": 1.0, "output": None, "cache_read": None},
+            {"name": "输入（缓存未命中）高峰时段", "input": 2.0, "output": None, "cache_read": None},
+            {"name": "输出空闲时段", "input": None, "output": 4.0, "cache_read": None},
+            {"name": "输出高峰时段", "input": None, "output": 8.0, "cache_read": None},
+        ],
+        "currency": "CNY", "quote": "deepseek-flash",
+    }])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    assert result["method"] == "ai" and result["warnings"] == []
+    record = result["models"][0]
+    # 基准按计费类别组合，不再整档照搬缓存命中价
+    assert (record["input_price"], record["output_price"]) == (2.0, 8.0)
+    assert record["cache_read_price"] == 0.04
+    assert len(record["tiers"]) == 6
+
+
+def test_fetch_ai_baseline_ignores_misplaced_standard_flag():
+    """AI 把缓存命中高峰档误标 standard 时，分维表基准仍按类别各取标准档。"""
+    page = (
+        "价格 demo-model\n"
+        "百万tokens输入（缓存命中）空闲时段 0.02元、高峰时段 0.04元\n"
+        "百万tokens输入（缓存未命中）空闲时段 1元、高峰时段 2元\n"
+        "百万tokens输出 空闲时段 4元、高峰时段 8元"
+    )
+    transport = _transport_with_ai(page, [{
+        "model": "demo-model",
+        "tiers": [
+            {"name": "输入（缓存命中）空闲时段", "input": 0.02, "cache_read": 0.02},
+            {"name": "输入（缓存命中）高峰时段", "standard": True, "input": 0.04, "cache_read": 0.04},
+            {"name": "输入（缓存未命中）空闲时段", "input": 1.0},
+            {"name": "输入（缓存未命中）高峰时段", "input": 2.0},
+            {"name": "输出空闲时段", "output": 4.0},
+            {"name": "输出高峰时段", "output": 8.0},
+        ],
+        "currency": "CNY", "quote": "demo-model",
+    }])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    record = result["models"][0]
+    assert (record["input_price"], record["output_price"]) == (2.0, 8.0)
+    assert record["cache_read_price"] == 0.04
 
 
 def test_fetch_ai_drops_only_hallucinated_tier():

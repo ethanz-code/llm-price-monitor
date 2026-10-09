@@ -34,6 +34,7 @@ import httpx
 from llm_price_monitor.config import AIConfig
 
 from llm_price_monitor.catalog import fx
+from llm_price_monitor.catalog.brands import is_hosted_model, is_unbranded, skip_reason
 from llm_price_monitor.catalog.normalize import model_key, round2
 from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.page_price import fetch_page_prices, parse_context_limit
@@ -316,6 +317,33 @@ def _cn_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _converted_price_views(
+    input_price: float | None,
+    output_price: float | None,
+    cache_read: float | None,
+    currency: str,
+    rate: float,
+) -> tuple[dict[str, float | None], dict[str, float | None], float | None, float | None]:
+    """单渠道价目 → 目录双币种视图：(list, list_cny, cache_read, cache_read_cny)。
+
+    目录统一 USD 口径：人民币标价按快照汇率折算成 list，页面原价进 list_cny；
+    美元标价反之。
+    """
+    if currency == "CNY":
+        usd = {k: round(v / rate, 6) if v is not None else None
+               for k, v in (("input", input_price), ("output", output_price))}
+        cny = {k: round2(v) for k, v in (("input", input_price), ("output", output_price))}
+        usd_cache = round(cache_read / rate, 6) if cache_read is not None else None
+        cny_cache = round2(cache_read)
+    else:
+        usd = {"input": input_price, "output": output_price}
+        cny = {k: round2(v * rate) if v is not None else None
+               for k, v in (("input", input_price), ("output", output_price))}
+        usd_cache = cache_read
+        cny_cache = round2(cache_read * rate) if cache_read is not None else None
+    return usd, cny, usd_cache, cny_cache
+
+
 def merge_sources_into_catalog(
     catalog: dict[str, Any],
     sources: dict[str, dict[str, Any]],
@@ -328,6 +356,10 @@ def merge_sources_into_catalog(
     海外源（region=global）：只给 region=cn 的命中条目补 list_global 国际参考
     价，不动基准；条目已是国际口径或目录未收录时跳过。
     同一轮里两个国内源撞同一模型键时按厂商名先到先得；禁用或没有抓取结果的源跳过。
+    命中已有条目时 vendor 同步为当前源，保证价格、来源与厂商归属同渠道。
+    国内定价页大量列出托管/转售的第三方模型（千帆卖 DeepSeek、百炼代售 deepseek、
+    SiliconFlow 聚合各家开源模型），按模型名判品牌，归属不是本厂商的一律不进
+    官方目录——官方基准只认厂商自研价，托管渠道价留在全量渠道价目录里比价。
     """
     models = catalog.get("models")
     if not isinstance(models, dict):
@@ -366,18 +398,7 @@ def merge_sources_into_catalog(
             currency = str(item.get("currency") or "").upper()
             # 页面没标注货币时按源区域兜底：国内定价页默认人民币、海外页默认美元
             currency = currency if currency in {"CNY", "USD"} else ("USD" if source_region == "global" else "CNY")
-            if currency == "CNY":
-                usd = {k: round(v / rate, 6) if v is not None else None for k, v in
-                       (("input", input_price), ("output", output_price))}
-                cny = {k: round2(v) for k, v in (("input", input_price), ("output", output_price))}
-                usd_cache = round(cache_read / rate, 6) if cache_read is not None else None
-                cny_cache = round2(cache_read)
-            else:
-                usd = {"input": input_price, "output": output_price}
-                cny = {k: round2(v * rate) if v is not None else None for k, v in
-                       (("input", input_price), ("output", output_price))}
-                usd_cache = cache_read
-                cny_cache = round2(cache_read * rate) if cache_read is not None else None
+            usd, cny, usd_cache, cny_cache = _converted_price_views(input_price, output_price, cache_read, currency, rate)
             if source_region == "global":
                 # 海外源只作国际参考：给国内基准条目补 list_global，基准与 region 不动
                 entry = models.get(key)
@@ -393,6 +414,10 @@ def merge_sources_into_catalog(
                     referenced_keys.add(key)
                     referenced += 1
                 continue
+            # 官方自研闸门：归属他家的托管/转售模型与识别不出归属的第三方模型都不进官方目录
+            if is_unbranded(name) or is_hosted_model(name, vendor):
+                skipped.append(skip_reason(name, vendor))
+                continue
             if key in claimed:
                 skipped.append(f"{vendor}/{name}（与其他定价源撞模型键，先到先得）")
                 continue
@@ -403,6 +428,7 @@ def merge_sources_into_catalog(
                     entry["list_global"] = entry["list"]
                     entry["list_global_cny"] = entry.get("list_cny")
                 entry["region"] = "cn"
+                entry["vendor"] = vendor  # 基准价已被本源覆盖，归属跟着换成当前渠道
                 entry["list"] = usd
                 entry["list_cny"] = cny
                 entry["source_url"] = source_url
@@ -445,6 +471,73 @@ def merge_sources_into_catalog(
                 added += 1
     catalog["models"] = models
     return catalog, {"matched": matched, "added": added, "referenced": referenced, "skipped": skipped}
+
+
+def merge_sources_into_channel_catalog(
+    full: dict[str, Any],
+    sources: dict[str, dict[str, Any]],
+    rate: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """把国内定价源抓取结果并入全量渠道价目录；返回 (新目录, 摘要)。
+
+    models.dev 有意不收国内渠道价（时段分档缺失、他方汇率换算偏差大），
+    国内渠道价由厂商定价源补位：`厂商:模型` 一家一条，与海外渠道同待遇，
+    官方目录撞键的模型在全量目录里各渠道价格并存、可直接对比。
+    同名键已存在时以官方定价页的抓取结果覆盖（比快照新鲜）。
+    只收国内源（region=cn）；禁用或没有抓取结果的源跳过。
+    """
+    models = full.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        full["models"] = models
+    added = 0
+    replaced = 0
+    for vendor, source in sorted(sources.items()):
+        if not source.get("enabled", True):
+            continue
+        if validate_region(str(source.get("region") or "")) != "cn":
+            continue
+        source_url = str(source.get("url") or "")
+        for item in source.get("models") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("model") or "").strip()
+            key = model_key(name)
+            if not key:
+                continue
+            input_price = number_or_none(item.get("input_price"))
+            output_price = number_or_none(item.get("output_price"))
+            if input_price is None and output_price is None:
+                continue
+            cache_read = number_or_none(item.get("cache_read_price"))
+            currency = str(item.get("currency") or "").upper()
+            # 国内定价页没标注货币时默认人民币
+            currency = currency if currency in {"CNY", "USD"} else "CNY"
+            usd, cny, usd_cache, cny_cache = _converted_price_views(input_price, output_price, cache_read, currency, rate)
+            entry_key = f"{model_key(vendor)}:{key}"
+            if entry_key in models:
+                replaced += 1
+            else:
+                added += 1
+            models[entry_key] = {
+                "found": True,
+                "model": name,
+                "name": name,
+                "vendor": vendor,
+                "region": "cn",
+                "logo": None,
+                "currency": "USD",
+                "list": usd,
+                "list_cny": cny,
+                "cache": {"read": usd_cache, "write": None},
+                "cache_cny": {"read": cny_cache, "write": None},
+                "source_url": str(item.get("source_url") or "").strip() or source_url,
+                "release_date": None,
+                **({"price_status": item["price_status"]} if item.get("price_status") else {}),
+                **_cn_meta_fields(item),
+            }
+    full["models"] = models
+    return full, {"added": added, "replaced": replaced}
 
 
 def detect_vendor_coverage(
@@ -574,6 +667,7 @@ __all__ = [
     "refresh_all_sources",
     "refresh_and_merge",
     "merge_sources_into_catalog",
+    "merge_sources_into_channel_catalog",
     "remerge_catalog",
     "validate_source",
     "validate_region",

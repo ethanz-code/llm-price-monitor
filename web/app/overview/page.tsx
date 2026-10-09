@@ -2,7 +2,8 @@ import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
 import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
 import { buildRankingIndex, type RankingHit } from "@/lib/rankings";
-import type { OverviewData, RankingsData, StatusSnapshot } from "@/lib/types";
+import { canonicalModel } from "@/lib/priceRows";
+import type { CatalogData, OverviewData, RankingsData, StatusSnapshot } from "@/lib/types";
 import { alerts } from "@/lib/copy";
 import { formatCount } from "@/lib/format";
 import { PageDigest } from "@/components/PageDigest";
@@ -34,16 +35,23 @@ export default async function OverviewPage() {
   let statusDots: Record<string, ChannelDotRow[]> = {};
   // AA 榜单匹配索引：给当前选中模型挂排名徽标；拉取失败只影响徽标
   let rankingsIndex: Record<string, RankingHit> = {};
+  // 目录发布日期索引（模型归一键 → release_date）：模型下拉按「发布日期倒序」排的依据；
+  // 只传这份轻量映射而非整个目录，拉取失败只影响排序口径（退化为按名称）
+  let releaseByModel: Record<string, string> = {};
   let error: string | null = null;
   try {
-    const [overview, status, rankings] = await Promise.all([
+    const [overview, status, rankings, catalog] = await Promise.all([
       apiGet<OverviewData>("/api/overview", headers),
       apiGet<{ records: StatusSnapshot[] }>(`/api/status?limit=${STATUS_LIMIT}`, headers).catch(() => null),
       apiGet<RankingsData>("/api/rankings").catch(() => null),
+      apiGet<CatalogData>("/api/catalog").catch(() => null),
     ]);
     data = overview;
     statusDots = status ? channelDotsBySite(status.records ?? []) : {};
     rankingsIndex = buildRankingIndex(rankings);
+    for (const entry of Object.values(catalog?.models ?? {})) {
+      if (entry?.model) releaseByModel[canonicalModel(entry.model)] = entry.release_date ?? "";
+    }
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
@@ -60,7 +68,9 @@ export default async function OverviewPage() {
           ]}
         />
       )}
-      {data && <OverviewTable data={data} statusDots={statusDots} rankingsIndex={rankingsIndex} />}
+      {data && (
+        <OverviewTable data={data} statusDots={statusDots} rankingsIndex={rankingsIndex} releaseByModel={releaseByModel} />
+      )}
     </div>
   );
 }

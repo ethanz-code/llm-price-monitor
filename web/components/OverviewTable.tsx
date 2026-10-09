@@ -13,6 +13,7 @@ import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
 import { effectiveCnyCachePrice, effectiveCnyPrice, formatDiscount, formatTime, noticeExcerpt, recordStatusKey, rowReason, statusMeta } from "@/lib/format";
 import { canonicalModel, hasUsablePrice, smartOrderRows } from "@/lib/priceRows";
+import { compareByReleaseDesc } from "@/lib/modelOrder";
 import { rankingHit, type RankingHit } from "@/lib/rankings";
 import { dotsOfGroup, dotsSuccessRate, type ChannelDot, type ChannelDotRow } from "@/lib/channelStatus";
 import { ChannelDotMatrix } from "./ChannelDotMatrix";
@@ -40,11 +41,15 @@ export function OverviewTable({
   data,
   statusDots,
   rankingsIndex = {},
+  releaseByModel = {},
 }: {
   data: OverviewData;
   statusDots?: Record<string, ChannelDotRow[]>;
   /** AA 榜单匹配索引：给当前选中模型挂排名徽标；榜单未生成时缺省不显示 */
   rankingsIndex?: Record<string, RankingHit>;
+  /** 模型名归一键（canonicalModel）→ 目录发布日期：模型下拉按「发布日期倒序」排的依据，
+   *  页面服务端从 /api/catalog 提炼；缺省退化为按名称。 */
+  releaseByModel?: Record<string, string>;
 }) {
   const records = data.records;
   const router = useRouter();
@@ -78,12 +83,13 @@ export function OverviewTable({
         priced: entry.rows.some(hasUsablePrice),
       };
     });
-    // 有真实价的模型在前；同状态按覆盖站点数多的在前，名称稳定排序兜底
+    // 目录口径排序（发布倒序+名称，与监控模型下拉一致）：目录里的新模型排前面，
+    // 目录没收录的模型（站点自有命名）垫底按名称；页面没传目录索引时退化为纯名称序
     groups.sort((a, b) =>
-      a.priced !== b.priced ? (a.priced ? -1 : 1) : b.sites - a.sites || a.model.localeCompare(b.model),
+      compareByReleaseDesc({ name: a.model, release: releaseByModel[a.key] }, { name: b.model, release: releaseByModel[b.key] }),
     );
     return groups;
-  }, [records]);
+  }, [records, releaseByModel]);
 
   const active = models.find((group) => group.key === activeModel) ?? models[0];
 

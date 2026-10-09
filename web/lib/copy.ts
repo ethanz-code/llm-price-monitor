@@ -114,6 +114,9 @@ export const calculator = {
   siteLabel: "选站点",
   sitePlaceholder: "先选一个中转站",
   modelPlaceholder: "搜索或选一个模型",
+  /** 厂商分组节头的「更多」按钮，括号里是被折叠的模型数 */
+  moreModels: (count: number) => `更多 ${count} 个`,
+  lessModels: "收起",
   buckets: {
     input: "输入",
     output: "输出",

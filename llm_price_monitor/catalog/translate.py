@@ -32,7 +32,7 @@ def ai_available(config: AIConfig) -> bool:
     return bool(config.enabled and config.base_url and config.api_key and config.models)
 
 
-def _chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
+def chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
     """一次 JSON 对话请求（与 ai.AIPriceExtractor 同一套响应解析）。"""
     ai_model = config.pick_model()
     if not config.base_url or not ai_model:
@@ -102,6 +102,7 @@ def attach_zh_descriptions(
         if zh is not None:
             entry["description_zh"] = zh
             entry["desc_fp"] = fingerprint
+            entry.pop("desc_source", None)  # 简介换回英文原文的译文，不再是 AI 生成
             continue
         if budget is not None and len(pending) >= budget:
             continue  # 本轮额度用完，剩余条目下一轮再翻
@@ -124,6 +125,7 @@ def attach_zh_descriptions(
         if zh is not None:
             entry["description_zh"] = zh
             entry["desc_fp"] = description_fingerprint(entry)
+            entry.pop("desc_source", None)
     return translated
 
 
@@ -134,7 +136,7 @@ def _translate_batch(
 ) -> int:
     """一个批次的 AI 翻译：返回成功落盘的条数；失败抛异常由调用方兜底。"""
     payload = [{"model": key, "description": entry.get("description")} for key, entry in batch]
-    translations = _chat_json(
+    translations = chat_json(
         config,
         SYSTEM_PROMPT,
         f'{{"models": {json.dumps(payload, ensure_ascii=False)}}}',
@@ -155,5 +157,6 @@ def _translate_batch(
         entry = located
         entry["description_zh"] = zh.strip()
         entry["desc_fp"] = description_fingerprint(entry)
+        entry.pop("desc_source", None)
         translated += 1
     return translated

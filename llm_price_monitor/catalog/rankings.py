@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from .normalize import model_key
+from ..http_retry import build_client
 
 AA_LEADERBOARD_URL = "https://artificialanalysis.ai/leaderboards/models"
 
@@ -131,7 +132,7 @@ def parse_leaderboard(html: str) -> dict[str, Any]:
 
 def fetch_rankings(*, transport: httpx.BaseTransport | None = None) -> dict[str, Any]:
     """抓取 AA 榜单页并解析为排名文档；不落盘，持久化由调用方决定。"""
-    with httpx.Client(follow_redirects=True, timeout=30, transport=transport) as client:
+    with build_client(timeout=30, transport=transport) as client:
         response = client.get(AA_LEADERBOARD_URL)
         response.raise_for_status()
         return parse_leaderboard(response.text)

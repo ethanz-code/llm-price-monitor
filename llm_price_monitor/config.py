@@ -224,6 +224,9 @@ class MonitorSettings:
     monitor_models: tuple[str, ...] = ()
     # 从监控清单里被手动移除过的模型：目录刷新自动补模型时跳过，避免删掉又被加回
     monitor_models_dismissed: tuple[str, ...] = ()
+    # 采集备用代理（http(s) 代理 URL，如 http://172.17.0.1:7890）：直连优先，
+    # 直连失败的域名经失败记忆（egress.py）自动改走它兜底；留空不启用
+    fallback_proxy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -285,6 +288,12 @@ def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSetti
     for key in ("assistant_daily_limit", "assistant_hourly_limit"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 0):
             raise ValueError(f"settings.{key} 必须是不小于 0 的整数（0 表示不限制）")
+    fallback_proxy = str(values.get("fallback_proxy") or "").strip() or None
+    if fallback_proxy:
+        parsed_proxy = urlsplit(fallback_proxy)
+        if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.netloc:
+            raise ValueError("settings.fallback_proxy 必须是完整的 http(s) 代理 URL，留空表示不启用")
+    values["fallback_proxy"] = fallback_proxy
     return MonitorSettings(**values)
 
 

@@ -2,8 +2,19 @@
 import httpx
 import pytest
 
+from llm_price_monitor import egress
 from llm_price_monitor.config import ModelTarget, sites_from_raw
 from llm_price_monitor.tracker import fetch_price
+
+
+@pytest.fixture(autouse=True)
+def _clean_egress():
+    """browser_fetch 会读出口失败记忆，用例间清干净避免串味。"""
+    egress._failures.clear()
+    egress.configure_provider(None)
+    yield
+    egress._failures.clear()
+    egress.configure_provider(None)
 
 
 def _from_raw(values):
@@ -268,7 +279,11 @@ def _fake_playwright(monkeypatch, captured: dict, *, fail: bool = False):
         def close(self): ...
 
     class FakeChromium:
-        chromium = types.SimpleNamespace(launch=lambda headless: FakeBrowser())
+        def __init__(self):
+            self.chromium = types.SimpleNamespace(launch=self._launch)
+        def _launch(self, **kwargs):
+            captured["launch"] = kwargs
+            return FakeBrowser()
         def stop(self): ...
 
     class FakePlaywright:
@@ -433,6 +448,45 @@ def test_login_value_supports_mixed_text_and_multiple_placeholders(monkeypatch):
     )
     assert captured["cookies"][0]["value"] == "a=tk-9&r=rf-1"
     assert "Bearer tk-9|refresh=rf-1|static" in captured["script"]
+
+
+def test_fetch_page_html_uses_proxy_for_marked_host(monkeypatch):
+    """失败记忆标记过的域名：无头渲染直接带代理启动，不再白撞一次墙。"""
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    egress.mark_direct_failed("demo.test")
+    egress.configure_provider(lambda: "http://172.17.0.1:7890")
+    fetch_page_html("https://demo.test/pricing", {"enabled": True})
+    assert captured["launch"]["proxy"] == {"server": "http://172.17.0.1:7890"}
+
+
+def test_fetch_page_html_splits_proxy_auth_for_chromium(monkeypatch):
+    """带认证的代理地址：server 去掉 userinfo，账号密码拆成独立字段并做 URL 解码。"""
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    egress.mark_direct_failed("demo.test")
+    egress.configure_provider(lambda: "http://user:p%40ss@172.17.0.1:7890")
+    fetch_page_html("https://demo.test/pricing", {"enabled": True})
+    assert captured["launch"]["proxy"] == {
+        "server": "http://172.17.0.1:7890",
+        "username": "user",
+        "password": "p@ss",
+    }
+
+
+def test_fetch_page_html_direct_when_not_marked(monkeypatch):
+    """未标记的域名：无头照常直连，proxy 参数保持 None。"""
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    egress.configure_provider(lambda: "http://172.17.0.1:7890")
+    fetch_page_html("https://demo.test/pricing", {"enabled": True})
+    assert captured["launch"]["proxy"] is None
 
 
 def test_ratio_headers_config_validation():

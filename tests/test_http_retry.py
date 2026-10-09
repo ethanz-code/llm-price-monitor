@@ -2,8 +2,14 @@
 import httpx
 import pytest
 
-from llm_price_monitor import tasklog
-from llm_price_monitor.http_retry import RETRY_ATTEMPTS, RetryingTransport, build_client
+from llm_price_monitor import egress, tasklog
+from llm_price_monitor.http_retry import (
+    _REPROBE_CONNECT_TIMEOUT_SECONDS,
+    RETRY_ATTEMPTS,
+    FallbackTransport,
+    RetryingTransport,
+    build_client,
+)
 
 
 def _client(handler, **kwargs) -> httpx.Client:
@@ -142,3 +148,141 @@ def test_injected_transport_bypasses_proxy_env(monkeypatch, spy_http_transport):
         client.get("https://demo.test/api/status")
     assert seen == ["https://demo.test/api/status"]
     assert spy_http_transport.proxies_seen == []
+
+
+# ---------- 直连优先、代理兜底（FallbackTransport） ----------
+
+
+@pytest.fixture(autouse=True)
+def _clean_egress():
+    """兜底用例从干净的失败记忆出发，不接线 provider（需要时用例里单独接）。"""
+    egress._failures.clear()
+    egress.configure_provider(None)
+    yield
+    egress._failures.clear()
+    egress.configure_provider(None)
+
+
+def _fallback_client(direct_handler, proxied_handler) -> httpx.Client:
+    return httpx.Client(
+        timeout=5,
+        transport=FallbackTransport(
+            direct=RetryingTransport(httpx.MockTransport(direct_handler)),
+            proxied=RetryingTransport(httpx.MockTransport(proxied_handler)),
+        ),
+    )
+
+
+def test_fallback_switches_to_proxy_after_direct_connect_error(monkeypatch):
+    calls = {"direct": [], "proxy": []}
+
+    def direct(request):
+        calls["direct"].append(1)
+        raise httpx.ConnectError("connection reset", request=request)
+
+    def proxied(request):
+        calls["proxy"].append(1)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr("llm_price_monitor.http_retry.time.sleep", lambda _s: None)
+    with _fallback_client(direct, proxied) as client:
+        response = client.get("https://demo.test/api/status")
+    assert response.status_code == 200
+    assert len(calls["direct"]) == 1 + RETRY_ATTEMPTS  # 直连先走完整退避重试，耗尽才兜底
+    assert len(calls["proxy"]) == 1
+    assert egress.plan("demo.test").use_proxy  # 失败记入记忆，TTL 内后续直接走代理
+
+
+def test_fallback_on_403_then_reprobe_recovers_direct(monkeypatch):
+    calls = {"direct": [], "proxy": []}
+
+    def direct(request):
+        calls["direct"].append(1)
+        return httpx.Response(403) if len(calls["direct"]) == 1 else httpx.Response(200)
+
+    def proxied(request):
+        calls["proxy"].append(1)
+        return httpx.Response(200)
+
+    now = [1000.0]
+    monkeypatch.setattr(egress, "_now", lambda: now[0])
+    with _fallback_client(direct, proxied) as client:
+        assert client.get("https://demo.test/p").status_code == 200  # 403 → 兜底
+        assert len(calls["direct"]) == 1 and len(calls["proxy"]) == 1
+        assert client.get("https://demo.test/p").status_code == 200  # 记忆内：直连不再被碰
+        assert len(calls["direct"]) == 1 and len(calls["proxy"]) == 2
+
+        now[0] += egress.REPROBE_SECONDS + 1
+        assert client.get("https://demo.test/p").status_code == 200  # 重探直连成功 → 洗白
+        assert len(calls["direct"]) == 2
+        assert not egress.plan("demo.test").use_proxy and not egress.plan("demo.test").reprobe
+
+
+def test_no_fallback_on_ordinary_4xx():
+    calls = {"direct": [], "proxy": []}
+
+    def direct(request):
+        calls["direct"].append(1)
+        return httpx.Response(404)
+
+    def proxied(request):
+        calls["proxy"].append(1)
+        return httpx.Response(200)
+
+    with _fallback_client(direct, proxied) as client:
+        assert client.get("https://demo.test/missing").status_code == 404
+    assert len(calls["direct"]) == 1 and len(calls["proxy"]) == 0
+    assert not egress.plan("demo.test").use_proxy
+
+
+def test_post_is_not_fallbacked():
+    calls = {"direct": [], "proxy": []}
+
+    def direct(request):
+        calls["direct"].append(1)
+        raise httpx.ConnectError("reset", request=request)
+
+    def proxied(request):
+        calls["proxy"].append(1)
+        return httpx.Response(200)
+
+    with _fallback_client(direct, proxied) as client, pytest.raises(httpx.ConnectError):
+        client.post("https://demo.test/api/refresh")
+    assert len(calls["direct"]) == 1 and len(calls["proxy"]) == 0
+
+
+def test_reprobe_injects_short_connect_timeout(monkeypatch):
+    seen = []
+
+    def direct(request):
+        seen.append(dict((request.extensions or {}).get("timeout") or {}))
+        return httpx.Response(200)
+
+    def proxied(request):
+        return httpx.Response(200)
+
+    now = [1000.0]
+    monkeypatch.setattr(egress, "_now", lambda: now[0])
+    egress.mark_direct_failed("demo.test")
+    now[0] += egress.REPROBE_SECONDS + 1
+    with _fallback_client(direct, proxied) as client:
+        assert client.get("https://demo.test/p").status_code == 200
+    assert seen[0]["connect"] == _REPROBE_CONNECT_TIMEOUT_SECONDS  # 重探只压短连接超时
+    assert seen[0]["read"] == 5  # 其余超时保持请求原值
+
+
+def test_build_client_transport_variants(monkeypatch):
+    # 清掉本机可能存在的代理环境变量，避免污染分支判定
+    for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    # 未配任何代理：普通重试传输层
+    with build_client() as client:
+        assert type(client._transport) is RetryingTransport
+    # 配了备用代理：包 FallbackTransport
+    egress.configure_provider(lambda: "http://172.17.0.1:7890")
+    with build_client() as client:
+        assert isinstance(client._transport, FallbackTransport)
+    # 环境代理是全量接管语义：优先于备用代理，无失败记忆层
+    monkeypatch.setenv("HTTPS_PROXY", "http://env.test:7890")
+    with build_client() as client:
+        assert type(client._transport) is RetryingTransport

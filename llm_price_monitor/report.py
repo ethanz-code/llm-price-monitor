@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -363,6 +363,47 @@ def _apply_price_sanity(
     }
 
 
+# 单站采集的硬上限（秒）：适配器内有 per-request 超时，但实测经本地代理的半死连接
+# 会在 SSL 抖动重试后无限挂起、超时不触发——单站卡死不能拖垮整轮和后续站点的落库
+SITE_HARD_TIMEOUT_SECONDS = 900.0
+
+
+def _run_network_phase(
+    phase: Callable[[], tuple[list[PriceRecord], list[str]]], site_id: str
+) -> tuple[list[PriceRecord], list[str]]:
+    """在 daemon 子线程里跑单站采集（含续签重采），到硬上限仍未返回就放弃该站。
+
+    Python 线程杀不掉：超时后工作线程变孤儿，仍占着那条挂死的连接，但它只采不写库、
+    不阻塞后续站点（共享的 httpx.Client 线程安全），daemon 属性也不挡进程退出；
+    它最终的产出被丢弃，本轮以超时错误记档。子线程转发主线程的日志出口，
+    否则适配器与重试层的过程日志会因 thread-local 出口缺失而静默丢失。
+    """
+    sink = tasklog.current_sink()
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        if sink is not None:
+            tasklog.bind(sink)
+        try:
+            box["result"] = phase()
+        except BaseException as exc:  # 采集线程的异常转交主线程按原语义处理
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, name=f"price-scan-{site_id}", daemon=True)
+    worker.start()
+    worker.join(SITE_HARD_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        message = f"采集超过 {SITE_HARD_TIMEOUT_SECONDS:g}s 硬上限仍未返回，本轮放弃该站（连接可能卡死在代理隧道上）"
+        tasklog.emit(f"[{site_id}] {message}", "error")
+        return [], [message]
+    if "error" in box:
+        raise box["error"]
+    result = box.get("result")
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    return [], ["采集线程未返回有效结果"]
+
+
 def _scan_prices(
     config: MonitorConfig,
     client: httpx.Client,
@@ -439,24 +480,28 @@ def _scan_prices(
                                 break
             return site_records, site_errors
 
-        collected, collect_errors = collect_all(spec)
-        # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
-        if spec.token_refresh and needs_refresh(collected):
-            tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
-            # 重采结果整体替换本轮记录与地址错误；续签失败或重采无数据时拿到的是续签前的
-            # "需认证"占位记录，保住该状态下面才会跳过分组下线判定（401 是我方凭证问题，
-            # 不代表分组真的下线）。错误列表不再被静默清空，重采阶段的地址失败照常上报。
-            collected, collect_errors = refresh_and_recollect(
-                spec,
-                collected,
-                collect=collect_all,
-                client=client,
-                timeout=config.settings.timeout,
-                user_agent=user_agent,
-                store=store,
-            )
-            if not collect_errors:
-                tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(collected)} 条价格")
+        def network_phase() -> tuple[list[PriceRecord], list[str]]:
+            phase_records, phase_errors = collect_all(spec)
+            # 有任一"需认证"且配了续签接口：续签 token、回写数据库并用新 token 重采一次
+            if spec.token_refresh and needs_refresh(phase_records):
+                tasklog.emit(f"[{spec.id}] 采集返回需认证，尝试续签 token…")
+                # 重采结果整体替换本轮记录与地址错误；续签失败或重采无数据时拿到的是续签前的
+                # "需认证"占位记录，保住该状态下面才会跳过分组下线判定（401 是我方凭证问题，
+                # 不代表分组真的下线）。错误列表不再被静默清空，重采阶段的地址失败照常上报。
+                phase_records, phase_errors = refresh_and_recollect(
+                    spec,
+                    phase_records,
+                    collect=collect_all,
+                    client=client,
+                    timeout=config.settings.timeout,
+                    user_agent=user_agent,
+                    store=store,
+                )
+                if not phase_errors:
+                    tasklog.emit(f"[{spec.id}] token 已续签并重新采集：{len(phase_records)} 条价格")
+            return phase_records, phase_errors
+
+        collected, collect_errors = _run_network_phase(network_phase, spec.id)
         if collect_errors and not collected:
             message = "；".join(collect_errors)
             errors.append({"site_id": spec.id, "error": message})
@@ -469,6 +514,9 @@ def _scan_prices(
         site_status[spec.id] = {"checked_at": time.time(), **site_status_from_records(collected)}
         site_changed = 0
         site_keys: set[str] = set()
+        # 站点切片标记：本站新增的历史行与事件从这两个下标起，供站内立即落库
+        history_mark = len(history_rows)
+        events_mark = len(events)
         # 本轮开始前快照里已有的模型：这些模型冒出新分组记 group_added，全新模型仍记 new
         known_models = {
             split_latest_key(key, spec.id)[0]
@@ -517,8 +565,26 @@ def _scan_prices(
         # 跳过缺失计数，避免 token 过期把分组刷成下线事件；
         # 有地址采集失败时本轮记录同样不完整（没采到 ≠ 分组下线），一并跳过；
         # 测试采集（persist=False）同样不计数——不完整的测试轮次不得污染正式下线阈值
+        site_removed: set[str] = set()
         if store is not None and persist and not needs_refresh(collected) and not collect_errors:
-            removed_keys |= _detect_removed_groups(store, latest, spec.id, site_keys, events)
+            site_removed = _detect_removed_groups(store, latest, spec.id, site_keys, events)
+            removed_keys |= site_removed
+        # 每站采完立即落库：单站卡死被放弃、或整轮中途被重启时，已完成的站点不随内存丢失。
+        # 落库范围用站点切片限定（touched ∩ site_keys 恰为本站写过的快照 key），
+        # latest 仍传完整内存快照，由 touched 限定只比对本站 key。
+        if store is not None and persist:
+            _persist_scan_results(
+                store,
+                latest=latest,
+                history_rows=history_rows[history_mark:],
+                events=[
+                    event
+                    for event in events[events_mark:]
+                    if event["kind"] not in ("unchanged", "status_changed")
+                ],
+                removed_keys=site_removed or None,
+                touched_keys=touched_keys & site_keys,
+            )
         if site_is_new:
             tasklog.emit(f"[{spec.id}] 站点建档：{len(collected)} 条价格入库（首轮不产生变化事件），{time.time() - site_started:.1f}s")
         else:
@@ -861,14 +927,7 @@ def scan_prices(
         # price_status 在确认/规则/无数据之间抖动不代表价格真的变了，这类事件不落库
         changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
-            _persist_scan_results(
-                store,
-                latest=latest,
-                history_rows=history_rows,
-                events=changed_events,
-                removed_keys=removed_keys,
-                touched_keys=touched_keys,
-            )
+            # 价格已在 _scan_prices 内逐站落库，这里只合并渠道状态与健康档案
             _merge_collect_status(store, config, site_status)
             _merge_price_health(store, config, site_status)
         return MonitorReport(started, time.time(), records, changed_events, errors, site_status=site_status)
@@ -955,13 +1014,14 @@ def run_once(
         errors = [*errors, *status_scan.errors, *notice_scan.errors]
         changed_events = [event for event in events if event["kind"] not in ("unchanged", "status_changed")]
         if persist and store is not None:
+            # 价格已在 _scan_prices 内逐站落库；这里只补公告与渠道状态（公告与 scan_notices 同口径）
             _persist_scan_results(
                 store,
-                latest=latest,
-                history_rows=history_rows,
-                events=changed_events,
-                removed_keys=removed_keys,
-                touched_keys=touched_keys,
+                latest={},
+                history_rows=[],
+                events=[],
+                removed_keys=None,
+                touched_keys=set(),
                 notice_records=notice_scan.records,
                 notice_events=notice_scan.events,
             )

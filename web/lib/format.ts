@@ -342,6 +342,7 @@ const TASK_KIND_LABELS: Record<string, string> = {
   "collect-notice": "站点公告采集",
   "catalog-refresh": "厂商定价刷新",
   "vendor-source-refresh": "厂商定价源抓取",
+  "rankings-refresh": "模型榜单刷新",
 };
 
 /** 后台任务类型的展示名。 */

@@ -5253,9 +5253,46 @@ a.event-card {
   min-width: 0;
 }
 
-/* grid 项的自动最小尺寸会顶着长模型名把窄屏撑出横向裁切，显式放开 */
-.calc-option {
+/* 厂商分组节头：整行可点展开/收起，右侧提示折叠数量 */
+.calc-vendor {
   display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 6px 10px 4px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-3);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast);
+}
+
+.calc-vendor:first-child {
+  margin-top: 0;
+}
+
+.calc-vendor:hover {
+  color: var(--text-2);
+}
+
+.calc-vendor-count {
+  font-weight: 400;
+}
+
+.calc-vendor-more {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--accent);
+}
+
+/* grid 项的自动最小尺寸会顶着长模型名把窄屏撑出横向裁切，显式放开 */
+.calc-option {  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;

@@ -7,6 +7,8 @@ import { DajuAwake, DajuNap } from "./DajuArt";
 import { formatCount, formatDiscount, formatPrice, looseIncludes } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { calculator } from "@/lib/copy";
+import { compareByReleaseDesc } from "@/lib/modelOrder";
+import { ShareCalcButton } from "./ShareCalcButton";
 import type { CatalogData, CatalogEntry, OverviewData, OverviewRecord } from "@/lib/types";
 import {
   DEFAULT_TOTAL_TOKENS,
@@ -30,9 +32,14 @@ interface Option {
   sub: string;
   prices: Record<PriceKey, number | null>;
   currency: string;
+  /** 目录发布日期：候选按「发布日期倒序 + 名称」排，与监控模型下拉同一套口径 */
+  release?: string;
 }
 
 const BUCKET_LABEL = calculator.buckets;
+
+/** 厂商分组默认露出的模型条数：超出部分折叠进「更多」，搜索时不限量 */
+const VENDOR_PREVIEW_COUNT = 5;
 
 function symbolOf(currency: string): string {
   if (currency === "CNY") return "¥";
@@ -48,6 +55,7 @@ function optionFromCatalog(key: string, entry: CatalogEntry): Option {
     value: key,
     label: entry.name ?? entry.model ?? key,
     sub: entry.vendor,
+    release: entry.release_date ?? "",
     prices: {
       input: (cn ? entry.list_cny?.input : entry.list?.input) ?? null,
       output: (cn ? entry.list_cny?.output : entry.list?.output) ?? null,
@@ -92,6 +100,11 @@ export function Calculator({
   const [totalTokens, setTotalTokens] = useState(initial.totalTokens ?? DEFAULT_TOTAL_TOKENS);
   const [hitRate, setHitRate] = useState(textOfNumber(initial.hitRate));
   const [keyword, setKeyword] = useState("");
+  // 厂商分组的展开状态：默认全部折叠，只露每家前几条；深链带着模型进来时自动展开其厂商
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const vendor = catalog?.models[initial.model]?.vendor;
+    return new Set(vendor ? [vendor] : []);
+  });
 
   /** 站点价模式下的站点清单：只保留有可用价的站点。 */
   const siteOptions = useMemo(() => {
@@ -105,9 +118,10 @@ export function Calculator({
   /** 候选模型：厂商模式走目录，站点模式走该站的价格记录（同模型同分组各占一项）。 */
   const options = useMemo<Option[]>(() => {
     if (source === "official") {
+      // 目录口径排序（发布倒序+名称）：厂商分节的先后也由它带出——新模型多的厂商靠前
       return Object.entries(catalog?.models ?? {})
         .map(([key, entry]) => optionFromCatalog(key, entry))
-        .sort((a, b) => a.sub.localeCompare(b.sub) || a.label.localeCompare(b.label));
+        .sort((a, b) => compareByReleaseDesc({ name: a.label, release: a.release }, { name: b.label, release: b.release }));
     }
     if (!site) return [];
     const seen = new Set<string>();
@@ -121,6 +135,18 @@ export function Calculator({
     }
     return list.sort((a, b) => a.label.localeCompare(b.label));
   }, [source, site, catalog, overview]);
+
+  /** 厂商官方价 + 未搜索时按厂商分节；搜索与站点模式返回 null 走平铺。 */
+  const groups = useMemo(() => {
+    if (source !== "official" || keyword) return null;
+    const byVendor = new Map<string, Option[]>();
+    for (const option of options) {
+      const list = byVendor.get(option.sub) ?? [];
+      list.push(option);
+      byVendor.set(option.sub, list);
+    }
+    return [...byVendor].map(([vendor, items]) => ({ vendor, items }));
+  }, [source, keyword, options]);
 
   const visible = useMemo(() => {
     const hit = options.filter((option) => looseIncludes(`${option.label} ${option.sub} ${option.value}`, keyword));
@@ -145,6 +171,16 @@ export function Calculator({
 
   const symbol = symbolOf(currency);
 
+  // 分享图要的展示信息：选中模型的显示名与厂商/分组，价格来源标签
+  const selected = useMemo(
+    () => options.find((option) => option.value === model) ?? null,
+    [options, model],
+  );
+  const sourceLabel =
+    source === "official"
+      ? calculator.source.official
+      : `${calculator.source.site} · ${getSiteInfo(site).name || site}`;
+
   // 状态同步进网址：刷新不丢、可直接分享；用 replaceState 避免每次输入都写历史
   useEffect(() => {
     const params = encodeCalcState({
@@ -164,7 +200,17 @@ export function Calculator({
     setSource(next as CalcSource);
     setModel("");
     setKeyword("");
+    setExpanded(new Set());
     setPrices(textsOf(EMPTY_PRICES));
+  }
+
+  function toggleVendor(vendor: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendor)) next.delete(vendor);
+      else next.add(vendor);
+      return next;
+    });
   }
 
   function pickSite(next: string) {
@@ -193,6 +239,32 @@ export function Calculator({
       toast(calculator.copied);
     }
   }
+
+  /** 单个候选按钮：分组与平铺两种布局共用 */
+  const renderOption = (option: Option) => {
+    const active = option.value === model;
+    return (
+      <button
+        key={`${option.value}:${option.sub}`}
+        type="button"
+        role="option"
+        aria-selected={active}
+        className={`calc-option${active ? " on" : ""}`}
+        onClick={() => pickModel(option)}
+      >
+        <span className="calc-option-main">
+          <span className="calc-option-name">{option.label}</span>
+          {option.sub && <span className="calc-option-sub">{option.sub}</span>}
+        </span>
+        <span className="calc-option-price">
+          {symbolOf(option.currency)}
+          {formatPrice(option.prices.input)} / {symbolOf(option.currency)}
+          {formatPrice(option.prices.output)}
+          {active && <IconCheck size={13} />}
+        </span>
+      </button>
+    );
+  };
 
   return (
     <div className="calculator">
@@ -228,35 +300,35 @@ export function Calculator({
         </div>
         {source === "site" && !site ? (
           <p className="calc-empty">{calculator.sitePlaceholder}</p>
-        ) : visible.length === 0 ? (
-          <p className="calc-empty">没找到匹配的模型，换个关键词试试。</p>
-        ) : (
+        ) : groups ? (
           <div className="calc-options" role="listbox">
-            {visible.map((option) => {
-              const active = option.value === model;
+            {groups.map((group) => {
+              const open = expanded.has(group.vendor);
+              const shown = open ? group.items : group.items.slice(0, VENDOR_PREVIEW_COUNT);
+              const folded = group.items.length - shown.length;
               return (
-                <button
-                  key={`${option.value}:${option.sub}`}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  className={`calc-option${active ? " on" : ""}`}
-                  onClick={() => pickModel(option)}
-                >
-                  <span className="calc-option-main">
-                    <span className="calc-option-name">{option.label}</span>
-                    {option.sub && <span className="calc-option-sub">{option.sub}</span>}
-                  </span>
-                  <span className="calc-option-price">
-                    {symbolOf(option.currency)}
-                    {formatPrice(option.prices.input)} / {symbolOf(option.currency)}
-                    {formatPrice(option.prices.output)}
-                    {active && <IconCheck size={13} />}
-                  </span>
-                </button>
+                <section key={group.vendor}>
+                  <button
+                    type="button"
+                    className="calc-vendor"
+                    onClick={() => toggleVendor(group.vendor)}
+                    aria-expanded={open}
+                  >
+                    <span>{group.vendor}</span>
+                    <span className="calc-vendor-count">· {group.items.length}</span>
+                    {folded > 0 && (
+                      <span className="calc-vendor-more">{open ? calculator.lessModels : calculator.moreModels(folded)}</span>
+                    )}
+                  </button>
+                  {shown.map(renderOption)}
+                </section>
               );
             })}
           </div>
+        ) : visible.length === 0 ? (
+          <p className="calc-empty">没找到匹配的模型，换个关键词试试。</p>
+        ) : (
+          <div className="calc-options" role="listbox">{visible.map(renderOption)}</div>
         )}
       </div>
 
@@ -324,9 +396,23 @@ export function Calculator({
             {result.lines.length > 0 && <DajuAwake width={20} />}
             {calculator.resultTitle}
           </span>
-          <Btn variant="ghost" size="sm" onClick={copyLink}>
-            {calculator.copyLink}
-          </Btn>
+          <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+            <ShareCalcButton
+              modelName={selected?.label ?? ""}
+              modelSub={selected?.sub ?? ""}
+              sourceLabel={sourceLabel}
+              currency={currency}
+              prices={parsedPrices}
+              totalTokens={totalTokens}
+              hitRate={hitNum}
+              result={result}
+              missingCacheRead={missingCacheRead}
+              disabled={result.lines.length === 0}
+            />
+            <Btn variant="ghost" size="sm" onClick={copyLink}>
+              {calculator.copyLink}
+            </Btn>
+          </span>
         </div>
         {result.lines.length === 0 ? (
           <div className="calc-empty">

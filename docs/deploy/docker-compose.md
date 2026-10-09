@@ -143,6 +143,56 @@ docker compose start api
 - **磁盘越来越满**：`docker system df` 看占用，`docker image prune -f` 清掉旧构建的悬空镜像。
 - **时间不对**：镜像默认 `TZ=Asia/Shanghai`，需改时区时调整 Dockerfile / compose 里的 TZ。
 - **能否多开几个 api 副本扩容**：不能。定时调度与任务状态都在 api 进程内存里，多副本会重复采集、任务状态错乱，只允许单实例。
+- **部分站点直连采集不通（被墙或限制大陆访问）**：宿主机跑一个代理客户端，在管理面板「系统设置 → 采集出口」填备用代理地址；容器内指向宿主机写 `http://172.17.0.1:7890`（Docker 桥接网关，不是 127.0.0.1）。采集直连优先，只有直连失败的域名自动走代理，面板保存后从下一轮采集生效。
+
+## 采集兜底代理（机场订阅）
+
+境内服务器直连不了的站点，在服务器上跑一个 mihomo（Clash Meta 内核）吃机场订阅，
+给「系统设置 → 采集出口」提供本地代理端口。三步：
+
+1. 建配置：`mkdir -p mihomo`，写入 `mihomo/config.yaml`：
+
+```yaml
+# 仅作为大橘采集兜底出口：不接管系统流量、无 TUN，纯本地 HTTP 代理端口
+mixed-port: 7890
+mode: rule
+log-level: warning
+
+# 订阅自动更新：每 12 小时拉一次；health-check 剔除坏节点
+proxy-providers:
+  liangxin:
+    type: http
+    url: "你的订阅链接末尾加 &flag=clash"
+    interval: 43200
+    path: ./providers/liangxin.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 600
+
+# 自动挑当前延迟最低的可用节点，节点挂了自动切
+proxy-groups:
+  - name: PROXY
+    type: url-test
+    use: [liangxin]
+    url: https://www.gstatic.com/generate_204
+    interval: 600
+    tolerance: 100
+
+rules:
+  - MATCH,PROXY
+```
+
+   `url` 末尾加 `&flag=clash` 让 V2Board 系机场直接返回 Clash 格式；若 mihomo 启动日志
+   报 providers 解析失败，换用机场提供的「Clash 订阅」地址。
+
+2. 取消 `docker-compose.yml` 里 proxy 服务段的注释，`docker compose up -d`。
+
+3. 管理面板「系统设置 → 采集出口」填 `http://proxy:7890` → 点「测试连通」→
+   出口 IP 是机场节点即成功 → 保存。侧栏状态条变绿即生效。
+
+安全边界：proxy 服务不发布任何端口，仅在 compose 容器网络内可达，公网摸不到；
+订阅链接自带 token，`mihomo/config.yaml` 记得 `chmod 600`，不要提交进仓库。
 
 ## 卸载
 

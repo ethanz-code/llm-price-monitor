@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Btn, Input, Pick, Seg, toast } from "./ui";
 import { IconSearch } from "./icons";
 import { apiSend } from "@/lib/api";
+import { latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import { CatalogTable } from "./CatalogTable";
 import { CatalogAllTable } from "./CatalogAllTable";
 import { CatalogEmptyState } from "./CatalogEmptyState";
@@ -33,11 +34,11 @@ export function CatalogView({
   const [vendor, setVendor] = useState("all");
   const router = useRouter();
 
-  // 官方定价视图的厂商下拉选项；筛选控件与视图切换同处一行工具栏
-  const vendors = useMemo(
-    () => Array.from(new Set(Object.values(official?.models ?? {}).map((entry) => entry.vendor))),
-    [official],
-  );
+  // 官方定价视图的厂商下拉选项：与表格行序同款（各家最新发布倒序），筛选顺序跟表一致
+  const vendors = useMemo(() => {
+    const latest = latestReleaseByVendor(official?.models ?? {});
+    return Array.from(latest.keys()).sort(vendorBlockCompare(latest));
+  }, [official]);
 
   function switchView(next: string) {
     setView(next as CatalogViewKey);

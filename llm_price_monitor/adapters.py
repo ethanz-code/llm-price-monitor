@@ -789,8 +789,72 @@ def _entries_from_json(payload: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def _unescape_rsc(text: str) -> str:
+    """还原 RSC 载荷里嵌套 JSON 的转义引号；层级深浅不一，循环归一到不再出现 \\" 为止。"""
+    normalized = text
+    for _ in range(4):
+        if '\\"' not in normalized:
+            break
+        normalized = normalized.replace('\\"', '"')
+    return normalized
+
+
+def _parse_micro_usd_entries(text: str) -> list[dict[str, Any]]:
+    """解析 hao 型 RSC 内嵌价：priceMicroUsd（微美元）按 component 分行、official/sell 两组价。
+
+    大部分模型对象不带 slug 字段，但每条价格行都带 modelId（provider/slug 形态），因此按
+    价格行锚定、按 modelId 聚合；站点售价取 role=sell、active=true、unit=per_1m_tokens 的
+    input/output 行，微美元换算成 USD/1M tokens。缺售组或没有输入/输出行的模型（纯缓存、
+    按次计费等）跳过，交给后续 AI 兜底；同一模型的行在 RSC 分片里可能重复，先到先得。
+    """
+    if "priceMicroUsd" not in text:
+        return []
+    normalized = _unescape_rsc(text)
+    sell_by_model: dict[str, dict[str, float]] = {}
+    order: list[str] = []
+    for row_text in re.findall(r'\{[^{}]*"priceMicroUsd"[^{}]*\}', normalized):
+        try:
+            row = json.loads(row_text)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("role") == "sell"
+            and row.get("active") is True
+            and row.get("unit") == "per_1m_tokens"
+            and _is_number(row.get("priceMicroUsd"))
+        ):
+            model_id = row.get("modelId")
+            component = row.get("component")
+            if not isinstance(model_id, str) or not model_id or not isinstance(component, str):
+                continue
+            bucket = sell_by_model.setdefault(model_id, {})
+            if not bucket:
+                order.append(model_id)
+            bucket.setdefault(component, float(row["priceMicroUsd"]) / 1_000_000)
+    entries: list[dict[str, Any]] = []
+    for model_id in order:
+        sell = sell_by_model[model_id]
+        if "input" not in sell or "output" not in sell:
+            continue
+        provider, _, slug = model_id.partition("/")
+        entries.append({
+            "category": None,
+            "provider": provider or None,
+            "name": None,
+            "models": [model_id, slug] if slug else [model_id],
+            "input": sell["input"],
+            "output": sell["output"],
+            "cache_read": sell.get("cache_read"),
+            "cache_create": sell.get("cache_creation"),
+        })
+    return entries
+
+
 def parse_base_price_entries(text: str) -> list[dict[str, Any]]:
-    """解析基准价表条目：先试整体 JSON（标准编码、键序无关），再退回压缩 JS 字面量正则。"""
+    """解析基准价表条目：先试整体 JSON（标准编码、键序无关），再退回压缩 JS 字面量正则，
+    最后试 hao 型 priceMicroUsd RSC 内嵌价（微美元计价、official/sell 双组价取 sell 组）。"""
     stripped = text.lstrip()
     if stripped[:1] in {"{", "["}:
         try:
@@ -806,7 +870,7 @@ def parse_base_price_entries(text: str) -> list[dict[str, Any]]:
             fields[key] = _parse_scalar(raw)
         if isinstance(fields.get("models"), list) and {"provider", "input", "output"} <= fields.keys():
             entries.append(fields)
-    return entries
+    return entries or _parse_micro_usd_entries(text)
 
 
 def _entry_matches_targets(entry: dict[str, Any], spec: SiteSpec) -> bool:

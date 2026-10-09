@@ -13,6 +13,7 @@ import {
   IconSettings,
   IconAim,
 } from "@/components/icons";
+import { EgressStatus } from "@/components/EgressStatus";
 
 const RAIL = [
   { href: "/admin", label: "概览", icon: <IconDashboard size={15} />, exact: true },
@@ -62,6 +63,7 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
               </Link>
             );
           })}
+          <EgressStatus />
           <button
             type="button"
             className="admin-rail-logout"

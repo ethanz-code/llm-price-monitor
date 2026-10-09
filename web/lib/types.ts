@@ -136,6 +136,8 @@ export interface CatalogEntry {
   description?: string;
   /** 简介的中文翻译（AI 随目录同步翻译；AI 未配置或未轮到时为空，回落英文原文） */
   description_zh?: string | null;
+  /** 简介来源标记：ai=按模型名生成的 AI 简介（界面带「AI」标）；缺省为 models.dev 简介或定价页原文 */
+  desc_source?: string | null;
   /** models.dev 的产品线家族（如 gpt-astra / claude-opus） */
   family?: string;
   /** 模态（models.dev 原始结构） */

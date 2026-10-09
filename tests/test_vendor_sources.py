@@ -9,6 +9,7 @@ from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.catalog.vendor_sources import (
     detect_vendor_coverage,
     merge_sources_into_catalog,
+    merge_sources_into_channel_catalog,
     refresh_and_merge,
     refresh_source,
     upsert_source,
@@ -135,27 +136,123 @@ def test_merge_adds_new_entry_with_source_vendor():
     assert entry["price_status"] == "candidate"  # AI 兜底来源标记 candidate，透传给前端
 
 
+def test_merge_overrides_update_vendor_attribution():
+    """命中已有条目时 vendor 同步为当前源，价格、来源与厂商归属保持同渠道。"""
+    catalog = _catalog()
+    sources = {"Alibaba Cloud": {
+        "url": "https://help.aliyun.com/zh/model-studio/model-pricing", "enabled": True,
+        "models": [{"model": "Qwen3-Max", "input_price": 2.4, "output_price": 9.6,
+                    "cache_read_price": None, "currency": "CNY"}],
+    }}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["matched"] == 1
+    entry = merged["models"]["qwen3max"]
+    assert entry["vendor"] == "Alibaba Cloud"
+    assert entry["region"] == "cn"
+    assert entry["source_url"].startswith("https://help.aliyun.com")
+    assert entry["list_cny"] == {"input": 2.4, "output": 9.6}
+
+
+def test_merge_skips_hosted_resale_models():
+    """官方自研闸门：国内源页面上归属他家的托管/转售模型不进官方目录，自家模型照常入库。"""
+    catalog = _catalog()
+    sources = {"Baidu": {"url": "https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya", "enabled": True, "models": [
+        {"model": "DeepSeek-V4-Pro", "input_price": 1.79, "output_price": 3.57,
+         "cache_read_price": None, "currency": "CNY"},
+        {"model": "GLM-5.2", "input_price": 1.0, "output_price": 3.0,
+         "cache_read_price": None, "currency": "CNY"},
+        {"model": "ERNIE-5.1", "input_price": 2.0, "output_price": 8.0,
+         "cache_read_price": None, "currency": "CNY"},
+    ]}}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["added"] == 1 and summary["matched"] == 0
+    assert "deepseekv4pro" not in merged["models"]
+    assert "glm5.2" not in merged["models"]
+    assert merged["models"]["ernie5.1"]["vendor"] == "Baidu" and merged["models"]["ernie5.1"]["region"] == "cn"
+    hosted = [reason for reason in summary["skipped"] if "托管/转售" in reason]
+    assert len(hosted) == 2 and any("DeepSeek-V4-Pro" in reason for reason in hosted)
+
+
+def test_merge_official_source_claims_own_model_over_hosted_channel():
+    """官方 lab 源对自家模型有归属权：托管渠道源（字母序在前）不再能抢注模型键。"""
+    catalog = _catalog()
+    sources = {
+        "Baidu": {"url": "https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya", "enabled": True, "models": [
+            {"model": "DeepSeek-V4-Pro", "input_price": 1.79, "output_price": 3.57,
+             "cache_read_price": None, "currency": "CNY"},
+        ]},
+        "DeepSeek": {"url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing", "enabled": True, "models": [
+            {"model": "deepseek-v4-pro", "input_price": 9.0, "output_price": 27.0,
+             "cache_read_price": 0.3, "currency": "CNY"},
+        ]},
+    }
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["added"] == 1 and summary["matched"] == 0
+    entry = merged["models"]["deepseekv4pro"]
+    assert entry["vendor"] == "DeepSeek"
+    assert entry["list_cny"] == {"input": 9.0, "output": 27.0}
+    assert entry["source_url"].startswith("https://api-docs.deepseek.com")
+
+
+def test_merge_channel_catalog_keeps_each_vendor_entry():
+    """国内源按 厂商:模型 一家一条进全量渠道目录；海外源不进（models.dev 已覆盖）。"""
+    full = {"models": {}}
+    sources = {
+        "DeepSeek": {"url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing", "enabled": True, "region": "cn",
+                     "models": [{"model": "deepseek-v4-pro", "input_price": 9.0, "output_price": 27.0,
+                                 "cache_read_price": 0.3, "currency": "CNY", "price_status": "candidate"}]},
+        "Alibaba Cloud": {"url": "https://help.aliyun.com/zh/model-studio/model-pricing", "enabled": True, "region": "cn",
+                          "models": [{"model": "deepseek-v4-pro", "input_price": 12.0, "output_price": 24.0,
+                                      "cache_read_price": None, "currency": "CNY"}]},
+        "OpenAI": {"url": "https://platform.openai.com/pricing", "enabled": True, "region": "global",
+                   "models": [{"model": "gpt-5", "input_price": 1.25, "output_price": 10.0, "currency": "USD"}]},
+        "Baichuan": {"url": "https://platform.baichuan-ai.com/prices", "enabled": False, "region": "cn",
+                     "models": [{"model": "baichuan-m3", "input_price": 1.0, "output_price": 1.0, "currency": "CNY"}]},
+    }
+    merged, summary = merge_sources_into_channel_catalog(full, sources, 7.0)
+    assert summary == {"added": 2, "replaced": 0}
+    assert merged["models"]["deepseek:deepseekv4pro"]["list_cny"] == {"input": 9.0, "output": 27.0}
+    assert merged["models"]["deepseek:deepseekv4pro"]["cache_cny"]["read"] == 0.3
+    assert merged["models"]["deepseek:deepseekv4pro"]["price_status"] == "candidate"
+    assert merged["models"]["alibabacloud:deepseekv4pro"]["list_cny"] == {"input": 12.0, "output": 24.0}
+    assert merged["models"]["deepseek:deepseekv4pro"]["vendor"] == "DeepSeek"
+    assert not any(k.startswith("openai:") or k.startswith("baichuan:") for k in merged["models"])
+
+
+def test_merge_channel_catalog_replaces_existing_key():
+    """同名键已存在（models.dev 快照遗留）时以官方定价页抓取结果覆盖。"""
+    full = {"models": {"deepseek:deepseekv4pro": {"found": True, "model": "deepseek-v4-pro", "vendor": "DeepSeek",
+                                                  "list_cny": {"input": 4.5, "output": 13.5}}}}
+    sources = {"DeepSeek": {"url": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing", "enabled": True, "region": "cn",
+                            "models": [{"model": "deepseek-v4-pro", "input_price": 9.0, "output_price": 27.0,
+                                        "currency": "CNY"}]}}
+    merged, summary = merge_sources_into_channel_catalog(full, sources, 7.0)
+    assert summary == {"added": 0, "replaced": 1}
+    assert merged["models"]["deepseek:deepseekv4pro"]["list_cny"] == {"input": 9.0, "output": 27.0}
+
+
 def test_merge_fills_limit_and_description_only_when_missing():
     """cn 源补充上下文/简介：条目缺就填，已有 models.dev 元数据不覆盖。"""
     catalog = _catalog()
-    catalog["models"]["qwen3max"]["limit"] = {"context": 262144, "output": 65536}
-    catalog["models"]["qwen3max"]["description_zh"] = "已有中文简介"
+    catalog["models"]["glm5.3flash"]["limit"] = {"context": 262144, "output": 65536}
+    catalog["models"]["glm5.3flash"]["description_zh"] = "已有中文简介"
     sources = {"Zhipu AI": {"url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": True, "models": [
         {"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8, "currency": "CNY",
          "context": "1M", "description": "轻量快速档"},
-        {"model": "qwen3-max", "input_price": 9.0, "output_price": 54.0, "currency": "CNY",
-         "context": "256K；最大输出 32K", "description": "千问旗舰"},
+        {"model": "GLM-5.2", "input_price": 6.0, "output_price": 24.0, "currency": "CNY",
+         "context": "256K；最大输出 32K", "description": "旗舰主力"},
     ]}}
     merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
-    assert summary["matched"] == 2
+    assert summary["matched"] == 1 and summary["added"] == 1
+    # 已有元数据的条目不被源抓取结果覆盖
     flash = merged["models"]["glm5.3flash"]
-    assert flash["limit"] == {"context": 1048576, "output": None}
-    assert flash["description_zh"] == "轻量快速档"
+    assert flash["limit"] == {"context": 262144, "output": 65536}
+    assert flash["description_zh"] == "已有中文简介"
+    glm52 = merged["models"]["glm5.2"]
+    assert glm52["limit"] == {"context": 262144, "output": 32768}
+    assert glm52["description_zh"] == "旗舰主力"
     # desc_fp 与简介指纹一致 → translate 视为已有译文，跳过翻译队列
-    assert flash["desc_fp"] == description_fingerprint_text("轻量快速档")
-    qwen = merged["models"]["qwen3max"]
-    assert qwen["limit"] == {"context": 262144, "output": 65536}
-    assert qwen["description_zh"] == "已有中文简介"
+    assert glm52["desc_fp"] == description_fingerprint_text("旗舰主力")
 
 
 def test_merge_drops_unparseable_context():
@@ -201,16 +298,15 @@ def test_merge_skips_disabled_and_resolves_collision_first_wins():
     sources = {
         "A Source": {"url": "u-a", "enabled": False, "models": [
             {"model": "GLM-5.3-Flash", "input_price": 9, "output_price": 9, "currency": "CNY"}]},
-        "B Source": {"url": "u-b", "enabled": True, "models": [
-            {"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8, "currency": "CNY"}]},
-        "C Source": {"url": "u-c", "enabled": True, "models": [
-            {"model": "GLM-5.3-Flash", "input_price": 5, "output_price": 5, "currency": "CNY"}]},
+        "Zhipu AI": {"url": "u-b", "enabled": True, "models": [
+            {"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8, "currency": "CNY"},
+            {"model": "glm-5.3-flash", "input_price": 5, "output_price": 5, "currency": "CNY"}]},
     }
     merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
     assert summary["matched"] == 1
     assert any("已停用" in item for item in summary["skipped"])
     assert any("撞模型键" in item for item in summary["skipped"])
-    # 厂商名排序先到先得：B 胜出；B 的基准替换不污染 list_global（原基准已是 cn 时）
+    # 同源重复键先到先得：首条胜出；基准替换不污染 list_global（原基准已是 cn 时）
     assert merged["models"]["glm5.3flash"]["list_cny"] == {"input": 0.8, "output": 2.8}
 
 
@@ -261,10 +357,10 @@ def test_merge_global_source_defaults_to_usd_when_currency_missing():
 def test_merge_cn_source_wins_baseline_over_global_reference():
     catalog = _catalog()
     sources = {
-        # 厂商名序 Anthropic 在先：先给 cn 基准条目补国际参考；Zhipu AI 随后替换基准
+        # 厂商名序 Anthropic 在先：先给 cn 基准条目补国际参考；Alibaba Cloud 随后替换基准
         "Anthropic": {"url": "https://u-a", "enabled": True, "region": "global", "models": [
             {"model": "qwen3-max", "input_price": 1.4, "output_price": 8.0, "currency": "USD"}]},
-        "Zhipu AI": {"url": "https://u-b", "enabled": True, "region": "cn", "models": [
+        "Alibaba Cloud": {"url": "https://u-b", "enabled": True, "region": "cn", "models": [
             {"model": "qwen3-max", "input_price": 1.2, "output_price": 7.0, "currency": "CNY"}]},
     }
     merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)

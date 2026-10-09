@@ -8,6 +8,7 @@ import { RiskLink } from "./RiskLink";
 import { ToneNum } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
 import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import { useNarrow } from "@/lib/useNarrow";
 import type { CatalogData, CatalogEntry } from "@/lib/types";
 
@@ -22,9 +23,11 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
   // 手机（≤560px）：渠道并入模型列上下两行，价格一列，避免横滑藏住最后一列
   const phone = useNarrow(560);
 
+  // 厂商块排序依据：各家最新发布日期倒序，筛选下拉与表格行序共用（官方视图同款口径）
+  const vendorOrder = useMemo(() => vendorBlockCompare(latestReleaseByVendor(data.models ?? {})), [data]);
   const vendors = useMemo(
-    () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))).sort((a, b) => a.localeCompare(b)),
-    [data],
+    () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))).sort(vendorOrder),
+    [data, vendorOrder],
   );
 
   const rows: Row[] = useMemo(() => {
@@ -33,9 +36,14 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true));
-    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3
-  }, [data, keyword, vendor]);
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true))
+      .sort(
+        (a, b) =>
+          vendorOrder(a.vendor, b.vendor) ||
+          compareByReleaseDesc({ name: a.model ?? "", release: a.release_date }, { name: b.model ?? "", release: b.release_date }),
+      );
+    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3；重排为目录口径（厂商块+发布倒序）
+  }, [data, keyword, vendor, vendorOrder]);
 
   const columns: DColumn<Row>[] = [
     {

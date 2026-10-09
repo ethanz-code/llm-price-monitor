@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from llm_price_monitor.catalog import vendor_sources
+from llm_price_monitor.catalog.intros import attach_ai_intros
 from llm_price_monitor.catalog.modelsdev import fetch_catalogs
 from llm_price_monitor.catalog.normalize import model_key
 from llm_price_monitor.catalog.rankings import fetch_rankings
@@ -179,12 +180,18 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             )
             rate = float(output.get("usd_cny_rate") or 0)
             if rate > 0:
-                output, merge_summary = vendor_sources.merge_sources_into_catalog(
-                    output, vendor_sources.load_sources(store), rate
-                )
+                sources_config = vendor_sources.load_sources(store)
+                output, merge_summary = vendor_sources.merge_sources_into_catalog(output, sources_config, rate)
                 sources_matched, sources_added = merge_summary["matched"], merge_summary["added"]
                 if merge_summary["skipped"]:
                     tasklog.emit("定价源合并跳过：" + "；".join(merge_summary["skipped"]))
+                # 国内渠道价补位进全量渠道目录（models.dev 有意不收国内渠道），一家一条可对比
+                full, channel_summary = vendor_sources.merge_sources_into_channel_catalog(full, sources_config, rate)
+                if channel_summary["added"] or channel_summary["replaced"]:
+                    tasklog.emit(
+                        "全量渠道目录并入国内定价源："
+                        f"新增 {channel_summary['added']}、覆盖 {channel_summary['replaced']}"
+                    )
         previous = store.get_document("catalog")
         previous_all = store.get_document("catalog_all")
         # 两份目录的译文按简介指纹互济：官方目录翻过的全量渠道直接复用，反之亦然
@@ -203,6 +210,10 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
         )
         if ai_config is not None:
             tasklog.emit(f"中文简介翻译 {translated + translated_all} 条")
+        # models.dev 未收录的条目（国内定价页抓进来的）没有现成简介，按模型名 AI 补一句
+        ai_intros = attach_ai_intros(output, previous, ai_config) if ai_config is not None else 0
+        if ai_intros:
+            tasklog.emit(f"AI 补简介 {ai_intros} 条（models.dev 未收录的模型）")
         store.set_document("catalog", output)
         store.set_document("catalog_all", full)
         tasklog.emit(f"厂商定价已更新：官方目录 {len(output['models'])} 个模型")
@@ -217,6 +228,7 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
             "models_total": len(output["models"]),
             "models_found": sum(1 for entry in output["models"].values() if entry.get("found")),
             "zh_translated": translated,
+            "ai_intros": ai_intros,
             "all_providers": providers,
             "all_models_total": len(full["models"]),
             "all_zh_translated": translated_all,

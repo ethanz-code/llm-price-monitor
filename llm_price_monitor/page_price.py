@@ -245,6 +245,138 @@ def _records_from_grid(
     return records or None
 
 
+# 转置规格表（DeepSeek 官方定价页形态）的识别特征：价格单元格必须带币种标识，
+# 免得把并发数、上下文窗口、BASE URL 当成价格；列头单元格出现属性列词汇说明
+# 那是普通价目表，不是「模型当列头」的转置表
+_PRICE_MARKED_CELL = re.compile(r"元|¥|￥|\$|美元|usd", re.IGNORECASE)
+_NON_MODEL_HEADER_CELL = re.compile(r"输入|输出|价格|上下文|缓存|并发|简介|描述|时段|版本|modality", re.IGNORECASE)
+_TRANSPOSED_TIER_LABEL = re.compile(
+    r"空闲|高峰|标准|默认|正常|时段|peak|standard|default|normal|off-peak|idle", re.IGNORECASE
+)
+
+
+def _cell_category(cell: str) -> str | None:
+    """定价行的说明单元格 → 计费类别；缓存命中优先于输入（「输入（缓存命中）」是缓存读价）。"""
+    text = cell.strip()
+    if not text:
+        return None
+    if _CACHE_HIT_TIER_PATTERN.search(text):
+        return "cache_read"
+    lowered = text.casefold()
+    if "输入" in text or "input" in lowered:
+        return "input"
+    if "输出" in text or "output" in lowered:
+        return "output"
+    return None
+
+
+def _records_from_transposed_grid(
+    header: list[str],
+    rows: list[list[str]],
+    *,
+    source_url: str,
+) -> list[dict[str, Any]] | None:
+    """转置规格表 → 价格记录：模型名当列头（第一行「模型 | 名A | 名B」），价格按行排布。
+
+    价格单元格按出现顺序对齐到模型列；合并单元格让部分行缺类别格，沿用上一行
+    的计费类别。基准价组合复用 AI 档位同款逻辑（输入取缓存未命中标准档、输出取
+    标准档、缓存命中价取命中档），全部档位进 tiers。
+    """
+    head = re.sub(r"\s+", "", header[0]).casefold() if header else ""
+    if "模型" not in head and head not in {"model", "modelname"}:
+        return None
+    names: list[str] = []
+    for cell in header[1:]:
+        text = clean_model_name(cell.strip())
+        if not text or _PRICE_MARKED_CELL.search(cell) or _NON_MODEL_HEADER_CELL.search(text):
+            return None  # 列头混着属性词或价格，不是转置规格表
+        names.append(text)
+    if not names:
+        return None
+
+    every_cell = [cell for row in rows for cell in row]
+    currency = detect_currency(*every_cell)
+    scale = unit_scale(" ".join(every_cell))
+    unit = f"{currency or '未知'}/1M tokens"
+
+    per_model: list[list[dict[str, Any]]] = [[] for _ in names]
+    contexts: dict[int, str] = {}
+    descriptions: dict[int, str] = {}
+    quote_parts: list[str] = []
+    category: str | None = None
+    category_text = ""
+    for row in rows:
+        price_cells: list[float] = []
+        for cell in row:
+            if not _PRICE_MARKED_CELL.search(cell):
+                continue
+            value, _has = price_value(cell)
+            if value is not None:
+                price_cells.append(value)
+        labels = [cell for cell in row if not _PRICE_MARKED_CELL.search(cell)]
+        if not price_cells:
+            # 无价格的行只认上下文/简介：单值行（colspan 合并）或多值按模型对齐，其余不猜
+            data = [cell.strip() for cell in row[1:] if cell.strip()]
+            label = row[0].strip() if row else ""
+            if not data or not label:
+                continue
+            distinct = list(dict.fromkeys(data))
+            values = distinct * len(names) if len(distinct) == 1 else data
+            if len(values) != len(names):
+                continue
+            if "上下文" in label or "context" in label.casefold():
+                contexts = {index: value for index, value in enumerate(values)}
+            elif "简介" in label or "描述" in label or "description" in label.casefold():
+                descriptions = {index: value for index, value in enumerate(values)}
+            continue
+        if len(price_cells) != len(names):
+            continue  # 价格个数与模型列数对不上的行（colspan 错位）不猜
+        row_category = next(((text, _cell_category(text)) for text in labels if _cell_category(text)), None)
+        if row_category is not None:
+            category_text, category = row_category
+        tier_text = next((text for text in labels if _TRANSPOSED_TIER_LABEL.search(text)), "") or category_text
+        if category is None:
+            continue  # 计费类别读不出（无类别格可沿用），不猜
+        quote_parts.append(" | ".join(cell.strip() for cell in row))
+        for model_index, value in enumerate(price_cells):
+            per_model[model_index].append({
+                "name": " ".join(filter(None, dict.fromkeys((category_text, tier_text.strip())))) or None,
+                "standard": bool(_STANDARD_TIER_PATTERN.search(tier_text)),
+                "input": value * scale if category == "input" else None,
+                "output": value * scale if category == "output" else None,
+                "cache_read": value * scale if category == "cache_read" else None,
+            })
+
+    records: list[dict[str, Any]] = []
+    for index, (name, tiers) in enumerate(zip(names, per_model)):
+        if not tiers:
+            continue
+        baseline = _compose_baseline(tiers)
+        records.append({
+            "model": name,
+            "model_key": model_key(name),
+            "input_price": baseline["input"],
+            "output_price": baseline["output"],
+            "cache_read_price": baseline["cache_read"],
+            "context": contexts.get(index),
+            "description": descriptions.get(index),
+            "currency": currency,
+            "unit": unit,
+            "tiers": [
+                {
+                    "name": tier["name"],
+                    "input_price": tier["input"],
+                    "output_price": tier["output"],
+                    "cache_read_price": tier["cache_read"],
+                }
+                for tier in tiers
+            ],
+            "source_url": source_url,
+            "quote": redact_text(" | ".join(quote_parts)),
+        })
+    return records or None
+
+
 def _split_markdown_row(line: str) -> list[str]:
     r"""一行 Markdown 表格 → 单元格列表；`\|` 转义不切分。"""
     placeholder = "\x00"
@@ -329,7 +461,11 @@ def parse_html_tables(text: str, source_url: str) -> list[dict[str, Any]] | None
         return None  # 残缺 HTML 交给Headless 渲染或 AI 兜底
     records: list[dict[str, Any]] = []
     for header, rows in collector.tables:
-        parsed = _records_from_grid(header, rows, source_url=source_url)
+        # 转置规格表（模型当列头）没有「模型名称」行，普通列映射拿不到输入/输出列，
+        # 通用解析落空后按转置口径再试一次
+        parsed = _records_from_grid(header, rows, source_url=source_url) or _records_from_transposed_grid(
+            header, rows, source_url=source_url
+        )
         if parsed:
             records.extend(parsed)
     return records or None
@@ -634,6 +770,50 @@ def _pick_baseline_tier(tiers: list[dict[str, Any]]) -> dict[str, Any]:
     return tiers[0]
 
 
+# 缓存命中档的名称特征：输入按缓存命中/未命中分两行时区分计费类别
+_CACHE_HIT_TIER_PATTERN = re.compile(r"缓存命中|命中缓存|cache\s*hit|cached", re.IGNORECASE)
+
+
+def _compose_baseline(tiers: list[dict[str, Any]]) -> dict[str, Any]:
+    """基准价三件套（输入/输出/缓存命中），从档位列表组合而来。
+
+    常见形态每档自带输入+输出（如上下文分档、时段整体半价），沿用单档基准；
+    分维表（如 DeepSeek：缓存命中/未命中输入与输出各自一行 × 空闲/高峰）没有
+    一档同时带输入和输出，按计费类别各选标准档组合——输入取缓存未命中档、
+    缓存命中价取缓存命中档、输出取输出档；页面只标缓存命中输入价时以其兜底。
+    """
+    cache_tiers = [
+        tier for tier in tiers
+        if tier["cache_read"] is not None or (tier["name"] and _CACHE_HIT_TIER_PATTERN.search(tier["name"]))
+    ]
+    if any(tier["input"] is not None and tier["output"] is not None for tier in tiers) or not cache_tiers:
+        baseline = _pick_baseline_tier(tiers)
+        if baseline["cache_read"] is None:
+            cache_only = [
+                tier for tier in tiers
+                if tier["cache_read"] is not None and tier["input"] is None and tier["output"] is None
+            ]
+            if cache_only:
+                baseline = {**baseline, "cache_read": _pick_baseline_tier(cache_only)["cache_read"]}
+        return baseline
+
+    def _pick(group: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return _pick_baseline_tier(group) if group else None
+
+    input_tiers = [
+        tier for tier in tiers
+        if tier["input"] is not None and not (tier["name"] and _CACHE_HIT_TIER_PATTERN.search(tier["name"]))
+    ]
+    input_source = _pick(input_tiers) or _pick(cache_tiers) or tiers[0]
+    cache_source = _pick(cache_tiers) or input_source
+    output_source = _pick([tier for tier in tiers if tier["output"] is not None])
+    return {
+        "input": input_source["input"],
+        "output": output_source["output"] if output_source else None,
+        "cache_read": cache_source["cache_read"],
+    }
+
+
 def _records_from_ai_payload(
     raw_models: Any,
     chunk_text: str,
@@ -668,7 +848,7 @@ def _records_from_ai_payload(
         if not tiers or all(tier["input"] is None and tier["output"] is None for tier in tiers):
             warnings.append(f"模型 {name} 的 AI 结果没有可用价格，已丢弃")
             continue
-        baseline = _pick_baseline_tier(tiers)
+        baseline = _compose_baseline(tiers)
         currency = str(item.get("currency") or "").upper()
         currency = currency if currency in {"CNY", "USD"} else detect_currency(str(item.get("quote") or ""))
         records.append({

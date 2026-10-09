@@ -7,7 +7,12 @@ import pytest
 from llm_price_monitor.catalog import modelsdev
 from llm_price_monitor.catalog.discount import build_discount, sanity_violation
 from llm_price_monitor.catalog.modelsdev import fetch_catalog
-from llm_price_monitor.catalog.translate import attach_zh_descriptions, description_fingerprint
+from llm_price_monitor.catalog.intros import attach_ai_intros
+from llm_price_monitor.catalog.translate import (
+    attach_zh_descriptions,
+    description_fingerprint,
+    description_fingerprint_text,
+)
 from llm_price_monitor.config import AIConfig
 from llm_price_monitor.report import attach_catalog_discounts
 
@@ -219,6 +224,34 @@ def test_fetch_catalog_excludes_domestic_channels(catalog_fetch):
     assert doc["models"]["gpt5.6sol"]["region"] == "global"
 
 
+def test_fetch_catalog_skips_resale_entries_under_platform_providers(monkeypatch):
+    """官方价目录只收各 lab 自研模型：白名单平台渠道下挂着他家模型（转售）不进目录。
+
+    models.dev 的 alibaba 渠道下有 deepseek/kimi 转售条目，此前靠厂商块顺序
+    先到先得兜底（moonshotai 在前能赢 kimi），deepseek 没有白名单渠道就会被
+    转售条目占位；品牌闸门按模型名归属直接拦下。
+    """
+    snapshot = {
+        "alibaba": _provider("alibaba", "Alibaba Cloud", "https://models.dev", {
+            "qwen3-max": {"id": "qwen3-max", "name": "Qwen3 Max", "release_date": "2026-07-01",
+                          "cost": {"input": 1.2, "output": 6.0}},
+            "deepseek-v4-pro": {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro",
+                                "cost": {"input": 0.27, "output": 1.11}},  # 转售条目：闸
+            "kimi-k3": {"id": "kimi-k3", "name": "Kimi K3", "cost": {"input": 0.6, "output": 3.0}},  # 转售条目：闸
+        }),
+        "moonshotai": _provider("moonshotai", "Moonshot AI", "https://platform.moonshot.ai", {
+            "kimi-k3": {"id": "kimi-k3", "name": "Kimi K3", "release_date": "2026-08-01",
+                        "cost": {"input": 0.6, "output": 3.0}},
+        }),
+    }
+    monkeypatch.setattr(modelsdev.fx, "get_usd_cny_rate", lambda client, fallback=None: (6.74, "test"))
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=snapshot))
+    doc = fetch_catalog(transport=transport)
+    assert set(doc["models"]) == {"qwen3max", "kimik3"}
+    assert doc["models"]["kimik3"]["vendor"] == "Moonshot AI"
+    assert doc["models"]["qwen3max"]["vendor"] == "Alibaba Cloud"
+
+
 def test_fetch_catalog_rejects_empty_payload(monkeypatch):
     monkeypatch.setattr(modelsdev.fx, "get_usd_cny_rate", lambda client, fallback=None: (6.74, "test"))
     transport = httpx.MockTransport(lambda request: httpx.Response(200, text=json.dumps({})))
@@ -423,6 +456,83 @@ def test_attach_zh_descriptions_silent_when_unavailable_or_failing():
     with httpx.Client(transport=broken) as client:
         assert attach_zh_descriptions(output, None, _ai_config(), client) == 0
     assert "description_zh" not in output["models"]["m1"]
+
+
+# ---------- catalog.intros（AI 生成简介）----------
+
+
+def _intro_output() -> dict:
+    return {
+        "models": {
+            "m1": {"found": True, "model": "m-1", "vendor": "V"},  # 缺简介，归 AI 生成
+            "m2": {"found": True, "model": "m-2", "vendor": "V", "description": "EN desc"},  # 有英文原文，归翻译管
+            "m3": {"found": True, "model": "m-3", "vendor": "V", "description_zh": "已有中文"},  # 已有中文，不动
+        }
+    }
+
+
+def _intro_recorder(pages: list[list[dict]]):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = pages[calls["n"]] if calls["n"] < len(pages) else []
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"intros": page})}}]})
+
+    return httpx.MockTransport(handler), calls
+
+
+def test_attach_ai_intros_generates_and_marks():
+    transport, calls = _intro_recorder([[{"model": "m1", "zh": "面向对话的轻量模型。"}]])
+    output = _intro_output()
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_intros(output, None, _ai_config(), client) == 1
+    assert calls["n"] == 1
+    entry = output["models"]["m1"]
+    assert entry["description_zh"] == "面向对话的轻量模型。"
+    assert entry["desc_source"] == "ai"
+    assert entry["desc_fp"] == description_fingerprint_text("m1")
+    # 有英文原文 / 已有中文的条目都不归它管
+    assert "description_zh" not in output["models"]["m2"]
+    assert output["models"]["m3"]["description_zh"] == "已有中文"
+
+
+def test_attach_ai_intros_reuses_previous_generation():
+    """模型名未变的条目沿用上一轮生成的简介，不再发请求。"""
+    output = _intro_output()
+    previous = {"models": {
+        "m1": {**output["models"]["m1"], "description_zh": "上轮生成",
+               "desc_fp": description_fingerprint_text("m1"), "desc_source": "ai"},
+    }}
+    transport, calls = _intro_recorder([])
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_intros(output, previous, _ai_config(), client) == 0
+    assert calls["n"] == 0
+    assert output["models"]["m1"]["description_zh"] == "上轮生成"
+    assert output["models"]["m1"]["desc_source"] == "ai"
+
+
+def test_attach_ai_intros_silent_when_unavailable_or_failing():
+    output = _intro_output()
+    assert attach_ai_intros(output, None, _ai_config(enabled=False), None) == 0
+    assert "description_zh" not in output["models"]["m1"]
+    broken = httpx.MockTransport(lambda request: httpx.Response(500))
+    with httpx.Client(transport=broken) as client:
+        assert attach_ai_intros(output, None, _ai_config(), client) == 0
+    assert "description_zh" not in output["models"]["m1"]
+
+
+def test_attach_zh_descriptions_replaces_ai_placeholder():
+    """models.dev 后来补了英文简介：翻译覆盖 AI 占位简介，AI 标一并清掉。"""
+    output = {"models": {"m1": {
+        "found": True, "model": "m-1", "vendor": "V", "description": "Fast model for chat.",
+        "description_zh": "AI 生成的占位", "desc_fp": description_fingerprint_text("m1"), "desc_source": "ai",
+    }}}
+    transport, _ = _zh_recorder([[{"model": "m1", "zh": "翻译后的正式简介。"}]])
+    with httpx.Client(transport=transport) as client:
+        assert attach_zh_descriptions(output, None, _ai_config(), client) == 1
+    assert output["models"]["m1"]["description_zh"] == "翻译后的正式简介。"
+    assert "desc_source" not in output["models"]["m1"]
 
 
 def test_attach_zh_descriptions_dedupes_same_description():

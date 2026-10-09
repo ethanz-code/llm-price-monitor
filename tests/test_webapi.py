@@ -749,6 +749,97 @@ def test_settings_test_probes_external_services_with_form_values(workspace: Path
     assert client.post("/api/settings/test", json={"target": "nope"}).status_code == 422
 
 
+def test_settings_test_proxy_checks_connectivity_and_exit_ip(workspace: Path, monkeypatch) -> None:
+    import llm_price_monitor.webapi.routes.settings as settings_routes
+
+    client = _admin_client(workspace)
+
+    # 未填地址时给出可读的 400
+    missing = client.post("/api/settings/test", json={"target": "proxy"})
+    assert missing.status_code == 400 and "备用代理" in missing.json()["detail"]
+
+    seen: dict = {}
+
+    def fake_probe(proxy_url: str, *, transport=None):
+        seen["proxy_url"] = proxy_url
+        return {"ok": True, "elapsed_ms": 123, "exit_ip": "45.67.89.10"}
+
+    monkeypatch.setattr(settings_routes, "probe_proxy", fake_probe)
+
+    # 先测后存：表单当前值直达，不依赖已保存配置
+    probe = client.post("/api/settings/test", json={
+        "target": "proxy",
+        "settings": {"fallback_proxy": "http://172.17.0.1:7890"},
+    }).json()
+    assert probe["ok"] is True and probe["exit_ip"] == "45.67.89.10" and probe["elapsed_ms"] == 123
+    assert seen["proxy_url"] == "http://172.17.0.1:7890"
+
+    # 探测失败 → 400 带可读原因
+    def boom(proxy_url: str, *, transport=None):
+        raise ValueError("经代理连不通外网（检查代理客户端是否在跑、地址是否可达）：boom")
+
+    monkeypatch.setattr(settings_routes, "probe_proxy", boom)
+    failed = client.post("/api/settings/test", json={
+        "target": "proxy",
+        "settings": {"fallback_proxy": "http://172.17.0.1:7890"},
+    })
+    assert failed.status_code == 400 and "连不通" in failed.json()["detail"]
+
+
+def test_proxy_status_probes_saved_config_each_call(workspace: Path, monkeypatch) -> None:
+    import llm_price_monitor.webapi.routes.settings as settings_routes
+
+    client = _admin_client(workspace)
+
+    # 未配置备用代理：直接 configured False，不触发探测
+    calls: list[str] = []
+    monkeypatch.setattr(settings_routes, "probe_proxy", lambda url, **kw: calls.append(url))
+    assert client.get("/api/settings/proxy-status").json() == {"configured": False}
+    assert calls == []
+
+    # 已配置：每次调用都实发探测（不做缓存），走状态档专用短超时
+    assert client.put("/api/settings", json={"settings": {"fallback_proxy": "http://172.17.0.1:7890"}}).status_code == 200
+
+    def fake_probe(url: str, *, transport=None, timeout=None):
+        calls.append(url)
+        assert timeout == settings_routes.PROXY_STATUS_TIMEOUT_SECONDS
+        return {"ok": True, "elapsed_ms": 321, "exit_ip": "203.10.99.36"}
+
+    monkeypatch.setattr(settings_routes, "probe_proxy", fake_probe)
+    assert client.get("/api/settings/proxy-status").json() == {
+        "configured": True,
+        "ok": True,
+        "elapsed_ms": 321,
+        "exit_ip": "203.10.99.36",
+    }
+    assert calls == ["http://172.17.0.1:7890"]
+    assert client.get("/api/settings/proxy-status").json()["elapsed_ms"] == 321
+    assert len(calls) == 2
+
+    # 探测失败：返回 ok False + 可读原因，而不是 500
+    def boom(url: str, **kw):
+        raise ValueError("经代理连不通外网：boom")
+
+    monkeypatch.setattr(settings_routes, "probe_proxy", boom)
+    status = client.get("/api/settings/proxy-status").json()
+    assert status["configured"] is True and status["ok"] is False and "连不通" in status["error"]
+
+
+def test_probe_proxy_connectivity_with_best_effort_exit_ip():
+    """probe_proxy 本体：204 判连通；出口 IP 源挂掉只降级为 None，不影响结论。"""
+    import httpx
+
+    from llm_price_monitor.webapi.routes import settings as settings_routes
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.gstatic.com":
+            return httpx.Response(204)
+        raise httpx.ConnectError("no dns", request=request)  # ipify 不可达
+
+    result = settings_routes.probe_proxy("http://127.0.0.1:1", transport=httpx.MockTransport(handler))
+    assert result["ok"] is True and result["exit_ip"] is None and result["elapsed_ms"] >= 0
+
+
 def test_settings_test_models_probes_pool_and_persists(workspace: Path, monkeypatch) -> None:
     """模型池批量体检：逐模型返回可用状态与报错原文，结果落库可回看；reset 开新轮。"""
     import llm_price_monitor.webapi.routes.settings as settings_routes

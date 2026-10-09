@@ -17,6 +17,7 @@ from typing import Any, Callable
 import httpx
 
 from .jsonio import read_json_object, write_json
+from ..http_retry import build_client
 
 FX_CACHE_FILE = Path("var/fx-cache.json")
 
@@ -78,7 +79,7 @@ def resolve_rate(snapshot_rate: Any, *, timeout: float = 10) -> tuple[Any, Any]:
     if isinstance(snapshot_rate, (int, float)) and snapshot_rate > 0:
         return float(snapshot_rate), "厂商价快照"
     try:
-        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+        with build_client(timeout=timeout) as client:
             return get_usd_cny_rate(client)
     except ValueError as exc:
         return None, str(exc)

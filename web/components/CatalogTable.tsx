@@ -10,6 +10,7 @@ import { ToneTag, ToneNum } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { useNarrow } from "@/lib/useNarrow";
 import { formatCount, formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
+import { compareByReleaseDesc, latestReleaseByVendor, vendorBlockCompare } from "@/lib/modelOrder";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 import { rankingHit, type RankingHit } from "@/lib/rankings";
 
@@ -145,15 +146,26 @@ export function CatalogTable({
   // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：厂商并入模型列，价格一列，避免横滑藏住最后一列
   const phone = useNarrow(560);
 
+  // 厂商块排序依据：各家最新发布日期倒序（新模型多的厂商靠前），同一家模型连成一块
+  const vendorOrder = useMemo(() => {
+    const latest = latestReleaseByVendor(data.models ?? {});
+    return vendorBlockCompare(latest);
+  }, [data]);
+
   const rows: Row[] = useMemo(() => {
     const lower = keyword.trim().toLowerCase();
     return Object.entries(data.models)
       .map(([key, entry]) => ({ ...entry, key }))
       .filter((row) => row.found)
       .filter((row) => (vendor === "all" ? true : row.vendor === vendor))
-      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true));
-    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3；不重排，保留后端权威顺序
-  }, [data, keyword, vendor]);
+      .filter((row) => (lower ? looseIncludes(`${row.model} ${row.vendor} ${row.name ?? ""}`, lower) : true))
+      .sort(
+        (a, b) =>
+          vendorOrder(a.vendor, b.vendor) ||
+          compareByReleaseDesc({ name: a.model ?? "", release: a.release_date }, { name: b.model ?? "", release: b.release_date }),
+      );
+    // 模糊匹配忽略 - _ . 空格等分隔符：搜 GLM5.3 也能命中 GLM-5.3；重排为目录口径（厂商块+发布倒序）
+  }, [data, keyword, vendor, vendorOrder]);
 
   const columns: DColumn<Row>[] = [
     {
@@ -293,18 +305,28 @@ export function CatalogTable({
         const text = row.description_zh || row.description;
         return text ? (
           <span
-            title={text}
-            style={{
-              display: "inline-block",
-              maxWidth: "100%",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              verticalAlign: "bottom",
-              color: "var(--text-2)",
-            }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", verticalAlign: "bottom" }}
           >
-            {text}
+            <span
+              title={row.desc_source === "ai" ? `${text}（AI 按模型名生成）` : text}
+              style={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                color: "var(--text-2)",
+              }}
+            >
+              {text}
+            </span>
+            {row.desc_source === "ai" && (
+              <span
+                title="简介由 AI 按模型名生成，仅供参考"
+                style={{ fontSize: 11.5, color: "var(--text-3)", flexShrink: 0 }}
+              >
+                AI
+              </span>
+            )}
           </span>
         ) : (
           <span style={{ color: "var(--text-3)" }}>—</span>
