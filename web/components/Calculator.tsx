@@ -18,6 +18,7 @@ import {
   calcCost,
   encodeCalcState,
   formatAmount,
+  hasAnyPrice,
   parseAmount,
   parseHitRate,
   type CalcSource,
@@ -168,6 +169,8 @@ export function Calculator({
   // 命中价缺失时命中的 token 不计费，要在结果里挑明，免得总价被悄悄低估
   const missingCacheRead =
     parsedPrices.cacheRead == null && hitNum > 0 && totalTokens > 0;
+  // 至少填了一档单价才有得算：明细表三档常显，空态与导出按钮都以它为准
+  const anyPriced = hasAnyPrice(parsedPrices);
 
   const symbol = symbolOf(currency);
 
@@ -393,7 +396,7 @@ export function Calculator({
       <div className="panel calc-block calc-result">
         <div className="calc-head">
           <span className="calc-label" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            {result.lines.length > 0 && <DajuAwake width={20} />}
+            {anyPriced && <DajuAwake width={20} />}
             {calculator.resultTitle}
           </span>
           <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
@@ -407,14 +410,14 @@ export function Calculator({
               hitRate={hitNum}
               result={result}
               missingCacheRead={missingCacheRead}
-              disabled={result.lines.length === 0}
+              disabled={!anyPriced}
             />
             <Btn variant="ghost" size="sm" onClick={copyLink}>
               {calculator.copyLink}
             </Btn>
           </span>
         </div>
-        {result.lines.length === 0 ? (
+        {!anyPriced ? (
           <div className="calc-empty">
             <DajuNap width={110} />
             {calculator.emptyResult}
@@ -442,25 +445,31 @@ export function Calculator({
                     </tr>
                   </thead>
                   <tbody>
-                    {result.lines.map((line) => (
-                      <tr key={line.key}>
-                        <td>{BUCKET_LABEL[line.key]}</td>
-                        <td className="num" style={{ textAlign: "right" }}>
-                          {symbol}
-                          {formatPrice(line.unitPrice)}
-                        </td>
-                        <td className="num" style={{ textAlign: "right" }}>
-                          {formatCount(line.tokens)}
-                        </td>
-                        <td className="num" style={{ textAlign: "right" }}>
-                          {symbol}
-                          {formatAmount(line.subtotal)}
-                        </td>
-                        <td className="num" style={{ textAlign: "right" }}>
-                          {formatDiscount(line.share)}
-                        </td>
-                      </tr>
-                    ))}
+                    {result.lines.map((line) => {
+                      // 没填价的档：单价/小计/占比留空并标注「未计入」，用量照实展示，
+                      // 让三档用量加总与总用量对得上，占比失真的疑问在表内就有答案
+                      const unbilled = line.subtotal === null;
+                      return (
+                        <tr key={line.key} style={unbilled ? { opacity: 0.55 } : undefined}>
+                          <td>
+                            {BUCKET_LABEL[line.key]}
+                            {unbilled && <span className="calc-unbilled">未计入</span>}
+                          </td>
+                          <td className="num" style={{ textAlign: "right" }}>
+                            {line.unitPrice !== null ? `${symbol}${formatPrice(line.unitPrice)}` : "—"}
+                          </td>
+                          <td className="num" style={{ textAlign: "right" }}>
+                            {formatCount(line.tokens)}
+                          </td>
+                          <td className="num" style={{ textAlign: "right" }}>
+                            {line.subtotal !== null ? `${symbol}${formatAmount(line.subtotal)}` : "—"}
+                          </td>
+                          <td className="num" style={{ textAlign: "right" }}>
+                            {line.share !== null ? formatDiscount(line.share) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

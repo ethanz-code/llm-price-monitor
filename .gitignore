@@ -9,6 +9,11 @@ dist/
 
 # runtime data
 var/
+.env
+
+# 服务器本地部署产物：mihomo 配置含订阅 token，override 是机器相关的编排覆盖
+mihomo/
+docker-compose.override.yml
 .serena/
 .playwright-mcp/
 .DS_Store

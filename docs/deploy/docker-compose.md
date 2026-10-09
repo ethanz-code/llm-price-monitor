@@ -148,51 +148,31 @@ docker compose start api
 ## 采集兜底代理（机场订阅）
 
 境内服务器直连不了的站点，在服务器上跑一个 mihomo（Clash Meta 内核）吃机场订阅，
-给「系统设置 → 采集出口」提供本地代理端口。三步：
+给「系统设置 → 采集出口」提供本地代理端口。代理服务已写在 `docker-compose.yml`
+里（profile 名 `proxy`，默认不启动），两步启用：
 
-1. 建配置：`mkdir -p mihomo`，写入 `mihomo/config.yaml`：
+```bash
+# 1. 机场配置：复制模板、填入订阅链接（V2Board 系末尾加 &flag=clash）
+cp mihomo.example.yaml mihomo/config.yaml && nano mihomo/config.yaml
+chmod 600 mihomo/config.yaml   # 链接自带 token，别让别的用户读到
 
-```yaml
-# 仅作为大橘采集兜底出口：不接管系统流量、无 TUN，纯本地 HTTP 代理端口
-mixed-port: 7890
-mode: rule
-log-level: warning
+# 2. .env 里加一行启用 profile（没有 .env 就创建）
+echo "COMPOSE_PROFILES=default,proxy" >> .env
 
-# 订阅自动更新：每 12 小时拉一次；health-check 剔除坏节点
-proxy-providers:
-  liangxin:
-    type: http
-    url: "你的订阅链接末尾加 &flag=clash"
-    interval: 43200
-    path: ./providers/liangxin.yaml
-    health-check:
-      enable: true
-      url: https://www.gstatic.com/generate_204
-      interval: 600
-
-# 自动挑当前延迟最低的可用节点，节点挂了自动切
-proxy-groups:
-  - name: PROXY
-    type: url-test
-    use: [liangxin]
-    url: https://www.gstatic.com/generate_204
-    interval: 600
-    tolerance: 100
-
-rules:
-  - MATCH,PROXY
+# 3. 拉起（已在跑的部署重新 up 一次即可）
+docker compose up -d
 ```
 
-   `url` 末尾加 `&flag=clash` 让 V2Board 系机场直接返回 Clash 格式；若 mihomo 启动日志
-   报 providers 解析失败，换用机场提供的「Clash 订阅」地址。
+然后管理面板「系统设置 → 采集出口」填 `http://proxy:7890` → 点「测试连通」→
+出口 IP 是机场节点即成功 → 保存。侧栏状态条变绿即生效。
 
-2. 取消 `docker-compose.yml` 里 proxy 服务段的注释，`docker compose up -d`。
-
-3. 管理面板「系统设置 → 采集出口」填 `http://proxy:7890` → 点「测试连通」→
-   出口 IP 是机场节点即成功 → 保存。侧栏状态条变绿即生效。
-
-安全边界：proxy 服务不发布任何端口，仅在 compose 容器网络内可达，公网摸不到；
-订阅链接自带 token，`mihomo/config.yaml` 记得 `chmod 600`，不要提交进仓库。
+- 停用：`.env` 删掉那行 COMPOSE_PROFILES 再 `docker compose up -d`（proxy 容器随之移除）。
+- 订阅拉取失败：给 mihomo 配代理或手动下载 Clash 格式订阅放到
+  `mihomo/providers/airport.yaml`（`path` 指向的本地文件存在时跳过在线拉取）。
+- 安全边界：proxy 服务不发布任何端口，仅在 compose 容器网络内可达，公网摸不到；
+  订阅链接自带 token，`mihomo/config.yaml` 已被 `.gitignore` 排除，不要提交进仓库。
+- 宿主机端口要按自家规范重映射（如 web 改绑 172.17.0.1:20002）时，用
+  `docker-compose.override.yml`（Compose v2.24+ 支持 `ports: !override` 整体覆盖）。
 
 ## 卸载
 

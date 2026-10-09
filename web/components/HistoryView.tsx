@@ -59,7 +59,7 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
       <Empty
         icon={<IconSync size={18} />}
         title="还没有事件"
-        description="价格或公告出现变化时会记录在这里。"
+        description="价格或公告一有变化，我们都会记在这里。"
       />
     );
   }

@@ -391,9 +391,9 @@ export function CatalogTable({
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <span style={{ fontWeight: 550, fontSize: 15 }}>厂商定价快照</span>
+          <span style={{ fontWeight: 550, fontSize: 15 }}>厂商定价</span>
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-            共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 · 快照{" "}
+            共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 · 截至{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>

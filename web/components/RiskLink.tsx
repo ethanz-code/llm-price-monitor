@@ -91,7 +91,7 @@ export function RiskLink({
             你将访问第三方站点 <span className="mono">{host}</span>。
           </p>
           <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>
-            本站展示的价格均为采集时刻的快照，可能与该站当前价格不同，也不构成对该站点的使用推荐，请自行评估风险。
+            这里展示的价格是我们当时采集到的，可能和该站现在的标价不一样，也不构成使用推荐，请自己评估风险。
           </p>
           <Check checked={skip} onChange={setSkip}>
             本次会话内不再提示

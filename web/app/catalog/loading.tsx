@@ -1,5 +1,5 @@
-import { PageLoading } from "@/components/PageLoading";
+import { CatalogLoading } from "@/components/PageLoading";
 
 export default function Loading() {
-  return <PageLoading digest={2} toolbar variant="table" dense />;
+  return <CatalogLoading />;
 }

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { CSSProperties } from "react";
 import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
@@ -8,7 +9,7 @@ import {
   noticeExcerpt,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import { lowestPriceRowPerModel, sortSnapshotRows } from "@/lib/priceRows";
+import { lowestPriceRowPerModel, orderByCheapestPrice } from "@/lib/priceRows";
 import {
   buildSiteViews,
   latencyLevel,
@@ -25,6 +26,8 @@ import type {
   StatusSnapshot,
 } from "@/lib/types";
 import { SiteSubmitButton } from "@/components/SiteSubmitModal";
+import { SiteGridSpotlight } from "@/components/SiteGridSpotlight";
+import { SectionRail } from "@/components/SectionRail";
 import { Reveal } from "@/components/Reveal";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
@@ -149,8 +152,9 @@ export default async function LandingPage() {
   const { overview, meta, feed, history, status, geo, rankings, error } = await loadLanding();
   const records = overview?.records ?? [];
   const sites = collectSites(overview, meta);
-  // 首页榜单速览：基础模型去重后的 Top 5
+  // 首页榜单速览：基础模型去重后的 Top 5；数值条按榜首归一
   const rankingsTop = topBaseModels(rankings);
+  const maxRankIndex = Math.max(0, ...rankingsTop.map((entry) => entry.intelligence_index ?? 0));
   // 站点价统一按 RMB 展示：汇率取厂商价快照口径
   const rate = overview?.catalog?.usd_cny_rate ?? null;
   // 最新事件侧栏直接用统一事件流；公告事件没有模型行，展示公告摘要
@@ -194,12 +198,40 @@ export default async function LandingPage() {
   // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
   const statusSiteIds = new Set(status.map((row) => row.site_id));
 
-  // 首页精选：每个模型归一合并后只留综合价最低的一行，再按采集时间倒序
-  const parentRows = sortSnapshotRows(lowestPriceRowPerModel(records, rate));
+  // bento 排布与总览锚点卡：down 站放大靠前、warn 次之、无数据其后、停用垫底；
+  // 平均可用率只算启用且有检测数据的站点，停用站的旧数据不掺进来
+  const LEVEL_RANK: Record<RateLevel | "none" | "off", number> = {
+    down: 0,
+    warn: 1,
+    ok: 2,
+    none: 3,
+    off: 4,
+  };
+  const rankOf = (site: (typeof sites)[number]) => {
+    if (!site.enabled) return LEVEL_RANK.off;
+    const series = availBySite[site.id] ?? [];
+    const latest = series[series.length - 1];
+    if (!latest) return LEVEL_RANK.none;
+    return LEVEL_RANK[rateLevel(latest.pct)];
+  };
+  const orderedSites = [...sites].sort((a, b) => rankOf(a) - rankOf(b));
+  const latestPcts = sites
+    .filter((site) => site.enabled)
+    .map((site) => (availBySite[site.id] ?? []).slice(-1)[0]?.pct)
+    .filter((pct): pct is number => pct != null);
+  const abnormalCount = latestPcts.filter((pct) => rateLevel(pct) !== "ok").length;
+  const avgAvailability =
+    latestPcts.length > 0
+      ? Math.round(latestPcts.reduce((sum, pct) => sum + pct, 0) / latestPcts.length)
+      : null;
+
+  // 首页精选：每个模型归一合并后只留综合价最低的一行，按综合价从低到高排
+  const parentRows = orderByCheapestPrice(lowestPriceRowPerModel(records, rate), rate);
 
   return (
     <>
       <div className="page landing">
+        <SectionRail />
         <HeroArea
           sites={globeSites}
           geo={geo}
@@ -231,7 +263,7 @@ export default async function LandingPage() {
 
         {records.length > 0 && (
           <Reveal>
-            <section className="landing-section">
+            <section className="landing-section" id="sec-latest">
               <div className="landing-section-head">
                 <div className="landing-section-title">
                   <h2>{home.sections.latestPrice}</h2>
@@ -247,7 +279,7 @@ export default async function LandingPage() {
         )}
 
         <Reveal>
-          <section className="landing-section landing-duo">
+          <section className="landing-section landing-duo" id="sec-trend">
             <div>
               <div className="landing-section-head">
                 <div className="landing-section-title">
@@ -278,23 +310,25 @@ export default async function LandingPage() {
                       <Link
                         key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
                         href="/history"
-                        className="side-note"
+                        className="event-row"
                       >
-                        <span className="side-note-line">
-                          <span className={`side-dot dot-${meta.tone}`} />
-                          <span className="side-note-title">
-                            {site.name} · {meta.label}
+                        <span className={`event-badge tone-${meta.tone}`}>
+                          {meta.label}
+                        </span>
+                        <span className="event-main">
+                          <span className="event-site">{site.name}</span>
+                          <span className="event-sub">
+                            {isNoticeEvent(event) ? (
+                              <span title={event.content}>
+                                {noticeExcerpt(event.content)}
+                              </span>
+                            ) : (
+                              <span className="mono">{event.model}</span>
+                            )}
                           </span>
                         </span>
-                        <span className="side-note-sub">
-                          {isNoticeEvent(event) ? (
-                            <span title={event.content}>
-                              {noticeExcerpt(event.content)}
-                            </span>
-                          ) : (
-                            <span className="mono">{event.model}</span>
-                          )}{" "}
-                          · {formatTime(event.detected_at)}
+                        <span className="event-time mono num">
+                          {formatTime(event.detected_at)}
                         </span>
                       </Link>
                     );
@@ -315,7 +349,7 @@ export default async function LandingPage() {
         )}
 
         <Reveal>
-          <section className="landing-section">
+          <section className="landing-section" id="sec-sites">
             <div className="landing-section-head">
               <div className="landing-section-title">
                 <h2>{home.sections.sites}</h2>
@@ -324,16 +358,59 @@ export default async function LandingPage() {
             </div>
             <p className="landing-section-sub">{home.sectionSubs.sites}</p>
             {sites.length > 0 ? (
-              <div className="site-cards">
-                {sites.map((site) => {
+              <SiteGridSpotlight className="site-cards">
+                <div className="site-card site-card--overview site-card--wide">
+                  <span className="site-overview-label">{home.sitesOverview.label}</span>
+                  {avgAvailability != null && (
+                    <span className="site-overview-row">
+                      <span
+                        className="site-overview-avg mono num"
+                        style={{ color: STRIP_TONE[rateLevel(avgAvailability)] }}
+                      >
+                        {avgAvailability}
+                        <span className="site-overview-pct">%</span>
+                      </span>
+                      <span className="site-overview-avg-label">
+                        {home.sitesOverview.avgLabel}
+                      </span>
+                    </span>
+                  )}
+                  <span className="site-overview-sub">
+                    {sites.length} {home.sitesOverview.sitesSuffix}
+                    {" · "}
+                    {abnormalCount > 0 ? (
+                      <em className="site-overview-abnormal">
+                        {home.sitesOverview.abnormal(abnormalCount)}
+                      </em>
+                    ) : (
+                      <em>{home.sitesOverview.allGood}</em>
+                    )}
+                  </span>
+                </div>
+                {orderedSites.map((site) => {
                   const info = getSiteInfo(site.id, site.sourceUrl);
                   const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
                   const strip = stripOf(site.id);
                   const latestPoint = strip[strip.length - 1];
                   const latestLatency = latestLatencyOf(site.id);
                   const notice = overview?.notices?.[site.id];
+                  // down 站放大加旋转描边，warn 站只加描边不放大的克制告警
+                  const tone =
+                    site.enabled && latestPoint ? rateLevel(latestPoint.pct) : null;
+                  const alertTone = tone === "warn" || tone === "down" ? tone : null;
                   return (
-                    <Link key={site.id} href={statusHref} className="site-card">
+                    <Link
+                      key={site.id}
+                      href={statusHref}
+                      className={`site-card${alertTone ? " site-card--alert" : ""}${tone === "down" ? " site-card--wide" : ""}`}
+                      style={
+                        alertTone
+                          ? ({ "--beam-color": `var(--chart-${alertTone})` } as CSSProperties)
+                          : undefined
+                      }
+                    >
+                      <span aria-hidden className="site-card-glow" />
+                      {alertTone && <span aria-hidden className="site-card-beam" />}
                       <div className="site-card-head">
                         <span
                           aria-hidden
@@ -355,7 +432,7 @@ export default async function LandingPage() {
                             {strip.map((point, index) => (
                               <span
                                 key={index}
-                                className="site-strip-dot"
+                                className={`site-strip-dot${index === strip.length - 1 ? " site-strip-dot--live" : ""}`}
                                 style={{
                                   background: STRIP_DOT_TONE[rateLevel(point.pct)],
                                 }}
@@ -412,7 +489,7 @@ export default async function LandingPage() {
                     </Link>
                   );
                 })}
-              </div>
+              </SiteGridSpotlight>
             ) : (
               <div className="landing-empty">
                 <DajuNap width={150} />
@@ -424,7 +501,7 @@ export default async function LandingPage() {
 
         {rankingsTop.length > 0 && (
           <Reveal>
-            <section className="landing-section">
+            <section className="landing-section" id="sec-rankings">
               <div className="landing-section-head">
                 <div className="landing-section-title">
                   <h2>{home.sections.rankings}</h2>
@@ -450,6 +527,15 @@ export default async function LandingPage() {
                     <span className="rank-row-creator">{entry.creator ?? "—"}</span>
                     <span className="rank-row-index mono num">
                       {entry.intelligence_index ?? "—"}
+                      {entry.intelligence_index != null && maxRankIndex > 0 && (
+                        <span
+                          aria-hidden
+                          className="rank-row-bar"
+                          style={{
+                            width: `${Math.round((entry.intelligence_index / maxRankIndex) * 100)}%`,
+                          }}
+                        />
+                      )}
                     </span>
                   </Link>
                 ))}
@@ -458,37 +544,37 @@ export default async function LandingPage() {
           </Reveal>
         )}
 
+        {/* 数据来源 + 常见问题同行双栏（复用 duo 栅格，窄屏自动叠回单列） */}
         <Reveal>
-          <section className="landing-section">
-            <div className="landing-section-head">
-              <div className="landing-section-title">
-                <h2>{home.sections.dataSource}</h2>
+          <div className="landing-section landing-duo landing-duo-faq">
+            <div id="sec-data">
+              <div className="landing-section-head">
+                <div className="landing-section-title">
+                  <h2>{home.sections.dataSource}</h2>
+                </div>
+              </div>
+              <div className="landing-truth">
+                <ul className="landing-points">
+                  {home.dataPoints.map((point, index) => (
+                    <li key={point}>
+                      <span className="landing-points-no mono num" aria-hidden>
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
-            <div className="landing-truth">
-              <ul className="landing-points">
-                {home.dataPoints.map((point, index) => (
-                  <li key={point}>
-                    <span className="landing-points-no mono num" aria-hidden>
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    {point}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </section>
-        </Reveal>
-
-        <Reveal>
-          <section className="landing-section">
-            <div className="landing-section-head">
-              <div className="landing-section-title">
-                <h2>{home.sections.faq}</h2>
+            <div id="sec-faq">
+              <div className="landing-section-head">
+                <div className="landing-section-title">
+                  <h2>{home.sections.faq}</h2>
+                </div>
               </div>
+              <FaqList items={home.faq} />
             </div>
-            <FaqList items={home.faq} />
-          </section>
+          </div>
         </Reveal>
 
         <Reveal>

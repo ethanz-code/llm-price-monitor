@@ -25,7 +25,7 @@ import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
 import { SiteAlert } from "./SiteAlert";
 import { VisitorMap } from "./VisitorMap";
-import { Btn, toast } from "./ui";
+import { Btn, toast, LoadingRows } from "./ui";
 
 const DEVICE_LABELS: Record<string, string> = {
   desktop: "桌面端",
@@ -194,7 +194,11 @@ export function AdminAnalytics() {
     return <SiteAlert title="暂时读不到访问统计" detail={error} fix="稍后再试，或检查服务是否已启动。" />;
   }
   if (!summary) {
-    return <p className="empty" style={{ padding: "40px 0" }}>加载中…</p>;
+    return (
+      <div className="panel" style={{ padding: "16px 20px" }}>
+        <LoadingRows rows={5} />
+      </div>
+    );
   }
 
   const mapRegions = summary.regions.filter((item) => !["未知"].includes(item.name));

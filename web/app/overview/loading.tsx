@@ -1,5 +1,5 @@
-import { PageLoading } from "@/components/PageLoading";
+import { OverviewLoading } from "@/components/PageLoading";
 
 export default function Loading() {
-  return <PageLoading digest={3} variant="table" />;
+  return <OverviewLoading />;
 }

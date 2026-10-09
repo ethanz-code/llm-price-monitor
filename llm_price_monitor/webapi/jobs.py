@@ -187,6 +187,8 @@ def catalog_refresh_job(store: Store) -> Callable[[], dict[str, Any]]:
                     tasklog.emit("定价源合并跳过：" + "；".join(merge_summary["skipped"]))
                 # 国内渠道价补位进全量渠道目录（models.dev 有意不收国内渠道），一家一条可对比
                 full, channel_summary = vendor_sources.merge_sources_into_channel_catalog(full, sources_config, rate)
+                if channel_summary.get("skipped"):
+                    tasklog.emit("全量渠道目录跳过：" + "；".join(channel_summary["skipped"]))
                 if channel_summary["added"] or channel_summary["replaced"]:
                     tasklog.emit(
                         "全量渠道目录并入国内定价源："

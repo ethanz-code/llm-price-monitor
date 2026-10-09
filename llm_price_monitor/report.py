@@ -426,7 +426,6 @@ def _scan_prices(
     site_status: dict[str, dict[str, Any]] = {}
     removed_keys: set[str] = set()
     touched_keys: set[str] = set()
-    sanity_models, sanity_rate = _sanity_context(store)
     enabled_count = sum(1 for spec in config.sites if spec.enabled)
     scan_started = time.time()
     tasklog.emit(f"开始价格采集：{enabled_count} 个站点")
@@ -525,6 +524,9 @@ def _scan_prices(
         }
         # 快照里没有任何本站数据 = 建档轮：逐模型"新增"事件只会刷屏，静默入库
         site_is_new = not known_models
+        # sanity 判据每站现读：一轮采集可能被卡死站点或机器休眠拖上数小时，
+        # 目录中途修正后要用新判据，启动时的坏目录不得贯穿整轮
+        sanity_models, sanity_rate = _sanity_context(store)
         for record in collected:
             current = _apply_price_sanity(_backfill_rule_price(record_dict(spec.id, record)), sanity_models, sanity_rate)
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定

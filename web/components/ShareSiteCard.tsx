@@ -19,12 +19,12 @@ import { share } from "@/lib/copy";
 
 export type ShareTheme = "light" | "dark";
 
-/** 分享图双主题配色：html-to-image 栅格化时外部样式表不生效，CSS 变量解析不出来，
+/** 分享图双主题配色（站点状况卡与花费计算卡共用）：html-to-image 栅格化时外部样式表不生效，CSS 变量解析不出来，
  *  所以这里全部写 globals.css token 的字面值（:root 亮色 / [data-theme="dark"] 暗色），
  *  改站内 token 时这里要同步。对照：--bg/--panel/--panel-2/--border/--text(-2/-3)/
  *  --tone-red(-bg/-text)/--chart-ok|warn|down，系列色板走 chartTheme 同一套。
  *  看到的页面什么样，导出的图就什么样。 */
-const SHARE_PALETTES: Record<
+export const SHARE_PALETTES: Record<
   ShareTheme,
   {
     bg: string;
@@ -122,7 +122,7 @@ export interface ShareLatencyModel {
 const SANS_FALLBACK = `"SF Pro Text", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`;
 const MONO_FALLBACK = `"SF Mono", "JetBrains Mono", ui-monospace, monospace`;
 /** 品牌名专用圆体：与站内 .brand-name 同栈，只两个字，不为它加载中文 webfont */
-const BRAND_FONT = `"Yuanti SC", "STYuanti", "YouYuan", "Hiragino Maru Gothic ProN", "PingFang SC", sans-serif`;
+export const BRAND_FONT = `"Yuanti SC", "STYuanti", "YouYuan", "Hiragino Maru Gothic ProN", "PingFang SC", sans-serif`;
 
 /** 站内 Geist 字体族名：next/font 的族名带 hash，从 html 上的 CSS 变量读真实值。
  *  SSR 初值为空（走兜底栈），挂载后补齐——离屏卡片平时不可见，无闪烁。 */
@@ -136,6 +136,15 @@ function useSiteFontFamilies() {
     });
   }, []);
   return fonts;
+}
+
+/** 分享卡字体栈（Geist 真值垫首 + 兜底）：站点状况卡与花费计算卡共用，保证导出图字体一致。 */
+export function useShareFontStacks() {
+  const { sans, mono } = useSiteFontFamilies();
+  return {
+    sans: [sans, SANS_FALLBACK].filter(Boolean).join(", "),
+    mono: [mono, MONO_FALLBACK].filter(Boolean).join(", "),
+  };
 }
 
 /** 同档位连续检测点切成一段，供逐段着色。 */
@@ -252,7 +261,7 @@ function TimeAxis({
 }
 
 /** 图表面板容器：站内卡片同款——panel 底 + 圆角 12，亮色发丝描边、暗色无描边。 */
-function chartPanelStyle(c: (typeof SHARE_PALETTES)["dark"]) {
+export function chartPanelStyle(c: (typeof SHARE_PALETTES)["dark"]) {
   return {
     background: c.panel,
     border: c.panelBorder,
@@ -454,9 +463,7 @@ export function ShareSiteCard({
   hiddenSeries?: ReadonlySet<string>;
 }) {
   const c = SHARE_PALETTES[theme];
-  const { sans, mono } = useSiteFontFamilies();
-  const sansStack = [sans, SANS_FALLBACK].filter(Boolean).join(", ");
-  const monoStack = [mono, MONO_FALLBACK].filter(Boolean).join(", ");
+  const { sans: sansStack, mono: monoStack } = useShareFontStacks();
   const rateColors: Record<RateLevel, string> = { ok: c.ok, warn: c.warn, down: c.down };
   // 延迟图系列按页面图例隐藏状态过滤；colorIndex 保留全量序列原始下标，取色与页面一致
   const latencySeries = useMemo(

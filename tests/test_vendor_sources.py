@@ -136,6 +136,33 @@ def test_merge_adds_new_entry_with_source_vendor():
     assert entry["price_status"] == "candidate"  # AI 兜底来源标记 candidate，透传给前端
 
 
+def test_merge_skips_column_misaligned_prices():
+    """价目设定自校验：输入/输出价低于缓存读价视为列错位，整条跳过不入目录。"""
+    catalog = _catalog()
+    sources = {"Zhipu AI": {
+        "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": True, "models": [
+            # 事故形态：定价页"缓存读/输入/输出"三列被错位，缓存读价填进了输入价
+            {"model": "GLM-5.3-Flash", "input_price": 0.025, "output_price": 3.0,
+             "cache_read_price": 6.0, "currency": "CNY"},
+            {"model": "GLM-5.2", "input_price": 3.0, "output_price": 0.025,
+             "cache_read_price": 0.25, "currency": "CNY"},
+            {"model": "GLM-5.3-Air", "input_price": 3.0, "output_price": 6.0,
+             "cache_read_price": 0.025, "currency": "CNY"},
+            # 没有缓存读价就没有判据，照常收录
+            {"model": "GLM-5.3-Lite", "input_price": 0.5, "output_price": 2.0,
+             "cache_read_price": None, "currency": "CNY"},
+        ],
+    }}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["skipped"] == [
+        "Zhipu AI/GLM-5.3-Flash（输入价低于缓存读价，判定为价目列错位）",
+        "Zhipu AI/GLM-5.2（输出价低于缓存读价，判定为价目列错位）",
+    ]
+    assert merged["models"]["glm5.3flash"]["list"] == {"input": 0.075, "output": 0.25}  # 坏价不覆盖已有条目
+    assert merged["models"]["glm5.3air"]["list_cny"] == {"input": 3.0, "output": 6.0}
+    assert merged["models"]["glm5.3lite"]["list_cny"] == {"input": 0.5, "output": 2.0}
+
+
 def test_merge_overrides_update_vendor_attribution():
     """命中已有条目时 vendor 同步为当前源，价格、来源与厂商归属保持同渠道。"""
     catalog = _catalog()
@@ -210,7 +237,7 @@ def test_merge_channel_catalog_keeps_each_vendor_entry():
                      "models": [{"model": "baichuan-m3", "input_price": 1.0, "output_price": 1.0, "currency": "CNY"}]},
     }
     merged, summary = merge_sources_into_channel_catalog(full, sources, 7.0)
-    assert summary == {"added": 2, "replaced": 0}
+    assert summary == {"added": 2, "replaced": 0, "skipped": []}
     assert merged["models"]["deepseek:deepseekv4pro"]["list_cny"] == {"input": 9.0, "output": 27.0}
     assert merged["models"]["deepseek:deepseekv4pro"]["cache_cny"]["read"] == 0.3
     assert merged["models"]["deepseek:deepseekv4pro"]["price_status"] == "candidate"
@@ -227,8 +254,22 @@ def test_merge_channel_catalog_replaces_existing_key():
                             "models": [{"model": "deepseek-v4-pro", "input_price": 9.0, "output_price": 27.0,
                                         "currency": "CNY"}]}}
     merged, summary = merge_sources_into_channel_catalog(full, sources, 7.0)
-    assert summary == {"added": 0, "replaced": 1}
+    assert summary == {"added": 0, "replaced": 1, "skipped": []}
     assert merged["models"]["deepseek:deepseekv4pro"]["list_cny"] == {"input": 9.0, "output": 27.0}
+
+
+def test_merge_channel_catalog_skips_misaligned_prices():
+    """渠道目录同样拦列错位价目：整条不进全量目录，跳过原因随摘要透出。"""
+    full = {"models": {}}
+    sources = {"Zhipu AI": {
+        "url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": True, "region": "cn",
+        "models": [{"model": "glm-5.3-flash", "input_price": 0.025, "output_price": 3.0,
+                    "cache_read_price": 6.0, "currency": "CNY"}],
+    }}
+    merged, summary = merge_sources_into_channel_catalog(full, sources, 7.0)
+    assert summary == {"added": 0, "replaced": 0,
+                       "skipped": ["Zhipu AI/glm-5.3-flash（输入价低于缓存读价，判定为价目列错位）"]}
+    assert merged["models"] == {}
 
 
 def test_merge_fills_limit_and_description_only_when_missing():

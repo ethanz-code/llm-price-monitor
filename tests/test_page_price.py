@@ -342,6 +342,59 @@ def test_transposed_grid_rejects_attribute_header() -> None:
     assert records is None
 
 
+# 仿 cloud.baidu.com 千帆价目表：rowspan 把模型列下推多行，输入/输出各占一行，
+# 价格在「在线推理」服务列，单位列标元/千tokens（要 ×1000 折成百万口径）
+BAIDU_CATEGORIZED_HTML = """<html><body><table>
+  <tr><th>模型名称</th><th>版本名称</th><th>子项</th><th>在线推理</th><th>批量推理</th><th>单位</th></tr>
+  <tr><td rowspan="4">ERNIE 5.1</td><td rowspan="4">ERNIE-5.1</td><td>输入（输入&lt;=32k）</td><td>0.004</td><td>-</td><td rowspan="4">元/千tokens</td></tr>
+  <tr><td>输出（输入&lt;=32k）</td><td>0.018</td><td>-</td></tr>
+  <tr><td>输入（32k&lt;输入&lt;=128k）</td><td>0.006</td><td>-</td></tr>
+  <tr><td>输出（32k&lt;输入&lt;=128k）</td><td>0.022</td><td>-</td></tr>
+</table>
+<table>
+  <tr><th>模型名称</th><th>版本名称</th><th>子项</th><th>预付费价格（单位：元/个/月）</th></tr>
+  <tr><td>ERNIE 5.1</td><td>ERNIE-5.1</td><td>输入</td><td>800</td></tr>
+</table>
+</body></html>"""
+
+
+def test_parse_html_categorized_rows_and_token_guard() -> None:
+    """计费类别行表：rowspan 展开后按「输入/输出行 × 服务价列」取数，千 tokens 单位折百万；
+    按 月/个 计价的预付费表不是 token 单价，整表不认。"""
+    records = parse_html_tables(BAIDU_CATEGORIZED_HTML, "https://cloud.baidu.com/doc/qianfan/s/wmh4sv6ya")
+    assert records is not None
+    assert [record["model_key"] for record in records] == ["ernie5.1"]
+    ernie = records[0]
+    assert (ernie["input_price"], ernie["output_price"]) == (4.0, 18.0)  # 0.004/千 × 1000
+    assert ernie["currency"] == "CNY"
+    assert len(ernie["tiers"]) == 4
+    # 档位名照抄子项原文；基准价取第一条输入行与第一条输出行
+    assert (ernie["tiers"][0]["name"], ernie["tiers"][0]["input_price"]) == ("输入（输入<=32k）", 4.0)
+    assert (ernie["tiers"][1]["name"], ernie["tiers"][1]["output_price"]) == ("输出（输入<=32k）", 18.0)
+
+
+def test_clean_model_name_strips_cjk_slash_annotations() -> None:
+    """阿里云把中文注解跟在模型 ID 后（斜杠/换行分隔）——剥注解但保留路径式模型名。"""
+    assert page_price.clean_model_name("qwen3.8-max-prime/更多详情参考优速模式（Prime）") == "qwen3.8-max-prime"
+    assert page_price.clean_model_name("qwen3.7-max/当前能力等同于qwen3.7-max-2026-05-20//Batch调用半价") == "qwen3.7-max"
+    assert page_price.clean_model_name("ZHIPU/GLM-5.3") == "ZHIPU/GLM-5.3"
+    assert page_price.clean_model_name("deepseek-v4-pro") == "deepseek-v4-pro"
+
+
+def test_parse_html_model_id_header_with_token_tiers() -> None:
+    """「模型 ID（Model ID）」表头 + Token 分档列（阿里云百炼形态）走通用列映射。"""
+    html = """<html><body><table>
+      <tr><th>模型 ID（Model ID）</th><th>模式</th><th>单次请求的输入Token数</th><th>输入单价（每百万Token）</th><th>输出单价（每百万Token）</th></tr>
+      <tr><td>qwen3.8-max</td><td>非思考和思考模式</td><td>0&lt;Token≤1M</td><td>12元</td><td>36元</td></tr>
+    </table></body></html>"""
+    records = parse_html_tables(html, "https://help.aliyun.com/zh/model-studio/model-pricing")
+    assert records is not None
+    qwen = records[0]
+    assert qwen["model"] == "qwen3.8-max"
+    assert (qwen["input_price"], qwen["output_price"]) == (12.0, 36.0)
+    assert qwen["currency"] == "CNY"  # 币种在单元格里，表头没有也能识别
+
+
 def test_parse_json_entries() -> None:
     records = parse_json_entries(JSON_PAGE, "https://example.com/api/pricing")
     assert records is not None

@@ -18,7 +18,7 @@ import { formatCount, formatTime, successRateTone, toneText } from "@/lib/format
 import type { AiLogDailyPoint as DailyPoint, AiLogSummary } from "@/lib/types";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
-import { Btn, Empty, Modal, Sel, Switch, toast } from "./ui";
+import { Btn, Empty, Modal, Sel, Switch, toast, LoadingRows } from "./ui";
 import { IconChevronRight } from "./icons";
 import { DajuSit } from "./DajuArt";
 
@@ -264,6 +264,8 @@ export function AdminAiLogs() {
   const { lineColor, secondaryColor } = useChartTheme();
   const [summary, setSummary] = useState<AiLogSummary | null>(null);
   const [logs, setLogs] = useState<AiLog[]>([]);
+  // 首次明细未回来前先画骨架，避免空表闪「还没有记录」的假空态
+  const [logsReady, setLogsReady] = useState(false);
   const [scene, setScene] = useState("");
   const [status, setStatus] = useState("");
   const [detail, setDetail] = useState<AiLog | null>(null);
@@ -288,7 +290,10 @@ export function AdminAiLogs() {
     if (status) query.set("status", status);
     apiSend<{ logs: AiLog[] }>(`/api/ai-logs?${query}`, "GET")
       .then((data) => {
-        if (alive) setLogs(data.logs);
+        if (alive) {
+          setLogs(data.logs);
+          setLogsReady(true);
+        }
       })
       .catch(() => {});
     return () => {
@@ -484,6 +489,11 @@ export function AdminAiLogs() {
         <Sel value={status} onChange={setStatus} ariaLabel="按结果筛选" options={STATUSES} />
       </div>
       <div className="panel" style={{ overflow: "hidden" }}>
+        {!logsReady ? (
+          <div style={{ padding: "16px 20px" }}>
+            <LoadingRows rows={7} />
+          </div>
+        ) : (
         <DataTable<AiLog>
           rowKey="id"
           columns={columns}
@@ -498,6 +508,7 @@ export function AdminAiLogs() {
             />
           }
         />
+        )}
       </div>
     </div>
   );

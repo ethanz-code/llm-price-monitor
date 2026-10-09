@@ -627,8 +627,46 @@ export function Tip({
 
 /* ---------- 骨架屏 ---------- */
 
-export function Skel({ w, h = 14, style }: { w?: number | string; h?: number; style?: React.CSSProperties }) {
-  return <span className="skel" style={{ width: w ?? "100%", height: h, display: "block", ...style }} />;
+export function Skel({
+  w,
+  h = 14,
+  delay,
+  style,
+}: {
+  w?: number | string;
+  h?: number;
+  /** 错峰相位（毫秒，取负为 animation-delay）：让每条骨架从动画中段起步，整页呈波浪扫过 */
+  delay?: number;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <span
+      className="skel"
+      style={{
+        width: w ?? "100%",
+        height: h,
+        display: "block",
+        ...(delay != null ? { animationDelay: `${-delay}ms` } : null),
+        ...style,
+      }}
+    />
+  );
+}
+
+/** 面板内加载骨架：几行灰条替代「加载中…」文字，行宽参差 + 错峰。 */
+export function LoadingRows({ rows = 5, style }: { rows?: number; style?: React.CSSProperties }) {
+  return (
+    <div aria-hidden style={{ display: "grid", gap: 12, ...style }}>
+      {Array.from({ length: rows }, (_, index) => (
+        <Skel
+          key={index}
+          w={`${82 - ((index * 13) % 28)}%`}
+          h={13}
+          delay={index * 90}
+        />
+      ))}
+    </div>
+  );
 }
 
 /* ---------- 占位弹窗（功能未上线） ---------- */

@@ -3,7 +3,7 @@
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast, Btn, Check, Empty, Switch } from "./ui";
+import { toast, Btn, Check, Empty, Switch, Skel, LoadingRows } from "./ui";
 import { DajuSit } from "./DajuArt";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
@@ -259,7 +259,7 @@ export function AdminSites() {
           </div>
           <div style={{ minWidth: 0 }}>
             {monitorModels === null ? (
-              <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>加载中…</span>
+              <Skel w={130} h={13} />
             ) : (
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <ModelMultiSelect value={monitorModels} onChange={saveMonitorModels} />
@@ -276,7 +276,9 @@ export function AdminSites() {
         style={{ overflow: "hidden", borderBottom: "none", borderRadius: "8px 8px 0 0" }}
       >
         {sites === null ? (
-          <div style={{ padding: "16px 20px", color: "var(--text-2)", fontSize: 13 }}>加载中…</div>
+          <div style={{ padding: "16px 20px" }}>
+            <LoadingRows rows={6} />
+          </div>
         ) : (
           <DataTable<SiteConfig>
             rowKey="id"

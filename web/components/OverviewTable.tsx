@@ -336,7 +336,7 @@ export function OverviewTable({
         >
           <span style={{ display: "inline-flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
             <span style={{ fontWeight: 550, fontSize: 15 }}>
-              {active ? <span className="mono">{active.model}</span> : "最新快照"}
+              {active ? <span className="mono">{active.model}</span> : "最新价格"}
             </span>
             {active && (() => {
               const hit = rankingHit(rankingsIndex, active.model);
@@ -373,7 +373,7 @@ export function OverviewTable({
             <Empty
               icon={<DajuSit width={30} />}
               title="还没有价格数据"
-              description="完成一轮采集后，这里会展示各站点的最新快照。"
+              description="我们采完一轮数据后，这里就会展示各站点的最新价格。"
             />
           }
         />

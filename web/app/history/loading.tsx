@@ -1,5 +1,5 @@
-import { PageLoading } from "@/components/PageLoading";
+import { HistoryLoading } from "@/components/PageLoading";
 
 export default function Loading() {
-  return <PageLoading digest={2} variant="cards" />;
+  return <HistoryLoading />;
 }

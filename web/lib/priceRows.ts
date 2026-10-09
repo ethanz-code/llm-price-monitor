@@ -3,10 +3,11 @@
 import { effectiveCnyPrice, effectivePrice } from "./format";
 import type { OverviewRecord } from "./types";
 
-/** 模型名归一：小写并去掉空格/连字符/下划线/点。
+/** 模型名归一：小写并去掉空格/连字符/下划线（与后端 model_key 同规则，点号保留——
+ *  "GLM-5.2" 与 "GLM52" 在后端目录里就是两个键，前端分组不擅自合并）。
  *  不同站点对同一模型的写法经常不同（如 "GPT-5.6 Sol" 与 "gpt-5.6-sol"），归一后才能按语义合并。 */
 export function canonicalModel(model: string): string {
-  return model.toLowerCase().replace(/[\s\-_.]+/g, "");
+  return model.toLowerCase().replace(/[\s\-_]+/g, "");
 }
 
 /** 有效价 = 顶层价格或阶梯档价任一可得；无效行（需认证/无数据）在时间排序中沉底。 */
@@ -14,12 +15,11 @@ export function hasUsablePrice(row: OverviewRecord): boolean {
   return effectivePrice(row, "input_price") != null || effectivePrice(row, "output_price") != null;
 }
 
-/** 最新快照的展示行序：有可用价在前，同状态按采集时间倒序；不再按站点+模型折叠，各分组各占一行。 */
-export function sortSnapshotRows(records: OverviewRecord[]): OverviewRecord[] {
-  return [...records].sort((a, b) => {
-    if (hasUsablePrice(a) !== hasUsablePrice(b)) return hasUsablePrice(a) ? -1 : 1;
-    return b.captured_at - a.captured_at;
-  });
+/** 首页精选行序：综合价低的在前（同价按采集更新的在前），让"各模型全站最低价"直接按价读。
+ *  入参约定来自 lowestPriceRowPerModel（每行都有可用价），缺综合价的 +∞ 沉底是兜底分支。 */
+export function orderByCheapestPrice(rows: OverviewRecord[], rate: number | null): OverviewRecord[] {
+  const blendOf = (row: OverviewRecord) => blendedCnyPrice(row, rate) ?? Number.POSITIVE_INFINITY;
+  return [...rows].sort((a, b) => blendOf(a) - blendOf(b) || b.captured_at - a.captured_at);
 }
 
 /** 综合价（排序用）：输入 3 : 输出 1 加权，统一折算 RMB；缺一项用另一项，都缺返回 null。 */

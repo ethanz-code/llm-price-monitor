@@ -230,7 +230,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
           <span style={{ fontWeight: 550, fontSize: 15 }}>全量渠道价格</span>
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
             共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 ·{" "}
-            <span className="mono">{vendors.length}</span> 个渠道 · 快照{" "}
+            <span className="mono">{vendors.length}</span> 个渠道 · 截至{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
             <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>

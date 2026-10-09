@@ -96,11 +96,24 @@ def price_value(cell: str) -> tuple[float | None, bool]:
 # 国内定价页惯用「模型名（200K）」把上下文档位写进名称单元格（如 GLM-4.7-Flash（200K）），
 # 尾部的括号限定符不是模型名的一部分，剥掉后才能与厂商目录的模型键对上
 _TRAILING_QUALIFIER_PATTERN = re.compile(r"[（(][^（）()]*[)）]\s*$")
+# 阿里云百炼惯用「模型ID/中文注解」同格写法（如 qwen3.8-max/Batch调用半价），
+# 注解段带 CJK 才当注解剥掉——ZHIPU/GLM-5.3 这类路径式模型名不含 CJK，保留原样
+_CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
 
 def clean_model_name(name: str) -> str:
-    """去掉模型名尾部的括号限定符（上下文档位等），保留原始大小写。"""
-    return _TRAILING_QUALIFIER_PATTERN.sub("", name).strip()
+    """剥掉模型名单元格里的注解（斜杠/换行后的中文说明、尾部括号限定符），保留原始大小写。
+
+    阿里云百炼把「Batch调用半价」这类注解跟在模型 ID 后面，分隔既有斜杠也有换行；
+    注解段带 CJK 才剥——ZHIPU/GLM-5.3 这类路径式模型名不含 CJK，保留原样。
+    """
+    text = name.strip()
+    segments = re.split(r"/|[\r\n]+", text)
+    for index, segment in enumerate(segments[1:], start=1):
+        if _CJK_PATTERN.search(segment):
+            text = segments[0]
+            break
+    return _TRAILING_QUALIFIER_PATTERN.sub("", text).strip()
 
 
 # 上下文窗口文本的取数与单位：K/M 按二进制口径（与 Kimi 官方标注 1,048,576 tokens 一致）
@@ -160,11 +173,11 @@ def _match_column(header: str) -> str | None:
         return None
     if re.search(r"缓存存储|storage|小时", h):
         return None  # 存储费按小时计，不是缓存读/写单价
-    if "模型名称" in h or h in {"模型", "名称", "model", "modelname"}:
+    if "模型名称" in h or "模型id" in h or "modelid" in h or h in {"模型", "名称", "model", "modelname"}:
         return "model"
     if "简介" in h:
         return "description"
-    if "上下文" in h or "context" in h or "时段" in h or "档位" in h:
+    if "上下文" in h or "context" in h or "时段" in h or "档位" in h or re.search(r"token(数|范围|长度)", h):
         return "context"
     if "缓存命中" in h or "缓存读" in h or "cacheread" in h:
         return "cache_read"
@@ -193,7 +206,8 @@ def _records_from_grid(
     columns = [_match_column(cell) for cell in header]
     if "model" not in columns or ("input" not in columns and "output" not in columns):
         return None
-    currency = detect_currency(*header)
+    # 币种标注常在单元格不在表头（阿里云「24元」），表头读不出来时看首行
+    currency = detect_currency(*header, *(rows[0] if rows else []))
     scale = unit_scale(" ".join(header))
     unit = f"{currency or '未知'}/1M tokens"
 
@@ -256,17 +270,21 @@ _TRANSPOSED_TIER_LABEL = re.compile(
 
 
 def _cell_category(cell: str) -> str | None:
-    """定价行的说明单元格 → 计费类别；缓存命中优先于输入（「输入（缓存命中）」是缓存读价）。"""
+    """定价行的说明单元格 → 计费类别。
+
+    缓存命中优先于输入/输出；输出必须先于输入判——「输出（输入<=32k）」这类
+    档位注解里同时含两个词，谁在句首才算谁。
+    """
     text = cell.strip()
     if not text:
         return None
     if _CACHE_HIT_TIER_PATTERN.search(text):
         return "cache_read"
     lowered = text.casefold()
-    if "输入" in text or "input" in lowered:
-        return "input"
     if "输出" in text or "output" in lowered:
         return "output"
+    if "输入" in text or "input" in lowered:
+        return "input"
     return None
 
 
@@ -285,14 +303,20 @@ def _records_from_transposed_grid(
     head = re.sub(r"\s+", "", header[0]).casefold() if header else ""
     if "模型" not in head and head not in {"model", "modelname"}:
         return None
-    names: list[str] = []
-    for cell in header[1:]:
+    # 模型名可能不从第 1 列开始：表头标签格 colspan 横跨时（真实 DeepSeek 页「模型」
+    # 占 3 列），rowspan/colspan 展开会把标签重复填进中间列——与表头标签同文的格子
+    # 与补齐空格都不是模型列
+    name_columns: list[tuple[int, str]] = []
+    for index, cell in enumerate(header[1:], start=1):
         text = clean_model_name(cell.strip())
-        if not text or _PRICE_MARKED_CELL.search(cell) or _NON_MODEL_HEADER_CELL.search(text):
+        if not text or re.sub(r"\s+", "", cell).casefold() == head:
+            continue
+        if _PRICE_MARKED_CELL.search(cell) or _NON_MODEL_HEADER_CELL.search(text):
             return None  # 列头混着属性词或价格，不是转置规格表
-        names.append(text)
-    if not names:
+        name_columns.append((index, text))
+    if not name_columns:
         return None
+    names = [name for _, name in name_columns]
 
     every_cell = [cell for row in rows for cell in row]
     currency = detect_currency(*every_cell)
@@ -305,6 +329,7 @@ def _records_from_transposed_grid(
     quote_parts: list[str] = []
     category: str | None = None
     category_text = ""
+    name_column_set = {index for index, _ in name_columns}
     for row in rows:
         price_cells: list[float] = []
         for cell in row:
@@ -315,18 +340,17 @@ def _records_from_transposed_grid(
                 price_cells.append(value)
         labels = [cell for cell in row if not _PRICE_MARKED_CELL.search(cell)]
         if not price_cells:
-            # 无价格的行只认上下文/简介：单值行（colspan 合并）或多值按模型对齐，其余不猜
-            data = [cell.strip() for cell in row[1:] if cell.strip()]
-            label = row[0].strip() if row else ""
-            if not data or not label:
+            # 无价格的行只认上下文/简介：值取模型列（colspan 合并展开后同值即全模型适用），其余不猜
+            label_text = " ".join(cell for index, cell in enumerate(row) if index not in name_column_set)
+            values = [row[index].strip() if index < len(row) else "" for index, _ in name_columns]
+            distinct = list(dict.fromkeys(v for v in values if v))
+            if len(distinct) == 1:
+                values = distinct * len(names)
+            elif len(values) != len(names) or any(not v for v in values):
                 continue
-            distinct = list(dict.fromkeys(data))
-            values = distinct * len(names) if len(distinct) == 1 else data
-            if len(values) != len(names):
-                continue
-            if "上下文" in label or "context" in label.casefold():
+            if "上下文" in label_text or "context" in label_text.casefold():
                 contexts = {index: value for index, value in enumerate(values)}
-            elif "简介" in label or "描述" in label or "description" in label.casefold():
+            elif "简介" in label_text or "描述" in label_text or "description" in label_text.casefold():
                 descriptions = {index: value for index, value in enumerate(values)}
             continue
         if len(price_cells) != len(names):
@@ -377,6 +401,103 @@ def _records_from_transposed_grid(
     return records or None
 
 
+def _records_from_categorized_rows(
+    header: list[str],
+    rows: list[list[str]],
+    *,
+    source_url: str,
+) -> list[dict[str, Any]] | None:
+    """计费类别行表（百度千帆形态）→ 价格记录：输入/输出各自占一行，价格在「在线推理」这类服务价列。
+
+    表形：模型列 + 类别列（子项如「输入（输入<=32k）」）+ 服务价列 + 单位列，rowspan
+    合并的模型格已由 _GridCollector 展开补齐。基准价取该模型第一条输入行与第一条
+    输出行；全部行进 tiers，档位注解原文保留（交给 parse_context_limit 判废，不猜）。
+    """
+    columns = [_match_column(cell) for cell in header]
+    if "model" not in columns:
+        return None
+    model_index = columns.index("model")
+    # 类别列：除模型列外，「输入/输出」开头格最多的那列
+    category_index, category_hits = -1, 0
+    for index in range(len(header)):
+        if index == model_index:
+            continue
+        hits = sum(1 for row in rows if index < len(row) and _cell_category(row[index]) in {"input", "output"})
+        if hits > category_hits:
+            category_index, category_hits = index, hits
+    if category_hits < 2:
+        return None
+    # 价格列：表头带单价/价格/在线的服务价列优先，否则不猜
+    price_index = next(
+        (
+            index
+            for index, head in enumerate(header)
+            if index not in (model_index, category_index) and re.search(r"单价|价格|在线|售价|price", head, re.IGNORECASE)
+        ),
+        -1,
+    )
+    if price_index < 0:
+        return None
+    # 只认按 token 计价的表：预付费包月（元/个/月）、按次计费这类不是 token 单价，不进价目
+    unit_index = header.index("单位") if "单位" in header else -1
+    token_priced = "token" in " ".join(header).casefold() or (
+        unit_index >= 0 and any("token" in row[unit_index].casefold() for row in rows)
+    )
+    if not token_priced:
+        return None
+    currency = detect_currency(*header, *(cell for row in rows for cell in row)) or "CNY"
+    unit = f"{currency}/1M tokens"
+    _CATEGORY_FIELD = {"input": "input_price", "output": "output_price", "cache_read": "cache_read_price"}
+
+    by_model: dict[str, dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        name = clean_model_name(row[model_index] if model_index < len(row) else "")
+        if not name:
+            continue
+        category = _cell_category(row[category_index])
+        if category is None:
+            continue
+        value, has = price_value(row[price_index] if price_index < len(row) else "")
+        if not has:
+            continue  # 批量推理 '-' 之类的空价格：该行不进档位
+        scale = unit_scale(row[unit_index] if 0 <= unit_index < len(row) else "")
+        tier = {
+            "name": row[category_index].strip(),
+            "input_price": value * scale if category == "input" else None,
+            "output_price": value * scale if category == "output" else None,
+            "cache_read_price": value * scale if category == "cache_read" else None,
+        }
+        key = model_key(name)
+        record = by_model.get(key)
+        if record is None:
+            record = {
+                "model": name,
+                "model_key": key,
+                "input_price": None,
+                "output_price": None,
+                "cache_read_price": None,
+                "currency": currency,
+                "unit": unit,
+                "tiers": [],
+                "source_url": source_url,
+                "quotes": [],
+            }
+            by_model[key] = record
+            records.append(record)
+        field = _CATEGORY_FIELD[category]
+        if record[field] is None:
+            record[field] = value * scale  # 基准价：该模型此类别第一条行（文档序即最基础档）
+        record["tiers"].append(tier)
+        record["quotes"].append(" | ".join(cell.strip() for cell in row))
+    records = [
+        {**record, "quote": redact_text(" | ".join(dict.fromkeys(record.pop("quotes"))))}
+        for record in records
+        if record["input_price"] is not None or record["output_price"] is not None or record["cache_read_price"] is not None
+    ]
+    return records or None
+
+
 def _split_markdown_row(line: str) -> list[str]:
     r"""一行 Markdown 表格 → 单元格列表；`\|` 转义不切分。"""
     placeholder = "\x00"
@@ -410,45 +531,83 @@ def parse_markdown_tables(text: str, source_url: str) -> list[dict[str, Any]] | 
 
 
 class _GridCollector(HTMLParser):
-    """收集 HTML 里的 <table> 行列文本（支持一层嵌套）；列映射复用 Markdown 同款逻辑。"""
+    """收集 HTML 里的 <table> 行列文本（支持一层嵌套）；列映射复用 Markdown 同款逻辑。
+
+    colspan/rowspan 合并单元格按锚点值展开补齐成矩形（百度千帆的模型列下推多行、
+    阿里云的说明列横跨等都靠这个对齐），空单元格与被合并覆盖的格子都能区分。
+    """
+
+    # colspan/rowspan 防御上限：正常价目表远够，坏页面防止内存爆掉
+    _MAX_SPAN = 1000
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[tuple[list[str], list[list[str]]]] = []
-        # 每层嵌套一个 [header, rows, current_row, current_cell]
-        self._stack: list[list[Any]] = []
+        # 每层嵌套一个表格 frame dict：row 当前行号、buffer 当前单元格文本、
+        # span 待落格的 (colspan, rowspan)、filled (行,列)→文本（含合并展开）、nrows 行数、width 列数
+        self._stack: list[dict[str, Any]] = []
 
     def handle_starttag(self, tag: str, attrs: Any) -> None:
         if tag == "table":
-            self._stack.append([None, [], None, None])
+            self._stack.append({"row": -1, "buffer": None, "span": (1, 1), "filled": {}, "nrows": 0, "width": 0})
         elif self._stack:
             frame = self._stack[-1]
-            if tag == "tr" and frame[2] is None:
-                frame[2] = []
-            elif tag in {"td", "th"} and frame[2] is not None:
-                frame[3] = []
+            if tag == "tr":
+                frame["row"] += 1
+                frame["buffer"] = None
+            elif tag in {"td", "th"} and frame["row"] >= 0:
+                raw = {key: value for key, value in attrs}
+                frame["span"] = (self._span(raw.get("colspan")), self._span(raw.get("rowspan")))
+                frame["buffer"] = []
+
+    @classmethod
+    def _span(cls, raw: Any) -> int:
+        try:
+            value = int(str(raw))
+        except (TypeError, ValueError):
+            return 1
+        return min(max(value, 1), cls._MAX_SPAN)
 
     def handle_data(self, data: str) -> None:
-        if self._stack and self._stack[-1][3] is not None:
-            self._stack[-1][3].append(data)
+        if self._stack and self._stack[-1]["buffer"] is not None:
+            self._stack[-1]["buffer"].append(data)
+
+    def _place_cell(self, frame: dict[str, Any]) -> None:
+        """把当前单元格文本按 (colspan, rowspan) 落进 filled 矩阵，列号跳过已被占用的槽。"""
+        text = "".join(frame["buffer"]).strip()
+        colspan, rowspan = frame["span"]
+        frame["span"] = (1, 1)
+        row = frame["row"]
+        col = 0
+        while (row, col) in frame["filled"]:
+            col += 1  # 跳过本行已被上方 rowspan 覆盖或已放置的列
+        for r in range(rowspan):
+            for c in range(col, col + colspan):
+                frame["filled"][(row + r, c)] = text
+        frame["nrows"] = max(frame["nrows"], row + rowspan)
+        frame["width"] = max(frame["width"], col + colspan)
+        frame["buffer"] = None
 
     def handle_endtag(self, tag: str) -> None:
         if not self._stack:
             return
         frame = self._stack[-1]
-        if tag in {"td", "th"} and frame[3] is not None:
-            frame[2].append("".join(frame[3]).strip())
-            frame[3] = None
-        elif tag == "tr" and frame[2] is not None:
-            if frame[0] is None:
-                frame[0] = frame[2]
-            else:
-                frame[1].append(frame[2])
-            frame[2] = None
+        if tag in {"td", "th"} and frame["buffer"] is not None:
+            self._place_cell(frame)
+        elif tag == "tr" and frame["row"] >= 0:
+            if frame["buffer"] is not None:
+                self._place_cell(frame)  # 残缺 HTML 缺 </td>：行尾把开着的格子落掉，不丢文本
+            frame["buffer"] = None
         elif tag == "table":
-            header, rows = frame[0], frame[1]
             self._stack.pop()
-            if header and rows:
+            if frame["nrows"] < 2:
+                return
+            materialized = [
+                [frame["filled"].get((row, col), "") for col in range(frame["width"])]
+                for row in range(frame["nrows"])
+            ]
+            header, rows = materialized[0], materialized[1:]
+            if any(cell for cell in header) and rows:
                 self.tables.append((header, rows))
 
 
@@ -460,14 +619,21 @@ def parse_html_tables(text: str, source_url: str) -> list[dict[str, Any]] | None
     except Exception:
         return None  # 残缺 HTML 交给Headless 渲染或 AI 兜底
     records: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for header, rows in collector.tables:
-        # 转置规格表（模型当列头）没有「模型名称」行，普通列映射拿不到输入/输出列，
-        # 通用解析落空后按转置口径再试一次
-        parsed = _records_from_grid(header, rows, source_url=source_url) or _records_from_transposed_grid(
-            header, rows, source_url=source_url
+        # 转置规格表（模型当列头）与计费类别行表（百度千帆形态）都没有标准的
+        # 输入/输出列，通用列映射落空后按这两种口径再试
+        parsed = (
+            _records_from_grid(header, rows, source_url=source_url)
+            or _records_from_categorized_rows(header, rows, source_url=source_url)
+            or _records_from_transposed_grid(header, rows, source_url=source_url)
         )
-        if parsed:
-            records.extend(parsed)
+        for record in parsed or []:
+            # 同模型出现在多张表（促销/原价对照、分区复述）：先到先得，与 AI 合并同规则
+            if record["model_key"] in seen:
+                continue
+            seen.add(record["model_key"])
+            records.append(record)
     return records or None
 
 

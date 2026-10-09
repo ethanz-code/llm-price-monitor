@@ -36,7 +36,7 @@ export default async function CalculatorPage({
       {!catalog && !overview && (
         <SiteAlert
           title={calculator.loadFailed.title}
-          detail="厂商定价与最新价格快照都还没准备好"
+          detail="厂商定价和最新价格都还没抓到"
           fix={calculator.loadFailed.fix}
         />
       )}

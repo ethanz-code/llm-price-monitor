@@ -22,7 +22,7 @@ import { DajuSit } from "./DajuArt";
 import { RiskLink } from "./RiskLink";
 import { SiteAlert } from "./SiteAlert";
 import { ToneTag, type Tone } from "./ToneTag";
-import { Btn, Empty, Input, Modal, Pick, Switch, toast, SettingRow } from "./ui";
+import { Btn, Empty, Input, Modal, Pick, Switch, toast, SettingRow, LoadingRows } from "./ui";
 import { errorText } from "@/lib/api";
 
 /** 覆盖检测统一口径：models.dev 的国内价一律不作基准，国内厂商都需要配置定价源。
@@ -343,7 +343,9 @@ export function AdminPricingSources() {
           </Btn>
         </div>
         {sources === null ? (
-          <div style={{ padding: "16px 20px", color: "var(--text-2)", fontSize: 13 }}>加载中…</div>
+          <div style={{ padding: "16px 20px" }}>
+            <LoadingRows rows={6} />
+          </div>
         ) : (
           <DataTable<VendorPricingSource>
             rowKey="vendor"
@@ -592,7 +594,7 @@ function SourceDetailModal({ vendor, onClose }: { vendor: string; onClose: () =>
       {error ? (
         <SiteAlert title="读取失败" detail={error} fix="刷新页面重试。" />
       ) : source === null ? (
-        <div style={{ padding: "24px 0", color: "var(--text-2)", fontSize: 13 }}>加载中…</div>
+        <LoadingRows rows={5} />
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", fontSize: 12.5, color: "var(--text-2)" }}>

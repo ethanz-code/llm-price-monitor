@@ -344,6 +344,20 @@ def _converted_price_views(
     return usd, cny, usd_cache, cny_cache
 
 
+def _price_order_violation(
+    input_price: float | None, output_price: float | None, cache_read: float | None
+) -> str | None:
+    """价目设定自校验：缓存读 ≤ 输入 ≤ 输出是定价常识，输入或输出低于缓存读价
+    说明页面列被错位提取（如把缓存读列当成输入价）。返回 skip 原因，正常返回 None。"""
+    if cache_read is None:
+        return None
+    if input_price is not None and input_price < cache_read:
+        return "（输入价低于缓存读价，判定为价目列错位）"
+    if output_price is not None and output_price < cache_read:
+        return "（输出价低于缓存读价，判定为价目列错位）"
+    return None
+
+
 def merge_sources_into_catalog(
     catalog: dict[str, Any],
     sources: dict[str, dict[str, Any]],
@@ -395,6 +409,10 @@ def merge_sources_into_catalog(
             if input_price is None and output_price is None:
                 continue
             cache_read = number_or_none(item.get("cache_read_price"))
+            violation = _price_order_violation(input_price, output_price, cache_read)
+            if violation is not None:
+                skipped.append(f"{vendor}/{name}{violation}")
+                continue
             currency = str(item.get("currency") or "").upper()
             # 页面没标注货币时按源区域兜底：国内定价页默认人民币、海外页默认美元
             currency = currency if currency in {"CNY", "USD"} else ("USD" if source_region == "global" else "CNY")
@@ -492,6 +510,7 @@ def merge_sources_into_channel_catalog(
         full["models"] = models
     added = 0
     replaced = 0
+    skipped: list[str] = []
     for vendor, source in sorted(sources.items()):
         if not source.get("enabled", True):
             continue
@@ -510,6 +529,10 @@ def merge_sources_into_channel_catalog(
             if input_price is None and output_price is None:
                 continue
             cache_read = number_or_none(item.get("cache_read_price"))
+            violation = _price_order_violation(input_price, output_price, cache_read)
+            if violation is not None:
+                skipped.append(f"{vendor}/{name}{violation}")
+                continue
             currency = str(item.get("currency") or "").upper()
             # 国内定价页没标注货币时默认人民币
             currency = currency if currency in {"CNY", "USD"} else "CNY"
@@ -537,7 +560,7 @@ def merge_sources_into_channel_catalog(
                 **_cn_meta_fields(item),
             }
     full["models"] = models
-    return full, {"added": added, "replaced": replaced}
+    return full, {"added": added, "replaced": replaced, "skipped": skipped}
 
 
 def detect_vendor_coverage(

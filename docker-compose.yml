@@ -49,13 +49,21 @@ services:
       retries: 3
       start_period: 20s
 
-  # 采集兜底代理（可选）：跑一个 mihomo 内核吃机场订阅，供「系统设置 → 采集出口」使用。
-  # 用法见 docs/deploy/docker-compose.md「采集兜底代理」：建 mihomo/config.yaml、
-  # 取消本段注释、docker compose up -d，面板地址填 http://proxy:7890。
-  # 端口不发布，仅在 compose 容器网络内可达，公网摸不到。
-  # proxy:
-  #   image: metacubex/mihomo:latest
-  #   container_name: price-monitor-proxy
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./mihomo:/root/.config/mihomo
+  # 采集兜底代理（可选，默认不启动）：mihomo 内核吃机场订阅，供「系统设置 → 采集出口」使用。
+  # 启用：.env 里加一行 COMPOSE_PROFILES=default,proxy（机场配置见 deploy/mihomo-config.example.yaml，
+  # 复制为 mihomo/config.yaml 并填订阅链接），用法详见 docs/deploy/docker-compose.md「采集兜底代理」。
+  # 端口不发布，仅在 compose 容器网络内可达，公网摸不到；面板地址填 http://proxy:7890。
+  proxy:
+    profiles: ["proxy"]
+    image: metacubex/mihomo:latest
+    container_name: price-monitor-proxy
+    restart: unless-stopped
+    volumes:
+      - ./mihomo:/root/.config/mihomo
+    healthcheck:
+      # 经自身代理端口探一次 204：订阅/节点全挂时 compose ps 能直接看出 unhealthy
+      test: ["CMD", "sh", "-c", "http_proxy=http://127.0.0.1:7890 wget -q -O /dev/null -T 5 http://www.gstatic.com/generate_204"]
+      interval: 60s
+      timeout: 8s
+      retries: 3
+      start_period: 30s

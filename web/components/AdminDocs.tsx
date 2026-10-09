@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import remarkAlert from "remark-github-blockquote-alert";
 import { apiSend } from "@/lib/api";
+import { LoadingRows } from "./ui";
 
 /** README 里的图片是仓库相对路径（如 web/app/icon.svg）：
  *  GitHub 上按仓库根解析，这里映射到站点根由 Next 静态路由提供。 */
@@ -37,7 +38,7 @@ export function AdminDocs() {
   if (markdown === null) {
     return (
       <div className="panel" style={{ padding: "24px 28px" }}>
-        <span style={{ color: "var(--text-2)", fontSize: 13 }}>加载中…</span>
+        <LoadingRows rows={8} />
       </div>
     );
   }

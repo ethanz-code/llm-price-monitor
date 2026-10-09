@@ -112,19 +112,19 @@ def spy_http_transport(monkeypatch):
 
 
 def test_default_transport_reads_proxy_env(monkeypatch, spy_http_transport):
-    """显式 transport 会绕过 httpx 的环境代理解析，build_client 必须自己读代理环境变量。"""
+    """显式 transport 会绕过 httpx 的环境代理解析，build_client 必须自己读代理环境变量当兜底。"""
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-    with build_client():
-        pass
-    assert spy_http_transport.proxies_seen == ["http://127.0.0.1:7897"]
+    with build_client() as client:
+        assert isinstance(client._transport, FallbackTransport)
+    assert spy_http_transport.proxies_seen == [None, "http://127.0.0.1:7897"]
 
 
 def test_default_transport_prefers_https_over_all_proxy(monkeypatch, spy_http_transport):
     monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-    with build_client():
-        pass
-    assert spy_http_transport.proxies_seen == ["http://127.0.0.1:7897"]
+    with build_client() as client:
+        assert isinstance(client._transport, FallbackTransport)
+    assert spy_http_transport.proxies_seen == [None, "http://127.0.0.1:7897"]
 
 
 def test_default_transport_without_proxy_env_stays_direct(monkeypatch, spy_http_transport):
@@ -271,18 +271,23 @@ def test_reprobe_injects_short_connect_timeout(monkeypatch):
     assert seen[0]["read"] == 5  # 其余超时保持请求原值
 
 
-def test_build_client_transport_variants(monkeypatch):
+def test_build_client_transport_variants(monkeypatch, spy_http_transport):
     # 清掉本机可能存在的代理环境变量，避免污染分支判定
     for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
         monkeypatch.delenv(key, raising=False)
     # 未配任何代理：普通重试传输层
     with build_client() as client:
         assert type(client._transport) is RetryingTransport
-    # 配了备用代理：包 FallbackTransport
+    assert spy_http_transport.proxies_seen == [None]
+    # 配了备用代理：包 FallbackTransport，代理腿用该地址
+    spy_http_transport.proxies_seen.clear()
     egress.configure_provider(lambda: "http://172.17.0.1:7890")
     with build_client() as client:
         assert isinstance(client._transport, FallbackTransport)
-    # 环境代理是全量接管语义：优先于备用代理，无失败记忆层
+    assert spy_http_transport.proxies_seen == [None, "http://172.17.0.1:7890"]
+    # 环境变量代理与备用代理同走兜底位，环境变量优先
+    spy_http_transport.proxies_seen.clear()
     monkeypatch.setenv("HTTPS_PROXY", "http://env.test:7890")
     with build_client() as client:
-        assert type(client._transport) is RetryingTransport
+        assert isinstance(client._transport, FallbackTransport)
+    assert spy_http_transport.proxies_seen == [None, "http://env.test:7890"]

@@ -1,12 +1,18 @@
 "use client";
 
 import { DataTable, type DColumn } from "./DataTable";
-import { formatDiscount, formatPrice, discountTone, toCnyPrice, recordStatusKey } from "@/lib/format";
+import { formatPrice, toCnyPrice, recordStatusKey } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import type { OverviewRecord } from "@/lib/types";
-import { ToneNum, RulePriceMark } from "./ToneTag";
+import { RulePriceMark } from "./ToneTag";
+import { DiscountBars } from "./DiscountBars";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
+
+/** 单位分母缩写："CNY/1M tokens" → "1M"，只留倍数不带 tokens，避免价格列折行撑高行。 */
+function unitSuffix(unit: string | null | undefined): string {
+  return unit?.split("/").pop()?.replace(/\s*tokens?$/i, "").trim() ?? "";
+}
 
 /** Landing 的最新快照预览表：每模型一行（综合价最低的代表行，见 priceRows.lowestPriceRowPerModel），列渲染含交互，需在客户端渲染。 */
 export function SnapshotPreview({
@@ -63,11 +69,14 @@ export function SnapshotPreview({
       width: 130,
       render: (v: number | null, row) => {
         const converted = toCnyPrice(v, row.unit, rate);
+        const suffix = unitSuffix(row.unit);
         return (
           <span className="mono">
             {converted !== null ? "¥" : ""}
             {formatPrice(converted ?? v)}
-            <span style={{ color: "var(--text-3)", fontSize: 12 }}> {row.unit?.split("/").pop()}</span>
+            {suffix && (
+              <span style={{ color: "var(--text-3)", fontSize: 12 }}> /{suffix}</span>
+            )}
           </span>
         );
       },
@@ -85,10 +94,14 @@ export function SnapshotPreview({
       mobileHide: true,
       render: (v: number | null, row) => {
         const converted = toCnyPrice(v, row.unit, rate);
+        const suffix = unitSuffix(row.unit);
         return (
           <span className="mono">
             {converted !== null ? "¥" : ""}
             {formatPrice(converted ?? v)}
+            {suffix && (
+              <span style={{ color: "var(--text-3)", fontSize: 12 }}> /{suffix}</span>
+            )}
           </span>
         );
       },
@@ -119,15 +132,8 @@ export function SnapshotPreview({
       key: "discount",
       width: 150,
       mobileHide: true,
-      render: (_, row) =>
-        row.discount ? (
-          <span style={{ display: "inline-flex", gap: 10 }}>
-            <ToneNum tone={discountTone(row.discount.input)}>入 {formatDiscount(row.discount.input)}</ToneNum>
-            <ToneNum tone={discountTone(row.discount.output)}>出 {formatDiscount(row.discount.output)}</ToneNum>
-          </span>
-        ) : (
-          <span style={{ color: "var(--text-3)" }}>—</span>
-        ),
+      // 首页快照表用单行紧凑芯片：堆叠条形会把行高撑到两倍
+      render: (_, row) => <DiscountBars discount={row.discount} compact />,
     },
   ];
 
@@ -137,6 +143,7 @@ export function SnapshotPreview({
         rowKey={(row) => `${row.site_id}:${row.model}:${row.unit}:${row.metadata?.group ?? ""}`}
         columns={columns}
         rows={rows}
+        dense
       />
     </div>
   );

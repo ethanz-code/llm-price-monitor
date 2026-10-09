@@ -5,12 +5,12 @@
 价格/状态/公告三类采集与其适配器无感知。重试只对幂等的 GET/HEAD 生效：
 token 续签、AI 兜底等 POST 不盲重试，避免续签凭证被消费两次。
 
-代理分两档：
-- 标准代理环境变量（HTTPS_PROXY 等）语义是全量接管，配了就全部流量走它；
-- 未配环境变量但系统设置里配了 settings.fallback_proxy 时，采集走「直连优先、
-  被墙兜底」：直连失败（连接类错误或 403/451）的域名记入失败记忆（egress.py），
-  TTL 内直接走代理，TTL 过期放行一次短连接超时的直连重探。代理地址在构建
-  client 时捕获，面板改动从下一轮采集生效。
+兜底代理地址按优先级取一处：标准代理环境变量（HTTPS_PROXY 等）优先，其次是
+系统设置里的 settings.fallback_proxy；配了哪个语义都一样——采集始终「直连优先、
+被墙兜底」：直连失败（连接类错误或 403/451）的域名记入失败记忆（egress.py），
+TTL 内直接走代理，TTL 过期放行一次短连接超时的直连重探。直连能通的站点
+（国内站等）永远不碰代理，兜底代理出口被目标站拒收也拖不垮直连。代理地址在
+构建 client 时捕获，面板改动从下一轮采集生效。
 """
 from __future__ import annotations
 
@@ -143,16 +143,9 @@ def build_client(
             follow_redirects=follow_redirects,
             transport=transport,
         )
-    env_proxy = _env_proxy()
-    if env_proxy:
-        # 环境代理语义是全量接管，失败记忆兜底没有用武之地
-        return httpx.Client(
-            timeout=timeout,
-            headers=headers,
-            follow_redirects=follow_redirects,
-            transport=RetryingTransport(httpx.HTTPTransport(proxy=env_proxy)),
-        )
-    fallback_proxy = egress.fallback_proxy()
+    # 环境变量代理与面板备用代理同走兜底位，环境变量优先：本机 shell 常驻代理时
+    # 不吞掉直连优先逻辑，国内可直连站点不会被代理出口的抖动连累
+    fallback_proxy = _env_proxy() or egress.fallback_proxy()
     if not fallback_proxy:
         return httpx.Client(
             timeout=timeout,

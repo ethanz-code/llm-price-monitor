@@ -9,13 +9,14 @@ export type CalcPrices = Record<PriceKey, number | null>;
 
 export interface CostLine {
   key: PriceKey;
-  /** 单价（与 CalcPrices 同币种，每 100 万 token） */
-  unitPrice: number;
-  /** 该档计费的 token 数 */
+  /** 单价（每 100 万 token，与 CalcPrices 同币种）；该档没填价时为 null，整档不计入总价 */
+  unitPrice: number | null;
+  /** 该档分到的 token 数；没填价也照常拆出来，明细表照实展示 */
   tokens: number;
-  subtotal: number;
-  /** 占总价比例 0–1；总价为 0 时为 0 */
-  share: number;
+  /** 小计；没填价时为 null */
+  subtotal: number | null;
+  /** 占已计费总价的比例 0–1；没填价或总价为 0 时为 null */
+  share: number | null;
 }
 
 export interface CalcResult {
@@ -61,8 +62,9 @@ export function parseHitRate(text: string): number {
 }
 
 /** 总花费 = 缓存命中部分×命中价 + 未命中输入×输入价 + 输出×输出价。
- *  输入按命中率切成命中/未命中两段（不含缓存写入/存储费，见 PriceKey 注释）；
- *  某一档没单价就整段不计，不编数。 */
+ *  输入按命中率切成命中/未命中两段（不含缓存写入/存储费，见 PriceKey 注释）。
+ *  三档固定返回：没填价的档 tokens 照常拆出，单价/小计/占比为 null——明细表据此
+ *  照实展示该档用量并标注「未计入」，不让整行消失后占比看起来失真。 */
 export function calcCost(prices: CalcPrices, usage: CalcUsage): CalcResult {
   const hit = parseHitRate(usage.hitRate != null ? String(usage.hitRate) : "") / 100;
   const totalTokens = positiveTokens(usage.total);
@@ -73,23 +75,21 @@ export function calcCost(prices: CalcPrices, usage: CalcUsage): CalcResult {
     { key: "input", tokens: inputTokens * (1 - hit), price: prices.input },
     { key: "output", tokens: outputTokens, price: prices.output },
   ];
-  const lines: CostLine[] = [];
-  for (const bucket of buckets) {
-    const price = bucket.price;
-    if (price === null || price < 0) continue;
-    const tokens = bucket.tokens;
-    if (tokens <= 0) continue;
-    lines.push({
-      key: bucket.key,
-      unitPrice: price,
+  const lines: CostLine[] = buckets.map(({ key, tokens, price }) => {
+    const unitPrice = price !== null && price >= 0 ? price : null;
+    return {
+      key,
+      unitPrice,
       tokens,
-      subtotal: (tokens / TOKENS_PER_UNIT) * price,
-      share: 0,
-    });
-  }
-  const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
+      subtotal: unitPrice !== null ? (tokens / TOKENS_PER_UNIT) * unitPrice : null,
+      share: null,
+    };
+  });
+  const total = lines.reduce((sum, line) => sum + (line.subtotal ?? 0), 0);
   if (total > 0) {
-    for (const line of lines) line.share = line.subtotal / total;
+    for (const line of lines) {
+      if (line.subtotal !== null) line.share = line.subtotal / total;
+    }
   }
   return { lines, total };
 }
@@ -143,6 +143,11 @@ export const EMPTY_PRICES: CalcPrices = {
   output: null,
   cacheRead: null,
 };
+
+/** 是否填了至少一档单价：决定结果区显示空态还是明细表。 */
+export function hasAnyPrice(prices: CalcPrices): boolean {
+  return PRICE_KEYS.some((key) => prices[key] !== null);
+}
 
 export const EMPTY_STATE: CalcState = {
   source: "official",

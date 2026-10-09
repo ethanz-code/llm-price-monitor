@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { fetchAuthState } from "@/lib/api";
+import { LoadingRows, Skel } from "@/components/ui";
 import {
   IconAppstore,
   IconBolt,
@@ -45,7 +46,26 @@ export default function AdminLayout({ children }: React.PropsWithChildren) {
     };
   }, [router]);
 
-  if (!ready) return null;
+  // 守卫未过时先画外壳（菜单 + 内容区骨架），避免硬加载 /admin 时整页白屏
+  if (!ready) {
+    return (
+      <div className="page">
+        <div className="admin-shell">
+          <aside className="admin-rail" aria-hidden>
+            {RAIL.map((item, index) => (
+              <span key={item.href} style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px" }}>
+                <Skel w={15} h={15} style={{ borderRadius: 4, flexShrink: 0 }} delay={index * 60} />
+                <Skel w={52} h={12} delay={index * 60 + 20} />
+              </span>
+            ))}
+          </aside>
+          <div className="admin-content" aria-hidden>
+            <LoadingRows rows={7} style={{ padding: "4px 0" }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

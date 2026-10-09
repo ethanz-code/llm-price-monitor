@@ -2699,6 +2699,46 @@ def test_price_sanity_carries_last_price_with_reason(tmp_path: Path, monkeypatch
     assert "可信区间" in (carried.get("metadata") or {}).get("error", "")
 
 
+def test_price_sanity_rereads_catalog_each_site(tmp_path: Path, monkeypatch):
+    """sanity 判据每站现读：一轮采集中途目录修正后，后续站点不再被启动时的坏判据误杀。"""
+    bad_catalog = {
+        "usd_cny_rate": 6.74,
+        "models": {"demomodel": {"found": True, "currency": "USD",
+                                 "list": {"input": 0.003, "output": 0.006}, "source_url": "https://demo.test"}},
+    }
+    good_catalog = {
+        "usd_cny_rate": 6.74,
+        "models": {"demomodel": {"found": True, "currency": "USD",
+                                 "list": {"input": 0.446429, "output": 0.892857}, "source_url": "https://demo.test"}},
+    }
+    store = Store(tmp_path / "monitor.db")
+    calls = {"n": 0}
+
+    def collect(*_args):
+        # 两个站返回同样的真实价 0.6 元（厂商 3 元 × 站点 0.2 折）；
+        # 首站采完、二站开始前目录修正，二站应按新判据放行同一价格
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            store.set_document("catalog", good_catalog)
+        return [PriceRecord("demo-model", 0.6, 1.2, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+
+    config = dict(_config(tmp_path))
+    config["sites"] = [
+        {"id": "first", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": ["demo-model"]},
+        {"id": "second", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": ["demo-model"]},
+    ]
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    store.set_document("catalog", bad_catalog)
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    run_once(load_config(config_path), store=store, client=httpx.Client())
+
+    # 首站 0.6 对坏判据 0.02 = 30 倍被作废（首轮无上次价，不落快照）
+    assert "first:demo-model:default" not in store.latest_all()
+    # 目录修正后二站同价放行
+    assert store.latest_all()["second:demo-model:default"]["input_price"] == 0.6
+
+
 def test_group_removed_requires_consecutive_misses(tmp_path: Path, monkeypatch):
     """缺失中途恢复一次就清零计数：累计而非连续的缺失不得累积成下线。"""
     groups = {"default", "vip"}

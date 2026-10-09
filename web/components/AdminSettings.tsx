@@ -3,7 +3,7 @@
 /** 系统设置：按「采集调度 / 数据保留 / AI 提取 / 微信通知 WxPusher / 种子导入」分组，AI 与通知可独立测试有效性。 */
 
 import { useEffect, useState } from "react";
-import { toast, Btn, Input, Sel, Modal, SettingRow } from "./ui";
+import { toast, Btn, Input, Sel, Modal, SettingRow, LoadingRows } from "./ui";
 import { errorText } from "@/lib/api";
 import { IconEye, IconEyeOff } from "./icons";
 import { apiSend } from "@/lib/api";
@@ -472,7 +472,9 @@ export function AdminSettings() {
   return (
     <div className="panel settings-panel">
       {!data ? (
-        <span style={{ color: "var(--text-2)", fontSize: 13 }}>加载中…</span>
+        <div style={{ padding: "4px 0" }}>
+          <LoadingRows rows={8} />
+        </div>
       ) : (
         <div style={{ display: "grid" }}>
           <SettingsSection

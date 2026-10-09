@@ -1,56 +1,53 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import { useTheme } from "@/app/providers";
 import { CAPTURE_TIMEOUT_MS, nextFrame, withFrameFallback, withTimeout } from "@/lib/capture";
 import { Btn, Modal, toast } from "./ui";
-import { ShareSiteCard, type ShareTheme } from "./ShareSiteCard";
-import { useChartLegend } from "./ChartLegendContext";
-import { buildChannelModel, type AvailabilityPoint, type ChannelDotRow } from "@/lib/channelStatus";
+import { ShareCalcCard } from "./ShareCalcCard";
+import type { ShareTheme } from "./ShareSiteCard";
+import type { CalcPrices, CalcResult } from "@/lib/calculator";
 
-/** 中转站实时状况分享图：点击生成 PNG（含站点状态、监控站域名与介绍），预览后一键保存。 */
-export function ShareSiteButton({
-  siteName,
-  homepage,
-  availability,
-  channels,
+/** 花费计算分享图：把当前参数与结果栅格化成 PNG，预览后一键保存。
+ *  截图链路与站点状况分享图同一套（离屏卡片 + html-to-image），交互也保持一致：
+ *  生成 → 预览弹窗 → 保存；配色跟随站点当前明暗，不做手动切换。 */
+export function ShareCalcButton({
+  modelName,
+  modelSub,
+  sourceLabel,
+  currency,
+  prices,
+  totalTokens,
+  hitRate,
+  result,
+  missingCacheRead,
+  disabled = false,
 }: {
-  siteName: string;
-  homepage: string;
-  availability: AvailabilityPoint[];
-  channels: ChannelDotRow[];
+  modelName: string;
+  modelSub: string;
+  sourceLabel: string;
+  currency: string;
+  prices: CalcPrices;
+  totalTokens: number;
+  hitRate: number;
+  result: CalcResult;
+  missingCacheRead: boolean;
+  /** 还没有可展示的花费结果（没填任何单价）时按钮置灰 */
+  disabled?: boolean;
 }) {
-  // 延迟趋势与页面 StatusCharts 同一条构建路径（统一时间轴 + 阶梯保持），
-  // 分享图固定 1000px 宽，不做窄屏抽稀
-  const latencyModel = useMemo(
-    () =>
-      buildChannelModel(
-        channels,
-        // 0 / 负值是站点自报的无效延迟，当缺数处理
-        (dot) => (dot.latency != null && dot.latency > 0 ? dot.latency : null),
-        false,
-        (a, b) => (a.value >= b.value ? a : b),
-      ),
-    [channels],
-  );
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [domain, setDomain] = useState("");
   const { dark } = useTheme();
-  // 页面延迟图图例的隐藏状态：点掉的渠道分享图里也不画（生成那一刻的快照）
-  const { hidden: legendHidden } = useChartLegend();
-  // 分享图配色完全跟随站点当前明暗（看到的页面什么样，图就什么样），不提供手动切换
+  // SSR 初值固定暗色保证水合一致，挂载后校正成站点当前主题
   const [theme, setTheme] = useState<ShareTheme>("dark");
-  // 初值 0（卡片时间显示"—"），挂载后再取真实时间：服务端和客户端各算一次 Date.now()
-  // 会让"数据截至"的刻度文本对不上；真正出图前 capture() 还会再刷新一次
+  // 初值 0（卡片时间显示"—"），挂载后再取真实时间；真正出图前 capture() 还会再刷新一次
   const [generatedAt, setGeneratedAt] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
 
-  // 监控站域名在客户端取：分享图要的是"现在打开的这个网站"的地址
   useEffect(() => setDomain(window.location.origin), []);
-  // SSR 初值固定暗色保证水合一致，挂载后校正成站点当前主题
   useEffect(() => setTheme(dark ? "dark" : "light"), [dark]);
   useEffect(() => setGeneratedAt(Math.floor(Date.now() / 1000)), []);
 
@@ -63,7 +60,7 @@ export function ShareSiteButton({
     const width = card.offsetWidth;
     const height = card.offsetHeight;
     if (width < 2 || height < 2) {
-      toast("分享卡片还没排好版，稍等片刻再试");
+      toast("分享图还没排好版，稍等片刻再试");
       return;
     }
     setBusy(true);
@@ -98,21 +95,24 @@ export function ShareSiteButton({
         ref={hostRef}
         style={{ position: "fixed", left: -20000, top: 0, pointerEvents: "none", zIndex: -1 }}
       >
-        <ShareSiteCard
-          siteName={siteName}
-          homepage={homepage}
+        <ShareCalcCard
+          modelName={modelName}
+          modelSub={modelSub}
+          sourceLabel={sourceLabel}
+          currency={currency}
+          prices={prices}
+          totalTokens={totalTokens}
+          hitRate={hitRate}
+          result={result}
+          missingCacheRead={missingCacheRead}
           domain={domain}
-          availability={availability}
-          channels={channels}
-          latency={latencyModel}
           generatedAt={generatedAt}
           theme={theme}
-          hiddenSeries={legendHidden}
         />
       </div>
 
-      <Btn variant="primary" loading={busy} onClick={generate}>
-        生成分享图
+      <Btn variant="ghost" size="sm" disabled={disabled} loading={busy} onClick={generate}>
+        导出分享图
       </Btn>
 
       <Modal open={open} onClose={() => setOpen(false)} title="分享图已生成" width={720}>
@@ -120,12 +120,12 @@ export function ShareSiteButton({
           <div style={{ display: "grid", gap: 14 }}>
             <img
               src={imgUrl}
-              alt={`${siteName} 实时状况分享图`}
+              alt="花费估算分享图"
               style={{ width: "100%", borderRadius: 10, border: "1px solid var(--border)" }}
             />
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <Btn onClick={() => setOpen(false)}>关闭</Btn>
-              <a className="btn btn-primary" href={imgUrl} download={`站点检测-${siteName}.png`}>
+              <a className="btn btn-primary" href={imgUrl} download={`花费计算-${modelName || "结果"}.png`}>
                 保存图片
               </a>
             </div>

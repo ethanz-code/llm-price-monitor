@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { Btn, Empty, Modal } from "./ui";
+import { Btn, Empty, Modal, LoadingRows } from "./ui";
 import { DajuSit } from "./DajuArt";
 import { apiSend } from "@/lib/api";
 import { formatClock, formatCount, formatTime, taskKindLabel } from "@/lib/format";
@@ -120,13 +120,18 @@ function TaskLogModal({ taskId, onClose }: { taskId: string; onClose: () => void
 export function AdminTasks() {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // 首轮轮询未回来前先画骨架，避免空表闪「还没有任务」的假空态
+  const [tasksReady, setTasksReady] = useState(false);
 
   useEffect(() => {
     let alive = true;
     const load = () => {
       apiSend<TasksData>("/api/tasks", "GET")
         .then((data) => {
-          if (alive) setTasks(data.tasks);
+          if (alive) {
+            setTasks(data.tasks);
+            setTasksReady(true);
+          }
         })
         .catch(() => {});
     };
@@ -225,6 +230,11 @@ export function AdminTasks() {
     <div style={{ display: "grid", gap: 12 }}>
       {detailId && <TaskLogModal taskId={detailId} onClose={() => setDetailId(null)} />}
       <div className="panel" style={{ overflow: "hidden" }}>
+        {!tasksReady ? (
+          <div style={{ padding: "16px 20px" }}>
+            <LoadingRows rows={6} />
+          </div>
+        ) : (
         <DataTable<GroupedTask>
           rowKey={(row) => row.task.id}
           columns={taskColumns}
@@ -239,6 +249,7 @@ export function AdminTasks() {
             />
           }
         />
+        )}
       </div>
     </div>
   );

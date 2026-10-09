@@ -1,0 +1,36 @@
+# mihomo 采集兜底出口配置模板：复制为 mihomo/config.yaml 并填入订阅链接。
+#   mkdir -p mihomo && cp deploy/mihomo-config.example.yaml mihomo/config.yaml
+#   填 url 后：chmod 600 mihomo/config.yaml
+# 订阅链接自带 token，本文件不要提交进仓库（mihomo/ 已在 .gitignore）。
+mixed-port: 7890
+# 必须开：默认只监听 127.0.0.1，api/web 容器从容器网络连不进来；
+# 端口没有发布到宿主机，容器网络外依然不可达
+allow-lan: true
+mode: rule
+log-level: warning
+
+# 订阅自动更新：每 12 小时拉一次；health-check 剔除坏节点。
+# V2Board 系机场在链接末尾加 &flag=clash（已有 ? 用 &，没有 ? 用 ?）返回 Clash 格式；
+# 启动日志报 providers 解析失败时，换用机场提供的「Clash 订阅」地址。
+proxy-providers:
+  airport:
+    type: http
+    url: "在这里填入订阅链接"
+    interval: 43200
+    path: ./providers/airport.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 600
+
+# 自动挑当前延迟最低的可用节点，节点挂了自动切
+proxy-groups:
+  - name: PROXY
+    type: url-test
+    use: [airport]
+    url: https://www.gstatic.com/generate_204
+    interval: 600
+    tolerance: 100
+
+rules:
+  - MATCH,PROXY

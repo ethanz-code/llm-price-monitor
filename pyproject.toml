@@ -24,6 +24,7 @@ include = ["llm_price_monitor*"]
 
 [dependency-groups]
 dev = [
+  "httpx2>=2.13.1",
   "pytest>=8,<9",
 ]
 

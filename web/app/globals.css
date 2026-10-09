@@ -104,9 +104,9 @@
   --chart-warn: #e0b45c;
   --chart-down: #e27b78;
   --tone-gray-bg: rgba(255, 255, 255, 0.06);
-  /* 骨架屏：暗色沿用原方案（底 #171a1f，高亮半透明白），色差已足够 */
+  /* 骨架屏：暗色高亮提到 14% 白——8% 时扫过几乎不可见，骨架只剩一块静灰 */
   --skel-base: #171a1f;
-  --skel-hi: rgba(255, 255, 255, 0.08);
+  --skel-hi: rgba(255, 255, 255, 0.14);
   --tone-gray-text: #9aa0a8;
 }
 
@@ -344,9 +344,25 @@ body > main {
 }
 
 .rank-row-index {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
   font-size: 15px;
   font-weight: 600;
   text-align: right;
+}
+
+/* AA 式数值条：指数相对榜首的比例，纯装饰（aria-hidden），宽度由行内样式给 */
+.rank-row-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 28%, transparent),
+    color-mix(in srgb, var(--accent) 75%, transparent)
+  );
 }
 
 @media (max-width: 720px) {
@@ -679,6 +695,36 @@ body > main {
 }
 
 /* 折扣迷你条：数值 + 相对厂商价的比例条，颜色沿用语义 tone */
+/* 折扣紧凑芯片（首页快照表）：色点 + 标签 + 数值，单行排布压行高 */
+.disc-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.disc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.disc-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.disc-chip-label {
+  color: var(--text-3);
+}
+
+.disc-chip-val {
+  color: var(--text-2);
+}
+
 .disc-cell {
   display: grid;
   gap: 4px;
@@ -2200,7 +2246,161 @@ html:not([data-theme="dark"]) .panel {
 
 .landing-events {
   display: grid;
-  gap: 14px;
+}
+
+/* 最新事件 changelog 行（AA 式）：类型徽章 + 站点/内容 + 右对齐时间 */
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.event-row:hover {
+  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+}
+
+.event-row:hover .event-site {
+  color: var(--accent-text);
+}
+
+.event-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.event-badge.tone-blue {
+  background: var(--tone-blue-bg);
+  color: var(--tone-blue-text);
+}
+
+.event-badge.tone-yellow {
+  background: var(--tone-yellow-bg);
+  color: var(--tone-yellow-text);
+}
+
+.event-badge.tone-green {
+  background: var(--tone-green-bg);
+  color: var(--tone-green-text);
+}
+
+.event-badge.tone-red {
+  background: var(--tone-red-bg);
+  color: var(--tone-red-text);
+}
+
+.event-badge.tone-gray {
+  background: var(--tone-gray-bg);
+  color: var(--tone-gray-text);
+}
+
+.event-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.event-site {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.event-sub {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* 右侧吸顶区块目录（AA 同款）：≥1280 显示，钉在导航下方右缘（垂直居中会撞企业微信/提建议悬浮球），
+   当前区块点亮成长条，标签仅悬停时展开（避免压到窄屏内容） */
+.section-rail {
+  position: fixed;
+  right: 20px;
+  top: 96px;
+  z-index: 60;
+  display: grid;
+  gap: 2px;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 3px 0;
+  text-decoration: none;
+}
+
+.rail-label {
+  font-size: 11px;
+  color: var(--text-3);
+  opacity: 0;
+  transform: translateX(4px);
+  transition:
+    opacity var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.rail-item:hover .rail-label {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.rail-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  transition:
+    background var(--dur) var(--ease),
+    width var(--dur) var(--ease);
+}
+
+.rail-item.on .rail-dot {
+  width: 14px;
+  background: var(--accent);
+}
+
+@media (max-width: 1279px) {
+  .section-rail {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-label,
+  .rail-dot {
+    transition: none;
+  }
+}
+
+/* 锚点跳转的落点补偿：吸顶导航约 64px + 呼吸空间 */
+.landing-section[id],
+#sec-data,
+#sec-faq {
+  scroll-margin-top: 92px;
 }
 
 @media (max-width: 1024px) {
@@ -2543,11 +2743,28 @@ html:not([data-theme="dark"]) .panel {
   color: rgba(255, 255, 255, 0.85);
 }
 
-/* 监控站点卡片 */
+/* 监控站点卡片：bento 网格——总览锚点卡与 down 站跨两列，dense 回填避免空洞 */
 .site-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-auto-flow: row dense;
   gap: 16px;
+  /* 鼠标光晕的橘色浓度：浅底上过浓显脏，亮色比暗色淡一档 */
+  --spot-color: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+[data-theme="dark"] .site-cards {
+  --spot-color: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.site-card--wide {
+  grid-column: span 2;
+}
+
+@media (max-width: 767px) {
+  .site-card--wide {
+    grid-column: auto;
+  }
 }
 
 .site-card {
@@ -2573,6 +2790,79 @@ html:not([data-theme="dark"]) .panel {
 
 .site-card:hover .site-name {
   color: var(--accent-text);
+}
+
+/* 总览锚点卡：品牌橘轻染底，承担区块的「一眼状态」 */
+.site-card--overview {
+  gap: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.site-card--overview:hover {
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+}
+
+.site-overview-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.site-overview-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.site-overview-avg {
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.site-overview-pct {
+  font-size: 0.55em;
+  margin-left: 1px;
+  opacity: 0.75;
+}
+
+.site-overview-avg-label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.site-overview-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.site-overview-sub em {
+  font-style: normal;
+}
+
+.site-overview-abnormal {
+  color: var(--chart-down);
+}
+
+/* 鼠标跟随光晕：容器统一监听指针，光标位置由 SiteGridSpotlight 写进卡片级 --sx/--sy，
+   opacity 交给 :hover；触屏与 reduce 动效场景自然没有这层光 */
+.site-card-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    260px circle at var(--sx, 50%) var(--sy, 50%),
+    var(--spot-color),
+    transparent 70%
+  );
+  transition: opacity var(--dur) linear;
+}
+
+.site-card:hover .site-card-glow {
+  opacity: 1;
 }
 
 .site-card-head {
@@ -2602,6 +2892,34 @@ html:not([data-theme="dark"]) .panel {
   flex-shrink: 0;
 }
 
+/* 最新检测点呼吸：只脉色条最后一颗，提示检测仍在继续（其余点保持静态） */
+.site-strip-dot--live {
+  position: relative;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .site-strip-dot--live::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: inherit;
+    animation: site-dot-ping 2.4s var(--ease) infinite;
+  }
+}
+
+@keyframes site-dot-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.65;
+  }
+  70%,
+  100% {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+}
+
 .site-card-more,
 .site-card-nostatus {
   font-size: 12px;
@@ -2624,6 +2942,49 @@ html:not([data-theme="dark"]) .panel {
   font-size: 11px;
   color: var(--text-3);
   margin-right: 6px;
+}
+
+/* 异常站点卡的旋转描边：conic-gradient 加双层 mask 只露 1.5px 边框环
+   （Magic UI Border Beam 的纯 CSS 复刻），颜色由卡片内联 --beam-color 给（warn 黄 / down 红）；
+   只给异常卡转，全卡都转会非常吵；老浏览器不识别 @property 时退化为一段静态弧 */
+@property --beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.site-card-beam {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0turn 0.55turn,
+    var(--beam-color, var(--chart-warn)) 0.85turn,
+    transparent 1turn
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .site-card--alert .site-card-beam {
+    animation: site-beam-spin 5.5s linear infinite;
+  }
+}
+
+@keyframes site-beam-spin {
+  to {
+    --beam-angle: 360deg;
+  }
 }
 
 /* ---- 过渡动画 ---- */
@@ -4431,10 +4792,9 @@ a.event-card {
   text-wrap: balance;
 }
 
-/* 04 数据从哪来：左要点列表 + 右采集数据面板 */
-/* 数据来源：单栏要点，mono 序号立节奏，零装饰件 */
+/* 04 数据从哪来：与常见问题同行双栏，本列内要点卡片竖排 */
 .landing-truth {
-  max-width: 680px;
+  max-width: none;
 }
 
 .landing-points {
@@ -4442,27 +4802,33 @@ a.event-card {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 16px;
+  grid-template-columns: 1fr;
+  gap: 12px;
 }
 
 .landing-points li {
   display: flex;
   align-items: baseline;
   gap: 14px;
-  font-size: 14px;
-  line-height: 1.7;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: var(--card-border);
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.75;
   color: var(--text-2);
 }
 
 .landing-points-no {
   flex-shrink: 0;
-  font-size: 12px;
-  color: var(--text-3);
+  font-size: 15px;
+  color: var(--accent-text);
 }
 
-/* 05 FAQ 手风琴：限宽居中，靠间距与 +/− 组织，不再画通栏线 */
+/* 05 FAQ 手风琴：限宽且真正居中（此前只有 max-width，整列吊在左边），靠间距与 +/− 组织 */
 .faq-list {
   max-width: 720px;
+  margin: 0 auto;
   display: grid;
   gap: 2px;
 }
@@ -4830,7 +5196,7 @@ a.event-card {
 .ai-suggest button {
   text-align: left;
   padding: 9px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: 4px;
   background: none;
   color: var(--text-2);
@@ -4881,17 +5247,17 @@ a.event-card {
 .ai-msg-user {
   align-self: flex-end;
   border-radius: 4px;
-  /* 品牌荧光绿两套主题取值一致，配深色文字明暗主题都可读 */
-  background: var(--accent);
-  color: #1c2400;
+  /* 淡橙底保留"我的消息"识别度，文字回归正文色，明暗主题都不刺眼 */
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-1);
   font-weight: 520;
 }
 
 .ai-msg-assistant {
   align-self: flex-start;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--text-1) 4%, transparent);
+  background: color-mix(in srgb, var(--text-1) 3%, transparent);
   color: var(--text-1);
 }
 
@@ -5227,6 +5593,13 @@ a.event-card {
   line-height: 1.6;
 }
 
+/* 明细表里没填价档的「未计入」小标 */
+.calc-unbilled {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
 .calc-empty {
   display: grid;
   justify-items: center;
@@ -5488,8 +5861,9 @@ a.event-card {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cellipse cx='12' cy='15.6' rx='5.6' ry='4.6'/%3E%3Cellipse cx='5.4' cy='10.2' rx='2' ry='2.7' transform='rotate(-18 5.4 10.2)'/%3E%3Cellipse cx='9.6' cy='7.4' rx='2' ry='2.8'/%3E%3Cellipse cx='14.4' cy='7.4' rx='2' ry='2.8'/%3E%3Cellipse cx='18.6' cy='10.2' rx='2' ry='2.7' transform='rotate(18 18.6 10.2)'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
-/* 数据源要点列表：圆点符号换成爪印 */
+/* 数据源要点卡片化后爪印符号退场：节奏由卡片内的 mono 序号承担 */
 .landing-points li::before {
+  content: none;
   width: 14px;
   height: 14px;
   top: 5px;
