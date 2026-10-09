@@ -51,6 +51,15 @@ FINGERPRINT_METADATA_KEYS = (
     "cache_read_price", "cache_create_price", "cache_create_1h_price",
 )
 
+# 这五个价格槽位里 0 与 null/缺失同义（"该处无独立价"）：AI 抽取轮次间会在两种写法间
+# 漂移（DaiTuAI 2026-10-08 实测同一档位前轮 0/0 后轮 null/null，有效价没变却每轮刷
+# changed）。仅指纹比较做归一，落库数据不动；顶层 input_price/output_price 不在此列——
+# 真免费档的 0/0 confirmed 是有语义的价格。
+ZERO_PRICE_KEYS = (
+    "input_price", "output_price",
+    "cache_read_price", "cache_create_price", "cache_create_1h_price",
+)
+
 
 def fingerprint(value: dict[str, Any]) -> str:
     """价格口径指纹：只含价格相关字段，用于判定"价格是否真的变了"。
@@ -60,6 +69,7 @@ def fingerprint(value: dict[str, Any]) -> str:
     避免 int/float 表示差异被误判成变化。值为 None 的键与键缺失视为等价——
     同一价格有的抽取轮次显式写 null、有的直接省略键（cache_create_price 等），
     不归一的话每轮表示法抖动都会刷出一条"价格没变的变更"事件。
+    五个价格槽位（ZERO_PRICE_KEYS）里 0 与 null/缺失也视为等价，理由同上。
     """
 
     def normalize(item: Any) -> Any:
@@ -74,6 +84,7 @@ def fingerprint(value: dict[str, Any]) -> str:
                 key: normalize(entry)
                 for key, entry in item.items()
                 if key not in ("context_min", "context_max") and entry is not None
+                and not (key in ZERO_PRICE_KEYS and entry == 0)
             }
         return item
 

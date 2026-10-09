@@ -50,6 +50,8 @@
 | 助手单次提问 token 爆炸 | 数据摘要瘦身，消耗降约 88% | 提交 d2f626e |
 | 提示词模板示例值会被 AI 照抄：输出结构示例写 `"input_price": 0`，AI 抽不到价就把 0 抄进结果，而 "0" 字符几乎总在证据文本里，数字在证闸门拦不住；0/0 占位行以 candidate 落库后被前端最低价挑选选中，首页把无数据模型渲染成 ¥0 假免费价（DaiTuAI grok-4.7 等 10 条实测） | 模板示例值一律写 null 不写 0；AI 自报 unavailable 时在状态推导链之前强制清空价格/缓存价/pricing_rules；写 prompt 示例时先问"这个值被照抄了会怎样" | extractor.py unavailable 清价分支 |
 | AI 调用失败还扣每日次数 | 失败不扣次数 | 提交 2f6487b |
+| 自研站的美元价被按人民币落库（118.ink 实测 $1.68 存成 ¥1.68，低约 7 倍）：extractor 币种闸门只有单向纠正，且币种标识取自 AI 自报 quote 而非系统侧证据 | 闸门补反向纠正（$ 在、¥/cny 不在、AI 报 CNY → USD），标识探测切到系统侧证据 searchable | 修复+单测 2026-10-08（c90de10） |
+| 无头渲染页被 chunk 爬虫劫持 AI 证据（118.ink 实测）：渲染页明明 6/6 模型全对，管线却因「chunk 里有模型名但格式认不出」把 AI 证据换成 445KB 压缩 JS 包，抽取全面劣化成 unavailable/null，表现成"抽取覆盖不稳"的假象 | chunk 搜索只服务 httpx 直采的空壳页；_BrowserPageResponse 链路直接用渲染页做 AI 兜底 | 修复 2026-10-08（69ff735），同提交含「售价+Official price 成对标注」提示词规则与缓存 version 15 |
 
 ## 3. 价格与目录口径
 

@@ -9,7 +9,7 @@ describe("articles markdown loader", () => {
     expect(all.map((item) => item.slug)).toContain("how-we-collect-prices");
     expect(all.map((item) => item.slug)).toContain("relay-station-traps");
     const collect = getArticle("how-we-collect-prices");
-    expect(collect?.title).toBe("这些价格是怎么抓下来的");
+    expect(collect?.title).toBe("本站里价格数据是怎么拿到的");
     expect(collect?.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
@@ -25,7 +25,7 @@ describe("articles markdown loader", () => {
     expect(collect?.content).toContain("| 响应长什么样 |");
     expect(collect?.content).toContain("`New-Api-User`");
     const relay = getArticle("relay-station-traps");
-    expect(relay?.content).toContain("> 信号有先后");
+    expect(relay?.content).toContain("> 跑路有前兆");
   });
 
   it("未知 slug 返回 undefined", () => {

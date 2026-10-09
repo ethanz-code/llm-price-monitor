@@ -592,7 +592,14 @@ class NetworkAdapter:
         evidence_source = "model_list"
         ai_page_text = response.text
         ai_captured = [captured]
-        if not (entries and any(_entry_matches_targets(item, spec) for item in entries)) and _looks_like_html(response.text):
+        # chunk 搜索是给 httpx 直采拿到的空壳页设计的（页面没有数据才去引用链里找）。
+        # 无头渲染出来的页面本身就是完整内容，且多是整站大包——把 AI 证据从渲染页换成
+        # 压缩 JS 包会让抽取全面劣化（118.ink 实测：渲染页 6/6 全对，换成 445KB 包文本
+        # 后同模型全变 unavailable/null），故浏览器链路不做 chunk 搜索。
+        if not (
+            isinstance(response, _BrowserPageResponse)
+            or (entries and any(_entry_matches_targets(item, spec) for item in entries))
+        ) and _looks_like_html(response.text):
             chunk_headers = build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"]
             hit = _search_price_chunk(spec, client, entry.url, chunk_headers, timeout, response.text)
             if hit is not None and hit.entries is not None:

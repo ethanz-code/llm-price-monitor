@@ -156,11 +156,13 @@ class AIPriceExtractor:
         # version=14：键改用顺序规范化证据（canonical_cache_evidence）。new-api 系接口的模型数组与
         # 分组列表逐请求洗牌（cun 实测两次响应字节数相同、顺序不同），原序哈希让缓存永不命中，
         # 每轮采集都全额重跑全部批次；旧键整体失效一次。
+        # version=15：提示词补「售价 + Official price 成对标注」判读规则（118.ink 免责声明页面
+        # 实测站点价被填 null），旧缓存结果未按新规则抽取，整体失效重抽。
         try:
             canonical = json.dumps(canonical_cache_evidence(json.loads(evidence)), ensure_ascii=False, sort_keys=True)
         except ValueError:
             canonical = evidence
-        return payload_hash({"version": 14, "site": spec.id, "models": expected_models, "evidence": canonical})
+        return payload_hash({"version": 15, "site": spec.id, "models": expected_models, "evidence": canonical})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -328,6 +330,7 @@ class AIPriceExtractor:
 {output_rule}
 - aliases：确认模型后必须至少列出接口原始 ID、规范展示名、供应商前缀 ID 三种形式（如识别到 gpt-5.6-sol，aliases 为 ["gpt-5.6-sol", "GPT-5.6 Sol", "openai/gpt-5.6-sol"]）；只允许基于已确认 ID 做格式规范化，不得把其他模型当别名。
 - 监控目标是站点实际售价，不是官方参考价：页面同时出现站点价与“官方价”时必须填站点价；official_pricing、official_price 等官方价字段只能作参考证据，绝不能填入 input_price 或 output_price。
+- 页面成对标注的“售价 + Official price（官方价）”判读：带 Official price / 官方价 / 官方参考标注的那个数是参考价，同卡片里另一个不带该标注的就是站点实售价，必须填入 input_price/output_price。页面顶部的免责声明（如 Prices are for reference only、价格仅供参考）不改变这一判读，也不构成填 null 的理由——成对标注本身就是“页面明确标注来源”。
 - input_price、output_price 不明确时填 null，不得把倍率或余额当成价格。页面多个价格的显示顺序不等于归属；只有页面明确标注来源时才映射，否则填 null 并在 notes 说明无法映射。
 - 位置型价格数组：证据里出现"[位置型价格数组解读]"和"[分组实付价结论]"结论行时，它们是调用方对压缩数组的确定性判读，直接采信：每个"[分组实付价结论]"各输出一条记录，group 填结论中的分组名，input_price/output_price/cache_read_price 填结论里的数值，status=candidate，notes 一句话说明取自结论行；不得再以"字段顺序不明"标 rule_only 或填 null。
 - 没有上述结论行时才自行判读：压缩 JS/JSON 数组（如 ["模型ID",14,84,1.4,2,12,.2]）没有字段名时，按结构判读而不是臆造：同一数组出现两组"输入/输出/缓存读取"三元组时，较大一组是官方参考价（页面通常声明"官方参考价 = 上游美元价 × 7"之类的公式，数值也正好是 7 的倍数），另一组较小的就是站内实付基础价。input_price/output_price 必须填站内实付基础价 × 所在分组倍率的结果，官方价只能写进 notes 作参考。基础价 × 分组倍率是本任务的标准换算，必须执行，不算推断；只有白名单或倍率确实缺失时才允许 rule_only。识别出两组三元组即视为"页面明确标注来源"，本条优先于"不明确时填 null""字段名不清晰标 rule_only"等其他规则。严禁把无法解释的数字编造成"缓存创建""1小时缓存"等字段名，解释不了的数字留在 quote/notes 里。
@@ -726,8 +729,10 @@ expected_models：
             evidence_text = json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False)
             currency = item.get("currency")
             unit = str(item.get("unit") or "来源未说明单位")
-            evidence_casefold = evidence_text.casefold()
-            has_usd_marker = any(marker in evidence_casefold for marker in ("$", "usd", "美元", "dollar"))
+            # 币种标识以系统侧证据原文为准（searchable=系统页面文本+响应体），AI 自报的
+            # quote 不算自证——与数字在证闸门同一信任边界
+            system_casefold = searchable.casefold()
+            has_usd_marker = any(marker in system_casefold for marker in ("$", "usd", "美元", "dollar"))
             if (input_price is not None or output_price is not None) and (
                 currency not in ("CNY", "USD") or (currency == "USD" and not has_usd_marker)
             ):
@@ -741,6 +746,14 @@ expected_models：
                 unit = unit.replace("USD", "CNY")
                 metadata_note = "AI 将人民币符号误识别为 USD，已按页面证据纠正为 CNY。"
                 item["notes"] = f"{metadata_note}{item.get('notes', '')}"
+            has_cny_marker = any(marker in system_casefold for marker in ("¥", "人民币", "cny"))
+            if currency == "CNY" and has_usd_marker and not has_cny_marker:
+                # 反向纠正：证据满是美元标识却无任何人民币标识，AI 仍报 CNY 是照抄了
+                # 提示词示例（118.ink 实测 $1.68 被落成 ¥1.68，低约 7 倍）；双标识并存时
+                # 不动，保守维持 CNY。
+                currency = "USD"
+                unit = "USD/1M tokens"
+                item["notes"] = f"证据标明美元，AI 误报 CNY，已纠正为 USD；{item.get('notes', '')}".strip()
             if currency == "CNY" and "USD" in unit:
                 unit = unit.replace("USD", "CNY")
             # browser_ai 只表示价格由 AI 从页面文本提取；"browser" 是历史命名，与采集是否走了浏览器无关

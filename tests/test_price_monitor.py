@@ -1001,6 +1001,74 @@ def test_ai_extractor_discards_prices_whose_digits_are_absent_from_evidence():
     assert "未在证据文本中出现" in (record.metadata or {}).get("notes", "")
 
 
+def test_ai_extractor_corrects_cny_claim_when_evidence_is_usd():
+    """证据满是美元标识、AI 却照抄提示词示例报 CNY 时必须纠正为 USD：币种闸门此前只有
+    USD→CNY 单向纠正，118.ink 实测页面 $1.68 被落成 ¥1.68（低约 7 倍）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "gpt-6.1-sol",
+                "observed_model": "gpt-6.1-sol",
+                "input_price": 1.68,
+                "output_price": 8.4,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "confirmed",
+                "confidence": 0.9,
+                "network_evidence": [{"url": "https://demo.test/pricing", "quote": "gpt-6.1-sol"}],
+                "page_evidence": ["gpt-6.1-sol"],
+            },
+        ], "cross_validation": {"status": "matched", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("gpt-6.1-sol"),))
+    records = extractor.extract(
+        spec,
+        # 系统侧证据原文带美元标识（$ 与 USD），且无任何人民币标识
+        "Model Pricing — gpt-6.1-sol Input $1.68 Output $8.4 USD per 1M tokens",
+        [{"url": "https://demo.test/pricing", "status": 200, "resource_type": "fetch",
+          "content_type": "text/html", "payload": None}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    record = records[0]
+    assert (record.metadata or {}).get("currency") == "USD"
+    assert record.unit == "USD/1M tokens"
+    assert "已纠正为 USD" in (record.metadata or {}).get("notes", "")
+
+
+def test_ai_extractor_keeps_cny_when_evidence_has_both_currency_markers():
+    """中英双标价页（$ 与 ¥ 并存）不做反向纠正：双向标识并存时保守维持 CNY。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {"models": [
+            {
+                "model": "demo-model",
+                "observed_model": "demo-model",
+                "input_price": 12,
+                "output_price": 60,
+                "unit": "CNY/1M tokens",
+                "currency": "CNY",
+                "status": "confirmed",
+                "confidence": 0.9,
+                "page_evidence": ["demo-model"],
+            },
+        ], "cross_validation": {"status": "matched", "conflicts": []}}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"}, models=(ModelTarget("demo-model"),))
+    records = extractor.extract(
+        spec,
+        "模型价格 — demo-model 输入 ¥12（约 $1.68）输出 ¥60（约 $8.4）",
+        [{"url": "https://demo.test/pricing", "status": 200, "resource_type": "fetch",
+          "content_type": "text/html", "payload": None}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    record = records[0]
+    assert (record.metadata or {}).get("currency") == "CNY"
+    assert record.unit == "CNY/1M tokens"
+
+
 def test_ai_extractor_keeps_unit_converted_prices():
     """prompt 要求把每 token 报价换算成每 1M tokens：换算产物不在证据原文里，
     证据闸按可枚举的单位换算形态放行，不把正确换算价当幻觉作废。"""
@@ -2680,6 +2748,61 @@ def test_fingerprint_treats_null_value_as_missing_key():
     assert classify(base, gained) == "changed"
     # 有值变缺失同理
     assert classify(gained, omitted) == "changed"
+
+
+def test_fingerprint_treats_zero_price_as_empty_in_tiers():
+    """tier 价位里 0 与 null 是同一口径（"该处无独立价"）：AI 抽取轮次间在两种写法间漂移
+    不得刷"变更"事件（DaiTuAI 2026-10-08 实测：同一档位前轮 0/0 后轮 null/null，两天刷了
+    60 条假 changed）。仅档位/缓存价槽位归一；顶层 input_price/output_price 的 0 是真免费
+    档语义，0↔null 仍算真变更。"""
+    base = {
+        "model": "grok-4.7",
+        "input_price": 0,
+        "output_price": 0,
+        "unit": "CNY/1M tokens",
+        "price_status": "rule_only",
+        "requires_auth": False,
+        "metadata": {
+            "group": "default",
+            "pricing_kind": "tiered_expr",
+            "pricing_rules": {"groups": [{"name": "default", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": 0, "output_price": 0,
+                 "cache_read_price": None, "cache_create_price": None, "cache_create_1h_price": None},
+            ]}]},
+        },
+    }
+    # 下一轮 AI 把档位价写成 null/null，其余一字未动（DaiTuAI 实测形态）：同一价格口径
+    drifted = {
+        **base,
+        "metadata": {
+            **base["metadata"],
+            "pricing_rules": {"groups": [{"name": "default", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": None, "output_price": None,
+                 "cache_read_price": None, "cache_create_price": None, "cache_create_1h_price": None},
+            ]}]},
+        },
+    }
+    assert fingerprint(base) == fingerprint(drifted)
+    # 真价格变化（档位 0 → 5）：仍要发事件
+    raised = {
+        **drifted,
+        "metadata": {
+            **drifted["metadata"],
+            "pricing_rules": {"groups": [{"name": "default", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": 5, "output_price": 25,
+                 "cache_read_price": None, "cache_create_price": None, "cache_create_1h_price": None},
+            ]}]},
+        },
+    }
+    assert fingerprint(base) != fingerprint(raised)
+    # 顶层 0/0（真免费档）与无价（null）：语义不同，不算同口径
+    no_price = {
+        **base,
+        "input_price": None,
+        "output_price": None,
+        "metadata": {**drifted["metadata"]},
+    }
+    assert fingerprint(base) != fingerprint(no_price)
 
 
 def test_parse_scalar_keeps_non_json_js_array_as_text():
