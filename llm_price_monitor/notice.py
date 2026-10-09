@@ -158,6 +158,9 @@ def fetch_site_notice(
         elif isinstance(data, dict) and isinstance(data.get("announcements"), list):
             # /api/status 型响应（data 携带 announcements）
             items = data["announcements"]
+        elif isinstance(data, dict) and str(data.get("content") or "").strip():
+            # 302.ai 型：data 是单条公告对象（title/content，正文 HTML 片段）
+            items = [data]
         elif isinstance(payload.get("announcements"), list):
             # icodeeasy 型：announcements 数组直接挂在顶层
             items = payload["announcements"]

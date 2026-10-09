@@ -125,6 +125,29 @@ def test_fetch_site_notice_handles_json_list_payload():
     assert "数组公告正文" in record["content"]
 
 
+def test_fetch_site_notice_single_object_data(monkeypatch):
+    """302.ai 型：data 是单条公告对象（title/content，HTML 正文）时结构化渲染，不经 AI。"""
+
+    def forbidden_extract(config, raw_text, *, client=None):
+        raise AssertionError("结构化单条公告不应交给 AI 提取")
+
+    monkeypatch.setattr("llm_price_monitor.notice.extract_notice_content", forbidden_extract)
+    spec = _spec({"url": "https://demo.test/api/proxy/announcements"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "code": 0,
+            "msg": "success",
+            "data": {"id": 50, "title": "维护通知", "content": "<p>今晚升级。</p>"},
+        })
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1", ai=AIConfig(enabled=True))
+    assert record["parse"] == "status"
+    assert "维护通知" in record["content"]
+    assert "<p>今晚升级。</p>" in record["content"]
+
+
 def test_fetch_site_notice_merges_status_announcements():
     """new-api 多条公告走 /api/status：分节拼进正文，置顶公告在前、列表最新在前。"""
     spec = _spec(None)

@@ -44,13 +44,18 @@
 **公告（notice）**：
 
 - new-api 系零配置也能跑：未配 `notice.url` 时自动从 `network.url` 根地址推导 `/api/notice`，并自动请求 `/api/status` 把后台「公告管理」发布的多条 announcements 拼成分节 Markdown 合并进正文。
-- **配法约定（2026-10-08 拍板）：new-api 系公告地址一律显式填 `/api/notice`**——解析层会自动把 `/api/status` 的 announcements 拼进正文（实测 `parse=json+status`），手写正文与公告板两条都拿全；显式配 `/api/status` 只拿公告板、会丢 `/api/notice` 手写正文，别用。零配置虽等价于显式 `/api/notice`，但按「填什么抓什么」原则统一显式写。
-- 其余显式场景：① 标准路径不存在或自研路径 → 配实际公告接口（`data` 直接是公告数组、`announcements` 挂顶层这两种形态都能解析）；② 公告接口要登录 → 显式配 + 认证（`auth_inject` 的 notice 腿或 `notice.headers`）。
+- **配法口径（2026-10-09 修订，推翻 10-08 旧拍板）**：**哪个接口承载站的真公告就配哪个**——new-api 站的公告板（`/api/status` 的 announcements）通常是主公告源且更明确（cun 板上 16 条完整版 vs `/api/notice` 57 字节一句话；modelflare 的 `/api/notice` 是静态欢迎页；subrouter 的为空），这类站显式配 `/api/status`；少数站板上无货、`/api/notice` 手写位才是真公告（123ai-ai-wx 等批站），则配 `/api/notice`。**配之前两个接口都拉一次看内容，别按站族套公式**。显式配 `/api/notice` 时解析层仍会自动拼 `/api/status` 的公告板进正文（json+status），显式配 `/api/status` 只拿公告板（但板上就是主源时这正好）。零配置虽等价于显式 `/api/notice`，按「填什么抓什么」原则统一显式写。
+- 其余显式场景：① 标准路径不存在或自研路径 → 配实际公告接口（`data` 直接是公告数组、`announcements` 挂顶层、`data` 为单条公告对象（302.ai 型）这三种形态都能解析）；② 公告接口要登录 → 显式配 + 认证（`auth_inject` 的 notice 腿或 `notice.headers`）。
 - 正文变化才存新版本发事件，正文为空不入库；显式配置的地址 404 是配置错误会报错，自动推导地址 404 视为站点没有公告接口、静默跳过。
 
 **渠道状态（status）**：
 
-- **没有自动推导，必须显式配 `status.url`**。new-api 系常见候选：`/api/model_status/groups`（渠道分组状态，多要登录态 + `New-Api-User` 头）、公开性能汇总接口（如 `/api/perf-metrics/summary?hours=24`）；自研站找 channel-monitors / channel-status 类端点。
+- **没有自动推导，必须显式配 `status.url`**。new-api 系常见候选：`/api/model_status/groups`（渠道分组状态，多要登录态 + `New-Api-User` 头）、公开性能汇总接口（如 `/api/perf-metrics/summary?hours=24`）；自研站找 channel-monitors / channel-status 类端点。⚠️ **perf-metrics 这类接口常是站方后来才上线的——启用时实测为空不等于一直空，批量复测标准端点族（脚本思路：拉首页提取 `/api/*` 引用 + 标准族逐个打）值得隔阵子跑一遍**（2026-10-09 复测即捡到 modelflare 48 条、123ai-ai-wx 1 条）。
+- **Uptime Kuma 状态页**（外挂 status.xxx 域名，导航叫 Monitor 的多是它）：配心跳接口并声明 `"parse": "kuma"`——
+  ```json
+  "status": {"url": "https://status.<站域>/api/status-page/heartbeat/<slug>", "parse": "kuma"}
+  ```
+  采集器自动取同源 `/api/status-page/<slug>` 拿监控名与分组，转成标准渠道形状（name/group/status 词/availability 整数/timeline 心跳点）；滚动窗口不进 diff，渠道状态翻转才算事件（首例 1xm：22 渠道两轮零噪音）。**不要原样采 heartbeat 端点**——前端通用提取器会把每条心跳渲染成垃圾渠道、diff 每轮刷 81 条噪音。
 - 解析三层：结构化 JSON 直接采用 → HTML/文本提取内嵌 JSON → AI 兜底；数据原样存（不强制归一 schema），路径级结构 diff 生成状态变化事件（滚动时间线字段自动跳过防噪音）。选地址时优先找直接返回 JSON 的接口。
 - `status.groups` 可只保留指定分组；401/403 按需认证处理，走 `auth_inject` 的 status 腿。
 

@@ -10,7 +10,7 @@
 | 访客统计 / visit_logs / IP 全一样 / XFF / client_ip | 本页 §1 |
 | 代理 / 出口 / Clash / 境外站 / 超时 / TLS 掐断 | 本页 §1 |
 | AI 输出截断 / max_tokens / 助手 token 爆炸 | 本页 §2 |
-| 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 / ¥0 / 假免费 / 最低价 / 旧价不更新 | 本页 §3 |
+| 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 / ¥0 / 假免费 / 最低价 / 旧价不更新 / 异常卡片刷屏 / 价格异常作废循环 | 本页 §3 |
 | 骨架屏 / 暗色 / 表格 / 窄屏 / 响应式 | 本页 §4 |
 | panic / char boundary / code-frame / dev 半死 / 改文件不生效 | 本页 §4 |
 | 强制刷新 / 数据不更新 / 页面旧数据 / revalidate / no-store / 缓存 | 本页 §4 |
@@ -41,6 +41,7 @@
 | "整站没价"被记成错误，用户看不到原因 | 401 这类"没价但不算错误"的原因直接报给用户 | 提交 40124fe |
 | 想采站点全部模型逐个列太累 | models 配置 `["*"]` 通配符全量采集，不可与其他模型混列 | 提交 3459300 |
 | 首页归属地查询逐 IP 打 ip-api 免费接口（45 次/分），失败站点每轮重查把自己打进限流，9 站只剩 1 颗星 | 改 `/batch` 批量接口一轮一请求（≤100 IP/请求，响应按请求顺序对位）；传输层失败记 2 分钟短退避，单 IP 明确失败仍 30 分钟负缓存 | 提交 f0de495 |
+| httpx 0.28 起 `client.get(url, params={})` 会用空参数**整体替换** URL 查询串：采集器对每个端点都默认带 `params={}`，把写在 URL 里的 `page_size`/过滤参数悄悄清掉（302.ai 分页接口只回 20 条默认页；subrouter 的 `source=shared_subscription` 渠道过滤参数此前也一直被吞）。同一 URL 裸发正常、走 kwargs 变薄，极易误判成"站方数据不稳定" | `build_request_kwargs` 仅在 params 非空时才带 `params` 键；排查这类问题先对比 `str(response.request.url)` 与配置 URL 是否一致 | 提交见 git log |
 
 ## 2. AI 抽取与助手
 
@@ -70,6 +71,10 @@
 | AI 抽取轮次间表示法漂移：tier 里 `cache_create_price: null` 下一轮直接省略键，指纹当成两种价格，有效价一分没变也刷"变更"事件（DaiTuAI 一轮四连假事件，用户点名） | fingerprint 归一"空"的两种写法：dict 里 None 值键剔除与键缺失等价；有值↔缺失仍算真变更。凡跨轮比较的结构都要做同类归一 | report.py `fingerprint`；存量清理 `uv run price-admin prune-noop-events`（默认预览，--apply 才删） |
 | 厂商页「输入（命中缓存）/未命中/输出」三列表被 AI 抽错位：缓存命中价当成输入价（小米 mimo 官方价错 100 倍，站点折扣全被算成 40–60 倍，用户点名）；证据校验又被"0.036 包含 0.03"子串误匹配放行 | prompt 明确列对号规则（命中缓存进 cache_read、输入必取未命中列）+ 拆行规则；合并目录时加与既有基准的 0.01–20 倍偏差闸门（candidate 基准不受保护，留纠错通道） | ai_fallback.py `_AI_SYSTEM_PROMPT`；vendor_sources.py `_source_deviation_violation` |
 | 站点价合理性校验一轮就作废：官方价目录自身带错时真数据被误标"无数据"（AIHub365 案，用户点名） | 改两轮确认：首轮异常只挂 `metadata.sanity_suspect` 标记、价格照常展示，下轮复现才作废；作废不沿用可疑旧价 | pricing.py `_apply_price_sanity`；scans.py 作废分支 |
+| 两轮确认自身循环刷屏：作废行无价被落库层清理 → 下轮 `previous` 变 None → 同一问题每两轮重新走一遍 warn→error（01tree 8 模型 21 条流水，用户点名）。**跨轮状态机别寄生在会被清理的数据行上** | 作废进度记 `sanity_state` 文档（key→{reason,voided}，站级读写、与 group_miss 同锁同 persist 口径）：已作废同因复现静默维持作废；恢复/换因重走两轮；存量只带旧标记的行同因直接作废 | pricing.py `_apply_price_sanity`；scans.py `sanity_state` |
+| 站方虚挂占位分组（2000lab deepseek稳定高速：5 模型同一 0.03/0.12 价目、前台不卖），用户点名"没有实际价格的分组要过滤"且拒绝逐站配置。**通用判据的直觉要拿全库数据证伪**：单看"组内全同价"全库 17 个组命中（grok 官方同价打包是真形态）；单看"越界"漏掉界内占位价（deepseek-flash 官方价 2.0，0.03=0.015 倍在界内） | 双信号定稿：组内 ≥2 个有价模型全部同一价目 + 组内已有 sanity 作废实锤 → 整组跳过（缺失计数 3 轮自动摘旧价，站方改价自动恢复）；单模型组"全同价"恒真不判，否则作废后改价无法恢复 | pricing.py `_drop_phony_group_records`；scans.py 接入 |
+| 01tree 全系价格 ×1000 + 币种标错 CNY（$2.00/1M 抽成 2000，sanity 连续作废刷屏）：页面价目本身全对，根因是 **HTML 采集链路只认 JS 内嵌条目（{category:...} 形态），普通价目表格页解析不出就落到 AI 兜底，而 AI 对干净表格页也会整表抽错**；同一页面 AI 时对时错（10-08 早上对过一次），不是单位标注问题 | page_price 表格解析器（Markdown/HTML/JSON/组件注入）作为 HTML 链路的确定性兜底，排在 AI 之前：命中监控模型即采信 confirmed（pricing_kind=page_table），页面没有的模型不产出也不交给 AI 补抽（宁缺勿编）；用真实渲染 HTML 复现验证 2.0/10.0 USD 全对 | adapters.py `_collect_from_html` 表格兜底 + `_price_records_from_table_entries`；tables.py `parse_text_tables` |
+| 1for"拿不到价格"两轮误判：第一轮归因"站方货架空了等补货"被用户纠正——**售卖接口（channels/available）空 ≠ 没价目，sub2api 系渠道状态（/monitor、channel-monitors）里渠道与模型列表一体且带 rate_multiplier**，倍率就是价目（实付=官方价×倍率）。判定站有没有货必须把状态腿响应翻全，不能只看售卖腿 | 价格腿零命中 + 状态快照（status_ref:{site}）渠道带倍率与模型 → 官方价×倍率自动合成渠道价（candidate、分组=渠道名、官方目录查无的渠道跳过），零配置通用判据 | pricing.py `_channel_rate_records`；scans.py 零命中分支 |
 | 0 被当成有效价贯穿全链路：`_has_price` 只判 `is not None`，0/0 双零占位行入库绕过"无价行不进快照"设计；前端 `hasUsablePrice`/最低价挑选同样不防 0，¥0 假免费价上首页。**判"有没有价"必须带 price_status 语义：0/0 只有 confirmed（真免费档）算数**；且旧价不能无限沿用——连续 3 轮无数据（响应缺席或解析不出价）就从快照摘除旧价发 group_removed（用户点名要实时，需认证/采集失败的整轮除外，那是我方问题） | pricing.py `_has_price`；scans.py `GROUP_REMOVED_MISSES = 3`；web/lib/priceRows.ts `hasUsablePrice`；存量 0/0 行由落库层无价行清扫自动摘除，无需手工清库 |
 
 ## 4. 前端

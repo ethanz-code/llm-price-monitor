@@ -10,6 +10,7 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -33,6 +34,100 @@ _STATUS_KEY_HINTS = ("status", "state", "channel", "health", "available", "onlin
 _MAX_JSON_CANDIDATES = 50
 # 渠道条目的名字候选键：与前端 channelStatus.ts 的 NAME_KEYS 口径一致
 _CHANNEL_NAME_KEYS = ("name", "channel", "model", "model_name", "id", "title", "key")
+
+# Uptime Kuma 心跳状态码 → 状态词（前端 UP_WORDS 认 up，其余按非正常渲染）
+KUMA_STATUS_WORDS = {0: "down", 1: "up", 2: "pending", 3: "maintenance"}
+KUMA_HEARTBEAT_PATH = "/api/status-page/heartbeat/"
+
+
+def _kuma_status_word(code: Any) -> str:
+    return KUMA_STATUS_WORDS.get(code) if isinstance(code, int) else "unknown"
+
+
+def _kuma_channel(
+    name: str,
+    group: str,
+    monitor_id: str,
+    heartbeat_list: dict[str, Any],
+    uptime_list: dict[str, Any],
+) -> dict[str, Any]:
+    beats = [item for item in (heartbeat_list.get(monitor_id) or []) if isinstance(item, dict)]
+    entries = [
+        {
+            "time": item.get("time"),
+            "status": _kuma_status_word(item.get("status")),
+            "latency_ms": item.get("ping"),
+        }
+        for item in beats
+    ]
+    last = entries[-1] if entries else None
+    uptime = uptime_list.get(f"{monitor_id}_24")
+    # 不放渠道级 latency_ms：最近一次 ping 每轮必变，纯刷 diff 噪音；延迟看点位（timeline）
+    return {
+        "name": name,
+        "group": group,
+        "status": last["status"] if last else "unknown",
+        "availability": round(uptime * 100) if isinstance(uptime, (int, float)) and not isinstance(uptime, bool) else None,
+        "timeline": entries,
+    }
+
+
+def _kuma_transform(
+    spec: SiteSpec,
+    payload: dict[str, Any],
+    heartbeat_url: str,
+    client: httpx.Client,
+    timeout: float,
+    user_agent: str,
+) -> dict[str, Any]:
+    """Uptime Kuma 状态页 → 标准渠道形状（前端通用提取器直接可渲染，diff 免噪）。
+
+    心跳接口只有监控 id，监控名与分组在同源 `/api/status-page/<slug>` 的
+    publicGroupList 里；配置页拉不到时降级用监控 id 兜底，心跳数据照常出。
+    timeline 挂在 TIMELINE_KEYS 认识的键下，滚动窗口不进 diff；
+    availability 取整为整数百分比，滚动窗口的小数漂移不刷状态事件。
+    """
+    split = urlsplit(heartbeat_url)
+    slug = split.path.split(KUMA_HEARTBEAT_PATH, 1)[-1].strip("/")
+    groups: list[dict[str, Any]] = []
+    if slug and payload.get("heartbeatList"):
+        config_url = f"{split.scheme}://{split.netloc}/api/status-page/{slug}"
+        try:
+            config_payload = client.get(
+                config_url, headers={"User-Agent": user_agent}, timeout=timeout
+            ).json()
+            if isinstance(config_payload, dict):
+                groups = config_payload.get("publicGroupList") or []
+        except (httpx.HTTPError, ValueError):
+            groups = []
+    heartbeat_list = payload.get("heartbeatList") or {}
+    uptime_list = payload.get("uptimeList") or {}
+    channels: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        group_name = str(group.get("name") or "").strip()
+        for monitor in group.get("monitorList") or []:
+            if not isinstance(monitor, dict):
+                continue
+            monitor_id = str(monitor.get("id"))
+            used_ids.add(monitor_id)
+            channels.append(
+                _kuma_channel(
+                    str(monitor.get("name") or monitor_id),
+                    group_name,
+                    monitor_id,
+                    heartbeat_list,
+                    uptime_list,
+                )
+            )
+    # 配置页没覆盖的监控（新挂/漏分组）：按 id 兜底补齐，不丢渠道
+    for monitor_id, beats in heartbeat_list.items():
+        if monitor_id in used_ids:
+            continue
+        channels.append(_kuma_channel(f"监控 {monitor_id}", "", str(monitor_id), heartbeat_list, uptime_list))
+    return {"channels": channels}
 
 
 def filter_status_groups(data: dict[str, Any], groups: list[str]) -> dict[str, Any]:
@@ -155,6 +250,10 @@ def fetch_site_status(
         data = payload
     elif isinstance(payload, list):
         data = {"items": payload}
+    if data is not None and str(spec.status.get("parse") or "").strip().lower() == "kuma":
+        # Uptime Kuma 状态页：心跳原始形状前端渲染不了，转成标准渠道形状
+        data = _kuma_transform(spec, payload, str(response.url), client, timeout, user_agent)
+        parse_kind = "kuma"
     if data is None:
         data = _status_from_text(response.text)
         parse_kind = "embedded_json"

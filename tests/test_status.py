@@ -656,3 +656,81 @@ def test_store_status_per_site_max_records_samples_and_keeps_latest(tmp_path: Pa
     # 不超限时不抽样，逐条返回
     full, full_total = store.read_status(per_site=400, max_records=100)
     assert full_total == 40 and len(full) == 40
+
+
+def test_fetch_site_status_kuma_transform():
+    """status.parse=kuma：Uptime Kuma 心跳页转标准渠道形状——名字/分组取自 status-page 配置，
+    状态词用 up/down，24h 可用率取整，timeline 挂在免噪键下。"""
+    spec = _spec({"url": "https://status.demo.test/api/status-page/heartbeat/models", "parse": "kuma"})
+    heartbeat = {
+        "heartbeatList": {
+            "7": [{"status": 1, "time": "2026-10-09T08:00:00.000Z", "ping": 120}],
+            "9": [{"status": 0, "time": "2026-10-09T08:00:00.000Z", "ping": None}],
+        },
+        "uptimeList": {"7_24": 0.9962, "9_24": 0.0},
+    }
+    page = {
+        "publicGroupList": [
+            {"id": 1, "name": "主站\n", "monitorList": [{"id": 7, "name": "https://demo.test", "type": "http"}]},
+            {"id": 2, "name": "cc-官网", "monitorList": [{"id": 9, "name": "cc | claude-opus", "type": "http"}]},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/status-page/models"):
+            return httpx.Response(200, json=page)
+        return httpx.Response(200, json=heartbeat)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_status(spec, client, 10.0, "ua/1")
+    assert record["parse"] == "kuma"
+    channels = record["data"]["channels"]
+    assert [c["name"] for c in channels] == ["https://demo.test", "cc | claude-opus"]
+    assert channels[0]["group"] == "主站"
+    assert channels[0]["status"] == "up" and channels[1]["status"] == "down"
+    assert channels[0]["availability"] == 100 and channels[1]["availability"] == 0
+    assert channels[0]["timeline"][0]["latency_ms"] == 120
+
+
+def test_fetch_site_status_kuma_config_page_unavailable():
+    """配置页拉不到时按监控 id 兜底出渠道，心跳数据照常。"""
+    spec = _spec({"url": "https://status.demo.test/api/status-page/heartbeat/models", "parse": "kuma"})
+    heartbeat = {"heartbeatList": {"7": [{"status": 1, "time": "2026-10-09T08:00:00.000Z", "ping": 5}]}, "uptimeList": {}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/status-page/models"):
+            return httpx.Response(500)
+        return httpx.Response(200, json=heartbeat)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_status(spec, client, 10.0, "ua/1")
+    assert record["parse"] == "kuma"
+    channels = record["data"]["channels"]
+    assert channels[0]["name"] == "监控 7" and channels[0]["status"] == "up"
+    assert channels[0]["availability"] is None
+
+
+def test_kuma_transform_diff_is_quiet_on_rolling_windows():
+    """滚动心跳与可用率小数漂移不产生噪音事件；只有渠道状态翻转才算变化。"""
+    from llm_price_monitor.status import diff_status
+
+    def beats(status: int, ping: int, minute: int) -> list:
+        return [
+            {"status": 1, "time": f"2026-10-09T08:{m:02d}:00.000Z", "ping": 100 + m % 7}
+            for m in range(minute, minute + 5)
+        ] + [{"status": status, "time": "2026-10-09T08:30:00.000Z", "ping": ping}]
+
+    previous = {"channels": [
+        {"name": "cc", "group": "g", "status": "up", "availability": 99,
+         "timeline": beats(1, 100, 55)},
+    ]}
+    current = {"channels": [
+        {"name": "cc", "group": "g", "status": "up", "availability": 99,
+         "timeline": beats(1, 103, 56)},
+    ]}
+    assert diff_status(previous, current) == []
+    flipped = {"channels": [{**current["channels"][0], "status": "down", "availability": 40}]}
+    changes = diff_status(previous, flipped)
+    paths = {c["path"] for c in changes}
+    assert "$.channels[0].status" in paths and "$.channels[0].availability" in paths
+    assert not any("timeline" in p for p in paths)

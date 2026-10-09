@@ -191,7 +191,12 @@ def build_request_kwargs(
     request_headers.update(injected)
     if spec.cookies and "cookie" not in request_headers:
         request_headers["cookie"] = "; ".join(f"{key}={value}" for key, value in spec.cookies.items())
-    return {"params": entry.params, "headers": request_headers, "timeout": timeout}
+    # 空 params 不能传给 httpx：0.28 起 params={} 会整体替换 URL 查询串，
+    # 把写在 URL 里的 page_size/过滤参数悄悄清掉（httpx.Request 实测）
+    kwargs: dict[str, Any] = {"headers": request_headers, "timeout": timeout}
+    if entry.params:
+        kwargs["params"] = entry.params
+    return kwargs
 
 
 def auth_required_records(spec: SiteSpec, message: str, source_url: str | None = None) -> list[PriceRecord]:
@@ -458,6 +463,106 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
     return list(records.values())
 
 
+def looks_like_product_library_prices(payload: Any) -> bool:
+    """302.ai 产品库价目（dash-api /products/list）：data.products[].price_info[] 带 input/output_price。"""
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    products = data.get("products")
+    if not isinstance(products, list):
+        return False
+    return any(
+        isinstance(product, dict) and isinstance(product.get("price_info"), list)
+        for product in products
+    )
+
+
+def _product_library_standard_tier(price_info: list[Any]) -> dict[str, Any] | None:
+    """标准档：优先 description 与 special_pricing 双空的档（上下文/闲高峰等多档产品取基准价），否则第一档。"""
+    for entry in price_info:
+        if (
+            isinstance(entry, dict)
+            and not str(entry.get("description") or "").strip()
+            and not str(entry.get("special_pricing") or "").strip()
+        ):
+            return entry
+    return next((entry for entry in price_info if isinstance(entry, dict)), None)
+
+
+def product_library_price_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> list[PriceRecord]:
+    """确定性解析 302.ai 产品库价目：美元每百万 token 直读。
+
+    price_info 多档取标准档；按次计费档（suffix 非 "1M tokens"）不按 token 价采；
+    折扣 SKU（is_discount 或 sale/ 名称前缀）归「折扣」分组，与标准价并列不互相覆盖。
+    """
+    response_source_url = str(captured[0].get("url") or "") if captured else str(spec.network.get("url") or "")
+    payload = captured[0].get("payload") if captured else None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    products = data.get("products") or []
+    records: dict[tuple[str, str], PriceRecord] = {}
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        name = str(product.get("name") or "")
+        tier = _product_library_standard_tier(product.get("price_info") or [])
+        if tier is None or str(tier.get("suffix") or "").strip() != "1M tokens":
+            continue
+        model_name = name.removeprefix("sale/")
+        target = next(
+            (t for t in spec.models if t.name.casefold() == model_name.casefold()),
+            None,
+        )
+        if target is None:
+            continue
+        input_price = tier.get("input_price") if _plain_number(tier.get("input_price")) else None
+        output_price = tier.get("output_price") if _plain_number(tier.get("output_price")) else None
+        if input_price is None and output_price is None:
+            continue
+        discounted = (
+            (_plain_number(tier.get("rate")) and tier["rate"] < 1)
+            or bool(product.get("is_discount"))
+            or name.startswith("sale/")
+        )
+        group = "折扣" if discounted else "default"
+        key = (target.name, group)
+        if key in records:
+            continue
+        tier_note = str(tier.get("description") or "").strip()
+        metadata = {
+            "adapter": "network",
+            "pricing_kind": "explicit_price",
+            "group": group,
+            "group_ratio": tier.get("rate") if _plain_number(tier.get("rate")) else None,
+            "currency": "USD",
+            "network_evidence": [{
+                "source": "model_list",
+                "url": redact_url(str(captured[0].get("url", ""))),
+                "resource_type": captured[0].get("resource_type"),
+                "status": captured[0].get("status"),
+                "payload_sha256": payload_hash(payload),
+            }],
+            "page_evidence": [],
+            "notes": "302.ai 产品库直读：美元每百万 token。"
+            + (f"档位：{tier_note}。" if tier_note else ""),
+        }
+        status = "confirmed" if input_price is not None and output_price is not None else "candidate"
+        records[key] = PriceRecord(
+            target.name,
+            input_price,
+            output_price,
+            "USD/1M tokens",
+            response_source_url,
+            time.time(),
+            metadata,
+            status,
+        )
+    return list(records.values())
+
+
 def looks_like_sub2api_model_prices(payload: Any) -> bool:
     """sub2api /api/v1/model-prices 结构：data.groups[].models[].tiers[]，分组实付价直读。"""
     if not isinstance(payload, dict):
@@ -699,6 +804,9 @@ class NetworkAdapter:
                     # 超时/模型池全坏时无日志就无从定位整轮为何拖长
                     tasklog.emit(f"[{spec.id}] AI 模型名解析失败，使用直采定价：{exc}", "warn")
             return direct_records
+        if looks_like_product_library_prices(payload):
+            # 302.ai 产品库价目：美元每百万 token 直读，未命中监控模型返回空不落 AI
+            return product_library_price_records(spec, [captured])
         if looks_like_sub2api_model_prices(payload):
             # sub2api model-prices 分组实付价：确定性直读，未命中监控模型就返回空，
             # 不落 AI——形状已识别，空转提取只会烧钱且结果必然为空
@@ -799,6 +907,24 @@ class NetworkAdapter:
             )
             if any(record.price_status == "confirmed" for record in records):
                 return records
+        # JS 内嵌条目没命中时，页面是普通价目表（表格 + 单元格币种符号）就做确定性表格解析，
+        # 命中监控模型即采信返回——这条兜底必须排在 AI 之前：AI 对干净表格页也会抽错
+        # （01tree 实测 $2.00/1M 被放大 1000 倍并标成 CNY），确定性解析优先是采集侧铁律；
+        # 延迟 import：page_price.tables 顶部反向引用本模块的 parse_base_price_entries
+        from llm_price_monitor.page_price.tables import parse_text_tables
+
+        table_entries = parse_text_tables(response.text, str(response.url))
+        if table_entries:
+            table_evidence = [{
+                "source": evidence_source,
+                "url": redact_url(evidence_url),
+                "resource_type": "fetch",
+                "status": evidence_status,
+                "payload_sha256": payload_hash(evidence_text),
+            }]
+            table_records = _price_records_from_table_entries(spec, table_entries, table_evidence, str(response.url))
+            if table_records:
+                return table_records
         if ai is not None and ai.usable:
             return AIPriceExtractor(ai).extract(
                 spec, ai_page_text, ai_captured, client=client,
@@ -1224,6 +1350,56 @@ def _records_from_base_entries(
             time.time(),
             metadata,
             "candidate" if ai_assisted else "confirmed",
+        ))
+    return records
+
+
+def _price_records_from_table_entries(
+    spec: SiteSpec,
+    entries: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    source_url: str,
+) -> list[PriceRecord]:
+    """page_price 表格解析条目 → 价格记录：只产出命中监控模型且输入输出齐全的行，confirmed。
+
+    表格条目自带币种与单位（取自页面单元格符号与表头标注），与"USD 基准价 × 端点倍率"
+    那套语义不同，单独转换不走 _records_from_base_entries。页面上没有的监控模型不产出
+    也不交给 AI 兜底（页面没有就是没有，AI 补抽只会编造——01tree 实测：页面 $2.00/1M
+    被 AI 整表放大 1000 倍并标错币种，连续多轮被合理性校验作废）。"""
+    matched = resolve_site_names(
+        [str(item.get("model") or "") for item in entries],
+        {target.name: (target.name,) for target in spec.models},
+    )
+    entry_by_model = {str(item.get("model") or "").strip(): item for item in entries}
+    records: list[PriceRecord] = []
+    for target_name, site_name in matched.items():
+        entry = entry_by_model.get(site_name)
+        if entry is None:
+            continue
+        input_price, output_price = entry.get("input_price"), entry.get("output_price")
+        if input_price is None or output_price is None:
+            continue
+        currency = str(entry.get("currency") or "USD")
+        unit = str(entry.get("unit") or f"{currency}/1M tokens")
+        metadata: dict[str, Any] = {
+            "adapter": "browser_network",
+            "pricing_kind": "page_table",
+            "currency": currency,
+            "formula": "价格取自页面价目表（page_price 表格解析，币种与单位按页面标注）",
+            "network_evidence": evidence,
+            "page_evidence": [],
+        }
+        if site_name.casefold() != target_name.casefold():
+            metadata["matched_model_name"] = site_name
+        records.append(PriceRecord(
+            target_name,
+            float(input_price),
+            float(output_price),
+            unit,
+            source_url,
+            time.time(),
+            metadata,
+            "confirmed",
         ))
     return records
 

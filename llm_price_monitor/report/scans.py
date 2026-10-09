@@ -29,7 +29,7 @@ from .health import (
     is_transport_error,
 )
 from .persist import _persist_scan_results
-from .pricing import _apply_price_sanity, _backfill_rule_price, _carry_last_price, _filter_price_groups, _has_price, _sanity_context
+from .pricing import _apply_price_sanity, _backfill_rule_price, _carry_last_price, _channel_rate_records, _drop_phony_group_records, _filter_price_groups, _has_price, _sanity_context
 from .timeouts import SITE_FETCH_CONCURRENCY, _run_site_fetch, start_network_phase
 
 
@@ -179,6 +179,20 @@ def _scan_prices(
         # sanity 判据每站现读：一轮采集可能被卡死站点或机器休眠拖上数小时，
         # 目录中途修正后要用新判据，启动时的坏目录不得贯穿整轮
         sanity_models, sanity_rate = _sanity_context(store)
+        # sanity 两轮确认的跨轮进度（待复核/已作废）：作废行被落库层清理后 previous 消失，
+        # 靠这份站级切片维持状态机，已作废的同因复现静默、不刷任务日志与异常卡片
+        sanity_state: dict[str, Any] = dict(store.get_document("sanity_state") or {}) if store is not None else {}
+        # 价格腿零命中 + 渠道状态快照带倍率与模型（sub2api 倍率型站）→ 官方价×倍率合成渠道价
+        if not collected and store is not None:
+            status_url = str(spec.status.get("url") or "") if isinstance(spec.status, dict) else ""
+            synthesized = _channel_rate_records(
+                store, spec.id, sanity_models, status_url or str(spec.network.get("url") or "")
+            )
+            if synthesized:
+                collected = synthesized
+                tasklog.emit(f"[{spec.id}] 价格腿未命中，按渠道倍率 × 官方价合成 {len(synthesized)} 条渠道价", "info")
+        # 占位组跳过：组内全部模型同一价目且有作废实锤时整组跳过（零配置通用判据）
+        collected = _drop_phony_group_records(collected, spec.id, sanity_state)
         for record in collected:
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定
             group = (record.metadata or {}).get("group") or "default"
@@ -187,7 +201,7 @@ def _scan_prices(
             previous = latest.get(key)
             # sanity 两轮确认要读上一轮的待复核标记，须在查出 previous 之后判
             current = _apply_price_sanity(
-                _backfill_rule_price(record_dict(spec.id, record)), sanity_models, sanity_rate, previous
+                _backfill_rule_price(record_dict(spec.id, record)), sanity_models, sanity_rate, previous, sanity_state, key
             )
             if not _has_price(current):
                 if previous is None or not _has_price(previous):
@@ -238,6 +252,10 @@ def _scan_prices(
         # 落库范围用站点切片限定（touched ∩ site_keys 恰为本站写过的快照 key），
         # latest 仍传完整内存快照，由 touched 限定只比对本站 key。
         if store is not None and persist:
+            # sanity 状态与 group_miss 同属并行轮共享的读-改-写文档，写回持同一把锁；
+            # 测试采集（persist=False）不写回，不得污染正式状态
+            with _MERGE_LOCK:
+                store.set_document("sanity_state", sanity_state)
             _persist_scan_results(
                 store,
                 latest=latest,

@@ -466,6 +466,47 @@ def test_network_pricing_uses_newapi_ratios_without_dom_or_ai():
     assert records[0].metadata["page_evidence"] == []
 
 
+_HTML_PRICE_TABLE = """
+<html><body>
+<p>GPT 模型，官方价格单位为每 1M tokens。</p>
+<table>
+<tr><th>模型</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+<tr><td>gpt-6.1-sol</td><td>$2.00</td><td>$0.10</td><td>$2.50</td><td>$10.00</td></tr>
+<tr><td>gpt-6-luna</td><td>$0.10</td><td>$0.01</td><td>$0.125</td><td>$0.50</td></tr>
+<tr><td>GLM-5.3</td><td>¥8.00</td><td>¥2.00</td><td>-</td><td>¥28.00</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_collect_from_html_table_fallback_beats_ai():
+    """渲染页是普通价目表（JS 内嵌条目解析不出）时走确定性表格解析，不再交给 AI：
+    01tree 实测 AI 对这种干净表格页把 $2.00/1M 整表放大 1000 倍并标错币种。"""
+    from llm_price_monitor.adapters import NetworkAdapter, _BrowserPageResponse
+
+    spec = SiteSpec(
+        id="demo",
+        network={"url": "https://demo.test/model-pricing", "headless": {"enabled": True}},
+        models=(ModelTarget("gpt-6.1-sol"), ModelTarget("gpt-6-luna"), ModelTarget("glm-5.3-flash")),
+    )
+    response = _BrowserPageResponse("https://demo.test/model-pricing", _HTML_PRICE_TABLE)
+    records = NetworkAdapter()._collect_from_html(
+        spec, spec.network, None, httpx.Client(), 10.0, "ua", None, response,
+        {"url": response.url, "status": 200, "resource_type": "fetch", "source": "model_list"},
+    )
+
+    by_model = {r.model: r for r in records}
+    # 页面上的监控模型按页面价目正确入库（AI 路径会给出 2000/10000）
+    assert by_model["gpt-6.1-sol"].input_price == 2.0
+    assert by_model["gpt-6.1-sol"].output_price == 10.0
+    assert by_model["gpt-6.1-sol"].unit == "USD/1M tokens"
+    assert by_model["gpt-6.1-sol"].price_status == "confirmed"
+    assert by_model["gpt-6-luna"].input_price == 0.1
+    # 页面上没有的监控模型（GLM-5.3 ≠ glm-5.3-flash）不产出也不硬抽，宁缺勿编
+    assert "glm-5.3-flash" not in by_model
+    assert by_model["gpt-6.1-sol"].metadata["pricing_kind"] == "page_table"
+
+
 def test_enable_groups_flicker_keeps_default_group_stable():
     """站点 enable_groups 抖动（["default"] ↔ []）时分组归一为 default，事件键不再翻转出重复"新增"。"""
     spec = SiteSpec(
@@ -3302,6 +3343,257 @@ def test_price_sanity_rereads_catalog_each_site(tmp_path: Path, monkeypatch):
     assert not (second.get("metadata") or {}).get("sanity_suspect")
 
 
+def test_price_sanity_voided_stays_quiet_on_repeat(tmp_path: Path, monkeypatch):
+    """已作废的同因异常持续复现时静默维持作废，不再每轮重走两轮确认刷任务日志与异常卡片；
+    站方改回正常价后状态清除，再次越界重新走两轮确认。"""
+    bad = [PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+    good = [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+    rounds = [bad, bad, bad, good, bad]
+
+    def collect(*_args):
+        return rounds.pop(0)
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+
+    from llm_price_monitor import tasklog
+
+    logs: list[tuple[str, str]] = []
+    tasklog.bind(lambda message, level: logs.append((message, level)))
+
+    def sanity_logs() -> list[tuple[str, str]]:
+        return [(m, lv) for m, lv in logs if lv in ("warn", "error") and "价格异常" in m]
+
+    try:
+        run_once(config, store=store, client=httpx.Client())  # 轮1：待复核
+        run_once(config, store=store, client=httpx.Client())  # 轮2：作废
+        assert sum("价格异常待复核" in message for message, _ in sanity_logs()) == 1
+        assert sum("价格异常作废" in message for message, _ in sanity_logs()) == 1
+        logs.clear()
+        run_once(config, store=store, client=httpx.Client())  # 轮3：同因持续，静默作废
+        assert sanity_logs() == []
+        assert "demo:demo-model:default" not in store.latest_all()
+        run_once(config, store=store, client=httpx.Client())  # 轮4：站方改回正常价
+        sane = store.latest_all()["demo:demo-model:default"]
+        assert sane["input_price"] == 1
+        assert not (sane.get("metadata") or {}).get("sanity_suspect")
+        run_once(config, store=store, client=httpx.Client())  # 轮5：再次越界，重新两轮确认
+        assert sum("价格异常待复核" in message for message, _ in sanity_logs()) == 1
+        assert sum("价格异常作废" in message for message, _ in sanity_logs()) == 0
+    finally:
+        tasklog.unbind()
+
+
+def test_price_sanity_voided_survives_gap_rounds(tmp_path: Path, monkeypatch):
+    """作废后站点中途几轮没返回该模型（previous 已被清理），恢复返回同因错价时
+    仍静默维持作废，不重新走两轮确认。"""
+    bad = [PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})]
+    empty: list = []
+
+    def collect(*_args):
+        return rounds.pop(0)
+
+    rounds = [bad, bad, empty, bad]
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+
+    from llm_price_monitor import tasklog
+
+    logs: list[tuple[str, str]] = []
+    tasklog.bind(lambda message, level: logs.append((message, level)))
+    try:
+        run_once(config, store=store, client=httpx.Client())  # 轮1：待复核
+        run_once(config, store=store, client=httpx.Client())  # 轮2：作废
+        logs.clear()
+        run_once(config, store=store, client=httpx.Client())  # 轮3：站点未返回该模型
+        run_once(config, store=store, client=httpx.Client())  # 轮4：同因错价回来了
+        assert [(m, lv) for m, lv in logs if lv in ("warn", "error") and "价格异常" in m] == []
+        assert "demo:demo-model:default" not in store.latest_all()
+    finally:
+        tasklog.unbind()
+
+
+def test_price_sanity_legacy_suspect_row_voids_directly():
+    """兼容存量：旧版只带 metadata.sanity_suspect 标记的待复核行，同因复现直接作废，
+    不再重走待复核（状态文档建立前已挂标记的行）。"""
+    from llm_price_monitor.report.pricing import _apply_price_sanity
+
+    catalog = _sanity_catalog()
+    models, rate = catalog["models"], catalog["usd_cny_rate"]
+    current = {"site_id": "demo", "model": "demo-model", "input_price": 2_000_000,
+               "output_price": 6_000_000, "metadata": {"group": "default"}, "tiers": []}
+    key = "demo:demo-model:default"
+    # 先走一轮拿到真实格式的待复核标记，模拟旧版数据：行带标记、状态文档尚不存在
+    warned = _apply_price_sanity(current, models, rate, None, {}, key)
+    assert (warned.get("metadata") or {}).get("sanity_suspect")
+    state: dict = {}
+    out = _apply_price_sanity(current, models, rate, warned, state, key)
+    assert out["input_price"] is None and out["price_status"] == "unavailable"
+    assert "可信区间" in (out.get("metadata") or {}).get("error", "")
+    assert state[key]["voided"] is True
+
+
+def test_phony_group_flat_pricing_with_void_skipped(tmp_path: Path, monkeypatch):
+    """占位组跳过：组内全部模型同一价目且有作废实锤时整组跳过（快照旧价走连续缺失摘除）；
+    同价的健康组（价格全可信，如各站 grok 分组）与模型各有其价的作废组（如 01tree 单位错）不受影响。"""
+    catalog = _sanity_catalog()
+    catalog["models"]["v4pro"] = {"found": True, "currency": "USD",
+                                  "list": {"input": 5.0, "output": 30.0}, "source_url": "https://demo.test"}
+    catalog["models"]["v4flash"] = {"found": True, "currency": "CNY",
+                                    "list": {"input": 2.0, "output": 8.0}, "source_url": "https://demo.test"}
+    records = [
+        # 占位组：两个模型同一 0.03/0.12 价目；v4-pro 对厂商价偏离 300 倍（越界→作废实锤），
+        # v4-flash 0.015 倍在可信区间内（任何价格偏离判据都拦不住，靠同价目+作废实锤摘除）
+        PriceRecord("v4-pro", 0.03, 0.12, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "占位组"}),
+        PriceRecord("v4-flash", 0.03, 0.12, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "占位组"}),
+        # 同价的健康组：价格全部可信，无作废实锤，不触发
+        PriceRecord("sane-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "ok"}),
+        PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "ok"}),
+    ]
+
+    def collect(*_args):
+        return records
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", catalog)
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+
+    run_once(config, store=store, client=httpx.Client())  # 轮1：建档，v4-pro 待复核，v4-flash 照常入库
+    assert store.latest_all()["demo:v4-flash:占位组"]["input_price"] == 0.03
+    run_once(config, store=store, client=httpx.Client())  # 轮2：v4-pro 作废（跳过下一轮才生效）
+    assert "demo:v4-pro:占位组" not in store.latest_all()
+    assert store.latest_all()["demo:v4-flash:占位组"]["input_price"] == 0.03
+    run_once(config, store=store, client=httpx.Client())  # 轮3：占位组整组跳过
+    run_once(config, store=store, client=httpx.Client())  # 轮4：缺失计数累计
+    run_once(config, store=store, client=httpx.Client())  # 轮5：连续缺失达阈值，v4-flash 旧价从快照摘除
+    assert "demo:v4-flash:占位组" not in store.latest_all()
+    assert store.latest_all()["demo:sane-model:ok"]["input_price"] == 1  # 同价健康组不受影响
+
+
+def test_flat_pricing_group_without_void_kept(tmp_path: Path, monkeypatch):
+    """整组同价但价格全部可信（真实打包价形态）：无作废实锤不触发跳过。"""
+    records = [
+        PriceRecord("sane-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "打包组"}),
+        PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "打包组"}),
+    ]
+
+    def collect(*_args):
+        return records
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    for _ in range(3):
+        run_once(config, store=store, client=httpx.Client())
+    kept = store.latest_all()
+    assert kept["demo:sane-model:打包组"]["input_price"] == 1
+    assert kept["demo:demo-model:打包组"]["input_price"] == 1
+
+
+def test_varied_pricing_group_with_void_not_skipped(tmp_path: Path, monkeypatch):
+    """模型各有其价的组（如 01tree 单位错）即使有作废也不整组跳过：仍走 sanity 逐模型作废。"""
+    records = [
+        PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+        PriceRecord("sane-model", 671.0, 1342.0, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
+    ]
+
+    def collect(*_args):
+        return records
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    monkeypatch.setattr(NetworkAdapter, "collect", collect)
+    for _ in range(4):
+        run_once(config, store=store, client=httpx.Client())
+    # sane-model 671/0.67=1001 倍同样越界走各自的两轮作废，不因同组有作废模型被整组跳过
+    assert "demo:sane-model:default" not in store.latest_all() or store.latest_all()["demo:sane-model:default"]["input_price"] is not None
+
+
+def test_channel_rate_records_synthesize_from_status_snapshot(tmp_path: Path):
+    """渠道倍率价合成：价格腿零命中时，按状态快照里的渠道倍率 × 官方价出价
+    （sub2api 倍率语义），分组用渠道名、整批 candidate；官方目录查无的渠道跳过。"""
+    from llm_price_monitor.report.pricing import _channel_rate_records
+
+    store = Store(tmp_path / "monitor.db")
+    catalog = _sanity_catalog()
+    catalog["models"]["grok47"] = {"found": True, "currency": "USD",
+                                   "list": {"input": 10.0, "output": 50.0}, "source_url": "https://demo.test"}
+    store.set_document("catalog", catalog)
+    store.set_document("status_ref:demo", {
+        "data": {"data": {"items": [
+            {"name": "ChatGPT-Plus【稳定】", "group_display_name": "ChatGPT-Plus【稳定】",
+             "primary_model": "demo-model", "rate_multiplier": 0.08},
+            {"name": "Claude-Kiro", "group_display_name": "Claude-Kiro",
+             "primary_model": "sane-model", "rate_multiplier": 0.3},
+            {"name": "Grok-Heavy", "group_display_name": "Grok-Heavy",
+             "primary_model": "unknown-model", "rate_multiplier": 0.1},
+            {"name": "无倍率渠道", "group_display_name": "无倍率渠道",
+             "primary_model": "demo-model", "rate_multiplier": None},
+        ]}},
+    })
+    records = _channel_rate_records(store, "demo", catalog["models"], "https://demo.test/monitor")
+    by_key = {(r.model, (r.metadata or {}).get("group")): r for r in records}
+    plus = by_key[("demo-model", "ChatGPT-Plus【稳定】")]
+    assert plus.input_price == 0.4 and plus.output_price == 2.4  # 5.0/30.0 USD × 0.08
+    assert plus.unit == "USD/1M tokens"
+    assert plus.price_status == "candidate"
+    assert plus.metadata["pricing_kind"] == "channel_rate"
+    assert plus.metadata["channel_rate"] == 0.08
+    kiro = by_key[("sane-model", "Claude-Kiro")]
+    assert kiro.input_price == 1.5 and kiro.output_price == 9.0  # 5.0/30.0 × 0.3
+    # 官方目录查无 / 无倍率的渠道跳过
+    assert ("unknown-model", "Grok-Heavy") not in by_key
+    assert len(records) == 2
+
+
+def test_channel_rate_fills_pricing_when_direct_leg_misses(tmp_path: Path, monkeypatch):
+    """端到端：售卖渠道接口（价格腿）未命中监控模型、状态快照带渠道倍率时，
+    采集自动合成渠道价入库；多渠道同模型按渠道名分组成多条。"""
+
+    def collect_empty(*_args):
+        return []  # 价格腿未命中（如 1for 的 available 只剩订阅制渠道）
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_config(tmp_path)), encoding="utf-8")
+    config = load_config(config_path)
+    store = Store(tmp_path / "monitor.db")
+    store.set_document("catalog", _sanity_catalog())
+    store.set_document("status_ref:demo", {
+        "data": {"data": {"items": [
+            {"name": "Plus【稳定】", "group_display_name": "Plus【稳定】",
+             "primary_model": "demo-model", "rate_multiplier": 0.08},
+            {"name": "Pro【企业池】", "group_display_name": "Pro【企业池】",
+             "primary_model": "demo-model", "rate_multiplier": 0.25},
+        ]}},
+    })
+    monkeypatch.setattr(NetworkAdapter, "collect", collect_empty)
+    # 状态腿在本轮价格合成读的是上一轮快照，本轮先跑一次状态写入再跑价格
+    run_once(config, store=store, client=httpx.Client())
+    report = run_once(config, store=store, client=httpx.Client())
+    groups = sorted(r["metadata"]["group"] for r in report.records)
+    assert groups == ["Plus【稳定】", "Pro【企业池】"]
+    latest = store.latest_all()
+    plus = latest["demo:demo-model:Plus【稳定】"]
+    assert plus["input_price"] == 0.4 and plus["price_status"] == "candidate"
+
+
 def test_group_removed_requires_consecutive_misses(tmp_path: Path, monkeypatch):
     """缺失中途恢复一次就清零计数：累计而非连续的缺失不得累积成下线。"""
     groups = {"default", "vip"}
@@ -3992,6 +4284,97 @@ def test_network_adapter_dispatches_sub2api_shapes_without_ai():
     )
     client_swe = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=swe_payload)))
     assert NetworkAdapter().collect(spec_swe, client_swe, 5, BROWSER_USER_AGENTS[0]) == []
+
+
+def test_product_library_price_records_parses_302ai():
+    """302.ai 产品库价目（data.products[].price_info[]）：美元每百万 token 直读，
+    多档取标准档，按次计费档跳过，折扣 SKU 归「折扣」分组、sale/ 前缀剥掉参与匹配。"""
+    from llm_price_monitor.adapters import looks_like_product_library_prices, product_library_price_records
+
+    payload = {
+        "code": 0,
+        "msg": "商品查询成功",
+        "data": {
+            "total_count": 3,
+            "returned_count": 3,
+            "products": [
+                {
+                    "id": 1,
+                    "name": "gpt-6.1-sol",
+                    "is_discount": 0,
+                    "price_info": [
+                        {"name": "gpt-6.1-sol", "rate": 1, "suffix": "1M tokens", "description": "≤ 272K", "input_price": 2.2, "output_price": 11, "special_pricing": ""},
+                        {"name": "gpt-6.1-sol", "rate": 1, "suffix": "1M tokens", "description": "> 272K", "input_price": 4.4, "output_price": 22, "special_pricing": ""},
+                    ],
+                },
+                {
+                    "id": 2,
+                    "name": "sale/claude-fable-5-1",
+                    "is_discount": 1,
+                    "price_info": [
+                        {"name": "sale/claude-fable-5-1", "rate": 0.85, "suffix": "1M tokens", "description": "", "input_price": 2.5, "output_price": 12.5, "special_pricing": ""},
+                    ],
+                },
+                {
+                    "id": 3,
+                    "name": "codex-agent-pro",
+                    "is_discount": 0,
+                    "price_info": [
+                        {"name": "codex-agent-pro", "rate": 1, "suffix": "次", "description": "", "input_price": 0.5, "output_price": 0.5, "special_pricing": ""},
+                    ],
+                },
+            ],
+        },
+    }
+    assert looks_like_product_library_prices(payload)
+    spec = SiteSpec(
+        id="302",
+        models=[ModelTarget("gpt-6.1-sol"), ModelTarget("claude-fable-5-1")],
+        network={"url": "https://dash-api.302.ai/products/list?page=1&page_size=100"},
+    )
+    records = product_library_price_records(spec, [{"url": "https://dash-api.302.ai/products/list", "status": 200, "resource_type": "fetch", "payload": payload}])
+    by_group = {r.metadata["group"]: r for r in records}
+    assert set(by_group) == {"default", "折扣"}
+    assert by_group["default"].model == "gpt-6.1-sol"
+    assert by_group["default"].input_price == pytest.approx(2.2)
+    assert by_group["default"].output_price == pytest.approx(11)
+    assert by_group["default"].price_status == "confirmed"
+    assert by_group["default"].unit == "USD/1M tokens"
+    assert "档位：≤ 272K" in by_group["default"].metadata["notes"]
+    assert by_group["折扣"].model == "claude-fable-5-1"
+    assert by_group["折扣"].metadata["group_ratio"] == 0.85
+
+
+def test_network_adapter_dispatches_product_library_without_ai():
+    """产品库形状识别后确定性返回：未命中监控模型返回空列表，不报错也不落 AI。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "data": {"products": [
+            {"id": 1, "name": "glm-5.3", "is_discount": 1, "price_info": [
+                {"name": "glm-5.3", "rate": 0.7, "suffix": "1M tokens", "description": "", "input_price": 1.2, "output_price": 4},
+            ]},
+        ]}})
+
+    spec = SiteSpec(id="302", models=(ModelTarget("kimi-k3"),), network={"url": "https://dash-api.302.ai/products/list"})
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert NetworkAdapter().collect(spec, client, 5, BROWSER_USER_AGENTS[0]) == []
+
+
+def test_build_request_kwargs_keeps_url_query_when_params_empty():
+    """空 params 不传给 httpx：URL 查询串（page_size/过滤参数）不得被 params={} 整体清掉。"""
+    from llm_price_monitor.adapters import build_request_kwargs, resolve_endpoint
+
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/api/list?page=1&page_size=100&tag=x"})
+    entry = resolve_endpoint({"url": spec.network["url"]}, spec=spec, label="network.url")
+    kwargs = build_request_kwargs(entry, spec, "ua/1", 10, target="price")
+    assert "params" not in kwargs
+    request = httpx.Request("GET", entry.url, headers=kwargs["headers"])
+    assert str(request.url) == "https://demo.test/api/list?page=1&page_size=100&tag=x"
+
+    entry_with_params = resolve_endpoint(
+        {"url": "https://demo.test/api/list", "params": {"page": 1}}, spec=spec, label="network.url"
+    )
+    kwargs_with = build_request_kwargs(entry_with_params, spec, "ua/1", 10, target="price")
+    assert kwargs_with["params"] == {"page": 1}
 
 
 def test_carry_last_price_keeps_auth_label_only_for_auth_placeholders():

@@ -630,3 +630,12 @@ def _parse_text(text: str, source_url: str, prefix: str) -> tuple[list[dict[str,
         if records:
             return records, f"{prefix}-{kind}"
     return None
+
+
+def parse_text_tables(text: str, source_url: str) -> list[dict[str, Any]] | None:
+    """全部表格解析器依次尝试（Markdown / HTML / JSON / 组件注入），任一命中即返回条目。
+
+    供 HTML 采集链路在 JS 内嵌条目（{category:...} 形态）解析不出时做确定性兜底：
+    普通价目中心页面（表格 + 单元格带币种符号）由这里接住，不再落到 AI 抽价。"""
+    result = _parse_text(text, source_url, "table")
+    return result[0] if result else None
