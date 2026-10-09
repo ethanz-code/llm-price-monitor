@@ -4,8 +4,9 @@
 new-api 接口并按配置的模型清单过滤；本模块面向厂商官方定价页，目标是"页面上的
 全部模型价格"，不预设模型清单。
 
-流水线：抓取 → 确定性解析（Markdown 表格 / HTML 表格 / JSON 价格表，任一命中即停）
-→ Headless 渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
+流水线：抓取 → 确定性解析（Markdown 表格 / HTML 表格 / JSON 价格表 / 组件属性
+表格，任一命中即停）→ 同名 .md 原文探测（页面把表格做成客户端组件时）→
+Headless 渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
 字面出现，防幻觉，结果一律标记 candidate）。确定性解析"出了结果但可疑"（模型名带
 档位/促销注释、合并行、同模型重复档价）时同样交给 AI 复核：AI 有产出就以 AI 为准，
 AI 没产出则把可疑记录整页降级为 candidate——宁可多人工复核，不静默采脏价。页面超过
@@ -20,6 +21,7 @@ max_input_chars 时先剥掉 script/style 再按行分块，逐段提取后按�
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -28,6 +30,7 @@ import time
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -100,6 +103,56 @@ def clean_model_name(name: str) -> str:
     return _TRAILING_QUALIFIER_PATTERN.sub("", name).strip()
 
 
+# 上下文窗口文本的取数与单位：K/M 按二进制口径（与 Kimi 官方标注 1,048,576 tokens 一致）
+_CONTEXT_TOKEN_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(K|M|B|万|亿)?", re.IGNORECASE)
+_CONTEXT_TOKEN_SCALE = {"K": 1024, "M": 1024**2, "B": 1024**3, "万": 10_000, "亿": 10_000**2}
+# 显式输出上限标注：标注后的数字是输出上限而不是上下文
+_OUTPUT_LABEL_PATTERN = re.compile(r"最大输出|输出上限|输出|max(?:imum)?[\s-]*output", re.IGNORECASE)
+# "8K~1M"这类可取值区间读不出单一上限，宁缺勿猜
+_CONTEXT_RANGE_PATTERN = re.compile(r"\d[^/／]*[-~～–—]\s*\d")
+
+
+def _context_tokens(text: str) -> int | None:
+    """一段文本里第一个「数字+单位」→ token 数；读不出 ≥1 的整数返回 None。"""
+    match = _CONTEXT_TOKEN_PATTERN.search(text)
+    if match is None:
+        return None
+    value = float(match.group(1).rstrip(",.、；;，").replace(",", ""))
+    scale = _CONTEXT_TOKEN_SCALE.get((match.group(2) or "").upper(), 1)
+    tokens = int(value * scale)
+    return tokens if tokens >= 1 else None
+
+
+def parse_context_limit(text: str | None) -> dict[str, int | None] | None:
+    """定价页上下文列原文 → {"context": 上限, "output": 输出上限或 None}；解析不出返回 None。
+
+    认三种形态：单值（"1M"、"1,048,576 tokens"）、斜杠对（"200K/32K"）、
+    输出标注（"256K；最大输出 32K"）。时段名（"高峰时段"）、区间（"8K~1M"）、
+    输入价格分档（"[0, 32k)"）这些不是上下文窗口的文本一律返回 None，不猜。
+    """
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    if not raw or raw.casefold() in _EMPTY_CELLS or not re.search(r"\d", raw):
+        return None
+    if _CONTEXT_RANGE_PATTERN.search(raw):
+        return None
+    parts = [part for part in re.split(r"[/／]", raw) if part.strip()]
+    if len(parts) >= 2:
+        context = _context_tokens(parts[0])
+        if context is None:
+            return None
+        return {"context": context, "output": _context_tokens(parts[1])}
+    label = _OUTPUT_LABEL_PATTERN.search(raw)
+    if label:
+        context = _context_tokens(raw[: label.start()])
+        if context is None:
+            return None
+        return {"context": context, "output": _context_tokens(raw[label.end() :])}
+    context = _context_tokens(raw)
+    if context is None:
+        return None
+    return {"context": context, "output": None}
+
+
 def _match_column(header: str) -> str | None:
     """表头单元格 → 语义列名。按表头名匹配而非列号（部分厂商的模型表会多一列「输入模态」）。"""
     h = re.sub(r"\s+", "", header).casefold()
@@ -109,6 +162,8 @@ def _match_column(header: str) -> str | None:
         return None  # 存储费按小时计，不是缓存读/写单价
     if "模型名称" in h or h in {"模型", "名称", "model", "modelname"}:
         return "model"
+    if "简介" in h:
+        return "description"
     if "上下文" in h or "context" in h or "时段" in h or "档位" in h:
         return "context"
     if "缓存命中" in h or "缓存读" in h or "cacheread" in h:
@@ -173,6 +228,9 @@ def _records_from_grid(
                 "input_price": input_value * scale if input_value is not None else None,
                 "output_price": output_value * scale if output_value is not None else None,
                 "cache_read_price": cache_value * scale if cache_value is not None else None,
+                # 记录级上下文/简介取首次出现的行（同模型多行是档位拆分，这两列不随档位变）
+                "context": context or None,
+                "description": re.sub(r"\s+", " ", _cell(cells, columns, "description")).strip() or None,
                 "currency": currency,
                 "unit": unit,
                 "tiers": [tier] if tier else [],
@@ -307,10 +365,102 @@ def parse_json_entries(text: str, source_url: str) -> list[dict[str, Any]] | Non
     return records or None
 
 
+def _extract_bracketed(text: str, start: int) -> str | None:
+    """从 text[start]（应为 '['）起取配对方括号内的原文；字符串字面量里的括号不参与配对。"""
+    depth = 0
+    in_string = False
+    quote = ""
+    escape = False
+    for index in range(start, len(text)):
+        ch = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                in_string = False
+            continue
+        if ch in {'"', "'"}:
+            in_string, quote = True, ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+# JS 对象字面量的键可不带引号（{ title: "模型" }），转成 JSON 前先补引号
+_JS_OBJECT_KEY = re.compile(r"([{,]\s*)([A-Za-z_]\w*)\s*:")
+
+
+def _loads_js_array(raw: str) -> Any | None:
+    """宽松解析 JS 数组字面量（键可不带引号、允许尾逗号）；不是合法结构返回 None，不猜。"""
+    quoted = _JS_OBJECT_KEY.sub(lambda m: f'{m.group(1)}"{m.group(2)}":', raw)
+    try:
+        return json.loads(quoted)
+    except ValueError:
+        pass
+    try:
+        # JS 的尾逗号 JSON 不收，Python 字面量语法恰好兼容
+        return ast.literal_eval(quoted)
+    except (ValueError, SyntaxError):
+        return None
+
+
+# JSX 属性形态 rows={[...]}：= 与 [ 之间隔着一个表达式容器 {
+_COMPONENT_COLUMNS = re.compile(r"columns\s*=\s*\{?\s*")
+_COMPONENT_ROWS = re.compile(r"rows\s*=\s*\{?\s*")
+
+
+def parse_component_tables(text: str, source_url: str) -> list[dict[str, Any]] | None:
+    """组件化定价表（如 Mintlify DocTable 的 columns/rows 属性）→ 价格记录。
+
+    厂商把定价表从 Markdown 迁成 React 组件后，页面 HTML 里不再有 <table>，
+    但 .md 原文的组件属性里数据原样还在；取 columns 的 title 当表头、rows 当
+    数据行，复用表格解析的列匹配与价格折算。组件定义处的空 columns/rows=[]
+    解析不出表头自然跳过，不误报。
+    """
+    records: list[dict[str, Any]] = []
+    for rows_match in _COMPONENT_ROWS.finditer(text):
+        columns_match = None
+        for candidate in _COMPONENT_COLUMNS.finditer(text, 0, rows_match.start()):
+            columns_match = candidate  # 与最近的 columns= 配对（一页多表时逐表配对）
+        if columns_match is None:
+            continue
+        columns_raw = _extract_bracketed(text, columns_match.end()) if text[columns_match.end()] == "[" else None
+        rows_raw = _extract_bracketed(text, rows_match.end()) if text[rows_match.end()] == "[" else None
+        if not columns_raw or not rows_raw:
+            continue
+        columns = _loads_js_array(columns_raw)
+        rows = _loads_js_array(rows_raw)
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            continue
+        header = [
+            str(col.get("title") or "") if isinstance(col, dict) else str(col)
+            for col in columns
+        ]
+        grid = [
+            [
+                str(cell) if isinstance(cell, (str, int, float)) else ("" if cell is None else json.dumps(cell, ensure_ascii=False))
+                for cell in row
+            ]
+            for row in rows
+            if isinstance(row, list)
+        ]
+        parsed = _records_from_grid(header, grid, source_url=source_url)
+        if parsed:
+            records.extend(parsed)
+    return records or None
+
+
 _PARSERS = (
     ("md", parse_markdown_tables),
     ("html", parse_html_tables),
     ("json", parse_json_entries),
+    ("component", parse_component_tables),
 )
 
 
@@ -383,10 +533,10 @@ def _slim_html_for_ai(text: str) -> str:
 _AI_CHUNK_CAP = 30000
 # 密集价目页（百炼/硅基那种一张表几百个模型）单段提取的回复预算：默认 4000 tokens
 # 装不下几十个模型的 JSON，会输出到一半截断；放大预算配合失败对半拆段双保险
-_AI_EXTRACT_MAX_TOKENS = 12000
+_AI_EXTRACT_MAX_TOKENS = 16000
 # 整页 AI 提取的总时长上界：超长页分块多、模型池回退会滚很久，没有上界会把抓取
 # worker 挂住；到点后已提取的段照常保留（标待复核），没跑的段记警告放弃
-_AI_PAGE_BUDGET_SECONDS = 600.0
+_AI_PAGE_BUDGET_SECONDS = 900.0
 
 
 def _split_for_ai(text: str, limit: int) -> list[str]:
@@ -428,6 +578,7 @@ _AI_SYSTEM_PROMPT = (
     "只输出 JSON 对象，不要输出其他内容："
     '{"models":[{"model":"模型名","tiers":[{"name":"档位名","standard":true,'
     '"input":输入单价,"output":输出单价,"cache_read":缓存命中单价或null}],'
+    '"context":"上下文窗口原文或null","description":"模型简介原文或null",'
     '"currency":"CNY或USD","quote":"价格所在的原文片段"}]}。'
     "同一模型在页面里有多档价格（如高峰/空闲时段、不同上下文长度、不同并发规格）时，"
     "每档一个元素，name 照页面原文抄写；页面有时间定义说明"
@@ -436,6 +587,9 @@ _AI_SYSTEM_PROMPT = (
     "标准档指高峰时段）把 standard 标为 true，页面没有说明就都不标。"
     "只有一个价的模型 tiers 只放一个元素、name 填 null。"
     "价格数值统一换算成每百万 tokens；页面标注免费的填 0；页面里没有的价格填 null。"
+    "context 抄页面上模型简介表或文字里的上下文窗口原文（如 1M、200K/32K、最大输出 8K），"
+    "description 抄模型简介原文并压缩到 40 字以内（超长只取核心一句），"
+    "页面里没有就填 null，不要编造；这两个字段越长越容易挤爆输出，务必精简。"
     "不要编造页面里不存在的模型或价格；模型名照页面原文抄写。"
 )
 
@@ -523,6 +677,8 @@ def _records_from_ai_payload(
             "input_price": baseline["input"],
             "output_price": baseline["output"],
             "cache_read_price": baseline["cache_read"],
+            "context": str(item.get("context") or "").strip() or None,
+            "description": re.sub(r"\s+", " ", str(item.get("description") or "")).strip() or None,
             "currency": currency,
             "unit": f"{currency or '未知'}/1M tokens",
             "tiers": [
@@ -628,6 +784,24 @@ def fetch_page_prices(
         text = response.text
 
         parsed = _parse_text(text, final_url, "static")
+        # Mintlify 系文档站每个页面都有同名 .md 原文；页面把定价表做成客户端组件时
+        # HTML 里没有表格，探测同名 .md 拿结构化原文再解析一遍，比渲染/AI 都稳，
+        # 成本只在整条静态链路落空后的一次 GET
+        probe_source = urlsplit(final_url)
+        if (
+            parsed is None
+            and not probe_source.path.lower().endswith((".md", ".json", ".txt"))
+            and probe_source.path.rstrip("/")
+        ):
+            probe_url = urlunsplit(probe_source._replace(path=probe_source.path.rstrip("/") + ".md"))
+            try:
+                probe = client.get(probe_url)
+                if probe.status_code == 200 and probe.text:
+                    parsed = _parse_text(probe.text, final_url, "md-source")
+                    if parsed:
+                        text = probe.text  # 后续 AI 复核也优先看这份带表格结构的原文
+            except httpx.HTTPError:
+                pass  # 探测只是兜底路径，失败照常走渲染/AI
         rendered: str | None = None
         if parsed is None and headless:
             try:

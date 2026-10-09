@@ -254,12 +254,14 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
   "enabled": true,
   "base_url": "https://.../compatible-mode/v1",
   "model": "qwen3.8-flash",
-  "max_tokens": 4000
+  "max_tokens": 16000,
+  "price_model": "Moonshot-Kimi-K2-Instruct"
 }
 ```
 
 - API key 在管理面板「系统设置」里填写（存数据库）；种子配置也可以直接写 `api_key`，首次导入时生效。
 - `models` 可配置多个候选模型，每次请求随机选用一个。
+- `price_model` 固定价格抽取的起始模型（失败仍按 `models` 池换模型重试）；留空则每批随机选。抽取数值依赖模型读法，随机轮换会让同一站点价格轮间漂移，追求稳定建议固定一个。
 - AI 原始结果按证据哈希缓存在数据库中，同一接口证据不变时不重复调用。
 
 ### sites

@@ -2,13 +2,10 @@ import Link from "next/link";
 import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
-  currencySymbol,
   eventMeta,
-  formatPrice,
   formatTime,
   isNoticeEvent,
   noticeExcerpt,
-  toCnyPrice,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { lowestPriceRowPerModel, sortSnapshotRows } from "@/lib/priceRows";
@@ -199,30 +196,6 @@ export default async function LandingPage() {
 
   // 首页精选：每个模型归一合并后只留综合价最低的一行，再按采集时间倒序
   const parentRows = sortSnapshotRows(lowestPriceRowPerModel(records, rate));
-
-  // 终端演示窗内容用真实数据渲染：没有快照时整个窗不出现，不放占位假数。
-  // 命令行首用虚构的 monitor.sh / 日志文件名，不出现本站任何真实接口路径
-  const termPriceLines = parentRows.slice(0, 3).map((row) => {
-    const converted = toCnyPrice(row.input_price, row.unit, rate);
-    const price = converted ?? row.input_price;
-    const symbol = converted !== null || currencySymbol(row.unit) === "¥" ? "¥" : currencySymbol(row.unit);
-    return `site: ${getSiteInfo(row.site_id).name || row.site_id}  model: ${row.model}  ${symbol} ${formatPrice(price)} /1M`;
-  });
-  const firstNotice = Object.values(overview?.notices ?? {})[0];
-  const termNoticeLine = firstNotice?.content
-    ? `「${noticeExcerpt(firstNotice.content, 1).slice(0, 40)}」${
-        firstNotice.captured_at ? ` · ${formatTime(firstNotice.captured_at)} 存档` : ""
-      }`
-    : null;
-  const uptimeSample = sites.map((site) => stripOf(site.id)).find((list) => list.length > 0);
-  const termUptimeLine = uptimeSample
-    ? `${uptimeSample
-        .slice(-5)
-        .map((point) => (point.pct >= 95 ? "✓" : "✗"))
-        .join(" ")}  近 ${uptimeSample.length} 次渠道检测 · 最新正常 ${
-        uptimeSample[uptimeSample.length - 1].pct
-      }%`
-    : null;
 
   return (
     <>
@@ -461,20 +434,23 @@ export default async function LandingPage() {
                 </Link>
               </div>
               <p className="landing-section-sub">{home.sectionSubs.rankings}</p>
-              <div className="rank-cards">
+              <div className="rank-list">
+                <div className="rank-list-head" aria-hidden>
+                  <span />
+                  <span>模型</span>
+                  <span>厂商</span>
+                  <span>智能指数</span>
+                </div>
                 {rankingsTop.map((entry) => (
-                  <Link key={entry.slug} href="/rankings" className="rank-card">
-                    <span className="rank-card-head">
-                      <span className="mono">#{entry.rank}</span>
-                      <span>{entry.creator ?? "—"}</span>
-                    </span>
-                    <span className="rank-card-name mono" title={entry.name}>
+                  <Link key={entry.slug} href="/rankings" className="rank-row">
+                    <span className="rank-row-no mono num">#{entry.rank}</span>
+                    <span className="rank-row-name mono" title={entry.name}>
                       {entry.name.replace(/\s*\([^)]*\)$/, "")}
                     </span>
-                    <span className="rank-card-index mono">
+                    <span className="rank-row-creator">{entry.creator ?? "—"}</span>
+                    <span className="rank-row-index mono num">
                       {entry.intelligence_index ?? "—"}
                     </span>
-                    <span className="rank-card-label">智能指数</span>
                   </Link>
                 ))}
               </div>
@@ -491,27 +467,15 @@ export default async function LandingPage() {
             </div>
             <div className="landing-truth">
               <ul className="landing-points">
-                {home.dataPoints.map((point) => (
-                  <li key={point}>{point}</li>
+                {home.dataPoints.map((point, index) => (
+                  <li key={point}>
+                    <span className="landing-points-no mono num" aria-hidden>
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    {point}
+                  </li>
                 ))}
               </ul>
-              {termPriceLines.length > 0 && (
-                <div className="term">
-                  <div className="term-bar">
-                    <span />
-                    <span />
-                    <span />
-                    <span className="term-title">monitor.sh</span>
-                  </div>
-                  <pre className="term-body">
-                    {`$ ./monitor.sh
-${termPriceLines.join("\n")}${
-                      termNoticeLine ? `\n\n$ cat notices.log | tail -1\n${termNoticeLine}` : ""
-                    }${termUptimeLine ? `\n\n$ tail -5 uptime.log\n${termUptimeLine}` : ""}`}
-                    <span className="term-cursor" />
-                  </pre>
-                </div>
-              )}
             </div>
           </section>
         </Reveal>

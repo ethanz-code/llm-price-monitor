@@ -31,7 +31,7 @@ export const nav = {
 
 /** 首页 */
 export const home = {
-  /** Hero 大标题打字机逐行打出 */
+  /** Hero 大标题静态两行，第二行开头两个字走品牌色（见 components/HeroType.tsx） */
   typeLines: ["中转站", "价格逐条可溯源"],
   heroSub:
     "自己用的中转站，是不是时不时就不能用？想找个靠谱的，先来对照各家价格和渠道状态。平台不偏向任何中转站，使用需谨慎，Token 少充值。",
@@ -53,7 +53,7 @@ export const home = {
   sectionSubs: {
     latestPrice: "站点标多少记多少，每条价格都附来源链接，点开就能核对",
     sites: "每个站点的渠道检测与公告都自动存档，点站点名进检测档案",
-    rankings: "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位用；点卡片看完整榜单",
+    rankings: "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位用",
   },
   viewAll: "查看全部 →",
   viewAllEvents: "全部事件 →",

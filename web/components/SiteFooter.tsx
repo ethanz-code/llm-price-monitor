@@ -6,7 +6,6 @@ import { IconGithub, IconMail, IconWecom } from "./icons";
 import { LogoMark } from "./LogoMark";
 import { FeedbackModal } from "./FeedbackModal";
 import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
-import { ChromeMosaic } from "./ChromeMosaic";
 import { footer, site } from "@/lib/copy";
 import { useAuthPage } from "@/lib/useAuthPage";
 
@@ -17,7 +16,6 @@ export function SiteFooter() {
   if (useAuthPage()) return null;
   return (
     <footer className="site-footer">
-      <ChromeMosaic />
       <div className="site-footer-inner">
         <div className="site-footer-brand">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

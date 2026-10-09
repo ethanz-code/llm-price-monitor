@@ -613,6 +613,19 @@ def test_ai_models_rejects_non_string_entries(tmp_path: Path):
         load_config(_write_config(tmp_path, {"ai": {"base_url": "https://ai.test/v1", "models": ["m-a", 1]}, "settings": {}, "sites": [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]}))
 
 
+def test_ai_price_model_is_parsed_and_pins_price_extraction():
+    """price_model 固定价格提取起始模型：留空回退随机 pick_model，两端空白等价留空。"""
+    from llm_price_monitor.config import ai_from_raw
+
+    pinned = ai_from_raw({"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "price_model": " m-b "}, cache=None)
+    assert pinned.price_model == "m-b"
+    assert pinned.pick_price_model() == "m-b"
+
+    random_only = ai_from_raw({"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"]}, cache=None)
+    assert random_only.price_model == ""
+    assert random_only.pick_price_model() in {"m-a", "m-b"}
+
+
 def test_ai_api_format_is_validated(tmp_path: Path):
     sites = [{"id": "demo", "adapter": "standard", "model_list_url": "https://demo.test/pricing", "models": []}]
     config = load_config(_write_config(tmp_path, {"ai": {"base_url": "https://ai.test/v1", "api_format": "anthropic"}, "settings": {}, "sites": sites}))
@@ -631,7 +644,7 @@ def test_ai_request_builds_openai_responses_payload():
         {"role": "system", "content": "系统提示"},
         {"role": "user", "content": "用户内容"},
     ]
-    assert body["max_output_tokens"] == 4000
+    assert body["max_output_tokens"] == 16000
     assert body["text"] == {"format": {"type": "json_object"}}
 
     _, _, ping_body = ai_request(config, "gpt-x", "", "hi", max_tokens=8, json_mode=False)
@@ -659,7 +672,7 @@ def test_ai_request_builds_anthropic_messages_payload():
     assert headers["anthropic-version"] == "2023-06-01"
     assert body == {
         "model": "claude-x",
-        "max_tokens": 4000,
+        "max_tokens": 16000,
         "temperature": 0,
         "system": "系统提示",
         "messages": [{"role": "user", "content": "用户内容"}],
@@ -678,7 +691,7 @@ def test_ai_request_builds_gemini_generate_content_payload():
     assert body["contents"] == [{"role": "user", "parts": [{"text": "用户内容"}]}]
     assert body["systemInstruction"] == {"parts": [{"text": "系统提示"}]}
     assert body["generationConfig"]["responseMimeType"] == "application/json"
-    assert body["generationConfig"]["maxOutputTokens"] == 4000
+    assert body["generationConfig"]["maxOutputTokens"] == 16000
 
     # 已带 :generateContent 的地址原样使用，不再重复拼接
     full = AIConfig(base_url="https://proxy.test/v1beta/models/gemini-x:generateContent", api_format="gemini")
@@ -997,6 +1010,42 @@ def test_ai_fallback_respects_deadline():
     assert "时间预算" in str(exc_info.value)
 
 
+def test_ai_fallback_pool_puts_preferred_model_first():
+    """preferred_model 固定排首位（不在池里也照样先试），其余池子乱序作后备。"""
+    import llm_price_monitor.ai as ai_mod
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
+    in_pool = ai_mod._fallback_pool(config, "m-a")
+    assert in_pool[0] == "m-a"
+    assert sorted(in_pool) == ["m-a", "m-b"]
+    outside = ai_mod._fallback_pool(config, "m-c")
+    assert outside[0] == "m-c"
+    assert sorted(outside) == ["m-a", "m-b", "m-c"]
+    assert ai_mod._fallback_pool(config)[0] in {"m-a", "m-b"}
+
+
+def test_ai_preferred_model_tried_first_then_pool_fallback(monkeypatch):
+    """价格提取固定模型：preferred_model 先试，失败仍按池子换，不因固定模型丢掉兜底。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.read())["model"]
+        tried.append(model)
+        if model == "m-c":
+            raise httpx.ConnectError("connection reset by peer", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
+    model, _ = request_with_model_fallback(
+        config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)), preferred_model="m-c",
+    )
+    assert tried[0] == "m-c"
+    assert model in {"m-a", "m-b"}
+
+
 def test_ai_prompt_too_long_falls_back_to_next_model(monkeypatch):
     """prompt 超出单模型上下文按模型级故障换下一个，不再判死整轮：池内模型上下文差异大，
     小上下文模型（如 7b 蒸馏 32k）装不下不代表 129k 的模型装不下。"""
@@ -1035,7 +1084,7 @@ def test_ai_max_tokens_range_error_retries_with_clamped_budget(monkeypatch):
             return httpx.Response(400, json={"error": {"message": "Range of max_tokens should be [1, 2000]"}})
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
-    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k", max_tokens=4000)
     model, _ = request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert model == "m-a"
     assert bodies == [4000, 2000]
@@ -1043,6 +1092,69 @@ def test_ai_max_tokens_range_error_retries_with_clamped_budget(monkeypatch):
     # 学到的上限缓存生效：之后的请求经 ai_request 直接按上限构造，不再白发那次 400
     _, _, clamped_body = ai_mod.ai_request(config, "m-a", "", "hi")
     assert clamped_body["max_tokens"] == 2000
+
+
+def test_ai_learned_limit_persists_and_preloads(monkeypatch):
+    """学到的 max_tokens 上限经 saver 落库、load_model_limits 预载：重启后每个模型不再白发降额 400。"""
+    import llm_price_monitor.ai as ai_mod
+
+    saved: dict[str, int] = {}
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {})
+    monkeypatch.setattr(ai_mod, "model_limits_saver", lambda model, limit: saved.__setitem__(model, limit))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    bodies: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        bodies.append(body["max_tokens"])
+        if len(bodies) == 1:
+            return httpx.Response(400, json={"error": {"message": "Range of max_tokens should be [1, 8192]"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert saved == {"m-a": 8192}
+
+    # 重启等价：内存缓存清空后从库里预载，同一请求直接按 8192 构造，不再出现 400
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {})
+    monkeypatch.setattr(ai_mod, "model_limits_loader", lambda: saved)
+    ai_mod.load_model_limits()
+    _, _, body = ai_mod.ai_request(config, "m-a", "", "hi")
+    assert body["max_tokens"] == 8192
+    assert bodies == [16000, 8192]
+
+
+def test_ai_fallback_skips_models_with_too_small_limit(monkeypatch):
+    """已学上限低于最低单批预算的模型按规格过小剔除；请求预算本身更小时不误剔。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {"tiny": 2000})
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.read())["model"]
+        tried.append(model)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    # 大预算请求（价格抽取 16000）：tiny 的 2000 连一批 JSON 都装不下，直接跳过
+    config = AIConfig(base_url="https://ai.test/v1", models=("tiny", "big"), api_key="k", price_model="tiny")
+    model, _ = request_with_model_fallback(
+        config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert model == "big"
+    assert "tiny" not in tried
+
+    # 小预算请求（ping 用 8）：2000 装得下，不误剔
+    tried.clear()
+    config_small = AIConfig(base_url="https://ai.test/v1", models=("tiny",), api_key="k")
+    model, _ = request_with_model_fallback(
+        config_small, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_tokens=8, json_mode=False,
+    )
+    assert model == "tiny"
+    assert tried == ["tiny"]
 
 
 def test_ai_http_client_bypasses_env_proxy(monkeypatch):
@@ -1234,7 +1346,8 @@ def test_ai_extract_switches_model_on_bad_models_shape(monkeypatch):
     import llm_price_monitor.ai as ai_mod
 
     monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
-    config = AIConfig(base_url="https://ai.test/v1", models=("garbage-model", "good-model"), api_key="k")
+    # price_model 显式钉住坏模型作起点：提取链路会把起始模型作为 preferred 注入请求顺序，留空会随机选导致用例抖动
+    config = AIConfig(base_url="https://ai.test/v1", models=("garbage-model", "good-model"), api_key="k", price_model="garbage-model")
     called: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3241,7 +3354,7 @@ def test_request_fallback_budget_retry_on_truncated_output(monkeypatch):
     rows: list[dict] = []
     monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
 
-    config = AIConfig(base_url="https://ai.test/v1", models=("thinker",), api_key="k")
+    config = AIConfig(base_url="https://ai.test/v1", models=("thinker",), api_key="k", max_tokens=4000)
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3276,7 +3389,7 @@ def test_request_fallback_no_budget_retry_below_limit(monkeypatch):
 
     monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
 
-    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+    config = AIConfig(base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k", max_tokens=4000)
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3305,7 +3418,7 @@ def test_request_fallback_empty_answer_with_full_budget_skips_budget_retry(monke
 
     monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
 
-    config = AIConfig(base_url="https://ai.test/v1", models=("blank-thinker", "good-model"), api_key="k")
+    config = AIConfig(base_url="https://ai.test/v1", models=("blank-thinker", "good-model"), api_key="k", max_tokens=4000)
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

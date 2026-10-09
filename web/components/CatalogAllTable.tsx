@@ -224,8 +224,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
             共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 ·{" "}
             <span className="mono">{vendors.length}</span> 个渠道 · 快照{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
-            <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）· 来源{" "}
-            <RiskLink href={data.source_url || "https://models.dev"}>models.dev</RiskLink>
+            <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>
         </div>
         {rows.length === 0 ? (

@@ -45,7 +45,6 @@ export default async function CalculatorPage({
           items={[
             { label: "官方价模型", value: formatCount(Object.keys(catalog.models).length) },
             ...(overview ? [{ label: "站点", value: formatCount(new Set(overview.records.map((row) => row.site_id)).size) }] : []),
-            { label: "汇率", value: catalog.usd_cny_rate.toFixed(2) },
           ]}
         />
       )}

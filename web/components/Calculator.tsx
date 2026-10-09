@@ -40,18 +40,20 @@ function symbolOf(currency: string): string {
   return "";
 }
 
-/** 目录条目 → 候选模型：缓存命中价缺失就留空，不填估算值；缓存写入价不进计算，不展示。 */
+/** 目录条目 → 候选模型：缓存命中价缺失就留空，不填估算值；缓存写入价不进计算，不展示。
+ *  国内条目取定价源抓来的人民币原价（list_cny/cache_cny），海外条目取美元原价，均不做汇率换算。 */
 function optionFromCatalog(key: string, entry: CatalogEntry): Option {
+  const cn = entry.region === "cn";
   return {
     value: key,
     label: entry.name ?? entry.model ?? key,
     sub: entry.vendor,
     prices: {
-      input: entry.list?.input ?? null,
-      output: entry.list?.output ?? null,
-      cacheRead: entry.cache?.read ?? null,
+      input: (cn ? entry.list_cny?.input : entry.list?.input) ?? null,
+      output: (cn ? entry.list_cny?.output : entry.list?.output) ?? null,
+      cacheRead: (cn ? entry.cache_cny?.read : entry.cache?.read) ?? null,
     },
-    currency: entry.currency || "USD",
+    currency: cn ? "CNY" : entry.currency || "USD",
   };
 }
 
@@ -90,8 +92,6 @@ export function Calculator({
   const [totalTokens, setTotalTokens] = useState(initial.totalTokens ?? DEFAULT_TOTAL_TOKENS);
   const [hitRate, setHitRate] = useState(textOfNumber(initial.hitRate));
   const [keyword, setKeyword] = useState("");
-
-  const rate = catalog?.usd_cny_rate ?? overview?.catalog?.usd_cny_rate ?? null;
 
   /** 站点价模式下的站点清单：只保留有可用价的站点。 */
   const siteOptions = useMemo(() => {
@@ -144,12 +144,6 @@ export function Calculator({
     parsedPrices.cacheRead == null && hitNum > 0 && totalTokens > 0;
 
   const symbol = symbolOf(currency);
-  /** 折人民币口径与站内一致：USD 乘快照汇率，CNY 原样，未知币种不折算。 */
-  const cnyTotal = useMemo(() => {
-    if (currency === "CNY") return result.total;
-    if (currency === "USD" && rate) return result.total * rate;
-    return null;
-  }, [currency, rate, result.total]);
 
   // 状态同步进网址：刷新不丢、可直接分享；用 replaceState 避免每次输入都写历史
   useEffect(() => {
@@ -347,9 +341,6 @@ export function Calculator({
                 {symbol}
                 {formatAmount(result.total)}
               </span>
-              {cnyTotal !== null && currency !== "CNY" && (
-                <span className="calc-total-cny">≈ ¥{formatAmount(cnyTotal)}</span>
-              )}
             </div>
             {missingCacheRead && <p className="calc-tip">{calculator.missingCache}</p>}
             <div className="dtable-wrap">

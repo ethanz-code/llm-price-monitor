@@ -11,6 +11,8 @@ from llm_price_monitor import page_price
 from llm_price_monitor.page_price import (
     detect_currency,
     fetch_page_prices,
+    parse_component_tables,
+    parse_context_limit,
     parse_html_tables,
     parse_json_entries,
     parse_markdown_tables,
@@ -73,9 +75,97 @@ deepseek-v4-pro：输入 4.5 元/百万 tokens，输出 13.5 元/百万 tokens
 
 JS_SHELL_PAGE = "<!doctype html><html><head><script>var app=document.getElementById('app')</script></head><body><div id=\"app\"></div></body></html>"
 
+# 仿 platform.kimi.com 定价页迁到组件表格后的 .md 原文：价格埋在 DocTable 的
+# columns/rows 属性里，开头还有组件定义处的空 columns=[]/rows=[]（不该误报）
+DOCTABLE_MD = """# 模型推理价格说明
+
+export const DocTable = ({columns = [], rows = []}) => {
+  return <div className="doc-table-wrap">...</div>;
+};
+
+## 模型定价
+
+### K3 系列模型
+
+<DocTable
+  columns={[
+{ title: "模型", width: "12%" },
+{ title: "计费单位", width: "10%" },
+{ title: "缓存写入（TTL 5min）", width: "13%" },
+{ title: "缓存写入（TTL 1h）", width: "13%" },
+{ title: "输入价格（缓存命中）", width: "16%" },
+{ title: "输入价格（缓存未命中）", width: "16%" },
+{ title: "输出价格", width: "12%" },
+{ title: "上下文窗口", width: "14%" },
+]}
+  rows={[
+["kimi-k3", "1M tokens", "¥20.00", "¥40.00", "¥2.00", "¥20.00", "¥100.00", "1,048,576 tokens"],
+]}
+/>
+
+### K2 系列模型
+
+<DocTable
+  columns={[
+{ title: "模型", width: "24%" },
+{ title: "计费单位", width: "12%" },
+{ title: "输入价格（缓存命中）", width: "16%" },
+{ title: "输入价格（缓存未命中）", width: "16%" },
+{ title: "输出价格", width: "14%" },
+{ title: "上下文窗口", width: "14%" },
+]}
+  rows={[
+["kimi-k2.7-code", "1M tokens", "¥1.30", "¥6.50", "¥27.00", "262,144 tokens"],
+["kimi-k2.7-code-highspeed", "1M tokens", "¥2.60", "¥13.00", "¥54.00", "262,144 tokens"],
+]}
+/>
+"""
+
 
 def by_key(records: list[dict], name: str) -> dict:
     return next(record for record in records if record["model_key"] == name)
+
+
+def test_parse_component_tables_kimi_doctable() -> None:
+    """Mintlify DocTable 组件属性表：表头取 title、行取数组，缓存命中列语义照旧。"""
+    records = parse_component_tables(DOCTABLE_MD, "https://platform.kimi.com/docs/pricing/chat.md")
+    keys = [record["model_key"] for record in records]
+    assert keys == ["kimik3", "kimik2.7code", "kimik2.7codehighspeed"]
+    k3 = records[0]
+    # 「输入价格（缓存命中）」进 cache_read、「（缓存未命中）」进 input——与 HTML 表同款列匹配
+    assert k3["input_price"] == 20.0 and k3["output_price"] == 100.0
+    assert k3["cache_read_price"] == 2.0
+    assert k3["context"] == "1,048,576 tokens"
+
+
+def test_parse_component_tables_skips_empty_props_and_garbage() -> None:
+    assert parse_component_tables("export const T = ({columns = [], rows = []}) => <div/>;", "https://x") is None
+    assert parse_component_tables("columns=[{broken", "https://x") is None
+
+
+def test_fetch_probes_md_sibling_when_html_has_no_tables() -> None:
+    """页面组件化后静态解析落空 → 探测同名 .md 恢复出价，不用走渲染/AI。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".md"):
+            return httpx.Response(200, text=DOCTABLE_MD)
+        return httpx.Response(200, text=JS_SHELL_PAGE)
+
+    result = fetch_page_prices("https://platform.kimi.com/docs/pricing/chat", transport=httpx.MockTransport(handler))
+    assert result["method"] == "md-source-component"
+    assert [record["model_key"] for record in result["models"]] == ["kimik3", "kimik2.7code", "kimik2.7codehighspeed"]
+
+
+def test_fetch_skips_md_probe_when_static_parse_hits() -> None:
+    """静态解析命中就不发探测请求：健康页零额外成本。"""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, text=HTML_PAGE)
+
+    result = fetch_page_prices("https://example.com/pricing", transport=httpx.MockTransport(handler))
+    assert result["method"] == "static-html"
+    assert all(not url.endswith(".md") for url in requested)
 
 
 def test_unit_helpers() -> None:
@@ -90,6 +180,51 @@ def test_unit_helpers() -> None:
     assert price_value("1,234.5") == (1234.5, True)
     assert price_value("—") == (None, False)
     assert price_value("限时免费")[0] == 0.0
+
+
+def test_parse_context_limit() -> None:
+    """上下文列原文 → limit 数字：单值/斜杠对/输出标注三种形态，非上下文文本一律 None。"""
+    assert parse_context_limit("1M") == {"context": 1048576, "output": None}
+    assert parse_context_limit("1,048,576 tokens") == {"context": 1_048_576, "output": None}
+    assert parse_context_limit("128k") == {"context": 131072, "output": None}
+    assert parse_context_limit("200K/32K") == {"context": 204800, "output": 32768}
+    assert parse_context_limit("256K；最大输出 32K") == {"context": 262144, "output": 32768}
+    assert parse_context_limit("1M（输出 64K）") == {"context": 1048576, "output": 65536}
+    assert parse_context_limit("输入长度 [0, 32K)") is None  # 输入价格分档不是上下文窗口
+    assert parse_context_limit("8K~1M") is None  # 可取值区间读不出单一上限，不猜
+    assert parse_context_limit("00:00 ~ 24:00") is None  # 时段定义不是上下文窗口
+    assert parse_context_limit("高峰时段") is None
+    assert parse_context_limit("") is None
+    assert parse_context_limit(None) is None
+
+
+def test_parse_markdown_captures_description_and_context() -> None:
+    """智谱式「模型名称|简介|上下文|输入|输出」表：简介与上下文进记录级字段。"""
+    md = (
+        "| 模型名称 | 简介 | 上下文 | 输入单价（元/百万 Tokens） | 输出单价（元/百万 Tokens） |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| GLM-5.3 | 旗舰模型，适合复杂任务 | 1M | 8 | 28 |\n"
+        "| GLM-5.3-Flash | 轻量快速档 | 128K | 0.8 | 2.8 |\n"
+    )
+    records = parse_markdown_tables(md, "https://docs.bigmodel.cn/pricing")
+    glm = by_key(records, "glm5.3")
+    assert glm["description"] == "旗舰模型，适合复杂任务"
+    assert glm["context"] == "1M"
+    flash = by_key(records, "glm5.3flash")
+    assert flash["description"] == "轻量快速档"
+    assert flash["tiers"] == [{"context": "128K", "input_price": 0.8, "output_price": 2.8}]
+
+
+def test_fetch_ai_captures_context_and_description() -> None:
+    transport = _transport_with_ai(PLAIN_PAGE, [
+        {"model": "deepseek-flash", "input": 1, "output": 4, "currency": "CNY",
+         "context": "64K/8K", "description": "快速低价模型",
+         "quote": "deepseek-flash：输入 1 元/百万 tokens"},
+    ])
+    result = fetch_page_prices("https://example.com/pricing", ai_config=AI_CONFIG, transport=transport)
+    flash = result["models"][0]
+    assert flash["context"] == "64K/8K"
+    assert flash["description"] == "快速低价模型"
 
 
 def test_parse_markdown_bigmodel_structure() -> None:

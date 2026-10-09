@@ -17,7 +17,9 @@ models.dev 是否收录、是否带国内站口径（智谱的 zhipuai/zai 甚�
   价目录——国内源命中条目则基准换成页价、原国际价退居 `list_global` 参考，
   未命中则新增条目（region=cn）；海外源只给 region=cn 的命中条目补 `list_global`
   参考价，不动国内基准。目录统一 USD 口径：CNY 页价按快照汇率折算存
-  `list`，`list_cny` 存页面标价的精确人民币值。
+  `list`，`list_cny` 存页面标价的精确人民币值。抓到的上下文窗口解析成 `limit`
+  数字、简介写进 `description_zh`（登记 desc_fp 跳过翻译），只在条目缺这两项
+  时补——models.dev 已有的元数据不覆盖。
 """
 from __future__ import annotations
 
@@ -33,7 +35,8 @@ from llm_price_monitor.config import AIConfig
 
 from llm_price_monitor.catalog import fx
 from llm_price_monitor.catalog.normalize import model_key, round2
-from llm_price_monitor.page_price import fetch_page_prices
+from llm_price_monitor.catalog.translate import description_fingerprint_text
+from llm_price_monitor.page_price import fetch_page_prices, parse_context_limit
 from llm_price_monitor.units import number_or_none
 
 VENDOR_SOURCES_DOCUMENT = "vendor_sources"
@@ -296,6 +299,23 @@ def refresh_source(store: Any, vendor: str, *, timeout: float, ai_config: AIConf
     }
 
 
+def _cn_meta_fields(item: dict[str, Any]) -> dict[str, Any]:
+    """抓取记录里的上下文/简介 → 目录条目元数据字段；没有就返回空 dict。
+
+    上下文解析成 limit 数字（输出上限可能缺）；简介是国内页的中文原文，
+    直接写 description_zh 并登记 desc_fp，跳过 translate 的英→中翻译队列。
+    """
+    fields: dict[str, Any] = {}
+    limit = parse_context_limit(item.get("context"))
+    if limit and limit.get("context"):
+        fields["limit"] = limit
+    description = str(item.get("description") or "").strip()
+    if description:
+        fields["description_zh"] = description
+        fields["desc_fp"] = description_fingerprint_text(description)
+    return fields
+
+
 def merge_sources_into_catalog(
     catalog: dict[str, Any],
     sources: dict[str, dict[str, Any]],
@@ -393,6 +413,15 @@ def merge_sources_into_catalog(
                     entry["cache_cny"] = {"read": cny_cache, "write": previous_cache_cny.get("write")}
                 if item.get("price_status"):
                     entry["price_status"] = item["price_status"]
+                # 上下文/简介只补空不覆盖：models.dev 已有的 limit 更结构化，已有简介译文不打架
+                meta = _cn_meta_fields(item)
+                if isinstance(meta.get("limit"), dict):
+                    entry_limit = entry.get("limit") if isinstance(entry.get("limit"), dict) else None
+                    if not (isinstance(entry_limit, dict) and entry_limit.get("context")):
+                        entry["limit"] = meta["limit"]
+                if meta.get("description_zh") and not entry.get("description") and not entry.get("description_zh"):
+                    entry["description_zh"] = meta["description_zh"]
+                    entry["desc_fp"] = meta["desc_fp"]
                 claimed.add(key)
                 matched += 1
             else:
@@ -410,6 +439,7 @@ def merge_sources_into_catalog(
                     "source_url": source_url,
                     "release_date": None,
                     **({"price_status": item["price_status"]} if item.get("price_status") else {}),
+                    **_cn_meta_fields(item),
                 }
                 claimed.add(key)
                 added += 1
@@ -483,7 +513,7 @@ def _catalog_rate(catalog: dict[str, Any]) -> float | None:
 def refresh_and_merge(store: Any, vendor: str, *, timeout: float, ai_config: AIConfig | None) -> dict[str, Any]:
     """单源「立即抓取」：抓页更新源文档后，就地重合并官方价目录。
 
-    合并只动价格字段，条目已有的简介译文等元数据原样保留。
+    合并价格字段全量更新；上下文/简介只补空，条目已有的元数据原样保留。
     """
     summary = refresh_source(store, vendor, timeout=timeout, ai_config=ai_config)
     if summary.get("status") == "failed":

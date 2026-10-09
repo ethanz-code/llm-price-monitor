@@ -237,13 +237,20 @@ class AIConfig:
     proxy: str | None = None
     timeout: float = 180.0
     max_input_chars: int = 60000
-    max_tokens: int = 4000
+    max_tokens: int = 16000
     enable_thinking: bool = False
     cache: AIResultCache | None = None
+    # 价格提取的固定起始模型；留空=每批随机选（多模型分摊用量）。
+    # 提取数值依赖模型读法，随机轮换会让同一站点价格轮间漂移，追求稳定就固定一个。
+    price_model: str = ""
 
     def pick_model(self) -> str:
         # 每次调用随机选一个模型，多模型分摊用量。
         return secrets.choice(self.models) if self.models else ""
+
+    def pick_price_model(self) -> str:
+        """价格提取的起始模型：配置了 price_model 就固定用它（失败仍按池子换模型），留空回退随机。"""
+        return self.price_model or self.pick_model()
 
     @property
     def usable(self) -> bool:
@@ -302,7 +309,8 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
             raise ValueError("配置文件 ai.proxy 必须是完整的 http(s) 代理 URL，留空表示直连")
     timeout = float(raw.get("timeout", 180))
     max_input_chars = int(raw.get("max_input_chars", 60000))
-    max_tokens = int(raw.get("max_tokens", 4000))
+    max_tokens = int(raw.get("max_tokens", 16000))
+    price_model = str(raw.get("price_model") or "").strip()
     if not timeout > 0:
         raise ValueError("配置文件 ai.timeout 必须是大于 0 的数字（秒）")
     if max_input_chars < 1:
@@ -321,6 +329,7 @@ def ai_from_raw(raw: dict[str, Any], *, cache: AIResultCache | None) -> AIConfig
         max_input_chars=max_input_chars,
         max_tokens=max_tokens,
         enable_thinking=bool(raw.get("enable_thinking", False)),
+        price_model=price_model,
         cache=cache,
     )
 

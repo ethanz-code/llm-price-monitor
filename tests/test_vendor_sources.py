@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from llm_price_monitor.catalog import vendor_sources as vs
+from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.catalog.vendor_sources import (
     detect_vendor_coverage,
     merge_sources_into_catalog,
@@ -132,6 +133,55 @@ def test_merge_adds_new_entry_with_source_vendor():
     assert entry["list_cny"] == {"input": 2.0, "output": 7.0}
     assert entry["cache"] == {"read": None, "write": None}
     assert entry["price_status"] == "candidate"  # AI 兜底来源标记 candidate，透传给前端
+
+
+def test_merge_fills_limit_and_description_only_when_missing():
+    """cn 源补充上下文/简介：条目缺就填，已有 models.dev 元数据不覆盖。"""
+    catalog = _catalog()
+    catalog["models"]["qwen3max"]["limit"] = {"context": 262144, "output": 65536}
+    catalog["models"]["qwen3max"]["description_zh"] = "已有中文简介"
+    sources = {"Zhipu AI": {"url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": True, "models": [
+        {"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8, "currency": "CNY",
+         "context": "1M", "description": "轻量快速档"},
+        {"model": "qwen3-max", "input_price": 9.0, "output_price": 54.0, "currency": "CNY",
+         "context": "256K；最大输出 32K", "description": "千问旗舰"},
+    ]}}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["matched"] == 2
+    flash = merged["models"]["glm5.3flash"]
+    assert flash["limit"] == {"context": 1048576, "output": None}
+    assert flash["description_zh"] == "轻量快速档"
+    # desc_fp 与简介指纹一致 → translate 视为已有译文，跳过翻译队列
+    assert flash["desc_fp"] == description_fingerprint_text("轻量快速档")
+    qwen = merged["models"]["qwen3max"]
+    assert qwen["limit"] == {"context": 262144, "output": 65536}
+    assert qwen["description_zh"] == "已有中文简介"
+
+
+def test_merge_drops_unparseable_context():
+    """时段列、输入分档这些不是上下文窗口的文本不进 limit，也不造脏数据。"""
+    catalog = _catalog()
+    sources = {"Zhipu AI": {"url": "https://docs.bigmodel.cn/cn/guide/start/pricing.md", "enabled": True, "models": [
+        {"model": "GLM-5.3-Flash", "input_price": 0.8, "output_price": 2.8, "currency": "CNY",
+         "context": "输入长度 [0, 32K)", "description": None},
+    ]}}
+    merged, _summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    entry = merged["models"]["glm5.3flash"]
+    assert "limit" not in entry and "description_zh" not in entry and "desc_fp" not in entry
+
+
+def test_merge_new_entry_carries_limit_and_description():
+    catalog = _catalog()
+    sources = {"Baichuan": {"url": "https://platform.baichuan-ai.com/prices", "enabled": True, "models": [
+        {"model": "Baichuan-M3", "input_price": 5.0, "output_price": 9.0, "currency": "CNY",
+         "context": "128K", "description": "百川新一代主力"},
+    ]}}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert summary["added"] == 1
+    entry = merged["models"]["baichuanm3"]
+    assert entry["limit"] == {"context": 131072, "output": None}
+    assert entry["description_zh"] == "百川新一代主力"
+    assert entry["desc_fp"] == description_fingerprint_text("百川新一代主力")
 
 
 def test_merge_usd_page_keeps_list_and_converts_cny_reference():

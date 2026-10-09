@@ -52,10 +52,14 @@ def _chat_json(config: AIConfig, system: str, user: str, client: httpx.Client | 
             client.close()
 
 
+def description_fingerprint_text(text: str) -> str:
+    """简介原文的指纹；条目存中文简介（description_zh）时也用它登记 desc_fp 跳过翻译。"""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
 def description_fingerprint(entry: dict[str, Any]) -> str:
     """简介翻译的输入指纹：简介原文变了才需要重新翻译。"""
-    raw = str(entry.get("description") or "")
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return description_fingerprint_text(str(entry.get("description") or ""))
 
 
 def fingerprint_translations(doc: dict[str, Any] | None) -> dict[str, str]:

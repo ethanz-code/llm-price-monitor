@@ -6,6 +6,7 @@ AI 只负责识别模型别名、补齐别名形式和标准化字段。
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import time
@@ -29,6 +30,8 @@ from llm_price_monitor.evidence import (
 )
 from llm_price_monitor import tasklog
 from llm_price_monitor.matching import canonical_target, contains_model_alias
+
+logger = logging.getLogger(__name__)
 from llm_price_monitor.tracker import PriceRecord, TextParser
 from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none
 
@@ -47,6 +50,15 @@ class AIBudgetExhaustedError(AIExtractionError):
 AiLogHook = Any
 ai_log_hook: AiLogHook | None = None
 
+# 模型 max_tokens 上限的持久化钩子：上限只能从 400 报错里学出来（无查询接口），学习结果
+# 落库后重启不丢，每个模型一生最多白发一次降额请求。loader 返回 {model: limit}，saver 增量写一条。
+model_limits_loader: Callable[[], dict[str, int]] | None = None
+model_limits_saver: Callable[[str, int], None] | None = None
+
+# 单批价格抽取 JSON 的最低输出预算（同 config.ai_from_raw 的最低校验值）：已学上限低于它的
+# 模型连一批都装不下，发起必然截断成坏 JSON，按"规格过小"从候选序里剔除。
+MIN_USABLE_MAX_TOKENS = 4000
+
 
 def log_ai_request(**fields: Any) -> None:
     if ai_log_hook is None:
@@ -55,6 +67,33 @@ def log_ai_request(**fields: Any) -> None:
         ai_log_hook(**fields)
     except Exception:
         pass  # 日志失败绝不影响主流程
+
+
+def learn_model_limit(model: str, limit: int) -> None:
+    """记录从 400 报错里学到的模型 max_tokens 上限：进内存缓存，落库钩子存在时同步持久化。"""
+    if _MODEL_MAX_TOKENS_LIMIT.get(model) == limit:
+        return
+    _MODEL_MAX_TOKENS_LIMIT[model] = limit
+    saver = model_limits_saver
+    if saver is None:
+        return
+    try:
+        saver(model, limit)
+    except Exception:
+        pass  # 落库失败只损失重启后的预载，不影响本轮
+
+
+def load_model_limits() -> None:
+    """启动预载：把库里学过的上限并入内存缓存，重启后不再白发降额 400。"""
+    loader = model_limits_loader
+    if loader is None:
+        return
+    try:
+        learned = loader()
+    except Exception:
+        return
+    if isinstance(learned, dict):
+        _MODEL_MAX_TOKENS_LIMIT.update({str(k): int(v) for k, v in learned.items() if isinstance(v, int) and v > 0})
 
 
 def _usage_tokens(api_format: str, payload: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
@@ -260,14 +299,17 @@ def ai_http_client(config: AIConfig, timeout: float | None = None) -> httpx.Clie
     return httpx.Client(timeout=timeout or config.timeout, trust_env=False, proxy=config.proxy or None)
 
 
-def _fallback_pool(config: AIConfig) -> list[str]:
-    """换模型重试共用的起点：模型池为空直接抛配置错误；返回打乱后的副本供调用方再过滤。"""
+def _fallback_pool(config: AIConfig, preferred_model: str = "") -> list[str]:
+    """换模型重试共用的起点：模型池为空直接抛配置错误；返回打乱后的副本供调用方再过滤。
+
+    preferred_model 非空时固定排在首位（不在池里也照样排，池子只作其后备），其余随机乱序。
+    """
     pool = model_pool(config)
     if not pool:
         raise AIExtractionError("配置文件 ai.models 未配置")
-    order = pool[:]
-    random.shuffle(order)
-    return order
+    rest = [name for name in pool if name != preferred_model]
+    random.shuffle(rest)
+    return ([preferred_model] if preferred_model else []) + rest
 
 
 def _log_pool_exhausted(scene: str, model: str, last_error_text: str, prompt_excerpt: str) -> None:
@@ -342,10 +384,12 @@ def request_with_model_fallback(
     timeout: float | None = None,
     validate: Callable[[str], None] | None = None,
     deadline: float | None = None,
+    preferred_model: str = "",
 ) -> tuple[str, httpx.Response]:
     """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
 
-    最近校验失败进冷却名单的模型先跳过（全冷却时回退全池，不拒服）。思考不可关的模型拒收
+    preferred_model 非空时固定用它开头（价格提取用：同一站点每轮同一模型读数，避免轮间漂移），
+    池内其余模型作后备。最近校验失败进冷却名单的模型先跳过（全冷却时回退全池，不拒服）。思考不可关的模型拒收
     enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。连接失败（超时/连接
     重置/SSL EOF 等传输错误）与模型报错同样换下一个并留痕。
     validate 传入时在 HTTP 成功后对回复正文做内容校验（如 JSON 可解析），校验失败按模型问题
@@ -359,12 +403,19 @@ def request_with_model_fallback(
     （如助手场景收紧死线），不传用 config.timeout。deadline 为换模型重试的总时长上界
     （time.monotonic() 时刻），超出即抛 AIExtractionError，价格提取用它与单站预算挂钩。
     """
-    pool = _fallback_pool(config)
+    pool = _fallback_pool(config, preferred_model)
     now = time.time()
     # 最近校验失败进冷却名单的模型先跳过（全冷却时回退全池，不拒服）
     order = [name for name in pool if _MODEL_COOLDOWN.get(name, 0) <= now] or pool
     request_timeout = timeout or config.timeout
     request_limit = config.max_tokens if max_tokens is None else max_tokens
+    # 已学上限连本次最低输出预算（MIN_USABLE_MAX_TOKENS 与 request_limit 取小）都装不下的
+    # 模型按"规格过小"剔除——发起必然截断成坏 JSON 白烧一次调用；全被剔时回退原序不拒服
+    floor = min(MIN_USABLE_MAX_TOKENS, request_limit)
+    too_small = [name for name in order if _MODEL_MAX_TOKENS_LIMIT.get(name, request_limit) < floor]
+    if too_small:
+        order = [name for name in order if name not in too_small] or order
+        logger.info("已学 max_tokens 上限低于 %d 的模型本轮跳过：%s", floor, "、".join(too_small))
     passed_client = client is not None
     client = client or ai_http_client(config, request_timeout)
     last_exc: Exception | None = None
@@ -453,8 +504,8 @@ def request_with_model_fallback(
                     current_budget = body.get("max_tokens") or body.get("max_output_tokens") or (body.get("generationConfig") or {}).get("maxOutputTokens") or request_limit
                     if clamped is not None and current_budget > clamped and not token_clamped:
                         # max_tokens 超出模型上限（含截断放大后撞上限）：解析上限同模型降额重试一次并
-                        # 缓存；池里其他路径经 ai_request 直接按上限构造。token_clamped 防同类错死循环
-                        _MODEL_MAX_TOKENS_LIMIT[model] = clamped
+                        # 持久化缓存；池里其他路径经 ai_request 直接按上限构造。token_clamped 防同类错死循环
+                        learn_model_limit(model, clamped)
                         token_clamped = True
                         log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error=f"模型 max_tokens 上限 {clamped}，已降额同模型重试｜" + error_text, prompt_excerpt=user)
                         attempts.insert(0, _with_token_budget(config.api_format, body, clamped))
@@ -1333,7 +1384,8 @@ class AIPriceExtractor:
     def _cache_key(self, spec: SiteSpec, expected_models: list[str], evidence: str) -> str:
         # version=8：位置型数组与分组倍率规则上线后旧缓存结果不可信，整体失效重抽。
         # version=12：价格合理性校验上线，旧缓存结果未过检（含 hao 站 OCR 模型提取的百万级错价），整体失效重抽。
-        return payload_hash({"version": 12, "site": spec.id, "models": expected_models, "evidence": evidence})
+        # version=13：提取模型固定化（price_model）+ 输出预算 16000，随机模型时代的缓存结果读法不可信，整体失效重抽。
+        return payload_hash({"version": 13, "site": spec.id, "models": expected_models, "evidence": evidence})
 
     def _cached_result(self, key: str) -> dict[str, Any] | None:
         if self.config.cache is None:
@@ -1589,7 +1641,7 @@ expected_models：
         searchable = ""
         network_evidence: list[dict[str, Any]] = []
         previous_body = ""
-        ai_model = self.config.pick_model()
+        ai_model = self.config.pick_price_model()
         for max_chars in EVIDENCE_CHAR_LADDER:
             system, user, page_evidence, network_evidence = self._request(
                 spec, page_text, responses, expected, page_sources, max_chars=max_chars,
@@ -1613,7 +1665,7 @@ expected_models：
             try:
                 ai_model, response = request_with_model_fallback(
                     self.config, system, user, client=client, scene="价格抽取",
-                    validate=_validated_price_payload, deadline=deadline,
+                    validate=_validated_price_payload, deadline=deadline, preferred_model=ai_model,
                 )
                 raw_result = json_content(ai_content(self.config.api_format, response.json()))
                 break

@@ -19,13 +19,6 @@
   /* 卡片：白底上靠发丝边框分层（AA 式），无投影 */
   --shadow-panel: none;
   --card-border: 1px solid var(--border);
-  /* 光晕与镀铬马赛克用色：首页顶部光束、页脚右下角马赛克共用 */
-  --glow-accent: rgba(255, 112, 24, 0.18);
-  --chrome-hi: #ececec;
-  --chrome-md: #c9c9c9;
-  --chrome-lo: #9a9a9a;
-  --chrome-glint: rgba(255, 112, 24, 0.45);
-  --chrome-opacity: 0.4;
   /* 输入类控件（.sel/.input）：无边框填充底，静态只靠底色分层，聚焦才换强调描边+光晕 */
   --field-bg: var(--panel-2);
   --field-bg-hover: #ececec;
@@ -97,12 +90,6 @@
   /* 暗色卡片同样无边框无投影，靠底色分层 */
   --shadow-panel: none;
   --card-border: none;
-  --glow-accent: rgba(255, 112, 24, 0.12);
-  --chrome-hi: #cbd5df;
-  --chrome-md: #828c96;
-  --chrome-lo: #4a545e;
-  --chrome-glint: rgba(255, 133, 52, 0.4);
-  --chrome-opacity: 0.5;
   /* 暗色下激活态阴影整体加深 */
   --shadow-pop: 0 1px 10px rgba(0, 0, 0, 0.55);
   --tone-green-bg: rgba(86, 168, 92, 0.16);
@@ -291,70 +278,97 @@ body > main {
   font-variant-numeric: tabular-nums;
 }
 
-/* 首页榜单速览卡：素底 + 发丝边框，大 mono 指数立视觉重心，整卡点击进完整榜单 */
-.rank-cards {
+/* 首页榜单速览：紧凑排行列表，一模型一行，发丝线分行，整行点击进完整榜单 */
+.rank-list-head,
+.rank-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.rank-card {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 14px 16px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-  text-decoration: none;
-  transition: border-color 0.15s var(--ease);
-}
-
-.rank-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.rank-card-head {
-  display: flex;
-  justify-content: space-between;
+  /* 厂商列用固定宽：表头与数据行各自成 grid，内容自适应宽度会各自解析、上下错位 */
+  grid-template-columns: 2.4em minmax(0, 1fr) 160px 4.5em;
+  column-gap: 14px;
   align-items: baseline;
-  font-size: 11.5px;
-  color: var(--text-3);
-  margin-bottom: 6px;
 }
 
-.rank-card-name {
+.rank-list-head {
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.rank-list-head span:last-child {
+  text-align: right;
+}
+
+.rank-row {
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.rank-row:last-child {
+  border-bottom: 0;
+}
+
+.rank-row:hover {
+  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+}
+
+.rank-row:hover .rank-row-name {
+  color: var(--accent-text);
+}
+
+.rank-row-no {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.rank-row-name {
   font-size: 13px;
   font-weight: 550;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease);
 }
 
-.rank-card-index {
-  margin-top: 8px;
-  font-size: 26px;
-  font-weight: 600;
-  line-height: 1.1;
-  color: var(--text);
-}
-
-.rank-card-label {
-  font-size: 11px;
+.rank-row-creator {
+  font-size: 12px;
   color: var(--text-3);
-  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-@media (max-width: 1024px) {
-  .rank-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+.rank-row-index {
+  font-size: 15px;
+  font-weight: 600;
+  text-align: right;
+}
+
+@media (max-width: 720px) {
+  .rank-list-head,
+  .rank-row {
+    grid-template-columns: 2.2em minmax(0, 1fr) 110px 4.5em;
   }
 }
 
 @media (max-width: 480px) {
-  .rank-cards {
-    grid-template-columns: 1fr;
+  .rank-list-head,
+  .rank-row {
+    grid-template-columns: 2.2em minmax(0, 1fr) 4em;
+  }
+
+  .rank-list-head span:nth-child(3),
+  .rank-row-creator {
+    display: none;
+  }
+
+  .rank-row-index {
+    font-size: 14px;
   }
 }
 
@@ -4418,11 +4432,9 @@ a.event-card {
 }
 
 /* 04 数据从哪来：左要点列表 + 右采集数据面板 */
+/* 数据来源：单栏要点，mono 序号立节奏，零装饰件 */
 .landing-truth {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
-  gap: 48px;
-  align-items: center;
+  max-width: 680px;
 }
 
 .landing-points {
@@ -4430,85 +4442,22 @@ a.event-card {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .landing-points li {
-  position: relative;
-  padding-left: 20px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
   font-size: 14px;
   line-height: 1.7;
   color: var(--text-2);
 }
 
-.landing-points li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 9px;
-  width: 8px;
-  height: 8px;
-  border-radius: 9999px;
-  background: var(--accent);
-}
-
-/* 采集数据面板：终端窗拟物（红黄绿窗口点 + monitor.sh 标题 + 闪烁光标），
- * 内容全部是真实采集数据；命令行首用虚构脚本与日志名，不暴露本站接口路径 */
-.term {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel, rgba(255, 255, 255, 0.03));
-  overflow: hidden;
-}
-
-.term-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.term-bar > span:first-child,
-.term-bar > span:nth-child(2),
-.term-bar > span:nth-child(3) {
-  width: 9px;
-  height: 9px;
-  border-radius: 9999px;
-  background: var(--border);
-}
-
-.term-title {
-  margin-left: 8px;
-  font-family: var(--mono);
-  font-size: 11px;
+.landing-points-no {
+  flex-shrink: 0;
+  font-size: 12px;
   color: var(--text-3);
-}
-
-.term-cursor {
-  display: inline-block;
-  width: 7px;
-  height: 13px;
-  margin-left: 2px;
-  vertical-align: -2px;
-  background: var(--accent);
-  animation: term-blink 1.1s steps(1) infinite;
-}
-
-@keyframes term-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-.term-body {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.9;
-  color: var(--text-2);
-  margin: 0;
-  padding: 18px 18px 20px;
-  overflow-x: auto;
 }
 
 /* 05 FAQ 手风琴：限宽居中，靠间距与 +/− 组织，不再画通栏线 */
@@ -4635,7 +4584,6 @@ a.event-card {
   .reveal,
   .landing-section::before,
   .landing-cta::before,
-  .term-cursor,
   .faq-body {
     transition: none;
     animation: none;
@@ -4649,13 +4597,6 @@ a.event-card {
   .landing-section::before,
   .landing-cta::before {
     transform: none;
-  }
-}
-
-@media (max-width: 1024px) {
-  .landing-truth {
-    grid-template-columns: 1fr;
-    gap: 36px;
   }
 }
 
@@ -5456,12 +5397,6 @@ a.event-card {
   line-height: 1.1;
 }
 
-.calc-total-cny {
-  font-size: 14px;
-  color: var(--text-3);
-  font-family: var(--mono);
-}
-
 @media (max-width: 768px) {
   .calc-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5481,112 +5416,6 @@ a.event-card {
 @media (max-width: 480px) {
   .calc-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-/* 页脚右下角镀铬马赛克：亮斑贴 footer 顶边、向下和向左双遮罩溶解，小屏隐藏避免挤文字 */
-.chrome-mosaic {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 560px;
-  height: 300px;
-  pointer-events: none;
-  -webkit-mask-image:
-    linear-gradient(to left, #000 58%, transparent 96%),
-    linear-gradient(to bottom, #000 60%, transparent 94%);
-  mask-image:
-    linear-gradient(to left, #000 58%, transparent 96%),
-    linear-gradient(to bottom, #000 60%, transparent 94%);
-  -webkit-mask-composite: source-in;
-  mask-composite: intersect;
-}
-
-@media (max-width: 1024px) {
-  .chrome-mosaic {
-    display: none;
-  }
-}
-
-/* 首页顶部通栏抽象光效：锚定文档顶端，向下渐隐融入页底色 */
-.hero-backdrop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: clamp(520px, 72vh, 800px);
-  pointer-events: none;
-  z-index: 0;
-  /* 整体降一档：荧光光束铺满首屏时亮部太多，与 CTA 抢注意力；氛围保留、亮度收敛 */
-  opacity: 0.72;
-  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
-  mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
-}
-
-/* 光束入场：刷新页面时从上方淡入落下，像光打下来；
-   只动 transform/opacity，落下后不干扰页面其他常驻动效。--hb-o 保留光束自身的基础透明度 */
-.hb-beam {
-  animation: hb-drop 1s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.hb-beam-late {
-  --hb-o: 0.7;
-  animation-delay: 0.12s;
-}
-
-@keyframes hb-drop {
-  from {
-    transform: translateY(-110px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: var(--hb-o, 1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hb-beam {
-    animation: none;
-  }
-}
-
-/* 镀铬方块动效：每颗方块的光泽按各自相位缓慢呼吸（--o 为该方块的基础不透明度），
-   时长 3.5~7.5s、延迟 0~7s 由固定种子生成，SSR 与客户端一致；
-   叠加一层蔓延波纹：所有方块共用 9s 周期，波前在开头约 1.2s 内扫过 */
-.chr-tile {
-  animation:
-    chr-shimmer ease-in-out infinite alternate,
-    chr-ripple 9s linear infinite;
-  animation-delay: var(--sd, 0s), var(--rd, 0s);
-  animation-duration: var(--sdur, 5s), 9s;
-}
-
-@keyframes chr-shimmer {
-  from {
-    opacity: calc(var(--o, 0.8) * 0.45);
-  }
-  to {
-    opacity: var(--o, 0.8);
-  }
-}
-
-@keyframes chr-ripple {
-  0% {
-    filter: brightness(1.6);
-  }
-  13% {
-    filter: brightness(1);
-  }
-  100% {
-    filter: brightness(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chr-tile {
-    animation: none;
-    opacity: var(--o, 0.8);
   }
 }
 

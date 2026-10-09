@@ -223,6 +223,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.include_router(routes.vendor_sources.build_router(store))
     app.include_router(routes.rankings.build_router(store))
     ai.ai_log_hook = store.add_ai_log  # 大模型调用统一落日志
+    ai.model_limits_loader = store.get_model_limits  # 已学 max_tokens 上限的存取：重启后不再白发降额 400
+    ai.model_limits_saver = store.save_model_limit
+    ai.load_model_limits()
     ensure_browser_ready(store)
     scheduler.start_scheduler(store)
 

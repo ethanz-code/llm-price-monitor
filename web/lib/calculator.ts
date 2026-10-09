@@ -129,7 +129,7 @@ export interface CalcState {
   source: CalcSource;
   model: string;
   site: string;
-  /** 单价币种："USD" 走汇率折算，"CNY" 原样；未知币种只显示原币 */
+  /** 单价币种：只决定展示符号（CNY→¥，USD→$，其余不显示符号），不做汇率换算 */
   currency: string;
   prices: CalcPrices;
   /** 总 token 用量；缺省回落默认档（1 亿） */

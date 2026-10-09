@@ -165,6 +165,7 @@ export function AdminSettings() {
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiFormat, setAiFormat] = useState("chat_completions");
   const [aiModels, setAiModels] = useState("");
+  const [aiPriceModel, setAiPriceModel] = useState("");
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiTimeout, setAiTimeout] = useState("60");
   const [schedule, setSchedule] = useState<Record<string, string>>({});
@@ -196,6 +197,7 @@ export function AdminSettings() {
         setAiBaseUrl(typeof ai.base_url === "string" ? ai.base_url : "");
         setAiFormat(typeof ai.api_format === "string" && ai.api_format ? ai.api_format : "chat_completions");
         setAiModels(modelsToText((ai.models as SiteConfig["models"]) ?? []));
+        setAiPriceModel(typeof ai.price_model === "string" ? ai.price_model : "");
         setAiApiKey(typeof ai.api_key === "string" ? ai.api_key : "");
         setAiTimeout(String(typeof ai.timeout === "number" ? ai.timeout : 60));
         setAiMaxInputChars(typeof ai.max_input_chars === "number" && Number.isFinite(ai.max_input_chars) ? String(ai.max_input_chars) : "");
@@ -341,6 +343,7 @@ export function AdminSettings() {
       base_url: base,
       api_format: aiFormat,
       models: aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+      price_model: aiPriceModel.trim() || null,
       api_key: aiApiKey.trim() || null,
       timeout,
       max_input_chars: maxInputChars,
@@ -372,6 +375,7 @@ export function AdminSettings() {
           base_url: aiBaseUrl.trim(),
           api_format: aiFormat,
           models: aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
+          price_model: aiPriceModel.trim() || null,
           api_key: aiApiKey.trim() || null,
           timeout: Number.isFinite(Number.parseFloat(aiTimeout)) ? Number.parseFloat(aiTimeout) : 60,
         },
@@ -529,8 +533,17 @@ export function AdminSettings() {
             <SettingRow label="AI Base URL">
               <Input value={aiBaseUrl} onChange={setAiBaseUrl} placeholder="https://api.example.com/v1" style={{ width: "min(360px, 100%)" }} />
             </SettingRow>
-            <SettingRow label="AI 模型列表" hint="逗号分隔，每次随机用一个">
+            <SettingRow
+              label="AI 模型列表"
+              hint="逗号分隔的候选池，请求失败自动换下一个。建议配新一代通用对话模型的轻量档（qwen3.8-flash、deepseek-v4-flash、glm-5.3-flash 这类，认准 flash / mini / turbo 命名）；OCR、分析型等专用模型输出上限小，价格抽取会失败——系统会自动记住每个模型的输出上限，装不下的自动跳过"
+            >
               <Input value={aiModels} onChange={setAiModels} placeholder="model-a, model-b" style={{ width: "min(360px, 100%)" }} />
+            </SettingRow>
+            <SettingRow
+              label="固定价格提取模型"
+              hint="价格数值靠模型读页面读出来，不同模型读数可能差很多；填列表里的某个模型名，每轮都由它提取，读数稳定。留空则每批随机换着用。填的模型坏了也不用怕，会自动按列表换下一个"
+            >
+              <Input value={aiPriceModel} onChange={setAiPriceModel} placeholder="留空则从模型列表随机选" style={{ width: "min(360px, 100%)" }} />
             </SettingRow>
             <SettingRow
               label="AI API Key"
@@ -635,7 +648,7 @@ export function AdminSettings() {
                 style={{ width: 120, maxWidth: "100%" }}
               />
             </SettingRow>
-            <SettingRow label="单次回复上限（token）" hint="模型单次最多生成多少 token；最低 4000，价格抽取的输出需要这个预算">
+            <SettingRow label="单次回复上限（token）" hint="模型单次最多生成多少 token；最低 4000，价格抽取的输出需要这个预算。填得超过某个模型的上限时，系统会按该模型实测上限自动降额，不用手动迁就">
               <Input
                 value={aiMaxTokens}
                 onChange={setAiMaxTokens}

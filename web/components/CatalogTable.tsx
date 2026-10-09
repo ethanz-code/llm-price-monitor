@@ -373,8 +373,7 @@ export function CatalogTable({
           <span style={{ color: "var(--text-2)", fontSize: 13 }}>
             共 <span className="mono">{formatCount(Object.values(data.models).filter((entry) => entry.found).length)}</span> 条 · 快照{" "}
             <span className="mono">{data.generated_at_iso}</span> · 汇率{" "}
-            <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）· 来源{" "}
-            <RiskLink href={data.source_url || "https://models.dev"}>models.dev</RiskLink>
+            <span className="mono">{data.usd_cny_rate}</span>（{data.rate_source}）
           </span>
         </div>
         {rows.length === 0 ? (
