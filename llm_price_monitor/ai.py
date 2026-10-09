@@ -27,7 +27,7 @@ from llm_price_monitor.evidence import (
     structure_page_source,
 )
 from llm_price_monitor.matching import canonical_target, contains_model_alias
-from llm_price_monitor.tracker import PriceRecord
+from llm_price_monitor.tracker import PriceRecord, _TextParser
 from llm_price_monitor.units import has_pricing_tiers, merge_model_items, number_or_none
 
 NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析 one-api/new-api 风格的中转站价格接口。响应通常包含顶层 data 数组和 group_ratio 字典；data 中模型字段包括 model_ratio、completion_ratio、cache_ratio、create_cache_ratio、enable_groups，部分模型包含 billing_mode/billing_expr 或 pricing_rules。普通模式以 model_ratio=1 对应的站点基准价（默认 2 CNY/1M tokens，除非证据或配置明确说明其他币种/基准）计算：输入单价=model_ratio×基准价，输出单价=输入单价×completion_ratio，缓存读取=输入单价×cache_ratio，缓存写入=输入单价×create_cache_ratio，最后乘 group_ratio[分组名]。模型的 enable_groups 是可用分组列表，必须为每个分组分别输出，不能按显示顺序猜分组。billing_mode=tiered_expr 时忽略普通 model_ratio 公式，执行 billing_expr；表达式中的系数就是最终每 1M tokens 单价，不再乘基准价。len 是总上下文 token 数，p/c/cr 分别是输入/输出/缓存读取 token 数；若存在 pricing_rules.tiers，也要保留每个上下文阶梯。单次请求费用按各类 token 数除以 1,000,000 后乘对应单价。没有明确证据时填 null/unavailable，不要把倍率、余额或官方参考价冒充实际价格。"""
@@ -37,15 +37,65 @@ class AIExtractionError(PriceMonitorError):
     pass
 
 
-class AIDryRun(PriceMonitorError):
-    def __init__(self, preview: dict[str, Any]) -> None:
-        super().__init__("AI dry-run 已生成请求预览")
-        self.preview = preview
+# 证据超长被供应商拒绝时，按阶梯收紧单条证据文本上限逐级重试；None 表示不限制。
+EVIDENCE_CHAR_LADDER: tuple[int | None, ...] = (None, 240_000, 96_000, 40_000, 16_000)
+
+_PROMPT_TOO_LONG_MARKERS = (
+    "1261",
+    "prompt 超长",
+    "prompt is too long",
+    "context length",
+    "maximum context",
+    "too many tokens",
+    "request too large",
+)
+
+
+def _plain_text(value: str) -> str:
+    """HTML 页面证据转纯文本，避免整页标签撑爆 AI 上下文；JSON 等非 HTML 内容原样返回。"""
+    if not value.lstrip().startswith("<"):
+        return value
+    parser = _TextParser()
+    parser.feed(value)
+    return " ".join(parser.parts)
+
+
+def _fit_text(value: str, limit: int) -> str:
+    """把超长证据文本收敛到 limit 字符以内；保留开头与结尾，价格证据可能在任一端。"""
+    if len(value) <= limit:
+        return value
+    head = limit * 7 // 10
+    tail = limit - head
+    return value[:head] + "\n…[证据过长已截断]…\n" + value[-tail:]
+
+
+def _prompt_too_long(exc: httpx.HTTPStatusError) -> bool:
+    body = exc.response.text[:2000].casefold()
+    return any(marker in body for marker in _PROMPT_TOO_LONG_MARKERS)
+
+
+def _response_detail(exc: httpx.HTTPError) -> str:
+    response = getattr(exc, "response", None)
+    body = response.text[:300].strip() if response is not None else ""
+    return f"；响应: {body}" if body else ""
 
 
 def ai_endpoint(base_url: str) -> str:
     base = base_url.rstrip("/")
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+
+def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None) -> str:
+    """发送一次最小对话请求验证 AI 配置连通性，返回模型回复文本；HTTP/网络错误原样抛出。"""
+    url, headers, request_body = ai_request(config, model, "", "连接测试，请只回复 ok", max_tokens=8, json_mode=False)
+    own_client = client or httpx.Client(timeout=config.timeout)
+    try:
+        response = own_client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+    finally:
+        if client is None:
+            own_client.close()
+    response.raise_for_status()
+    return ai_content(config.api_format, response.json()).strip()
 
 
 def chat_content(payload: dict[str, Any]) -> str:
@@ -76,6 +126,134 @@ def json_content(value: str) -> dict[str, Any]:
     return parsed
 
 
+def _responses_endpoint(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/responses"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/responses"
+    return f"{base}/v1/responses"
+
+
+def _anthropic_endpoint(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1/messages"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/messages"
+    return f"{base}/v1/messages"
+
+
+def ai_request(
+    config: AIConfig,
+    model: str,
+    system: str,
+    user: str,
+    *,
+    max_tokens: int | None = None,
+    json_mode: bool = True,
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """按配置的接口结构（config.api_format）构造请求 URL、headers 与 body；只构造不发送。"""
+    limit = config.max_tokens if max_tokens is None else max_tokens
+    if config.api_format == "openai_responses":
+        input_messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+        body = {
+            "model": model,
+            "input": input_messages,
+            "max_output_tokens": limit,
+            "temperature": 0,
+        }
+        if json_mode:
+            body["text"] = {"format": {"type": "json_object"}}
+        headers = {"content-type": "application/json"}
+        if config.api_key:
+            headers["authorization"] = f"Bearer {config.api_key}"
+        return _responses_endpoint(config.base_url), headers, body
+    if config.api_format == "anthropic":
+        body: dict[str, Any] = {
+            "model": model,
+            "max_tokens": limit,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if system:
+            body["system"] = system
+        return (
+            _anthropic_endpoint(config.base_url),
+            {"content-type": "application/json", "x-api-key": config.api_key or "", "anthropic-version": "2023-06-01"},
+            body,
+        )
+    if config.api_format == "gemini":
+        base = config.base_url.rstrip("/")
+        if base.endswith(":generateContent"):
+            url = base
+        elif base.endswith("/v1beta"):
+            url = f"{base}/models/{model}:generateContent"
+        else:
+            url = f"{base}/v1beta/models/{model}:generateContent"
+        generation_config: dict[str, Any] = {"temperature": 0, "maxOutputTokens": limit}
+        if json_mode:
+            generation_config["responseMimeType"] = "application/json"
+        gemini_body: dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": generation_config,
+        }
+        if system:
+            gemini_body["systemInstruction"] = {"parts": [{"text": system}]}
+        return url, {"content-type": "application/json", "x-goog-api-key": config.api_key or ""}, gemini_body
+    if config.api_format != "chat_completions":
+        raise AIExtractionError(f"未知的 AI 接口结构: {config.api_format}")
+    headers = {"content-type": "application/json"}
+    if config.api_key:
+        headers["authorization"] = f"Bearer {config.api_key}"
+    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+    body = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": limit,
+        "messages": messages,
+    }
+    if json_mode:
+        body["enable_thinking"] = config.enable_thinking
+        body["response_format"] = {"type": "json_object"}
+    return ai_endpoint(config.base_url), headers, body
+
+
+def ai_content(api_format: str, payload: dict[str, Any]) -> str:
+    """从所选接口结构的响应 JSON 中取出文本回复。"""
+    if api_format == "openai_responses":
+        output = payload.get("output")
+        if not isinstance(output, list) or not output:
+            raise AIExtractionError("AI 响应缺少 output")
+        texts: list[str] = []
+        for item in output:
+            content = item.get("content") if isinstance(item, dict) else None
+            if isinstance(content, list):
+                texts.extend(str(part.get("text", "")) for part in content if isinstance(part, dict) and part.get("type") == "output_text")
+        text = "".join(texts)
+        if not text:
+            raise AIExtractionError("AI 响应 output 中没有文本输出")
+        return text
+    if api_format == "anthropic":
+        blocks = payload.get("content")
+        if not isinstance(blocks, list) or not blocks:
+            raise AIExtractionError("AI 响应缺少 content 文本块")
+        text = "".join(str(block.get("text", "")) for block in blocks if isinstance(block, dict) and block.get("type") == "text")
+        if not text:
+            raise AIExtractionError("AI 响应 content 中没有文本块")
+        return text
+    if api_format == "gemini":
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+            raise AIExtractionError("AI 响应缺少 candidates")
+        content = candidates[0].get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not isinstance(parts, list) or not parts:
+            raise AIExtractionError("AI 响应缺少 candidates[0].content.parts")
+        return "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+    return chat_content(payload)
+
+
 class AIPriceExtractor:
     def __init__(self, config: AIConfig) -> None:
         self.config = config
@@ -99,8 +277,11 @@ class AIPriceExtractor:
         responses: list[dict[str, Any]],
         expected_models: list[str],
         page_sources: list[dict[str, str]] | None = None,
+        max_chars: int | None = None,
     ) -> tuple[str, str, str, list[dict[str, Any]], list[dict[str, Any]]]:
-        raw_page_sources = page_sources or [{"source": "model_list", "url": spec.model_list_url or "", "text": page_text}]
+        raw_page_sources = page_sources or [{"source": "model_list", "url": str(spec.network.get("url") or ""), "text": page_text}]
+        for source in raw_page_sources:
+            source["text"] = _plain_text(str(source.get("text", "")))
         filtered_page_sources: list[dict[str, Any]] = []
         for source in raw_page_sources:
             if str(source.get("source") or "model_list") != "model_list":
@@ -115,9 +296,7 @@ class AIPriceExtractor:
             response for response in responses
             if str(response.get("resource_type", "")) in {"fetch", "xhr"}
             and str(response.get("source") or "model_list") == "model_list"
-            and is_preferred_response_url(
-                str(response.get("url", "")), spec.preferred_response_url_patterns
-            )
+            and is_preferred_response_url(str(response.get("url", "")))
         ]
         if preferred_candidates:
             responses = [sorted(
@@ -129,12 +308,10 @@ class AIPriceExtractor:
                 continue
             original_payload = sanitize_evidence(response.get("payload"))
             candidate = candidate_payload(original_payload, expected_models) if original_payload is not None else None
-            if self.config.dry_run:
-                candidate = original_payload
             original_body = (
                 json.dumps(original_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 if original_payload is not None
-                else redact_text(str(response.get("text", "")))
+                else redact_text(_plain_text(str(response.get("text", ""))))
             )
             response_url = str(response.get("url", ""))
             source = str(response.get("source") or "model_list")
@@ -142,7 +319,7 @@ class AIPriceExtractor:
                 continue
             preferred_response = bool(response.get("preferred_response")) or (
                 source == "model_list"
-                and is_preferred_response_url(response_url, spec.preferred_response_url_patterns)
+                and is_preferred_response_url(response_url)
             )
             # 只按目标模型做候选预筛；找不到候选时保留完整响应，避免误丢模型。
             matched_models = ["unresolved"]
@@ -160,7 +337,7 @@ class AIPriceExtractor:
                 body = (
                     json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     if payload is not None
-                    else redact_text(str(response.get("text", "")))
+                    else redact_text(_plain_text(str(response.get("text", ""))))
                 )
                 if response.get("payload") is not None and payload is None:
                     continue
@@ -187,14 +364,19 @@ class AIPriceExtractor:
                     ),
                 }
                 clean_responses.append(captured)
+        # 价格证据默认原样交给 AI；只有供应商以"超长"拒绝时才按 EVIDENCE_CHAR_LADDER 收紧上限。
+        if max_chars is not None:
+            for source in filtered_page_sources:
+                source["quote"] = _fit_text(str(source.get("quote", "")), max_chars)
+            for captured in clean_responses:
+                captured["quote"] = _fit_text(str(captured.get("quote", "")), max_chars)
         evidence = {
             "site_id": spec.id,
-            "model_list_url": redact_url(spec.model_list_url or ""),
+            "source_url": redact_url(str(spec.network.get("url") or "")),
             "requested_models": expected_models,
             "page_evidence": filtered_page_sources,
             "network_evidence": clean_responses,
         }
-        # 模型列表网络响应必须原样交给 AI；max_input_chars 不再裁剪价格证据。
         serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
         searchable = filtered_page_text + "\n" + json.dumps(clean_responses, ensure_ascii=False)
         return serialized, searchable, filtered_page_text, filtered_page_sources, clean_responses
@@ -206,9 +388,9 @@ class AIPriceExtractor:
         responses: list[dict[str, Any]],
         expected_models: list[str],
         page_sources: list[dict[str, str]] | None = None,
-        ai_model: str = "",
-    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-        evidence, _, filtered_page_text, filtered_page_sources, clean_responses = self._evidence(spec, page_text, responses, expected_models, page_sources)
+        max_chars: int | None = None,
+    ) -> tuple[str, str, list[dict[str, str]], list[dict[str, Any]]]:
+        evidence, _, filtered_page_text, filtered_page_sources, clean_responses = self._evidence(spec, page_text, responses, expected_models, page_sources, max_chars=max_chars)
         system = (
             NEWAPI_ONEAPI_PRICING_GUIDANCE
             + "\n\n你是模型价格数据抽取器。只能使用 user 消息中的网页证据，禁止凭常识补全或猜测价格。"
@@ -280,32 +462,7 @@ expected_models：
 
 网页证据：
 {evidence}"""
-        request_body = {
-            "model": ai_model,
-            "temperature": 0,
-            "max_tokens": self.config.max_tokens,
-            "enable_thinking": self.config.enable_thinking,
-            "response_format": {"type": "json_object"},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        }
-        preview = {
-            "ai_request": {
-                "endpoint": ai_endpoint(self.config.base_url),
-                "request_body": request_body,
-            },
-            "evidence_summary": {
-                "target_models": expected_models,
-                "verification_mode": "model_list_only",
-                "network_capture_scope": ["fetch", "xhr"],
-                "verification_sources": list(dict.fromkeys(
-                    [source["source"] for source in filtered_page_sources]
-                    + [response["source"] for response in clean_responses]
-                )) or ["model_list"],
-                "page_evidence_count": len(filtered_page_sources),
-                "network_evidence_count": len(clean_responses),
-            },
-        }
-        return request_body, preview, filtered_page_sources, clean_responses
+        return system, user, filtered_page_sources, clean_responses
 
     def extract(
         self,
@@ -325,45 +482,68 @@ expected_models：
         expected = list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
         if not expected:
             raise AIExtractionError("browser 价格监控必须配置目标模型 models")
-        request_body, preview, page_evidence, network_evidence = self._request(spec, page_text, responses, expected, page_sources, ai_model=ai_model)
-        evidence_key = self._cache_key(spec, expected, json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False, sort_keys=True))
-        cached = None if self.config.dry_run else self._cached_result(evidence_key)
-        if cached is not None:
-            searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
-            return self._records(spec, cached, searchable, payload_hash(cached), {redact_url(str(item.get("url", ""))) for item in network_evidence}, {redact_url(str(item.get("url", ""))): str(item.get("quote", "")) for item in network_evidence}, expected, ai_model=ai_model)
-        if self.config.dry_run:
-            raise AIDryRun(preview)
-        api_key = self.config.api_key
-        if not api_key:
-            raise AIExtractionError("配置文件 ai.api_key 未配置")
-        searchable = join_page_sources(page_evidence)
-        searchable += "\n" + json.dumps(network_evidence, ensure_ascii=False)
         own = client is None
         client = client or httpx.Client(timeout=self.config.timeout)
         try:
-            response = client.post(
-                ai_endpoint(self.config.base_url),
-                headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-                json=request_body,
-                timeout=self.config.timeout,
-            )
-            response.raise_for_status()
-            raw_result = json_content(chat_content(response.json()))
-        except (httpx.HTTPError, ValueError, AIExtractionError) as exc:
-            if isinstance(exc, AIExtractionError):
-                raise
-            raise AIExtractionError(f"AI 价格识别请求失败: {exc}") from exc
+            raw_result: dict[str, Any] | None = None
+            evidence_key = ""
+            base_evidence_key = ""
+            searchable = ""
+            network_evidence: list[dict[str, Any]] = []
+            previous_body = ""
+            for max_chars in EVIDENCE_CHAR_LADDER:
+                system, user, page_evidence, network_evidence = self._request(
+                    spec, page_text, responses, expected, page_sources, max_chars=max_chars,
+                )
+                request_key = json.dumps({"system": system, "user": user}, ensure_ascii=False, sort_keys=True)
+                if request_key == previous_body:
+                    # 证据本身没超过当前上限，请求与上一次完全相同，再发也必然同样被拒。
+                    continue
+                previous_body = request_key
+                evidence_key = self._cache_key(spec, expected, json.dumps({"page": page_evidence, "network": network_evidence}, ensure_ascii=False, sort_keys=True))
+                if max_chars == EVIDENCE_CHAR_LADDER[0]:
+                    base_evidence_key = evidence_key
+                cached = self._cached_result(evidence_key)
+                if cached is not None:
+                    raw_result = cached
+                    searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
+                    break
+                if not self.config.api_key:
+                    raise AIExtractionError("配置文件 ai.api_key 未配置")
+                searchable = join_page_sources(page_evidence) + "\n" + json.dumps(network_evidence, ensure_ascii=False)
+                try:
+                    url, headers, request_body = ai_request(self.config, ai_model, system, user)
+                    response = client.post(url, headers=headers, json=request_body, timeout=self.config.timeout)
+                    response.raise_for_status()
+                    raw_result = json_content(ai_content(self.config.api_format, response.json()))
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if _prompt_too_long(exc) and max_chars != EVIDENCE_CHAR_LADDER[-1]:
+                        continue
+                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
+                except httpx.TimeoutException as exc:
+                    # 只在大证据超时时降级重试——小证据超时多半是供应商抖动，多等无益。
+                    if len(request_key) > 100_000 and max_chars != EVIDENCE_CHAR_LADDER[-1]:
+                        continue
+                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}") from exc
+                except (httpx.HTTPError, ValueError) as exc:
+                    raise AIExtractionError(f"AI 价格识别请求失败: {exc}{_response_detail(exc)}") from exc
+            if raw_result is None:
+                raise AIExtractionError("AI 请求未完成")
+            allowed_urls = {redact_url(str(item.get("url", ""))) for item in network_evidence}
+            response_bodies = {
+                redact_url(str(item.get("url", ""))): str(item.get("quote", ""))
+                for item in network_evidence
+            }
+            records = self._records(spec, raw_result, searchable, payload_hash(raw_result), allowed_urls, response_bodies, expected, ai_model=ai_model)
+            self._save_cached_result(evidence_key, raw_result)
+            if base_evidence_key and evidence_key != base_evidence_key:
+                # 结果同时挂在未截断证据的 key 下：页面内容不变时，下次无需再白等一次超时。
+                self._save_cached_result(base_evidence_key, raw_result)
+            return records
         finally:
             if own:
                 client.close()
-        allowed_urls = {redact_url(str(item.get("url", ""))) for item in network_evidence}
-        response_bodies = {
-            redact_url(str(item.get("url", ""))): str(item.get("quote", ""))
-            for item in network_evidence
-        }
-        records = self._records(spec, raw_result, searchable, payload_hash(raw_result), allowed_urls, response_bodies, expected, ai_model=ai_model)
-        self._save_cached_result(evidence_key, raw_result)
-        return records
 
     def _records(
         self,
@@ -521,7 +701,7 @@ expected_models：
                 len(split_groups) == 1 and str(split_groups[0].get("name") or "default").casefold() not in ("", "default")
             )
             if not needs_split:
-                records.append(PriceRecord(model, input_price, output_price, unit, spec.model_list_url or "", time.time(), metadata, price_status))
+                records.append(PriceRecord(model, input_price, output_price, unit, str(spec.network.get("url") or ""), time.time(), metadata, price_status))
                 continue
             # AI 路径把多个分组的单价塞在同一条记录里时，拆成与 NewAPI 路径一致的 per-group 记录。
             item_group = str(item.get("group") or "default").casefold()
@@ -536,7 +716,7 @@ expected_models：
                     input_price if is_item_group else None,
                     output_price if is_item_group else None,
                     unit,
-                    spec.model_list_url or "",
+                    str(spec.network.get("url") or ""),
                     time.time(),
                     group_metadata,
                     price_status,
@@ -550,7 +730,7 @@ expected_models：
                 None,
                 None,
                 "来源未说明单位",
-                spec.model_list_url or "",
+                str(spec.network.get("url") or ""),
                 time.time(),
                 {
                     "adapter": "browser_ai",
@@ -567,3 +747,42 @@ expected_models：
                 "unavailable",
             ))
         return records
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+class AISchemaNormalizer:
+    """AI 字段归一化兜底：把未知形态的价格证据归一化为标准 schema。
+
+    只做字段映射（字段名/嵌套结构可能因站点而异），不推算、不换算任何数值；
+    归一化结果仍由适配器确定性计价，产出记录标记 candidate。
+    """
+
+    def __init__(self, config: AIConfig):
+        self.config = config
+
+    def available(self) -> bool:
+        return bool(self.config.enabled and self.config.base_url and self.config.pick_model())
+
+    def _chat_json(self, system: str, user: str, client: httpx.Client | None) -> dict[str, Any]:
+        ai_model = self.config.pick_model()
+        if not self.config.base_url or not ai_model:
+            raise AIExtractionError("配置文件 ai.base_url 或 ai.model/ai.models 未配置")
+        if not self.config.api_key:
+            raise AIExtractionError("配置文件 ai.api_key 未配置")
+        url, headers, request_body = ai_request(self.config, ai_model, system, user)
+        own = client is None
+        client = client or httpx.Client(timeout=self.config.timeout)
+        try:
+            try:
+                response = client.post(url, headers=headers, json=request_body, timeout=self.config.timeout)
+                response.raise_for_status()
+                return json_content(ai_content(self.config.api_format, response.json()))
+            except (httpx.HTTPError, ValueError) as exc:
+                raise AIExtractionError(f"AI schema 归一化请求失败: {exc}{_response_detail(exc)}") from exc
+        finally:
+            if own:
+                client.close()
+

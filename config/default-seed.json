@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "timeout": 45,
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "schedule": {
+      "price": 60,
+      "status": 5,
+      "notice": 30,
+      "catalog": 1440
+    }
+  },
+  "ai": {
+    "enabled": true,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "models": [
+      "qwen3.8-flash",
+      "qwen3.8-27b",
+      "qwen3.8-max",
+      "qwen3.8-2.4t-a95b",
+      "kimi-k3",
+      "kimi-k2.7-code",
+      "glm-5.2",
+      "deepseek-v4-pro-0813",
+      "deepseek-v4-flash-0731",
+      "qwen3.7-plus",
+      "qwen3.7-plus-2026-05-26",
+      "qwen3.7-max-2026-06-08"
+    ],
+    "max_input_chars": 60000,
+    "max_tokens": 4000
+  },
+  "sites": []
+}

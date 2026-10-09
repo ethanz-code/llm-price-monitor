@@ -1,18 +1,35 @@
+import { cookies } from "next/headers";
 import { apiGet } from "@/lib/api";
-import type { OverviewData } from "@/lib/types";
+import { channelDotsBySite, type ChannelDotRow } from "@/lib/channelStatus";
+import type { OverviewData, StatusSnapshot } from "@/lib/types";
 import { PageHeader } from "@/components/PageHeader";
 import { OverviewTable } from "@/components/OverviewTable";
 import { SiteAlert } from "@/components/SiteAlert";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "价格总览" };
+export const metadata = { title: "中转站定价" };
+
+// collect_status（需要关注的站点）仅管理员可见：服务端请求必须带上会话 cookie
+const SESSION_COOKIE = "ppm_session";
+
+// 渠道迷你方块取最近 30 次检测；600 条时序对多站点场景足够，摘要化后传给前端体积很小
+const STATUS_LIMIT = 600;
 
 export default async function OverviewPage() {
+  const session = (await cookies()).get(SESSION_COOKIE)?.value;
+  const headers = session ? { Cookie: `${SESSION_COOKIE}=${session}` } : undefined;
   let data: OverviewData | null = null;
+  // 渠道点阵数据源（渠道 → 检测点序列）；拉取失败只影响该列展示，不阻塞总览
+  let statusDots: Record<string, ChannelDotRow[]> = {};
   let error: string | null = null;
   try {
-    data = await apiGet<OverviewData>("/api/overview");
+    const [overview, status] = await Promise.all([
+      apiGet<OverviewData>("/api/overview", headers),
+      apiGet<{ records: StatusSnapshot[] }>(`/api/status?limit=${STATUS_LIMIT}`, headers).catch(() => null),
+    ]);
+    data = overview;
+    statusDots = status ? channelDotsBySite(status.records ?? []) : {};
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
@@ -21,11 +38,11 @@ export default async function OverviewPage() {
     <div className="page">
       <PageHeader
         eyebrow="OVERVIEW"
-        title="价格总览"
-        subtitle="各中转站最新一次采集的模型单价，折扣为站点价相对厂商官方原价的比值——越低越便宜。"
+        title="中转站定价"
+        subtitle="各中转站最新的模型单价，折扣为站点价相对厂商原价的比值——越低越便宜。"
       />
-      {error && <SiteAlert title="无法读取监控数据" detail={error} fix="请确认后端已启动：uv run price-web" />}
-      {data && <OverviewTable data={data} />}
+      {error && <SiteAlert title="暂时读不到监控数据" detail={error} fix="请稍后刷新重试；若持续出现，欢迎通过页脚「提建议」告诉我们。" />}
+      {data && <OverviewTable data={data} statusDots={statusDots} />}
     </div>
   );
 }

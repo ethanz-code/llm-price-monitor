@@ -15,7 +15,7 @@ export function PageHeader({
   return (
     <div className="page-header">
       <div className="page-eyebrow">{eyebrow}</div>
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 24 }}>
         <div>
           <h1 className="page-title">{title}</h1>
           <p className="page-subtitle">{subtitle}</p>
@@ -26,10 +26,24 @@ export function PageHeader({
   );
 }
 
-export function StatCard({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
+export function StatCard({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  hint?: string;
+  /** 标签前色点的语义色（对齐实时亮点的指标分色） */
+  tone?: "green" | "yellow" | "blue" | "red" | "gray";
+}) {
   return (
     <div className="stat-card">
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">
+        {tone && <span aria-hidden className={`stat-dot dot-${tone}`} />}
+        {label}
+      </div>
       <div className="stat-value">{value}</div>
       {hint && <div className="stat-hint">{hint}</div>}
     </div>

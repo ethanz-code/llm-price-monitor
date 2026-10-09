@@ -1,10 +1,16 @@
 "use client";
 
-import { IconGithub } from "./icons";
+import { useState } from "react";
+import Link from "next/link";
+import { IconGithub, IconMail, IconWecom } from "./icons";
 import { LogoMark } from "./LogoMark";
+import { FeedbackModal } from "./FeedbackModal";
+import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
 
-/** 全站页脚：品牌介绍、数据说明与 GitHub 入口，紧凑单区布局。 */
+/** 全站页脚：品牌 + 一句话说明合并数据免责；联系方式图标与低调管理入口在底行。 */
 export function SiteFooter() {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
   return (
     <footer className="site-footer">
       <div className="site-footer-inner">
@@ -14,25 +20,43 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>LLM 价格监控</span>
           </div>
           <p>
-            面向 API 中转站的价格取证与监控：周期性请求各站点价格接口，与厂商官方价相除得到折扣，并把每次采集沉淀为历史曲线与变化事件。所有价格均来自直接请求的
-            HTTP JSON 响应，逐条可溯源。
+            盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成对任何站点的使用推荐。
           </p>
-          <a
-            className="footer-github"
-            href="https://github.com/ethanz-code/llm-price-monitor"
-            target="_blank"
-            rel="noreferrer"
-            aria-label="GitHub 仓库"
-          >
-            <IconGithub size={18} />
-          </a>
-        </div>
-        <div className="site-footer-note">
-          <div className="site-footer-title">数据说明</div>
-          页面展示的价格均为特定时间的取证快照，可能与站点当前实时价格不同，也不构成对任何站点的使用推荐；折扣对比以厂商官方价为锚点，汇率快照与来源链接随每条记录一同展示。
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <a
+              className="footer-icon"
+              href="https://github.com/ethanz-code/llm-price-monitor"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="GitHub 仓库"
+            >
+              <IconGithub size={18} />
+            </a>
+            <a className="footer-icon" href={`mailto:${CONTACT_EMAIL}`} aria-label="邮件联系">
+              <IconMail size={18} />
+            </a>
+            <button
+              type="button"
+              className="footer-icon"
+              aria-label="企业微信联系"
+              onClick={() => setContactOpen(true)}
+            >
+              <IconWecom size={18} />
+            </button>
+          </div>
         </div>
       </div>
-      <div className="site-footer-meta">© 2026 LLM 价格监控</div>
+      <div className="site-footer-meta">
+        <span>© 2026 LLM 价格监控</span>
+        <span className="site-footer-meta-links">
+          <Link href="/discount">折扣对比</Link>
+          <Link href="/catalog">厂商定价</Link>
+          <button type="button" onClick={() => setFeedbackOpen(true)}>提建议</button>
+          <Link href="/admin" className="footer-admin-link">管理</Link>
+        </span>
+      </div>
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      <ContactModal open={contactOpen} onClose={() => setContactOpen(false)} />
     </footer>
   );
 }

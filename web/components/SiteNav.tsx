@@ -1,80 +1,94 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Btn } from "./ui";
-import { IconCheck, IconClose, IconMenu, IconMoon, IconSun } from "./icons";
+import { IconCheck, IconClose, IconMenu, IconMonitor, IconMoon, IconSun } from "./icons";
 import { LogoMark } from "./LogoMark";
 import { useTheme } from "@/app/providers";
-import type { MetaData } from "@/lib/types";
 import type { ThemeMode } from "@/theme";
 
 const ITEMS = [
   { key: "/", label: "首页" },
-  { key: "/overview", label: "价格总览" },
+  { key: "/overview", label: "中转站定价" },
   { key: "/history", label: "历史与事件" },
-  { key: "/official", label: "官方价库" },
+  { key: "/catalog", label: "厂商定价" },
   { key: "/discount", label: "折扣对比" },
 ];
 
-const MODE_OPTIONS: { value: ThemeMode; label: string; icon: React.ReactNode }[] = [
-  { value: "light", label: "浅色", icon: <IconSun size={14} /> },
-  { value: "dark", label: "深色", icon: <IconMoon size={14} /> },
-  { value: "system", label: "跟随系统", icon: <span className="mono" style={{ fontSize: 10 }}>SYS</span> },
+const MODE_OPTIONS: { value: ThemeMode; label: string; title: string; icon: React.ReactNode }[] = [
+  { value: "light", label: "浅色", title: "浅色模式", icon: <IconSun size={14} /> },
+  { value: "dark", label: "深色", title: "深色模式", icon: <IconMoon size={14} /> },
+  { value: "system", label: "系统", title: "跟随系统", icon: <IconMonitor size={14} /> },
 ];
 
-function ThemeToggle() {
+/** 桌面主题切换：单图标触发器 + 下拉三选，当前档位由图标本身表达。 */
+function ThemeMenu() {
   const { mode, setMode } = useTheme();
-  const next = MODE_OPTIONS[(MODE_OPTIONS.findIndex((option) => option.value === mode) + 1) % MODE_OPTIONS.length];
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const current = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[2];
   return (
-    <button
-      aria-label={`当前主题：${MODE_OPTIONS.find((option) => option.value === mode)?.label}，点击切换到${next.label}`}
-      title={`主题：${MODE_OPTIONS.find((option) => option.value === mode)?.label}，切换到${next.label}`}
-      className="icon-btn"
-      onClick={() => setMode(next.value)}
-    >
-      {mode === "light" ? <IconMoon size={15} /> : <IconSun size={15} />}
-    </button>
+    <span className="theme-wrap" ref={ref}>
+      <button
+        type="button"
+        className="theme-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`主题模式：${current.title}`}
+        title={`主题：${current.title}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {current.icon}
+      </button>
+      {open && (
+        <div className="nav-pop theme-pop" role="menu">
+          {MODE_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === option.value}
+              className={`nav-pop-theme-item${mode === option.value ? " active" : ""}`}
+              onClick={() => {
+                setMode(option.value);
+                setOpen(false);
+              }}
+            >
+              {option.icon}
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
   );
 }
 
-/** 管理员登录态：读 /api/meta 判断当前访客是否已凭 Basic 凭据成为管理员；
- *  未登录时点击「登录」发一次写探测，401 触发浏览器原生登录框。 */
-function useAdminState() {
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const router = useRouter();
-
-  useEffect(() => {
-    fetch("/api/meta", { cache: "no-store" })
-      .then((res) => (res.ok ? (res.json() as Promise<MetaData>) : null))
-      .then((data) => setIsAdmin(Boolean(data?.is_admin)))
-      .catch(() => setIsAdmin(false));
-  }, []);
-
-  async function login() {
-    try {
-      const res = await fetch("/api/auth/verify", { method: "POST", cache: "no-store" });
-      if (res.ok) {
-        setIsAdmin(true);
-        router.push("/admin");
-      }
-    } catch {
-      // 浏览器登录框被取消时可能抛错；保持未登录态
-    }
-  }
-
-  return { isAdmin, login };
-}
-
-/** 透明浮动导航（Artificial Analysis 式）：logo 胶囊居左，菜单与动作靠右；
- *  「管理面板」入口仅在管理员登录态（或本机全开放模式）显示。 */
+/** 透明浮动导航：logo 胶囊居左，菜单与主题切换靠右。
+ *  管理入口不放在导航里——见页脚的低调链接。 */
 export function SiteNav() {
   const pathname = usePathname();
   const selected = `/${pathname.split("/")[1] ?? ""}`;
   const { mode, setMode } = useTheme();
-  const { isAdmin, login } = useAdminState();
-  const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -108,7 +122,6 @@ export function SiteNav() {
         <Link href="/" className="brand-pill">
           <LogoMark size={24} />
           <span className="brand-name">LLM 价格监控</span>
-          <span className="mono brand-version">v0.1</span>
         </Link>
 
         <nav className="nav-pill" aria-label="主导航">
@@ -146,16 +159,6 @@ export function SiteNav() {
                     {selected === item.key && <IconCheck size={13} />}
                   </Link>
                 ))}
-                {isAdmin && (
-                  <Link
-                    href="/admin"
-                    onClick={() => setMenuOpen(false)}
-                    className={`nav-pop-item${selected === "/admin" ? " active" : ""}`}
-                  >
-                    管理面板
-                    {selected === "/admin" && <IconCheck size={13} />}
-                  </Link>
-                )}
               </nav>
               <div className="nav-pop-theme">
                 <span className="admin-rail-title">主题</span>
@@ -178,16 +181,7 @@ export function SiteNav() {
         </span>
 
         <div className="nav-actions">
-          <ThemeToggle />
-          {isAdmin === null ? null : isAdmin ? (
-            <Btn variant="text" onClick={() => router.push("/admin")} title="已以管理员身份登录">
-              管理面板
-            </Btn>
-          ) : (
-            <Btn variant="text" onClick={login} title="输入管理员密码后可配置站点与触发采集">
-              登录
-            </Btn>
-          )}
+          <ThemeMenu />
         </div>
       </div>
     </header>

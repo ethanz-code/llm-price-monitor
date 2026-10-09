@@ -1,36 +1,34 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-/**
- * 管理员门禁：设置 PRICE_WEB_PASSWORD 后，/api 的写请求（POST/PUT/PATCH/DELETE）
- * 需要管理员 Basic 凭据，与 FastAPI 侧双层校验；页面与读接口公开浏览。
- * Proxy 固定运行在 Node.js runtime，可在 next start 运行时读取环境变量。
- */
+const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000";
 
-const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-
-export default function proxy(request: NextRequest) {
-  const password = process.env.PRICE_WEB_PASSWORD;
-  const isWriteApi = request.nextUrl.pathname.startsWith("/api") && WRITE_METHODS.has(request.method);
-  if (!password || !isWriteApi) return NextResponse.next();
-
-  const username = process.env.PRICE_WEB_USERNAME ?? "admin";
-  const header = request.headers.get("authorization") ?? "";
-  if (header.startsWith("Basic ")) {
-    try {
-      const [user, ...rest] = Buffer.from(header.slice(6), "base64")
-        .toString("utf8")
-        .split(":");
-      if (user === username && rest.join(":") === password) return NextResponse.next();
-    } catch {
-      // 解码失败按未认证处理
-    }
+/** 页面访问埋点：服务端把每次页面导航（首屏加载与客户端路由跳转）异步上报给
+ *  FastAPI 落库，浏览器侧零脚本。排除 API 反代、Next 内部资源、静态文件与
+ *  /admin 后台页面（统计只反映对外访客，管理员自己的浏览不计入）；
+ *  next-router-prefetch 的预取请求不计入 PV。上报失败静默忽略，不影响页面渲染。
+ *  Next 16 起该文件约定由 middleware 更名为 proxy，职责不变。 */
+export function proxy(request: NextRequest) {
+  if (request.headers.get("next-router-prefetch") === "1") {
+    return NextResponse.next();
   }
-  return new NextResponse("Unauthorized", {
-    status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="llm-price-monitor"' },
-  });
+  const ip =
+    (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() ||
+    request.headers.get("x-real-ip") ||
+    "";
+  fetch(`${API_BASE}/api/analytics/track`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(ip ? { "x-forwarded-for": ip } : null),
+      "user-agent": request.headers.get("user-agent") ?? "",
+    },
+    body: JSON.stringify({ path: request.nextUrl.pathname }),
+  }).catch(() => {});
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!api|admin|_next/static|_next/image|favicon\\.ico|icon|apple-icon|robots\\.txt|sitemap\\.xml|wecom-qr\\.png).*)",
+  ],
 };
