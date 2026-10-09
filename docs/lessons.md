@@ -7,6 +7,7 @@
 | 途中见到这些词 | 先看 |
 | --- | --- |
 | 401 / 403 / WAF / Cookie / Cloudflare / 认证 / 登录态 | 本页 §1 + Serena 记忆 `dom_url_auth_constraint` |
+| 访客统计 / visit_logs / IP 全一样 / XFF / client_ip | 本页 §1 |
 | 代理 / 出口 / Clash / 境外站 / 超时 / TLS 掐断 | 本页 §1 |
 | AI 输出截断 / max_tokens / 助手 token 爆炸 | 本页 §2 |
 | 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 / ¥0 / 假免费 / 最低价 / 旧价不更新 | 本页 §3 |
@@ -23,6 +24,7 @@
 | AI 对证据里没有的模型照样编价格（notes 自认"证据未出现具体数值，仅通过 JS 结构推断"仍给出具体数字），旧代码发现模型名不在证据只降状态不清价，幻觉价以 candidate 身份混进快照、再被合理性校验每轮作废刷异常卡片 | `ai.py _records` 里模型名不在证据 → 价格与 pricing_rules 一并清空（幻觉价无从落地）；异常卡片再出现"价格异常作废"先查该站页面是否真有此模型 | 提交见 git log |
 | AI 张冠李戴：给页面上不存在的模型安上别的模型的真价（DaiTuAI 把 gpt-5.4-mini 的 ¥0.11/¥0.68 安给 step-3.5-flash，还过了 confirmed 校验）；模型名匹配也会被残留文案误判（已下线 Kimi 分组的 i18n 描述仍写着 kimi-k3，名字在证据但价格不存在） | 名字在证据 + 价格数字在证据双闸（数字以系统侧证据原文为准，AI 事后补写的引用不算自证）；数字形态补 JS 省前导零写法（.7）避免误杀；本轮没采到的价由快照沿用机制兜底，页面价格不闪没 | 提交见 git log |
 | 传输错误正则漏了 DNS 解析失败（`[Errno 8] nodename nor servname` 不含 connection/timeout 字样），本机网络瞬断的 warn 刷进异常卡片 | `_TRANSPORT_ERROR_RE` 补 nodename/getaddrinfo/name or service not known | 提交见 git log |
+| 生产访客统计 IP 全是同一个容器 IP、visit_logs 被 wget 健康检查刷屏（5 天 1.4 万条）：Next 中间件上报跨容器网对端非回环，`client_ip` 只信回环对端不认转发头，真人 IP 全记成 web 容器 IP（dev 本机回环链路正常，故测试没暴露） | `deps.client_ip` 信任边界从回环扩为内网网段表（回环/RFC1918/链路本地/ULA；**不能用 `is_private`**——TEST-NET、CGNAT 等 IANA 保留段会被误判成内网对端）；`web/proxy.ts` 对 wget/curl/bot UA 跳过埋点；存量垃圾按保留天数自然老化不删 | 提交见 git log |
 | httpx 直采没有浏览器环境，DOM 页必须免登录；认证要显式配 headers/token_refresh | 无头浏览器是例外分支（`network.headless.enabled`），注入 Cookie/localStorage 后渲染再解析 | Serena 记忆；`browser_fetch.py` |
 | new-api 系站点 401：光有 Cookie 不够，还要 `New-Api-User` 头；Cookie 只挂公告 headers 时全站采不到 | 共享落点是**站点级 `request_headers`**（站点对象顶层，三腿共用）；`network.headers` 只有公告腿显式读（notice.py `_site_headers`），状态/价格腿不认——2026-10-07 A/B 实测 network.headers 版迁移状态腿 401、request_headers 版三腿 200 | Serena 记忆 |
 | Cloudflare WAF 403：多为缺 `Referer`/`Origin` 头，补齐后匿名也能过；别只报"可能需要认证" | 站点级 request_headers 配齐 Referer+Origin+Accept，看响应体里的真实 message | Serena 记忆 |

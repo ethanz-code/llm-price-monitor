@@ -22,7 +22,7 @@ const RAIL = [
   { href: "/admin/pricing-sources", label: "厂商定价源", icon: <IconNodes size={15} /> },
   { href: "/admin/tasks", label: "采集任务", icon: <IconBolt size={15} /> },
   { href: "/admin/ai-logs", label: "AI 日志", icon: <IconAim size={15} /> },
-  { href: "/admin/docs", label: "使用文档", icon: <IconBook size={15} /> },
+  { href: "/admin/docs", label: "项目文档", icon: <IconBook size={15} /> },
   { href: "/admin/settings", label: "系统设置", icon: <IconSettings size={15} /> },
 ];
 

@@ -258,6 +258,36 @@ function shortenUrlText(text: string, max = 46): string {
   return bare.length > max ? `${bare.slice(0, max)}…` : bare;
 }
 
+/** 表单已覆盖的顶层字段：之外的进「仅在 JSON 里维护」清单，让"配了但表单没输入框"的配置在界面上看得见 */
+const FORM_COVERED_KEYS = new Set([
+  "id",
+  "adapter",
+  "enabled",
+  "network",
+  "status",
+  "notice",
+  "auth_token",
+  "auth_header",
+  "auth_prefix",
+  "token_refresh",
+  "auth_inject",
+  "headless",
+]);
+
+/** 「仅在 JSON 里维护」摘要：只描述形态不展开值（认证串敏感），对象列一层键名 */
+function jsonOnlySummary(value: unknown): string {
+  if (typeof value === "string") return `文本 ${value.length} 字`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `${value.length} 项`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>);
+    if (keys.length === 0) return "空对象";
+    const shown = keys.slice(0, 4).join("、");
+    return keys.length > 4 ? `${shown} 等 ${keys.length} 项` : shown;
+  }
+  return "已配置";
+}
+
 function SiteModal({
   initial,
   isNew,
@@ -327,6 +357,16 @@ function SiteModal({
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
   const [saving, setSaving] = useState(false);
   const advancedError = advancedJsonError(advanced);
+  // JSON 里有、表单没输入框的字段：在主弹窗亮出来，免得"配了但界面上看不见"
+  const jsonOnlyEntries = useMemo<[string, unknown][]>(() => {
+    if (advancedError) return [];
+    try {
+      const parsed = JSON.parse(advanced) as Record<string, unknown>;
+      return Object.entries(parsed).filter(([key]) => !FORM_COVERED_KEYS.has(key));
+    } catch {
+      return [];
+    }
+  }, [advanced, advancedError]);
   // 「认证与续签」卡片的已配置状态：续签地址或站点令牌任一存在
   const authTokenConfigured = useMemo(() => {
     try {
@@ -886,11 +926,27 @@ function SiteModal({
             />
             <EntryCard
               title="高级 JSON"
-              desc="直接编辑整份站点配置"
-              configured={false}
+              desc={jsonOnlyEntries.length > 0 ? `${jsonOnlyEntries.length} 个字段只在 JSON 里维护` : "直接编辑整份站点配置"}
+              configured={jsonOnlyEntries.length > 0}
               onClick={() => setActiveSub("json")}
             />
           </div>
+          {jsonOnlyEntries.length > 0 && (
+            <div style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 13.5 }}>仅在 JSON 里维护</span>
+              {jsonOnlyEntries.map(([key, value]) => (
+                <div key={key} style={{ fontSize: 12.5 }}>
+                  <span className="mono" style={{ fontWeight: 550 }}>
+                    {key}
+                  </span>
+                  <span style={{ color: "var(--text-3)" }}>：{jsonOnlySummary(value)}</span>
+                </div>
+              ))}
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                这些配置没有表单输入框，点「高级 JSON」卡片查看与编辑；表单保存不会动它们。
+              </span>
+            </div>
+          )}
           {advancedError && (
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误</span>

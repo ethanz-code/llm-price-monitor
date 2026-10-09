@@ -64,6 +64,9 @@ export function EgressStatus() {
         padding: "6px 10px",
         cursor: checking ? "default" : "pointer",
         textAlign: "left",
+        /* ≤768px 侧栏变横条时不被压缩换行，与退出登录按钮同样保持单行原宽 */
+        flexShrink: 0,
+        whiteSpace: "nowrap",
       }}
     >
       <span

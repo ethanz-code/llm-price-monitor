@@ -173,7 +173,7 @@ export default async function AdminOverviewPage() {
                 <IconSettings size={15} /> 系统设置
               </Link>
               <Link href="/admin/docs" className="dash-quick-item">
-                <IconBook size={15} /> 使用文档
+                <IconBook size={15} /> 项目文档
               </Link>
             </div>
           </div>

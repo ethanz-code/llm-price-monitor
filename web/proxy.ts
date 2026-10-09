@@ -2,6 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8437";
 
+/** 明显的机器流量不上报：compose 健康检查的 wget、命令行 curl、各平台预取爬虫等。
+ *  名单只收基本不会是真实访客的 UA，宁漏勿错杀。 */
+const BOT_UA_RE =
+  /(wget|curl|python-requests|go-http-client|okhttp|apache-httpclient|headlesschrome|bot|crawl|spider|slurp)/i;
+
 /** 页面访问埋点：服务端把每次页面导航（首屏加载与客户端路由跳转）异步上报给
  *  FastAPI 落库，浏览器侧零脚本。排除 API 反代、Next 内部资源、静态文件与
  *  /admin 后台页面（统计只反映对外访客，管理员自己的浏览不计入）；
@@ -11,7 +16,12 @@ export function proxy(request: NextRequest) {
   if (request.headers.get("next-router-prefetch") === "1") {
     return NextResponse.next();
   }
-  // 转发头原样透传：后端只在直连方为回环（本机反代）时才信任，取 x-real-ip 或 XFF 最后一跳
+  const userAgent = request.headers.get("user-agent") ?? "";
+  if (BOT_UA_RE.test(userAgent)) {
+    return NextResponse.next();
+  }
+  // 转发头原样透传：后端只信任内网对端（本机反代或容器网络里的自家组件），
+  // 取 x-real-ip 或 XFF 最后一跳
   const forwardedFor = request.headers.get("x-forwarded-for");
   const realIp = request.headers.get("x-real-ip");
   fetch(`${API_BASE}/api/analytics/track`, {
@@ -20,7 +30,7 @@ export function proxy(request: NextRequest) {
       "Content-Type": "application/json",
       ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : null),
       ...(realIp ? { "x-real-ip": realIp } : null),
-      "user-agent": request.headers.get("user-agent") ?? "",
+      "user-agent": userAgent,
     },
     body: JSON.stringify({ path: request.nextUrl.pathname }),
   }).catch(() => {});

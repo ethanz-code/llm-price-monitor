@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import ipaddress
+
 from fastapi import HTTPException, Request
 
 from llm_price_monitor.catalog import fx
@@ -23,19 +25,44 @@ def load_config(store: Store) -> MonitorConfig:
         raise HTTPException(status_code=500, detail=f"加载数据库配置失败: {exc}") from exc
 
 
-_LOOPBACK_PEERS = {"127.0.0.1", "::1"}
+_TRUSTED_PEER_NETS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def _trusted_peer(host: str) -> bool:
+    """直连方是否为可信内网组件（本机反代 / Docker 网络里的 Next 容器）。
+
+    API 从不对外发布（部署只绑容器网络/本机，见 docker-compose.md），直连方只可能
+    是自家基础设施，因此内网对端的转发头可信；公网对端与解析不了的地址一律不信任，
+    防止伪造头冒充他人 IP。不用 ipaddress.is_private——它把 TEST-NET/CGNAT 等
+    IANA 保留段也算私有，会让文档段地址冒充内网对端。
+    """
+    text = host.strip().removeprefix("::ffff:")
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return any(addr in net for net in _TRUSTED_PEER_NETS)
 
 
 def client_ip(request: Request) -> str:
-    """访客 IP：仅当直连方是本机回环（Nginx/Next 反代同机转发）时才信任转发头——
-    优先 x-real-ip（部署文档的 Nginx 写入真实 IP），否则取 X-Forwarded-For 最后一跳
-    （追加链的末端由可信代理写入）；直连访问一律用 socket 地址，防止伪造头冒充他人 IP。"""
+    """访客 IP：仅当直连方是可信内网组件（回环反代或容器网络里的 Next 中间件）时才信任
+    转发头——优先 x-real-ip（部署文档的 Nginx 写入真实 IP），否则取 XFF 最后一跳
+    （追加链的末端由可信代理写入）；公网直连一律用 socket 地址，防止伪造头冒充他人 IP。"""
     peer = request.client.host if request.client else ""
-    if peer not in _LOOPBACK_PEERS:
+    if not _trusted_peer(peer):
         return peer
-    real = (request.headers.get("x-real-ip") or "").strip()
-    if real:
-        return real
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
     forwarded = (request.headers.get("x-forwarded-for") or "").split(",")
     return forwarded[-1].strip() or peer
 

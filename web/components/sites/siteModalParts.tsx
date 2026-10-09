@@ -573,6 +573,7 @@ function JsonSubModal({
   onClose: () => void;
 }) {
   const [text, setText] = useState(initial);
+  const [guideOpen, setGuideOpen] = useState(false);
   const error = advancedJsonError(text);
   return (
     <Modal
@@ -600,6 +601,48 @@ function JsonSubModal({
       }
     >
       <div style={{ display: "grid", gap: 8 }}>
+        <button
+          type="button"
+          className="disclosure-row"
+          aria-expanded={guideOpen}
+          onClick={() => setGuideOpen(!guideOpen)}
+        >
+          <span className="caret" aria-hidden>
+            <IconChevronRight size={13} />
+          </span>
+          <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>这份 JSON 管什么</span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "var(--text-3)",
+            }}
+          >
+            表单的每个输入框都对应这里的一段；表单没有输入框的字段只能在这里改
+          </span>
+        </button>
+        {guideOpen && (
+          <div style={{ display: "grid", gap: 6, fontSize: 12, color: "var(--text-3)", lineHeight: 1.7 }}>
+            <span>主弹窗里每个输入框改的就是这份 JSON 对应的字段，两边改动自动同步；保存时表单不会动只在这里维护的字段。</span>
+            <span>没有表单输入框、只能在这里改的字段：</span>
+            <span>
+              · <span className="mono" style={{ fontWeight: 550, color: "var(--text-2)" }}>request_headers</span>
+              {" — 站点级共享请求头（如 Cookie、New-Api-User、Referer），价格、渠道状态、公告三处请求都会带上"}
+            </span>
+            <span>
+              · <span className="mono" style={{ fontWeight: 550, color: "var(--text-2)" }}>cookie / cookies</span>
+              {" — 站点级 Cookie（整串或键值两种写法）；新配置建议直接写进 request_headers"}
+            </span>
+            <span>
+              · <span className="mono" style={{ fontWeight: 550, color: "var(--text-2)" }}>networks</span>
+              {" — 附加采集地址清单，每一项和主采集地址写法相同，用于多地址轮换"}
+            </span>
+            <span>其余字段（采集地址、分组白名单、认证与续签、Headless 等）主弹窗都有输入框，回那边改更直观。</span>
+          </div>
+        )}
         {error ? (
           <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>JSON 格式错误：{error}</span>
         ) : (

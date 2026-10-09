@@ -93,6 +93,10 @@ function SitesGuide() {
       how: "认证方式选「固定令牌」，令牌填进「认证与续签」；下面「凭证注入」决定它怎么带进价格、渠道状态、公告三处请求（默认 Authorization: Bearer）",
     },
     {
+      when: "要令牌之外还要带特殊头（如 Cookie、New-Api-User、Referer 每条请求都得带）",
+      how: "编辑弹窗点「高级 JSON」卡片，把头写进 request_headers：站点级共享头，价格、渠道状态、公告三处请求自动都带上；JSON 弹窗里有字段速查",
+    },
+    {
       when: "令牌很快过期（如 new-api 登录会话）",
       how: "认证方式选「登录会话自动续签」，把浏览器里 new_api_refresh Cookie 的值贴进 Refresh Token 点「测试续签」；Access Token 留空也行，采集被拒时会自动续签补上。贴完回浏览器重新登录一次（两边各用各的会话），每个登录最长保持 30 天",
     },

@@ -896,7 +896,7 @@ def test_settings_test_models_probes_pool_and_persists(workspace: Path, monkeypa
 def test_analytics_track_public_with_dedup_and_validation(workspace: Path):
     """访问埋点公开可写：记录 IP/UA 并解析设备；30 秒内同 IP 同路径去重；非法路径 400。"""
     # summary 为管理员接口，统一用已登录客户端发起；track 本身公开。
-    # peer 模拟本机反代（回环）转发：只有回环直连才信任转发头，对应线上 Nginx→Next→FastAPI 链路
+    # peer 模拟可信内网对端（回环）转发：本机反代链路 Nginx→Next→FastAPI
     client = _admin_client(workspace, peer=("127.0.0.1", 50000))
     ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     headers = {"x-forwarded-for": "203.0.113.7", "user-agent": ua}
@@ -918,11 +918,27 @@ def test_analytics_track_public_with_dedup_and_validation(workspace: Path):
     for bad in {"path": "/api/overview"}, {"path": "https://evil.com"}, {"path": ""}:
         assert client.post("/api/analytics/track", json=bad, headers=headers).status_code == 400
 
-    # 非回环直连的客户端不能借 XFF 伪造来源 IP：按直连地址记录
+    # 解析不了的对端（TestClient 默认 testclient）不能借 XFF 伪造来源 IP：按直连地址记录
     outsider = TestClient(create_app(_config(workspace)))
     outsider.post("/api/analytics/track", json={"path": "/overview"}, headers={"x-forwarded-for": "198.51.100.9"})
     latest = client.get("/api/analytics/logs?limit=1").json()["visits"][0]
     assert latest["ip"] == "testclient"
+
+    # 容器网络对端（私网）与回环同权：Docker 部署里 Next 中间件服务端上报的转发头可信
+    docker_peer = TestClient(create_app(_config(workspace)), client=("172.24.0.4", 50000))
+    docker_peer.post(
+        "/api/analytics/track",
+        json={"path": "/discover"},
+        headers={"x-forwarded-for": "198.51.100.7", "user-agent": "Mozilla/5.0"},
+    )
+    latest = client.get("/api/analytics/logs?limit=1").json()["visits"][0]
+    assert latest["ip"] == "198.51.100.7"
+
+    # 公网对端直连仍不信任转发头：只可能是绕过反代的直连，按 socket 地址记录
+    public_peer = TestClient(create_app(_config(workspace)), client=("203.0.113.99", 50000))
+    public_peer.post("/api/analytics/track", json={"path": "/discover"}, headers={"x-forwarded-for": "198.51.100.8"})
+    latest = client.get("/api/analytics/logs?limit=1").json()["visits"][0]
+    assert latest["ip"] == "203.0.113.99"
 
 
 def test_analytics_track_per_ip_rate_limit(workspace: Path):
@@ -1741,7 +1757,7 @@ def test_assistant_daily_ip_limit(workspace: Path, monkeypatch):
     limited = ask()
     assert limited.status_code == 429 and "明天" in limited.json()["detail"]
 
-    # 限额按 IP 独立：回环对端才信任转发头（见 deps.client_ip），换一个真实 IP 不受影响
+    # 限额按 IP 独立：可信内网对端才信任转发头（见 deps.client_ip），换一个真实 IP 不受影响
     loopback = TestClient(create_app(config_path), client=("127.0.0.1", 50000))
     assert loopback.post(
         "/api/assistant/ask",
