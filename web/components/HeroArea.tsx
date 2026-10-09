@@ -53,10 +53,13 @@ export function HeroArea({
   sites,
   geo,
   main,
+  side,
 }: {
   sites: GlobeSite[];
   geo: Record<string, SiteGeo>;
   main: ReactNode;
+  /** AA 式 LAUNCH 侧栏位：右侧最新动态公告列，不传则保持双列 */
+  side?: ReactNode;
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const router = useRouter();
@@ -124,6 +127,7 @@ export function HeroArea({
         )}
       </aside>
       <div className="hero-main">{main}</div>
+      {side ? <aside className="hero-side">{side}</aside> : null}
       {rows.map((row, rowIndex) => {
         // 两排都恒滚动；半条轨道不足一屏宽（按 8 个胶囊估算）时复制节点补满，位移 -50% 才无缝
         const copies = Math.max(1, Math.ceil(8 / Math.max(row.items.length, 1)));

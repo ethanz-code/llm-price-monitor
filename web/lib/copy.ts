@@ -41,130 +41,58 @@ export const home = {
     secondary: "算一笔花费 →",
   },
   sections: {
-    capabilities: "它都帮你检测些什么",
-    pipeline: "一条价格数据的旅程",
-    useCases: "你可能这样用",
     latestPrice: "最新价格",
     trend: "价格走势",
     events: "最新事件",
     sites: "检测中的站点",
     rankings: "模型榜单速览",
-    dataSource: "数据从哪来",
     faq: "常见问题",
   },
   sectionSubs: {
-    capabilities:
-      "价格、公告、渠道状态自动记录、自动比对；不推荐、不评分，只把数据摆给你看。",
-    pipeline: "每条价格都要走完这六步才会上首页；哪一步对不上，这条数据就不会摆出来。",
-    useCases: "不管自己用还是带团队用，这几件事都能省掉来回问、到处翻。",
     latestPrice:
       "每个模型只展示检测站点里的最低价，每条都附来源链接，点开就能核对",
     sites: "每个站点的渠道检测与公告我们都自动存档，点站点名就能进检测档案",
     rankings:
       "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位时拿它做参考",
   },
-  /** 能力总览卡：图标芯片 + 分类 + 标题 + 一句话，对应首页「它都帮你检测些什么」；
-   *  icon 是 components/icons.tsx 的导出名键，LandingNarrative 按键映射组件 */
-  capabilities: [
-    {
-      icon: "trend",
-      tag: "价格追踪",
-      title: "调价第一时间留档",
-      desc: "哪家涨价了、哪家降价了，一变就记成事件，新价旧价、变化时间都在记录里。",
+  /** Bento 产品介绍：1 大（主价值 + 真实价格行预览，可点）+ 3 小（图标芯片 + 能力一句话）；
+   *  icon 是 components/icons.tsx 的导出名键 */
+  introBento: {
+    main: {
+      title: "每条价格，逐条可溯源",
+      desc: "每条价格都附来源链接，点开就是站点当时的价目页，随时自己核对；我们只记录，不修改。",
+      cta: "去看最新价格 →",
     },
-    {
-      icon: "pulse",
-      tag: "渠道巡检",
-      title: "可用性自动探测",
-      desc: "几分钟一轮自动探测各家渠道，能不能用、延迟多少，正常异常都有记录。",
-    },
-    {
-      icon: "file-search",
-      tag: "数据可信",
-      title: "标价逐条可溯源",
-      desc: "每条价格都附来源链接，点开就是站点当时的价目页，随时自己核对。",
-    },
-    {
-      icon: "percent",
-      tag: "官方价对照",
-      title: "折扣一眼看清",
-      desc: "厂商官方定价摆在旁边，中转站标价折到几折，不用自己按计算器。",
-    },
-    {
-      icon: "calculator",
-      tag: "成本核算",
-      title: "花费先算后充",
-      desc: "按你的用量和缓存命中率算一笔账，充值前先知道大概花多少。",
-    },
-    {
-      icon: "megaphone",
-      tag: "公告存档",
-      title: "公告变化留底",
-      desc: "站点公告一有变动就存档，什么时候改的、改了什么，翻记录就知道。",
-    },
-  ],
-  /** 首页流水线六步：与 docs/pricing.md 的采集口径一一对应 */
-  pipeline: [
-    { name: "抓取", desc: "定时去各家公开的价目页抓快照，标价原样记录" },
-    { name: "抽取", desc: "AI 读懂页面，把每个模型的价格一条条读出来" },
-    { name: "归一", desc: "统一币种和计价单位，口径对齐了才能横向比" },
-    { name: "比对", desc: "和上一轮逐条比对，有效价格真变了才算变" },
-    { name: "留痕", desc: "变化写成一条事件，旧价、新价和来源链接一起存档" },
-    { name: "巡检", desc: "价格之外，各家渠道能不能用也在持续探测" },
-  ],
-  /** 使用场景卡：整卡可点直达对应页 */
-  useCases: [
-    {
-      title: "挑中转站",
-      desc: "先对照各家最低价和渠道状态，再决定把 token 充在哪里。",
-      href: "/overview",
-    },
-    {
-      title: "算一笔账",
-      desc: "用量和缓存命中率填进去，一个月大概花多少先有数。",
-      href: "/calculator",
-    },
-    {
-      title: "检测价格变化",
-      desc: "调价第一时间出现在事件流里，不用天天手动刷价目页。",
-      href: "/history",
-    },
-    {
-      title: "翻历史留档",
-      desc: "公告和价格什么时候变的，回查记录就能说清。",
-      href: "/history",
-    },
-  ],
+    items: [
+      {
+        icon: "sync",
+        title: "调价第一时间留档",
+        desc: "哪家涨价了、哪家降价了，一变就记成事件，新价旧价、变化时间都在记录里。",
+      },
+      {
+        icon: "monitor",
+        title: "渠道自动探测",
+        desc: "几分钟一轮自动探测各家渠道，能不能用、延迟多少，正常异常都有记录。",
+      },
+      {
+        icon: "aim",
+        title: "折扣一眼看清",
+        desc: "厂商官方定价摆在旁边，中转站标价折到几折，不用自己按计算器。",
+      },
+    ],
+  },
   viewAll: "查看全部 →",
   viewAllEvents: "全部事件 →",
   submitSite: "提交站点，加入检测",
   submitSiteDesc: "把站点地址填给我们，逐个核验通过后就开始检测。",
-  dataPoints: [
-    "我们定时去各站点公开的价目页抓数据，标价原样记录",
-    "渠道能不能用，我们几分钟自动探一轮，正常和异常都有记录",
-    "站点公告一有变化就留档，想翻历史公告随时能查。",
-    "每条数据都能点回来源页面，随时自己核对",
-  ],
   empty: {
     events: "还没有事件记录。",
     sites: "还没有站点数据。",
-    siteNotice: "暂无公告",
     siteNoCheckRecord: "暂无渠道检测记录",
-    siteCheckNotEnabled: "渠道检测未接入",
     siteDisabled: "已停用",
   },
-  /** 站点卡片：近 N 次渠道检测 · 最新正常 X% */
-  siteCard: {
-    checkSuffix: "次渠道检测 · 最新正常",
-    latencySuffix: "延迟",
-  },
-  /** 站点总览锚点卡（bento 大卡）：规模与健康度一眼看清 */
   sitesOverview: {
-    label: "检测总览",
-    avgLabel: "平均可用率",
-    sitesSuffix: "个站点在检测",
-    allGood: "暂无异常",
-    abnormal: (n: number) => `${n} 个站点有异常`,
+    more: (n: number) => `还有 ${n} 个站点 →`,
   },
 
   faq: [

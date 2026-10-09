@@ -959,16 +959,27 @@ body > main {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff 12%), var(--accent));
   color: var(--accent-contrast);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  transition:
+    filter var(--dur) linear,
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 
 .btn-primary:hover:not(:disabled) {
-  filter: brightness(1.07);
+  filter: brightness(1.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 6px 24px color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 .btn-primary:active:not(:disabled) {
   transform: scale(0.98);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .btn-ghost {
@@ -1971,9 +1982,52 @@ html:not([data-theme="dark"]) .panel {
   grid-template-columns: minmax(340px, 540px) minmax(0, 1.05fr);
   gap: 40px 48px;
   align-items: center;
-  align-items: center;
   padding: 56px 0 72px;
   position: relative;
+}
+
+/* Vercel 式首屏氛围：品牌色低浓度径向光晕 + 极淡点阵网格，全部压在内容层之下。
+   浅色 5%、暗色 9%——只做单色氛围，不搞彩虹渐变（design-guide 红线） */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: -8% -12% 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(52% 62% at 26% 42%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 72%),
+    radial-gradient(circle at 50% 0, color-mix(in srgb, var(--accent) 3%, transparent), transparent 55%);
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 30%;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(color-mix(in srgb, var(--text) 9%, transparent) 1px, transparent 1px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(70% 90% at 40% 30%, #000, transparent 78%);
+  mask-image: radial-gradient(70% 90% at 40% 30%, #000, transparent 78%);
+  opacity: 0.55;
+}
+
+[data-theme="dark"] .hero::before {
+  background:
+    radial-gradient(52% 62% at 26% 42%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 72%),
+    radial-gradient(circle at 50% 0, color-mix(in srgb, var(--accent) 5%, transparent), transparent 55%);
+}
+
+[data-theme="dark"] .hero::after {
+  background-image: radial-gradient(color-mix(in srgb, #fff 7%, transparent) 1px, transparent 1px);
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero::before,
+  .hero::after {
+    display: none;
+  }
 }
 
 .hero-main {
@@ -1981,20 +2035,21 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .hero-title {
-  font-size: 42px;
+  /* 全页最大声明位：对标 Linear/OpenHands 的超大标题（88px 级的克制中文版） */
+  font-size: clamp(42px, 4.8vw, 62px);
   font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
   margin: 0;
   text-wrap: balance;
 }
 
 .hero-sub {
   color: var(--text-2);
-  font-size: 16px;
-  line-height: 1.75;
-  max-width: 520px;
-  margin: 22px 0 0;
+  font-size: 17px;
+  line-height: 1.7;
+  max-width: 560px;
+  margin: 24px 0 0;
   text-wrap: pretty;
 }
 
@@ -2069,10 +2124,11 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .landing-section {
-  /* 统一分区节奏：发丝线分隔 + 一致的上下留白；线条由 ::before 承担，滚动进入时展开 */
+  /* 统一分区节奏：发丝线分隔 + 一致的上下留白（72px 对齐 Linear 的留白档）；
+     线条由 ::before 承担，滚动进入时展开 */
   position: relative;
   margin-top: 32px;
-  padding-top: 56px;
+  padding-top: 72px;
 }
 
 .landing-section::before,
@@ -2124,9 +2180,10 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .landing-section-head h2 {
-  font-size: 20px;
+  /* 全 section 统一陈述级区头：数据区不再低叙事区一头 */
+  font-size: 28px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   margin: 0;
   line-height: 1.15;
 }
@@ -2213,9 +2270,9 @@ html:not([data-theme="dark"]) .panel {
 
 /* 板块说明行：head 之下的一句话上下文 */
 .landing-section-sub {
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--text-3);
-  margin: -10px 0 22px;
+  margin: -8px 0 24px;
 }
 
 /* 走势图 + 最新事件的双栏板块 */
@@ -2506,6 +2563,20 @@ html:not([data-theme="dark"]) .panel {
     transparent 97%
   );
   mask-image: radial-gradient(circle at center, #000 55%, transparent 97%);
+}
+
+/* 球体托底氛围光：Vercel 大 logo 同款手法，品牌色极低浓度径向光托住球的分量 */
+.pano-globe-layer::before {
+  content: "";
+  position: absolute;
+  inset: -12%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 10%, transparent),
+    transparent 68%
+  );
 }
 
 .pano-globe {
@@ -2800,247 +2871,271 @@ html:not([data-theme="dark"]) .panel {
   color: rgba(255, 255, 255, 0.85);
 }
 
-/* 监控站点卡片：bento 网格——总览锚点卡与 down 站跨两列，dense 回填避免空洞 */
-.site-cards {
+/* Bento 产品介绍：1 大（主价值可点）+ 3 小（能力一句话），panel 发丝线卡一套语言 */
+.bento-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  grid-auto-flow: row dense;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
-  /* 鼠标光晕的橘色浓度：浅底上过浓显脏，亮色比暗色淡一档 */
-  --spot-color: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
-[data-theme="dark"] .site-cards {
-  --spot-color: color-mix(in srgb, var(--accent) 13%, transparent);
-}
-
-.site-card--wide {
-  grid-column: span 2;
-}
-
-@media (max-width: 767px) {
-  .site-card--wide {
-    grid-column: auto;
-  }
-}
-
-.site-card {
-  display: grid;
-  gap: 14px;
-  align-content: start;
-  padding: 20px;
+.bento-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 26px 28px;
   background: var(--panel);
   border: var(--card-border);
   border-radius: 12px;
-  box-shadow: var(--shadow-panel);
+  box-shadow:
+    var(--shadow-panel),
+    inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent);
   color: inherit;
   text-decoration: none;
   transition:
-    background 160ms linear,
-    transform 220ms var(--ease);
+    border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.bento-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  transform: translateY(-2px);
+  box-shadow:
+    var(--shadow-panel),
+    inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent),
+    0 12px 40px color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* 入场 stagger：随区块 reveal 后各卡依次浮入（reduced-motion 下由全局降级接管） */
+.reveal .bento-card {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.6s var(--ease),
+    transform 0.6s var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.reveal.is-in .bento-card {
+  opacity: 1;
+  transform: none;
+}
+
+.reveal.is-in .bento-card:nth-child(2) { transition-delay: 0.06s; }
+.reveal.is-in .bento-card:nth-child(3) { transition-delay: 0.12s; }
+.reveal.is-in .bento-card:nth-child(4) { transition-delay: 0.18s; }
+
+.bento-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.bento-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+  max-width: 62ch;
+}
+
+.bento-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent-text);
+}
+
+/* 大卡：Apple 式文/视觉分栏——左文案右产品预览（真实价格行缩影） */
+.bento-card--feature {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 28px 44px;
+  align-items: center;
+  padding: 30px 32px;
+}
+
+.bento-card--feature .bento-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.bento-card--feature .bento-title {
+  font-size: 19px;
+}
+
+.bento-card--feature .bento-desc {
+  font-size: 14px;
+}
+
+/* mini 价格表：真实数据缩影，panel-2 底像一块小屏 */
+.bento-visual {
+  display: grid;
+  gap: 0;
+  padding: 14px 16px 12px;
+  background: var(--panel-2);
+  border: var(--card-border);
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+.bento-mini-head {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 2px 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.bento-mini-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.bento-mini-site {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 550;
+}
+
+.bento-mini-model {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+
+.bento-mini-price {
+  text-align: right;
+  font-weight: 550;
+}
+
+.bento-mini-src {
+  padding: 9px 4px 2px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+@media (max-width: 900px) {
+  .bento-card--feature {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 24px 22px;
+  }
+}
+
+/* 监控站点小卡：一卡一站（状态点 + 可用率 + 模型数），普通卡片网格不做状态页 */
+.site-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.site-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: var(--card-border);
+  border-radius: 10px;
+  box-shadow:
+    var(--shadow-panel),
+    inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
+  color: inherit;
+  text-decoration: none;
+  transition:
+    background var(--dur) linear,
+    border-color var(--dur) linear,
+    transform var(--dur) var(--ease);
 }
 
 .site-card:hover {
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
   transform: translateY(-2px);
 }
 
-.site-card:hover .site-name {
-  color: var(--accent-text);
-}
-
-/* 总览锚点卡：品牌橘轻染底，承担区块的「一眼状态」 */
-.site-card--overview {
-  gap: 8px;
-  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-
-.site-card--overview:hover {
-  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
-}
-
-.site-overview-label {
-  font-size: 12px;
-  color: var(--text-3);
-}
-
-.site-overview-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.site-overview-avg {
-  font-size: 38px;
-  font-weight: 600;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-}
-
-.site-overview-pct {
-  font-size: 0.55em;
-  margin-left: 1px;
-  opacity: 0.75;
-}
-
-.site-overview-avg-label {
-  font-size: 13px;
-  color: var(--text-2);
-}
-
-.site-overview-sub {
-  font-size: 12.5px;
-  color: var(--text-3);
-}
-
-.site-overview-sub em {
-  font-style: normal;
-}
-
-.site-overview-abnormal {
-  color: var(--chart-down);
-}
-
-/* 鼠标跟随光晕：容器统一监听指针，光标位置由 SiteGridSpotlight 写进卡片级 --sx/--sy，
-   opacity 交给 :hover；触屏与 reduce 动效场景自然没有这层光 */
-.site-card-glow {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    260px circle at var(--sx, 50%) var(--sy, 50%),
-    var(--spot-color),
-    transparent 70%
-  );
-  transition: opacity var(--dur) linear;
-}
-
-.site-card:hover .site-card-glow {
-  opacity: 1;
+.site-card--off {
+  opacity: 0.6;
 }
 
 .site-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.site-card-head .site-name {
-  flex: 1;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.site-strip {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.site-strip-dot {
+.site-card-dot {
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: 9999px;
   flex-shrink: 0;
 }
 
-/* 最新检测点呼吸：只脉色条最后一颗，提示检测仍在继续（其余点保持静态） */
-.site-strip-dot--live {
-  position: relative;
+.site-card-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .site-strip-dot--live::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: inherit;
-    animation: site-dot-ping 2.4s var(--ease) infinite;
-  }
+.site-card:hover .site-card-name {
+  color: var(--accent-text);
 }
 
-@keyframes site-dot-ping {
-  0% {
-    transform: scale(1);
-    opacity: 0.65;
-  }
-  70%,
-  100% {
-    transform: scale(2.3);
-    opacity: 0;
-  }
+.site-card-avg {
+  font-size: 13px;
+  font-weight: 550;
 }
 
-.site-card-more,
-.site-card-nostatus {
+.site-card-meta {
   font-size: 12px;
   color: var(--text-3);
 }
 
-.site-notice {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-2);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.site-card--more {
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border-style: dashed;
+  box-shadow: none;
 }
 
-.site-notice-time {
-  font-size: 11px;
-  color: var(--text-3);
-  margin-right: 6px;
+.site-card-more-label {
+  font-size: 13px;
+  color: var(--accent-text);
 }
 
-/* 异常站点卡的旋转描边：conic-gradient 加双层 mask 只露 1.5px 边框环
-   （Magic UI Border Beam 的纯 CSS 复刻），颜色由卡片内联 --beam-color 给（warn 黄 / down 红）；
-   只给异常卡转，全卡都转会非常吵；老浏览器不识别 @property 时退化为一段静态弧 */
-@property --beam-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-
-.site-card-beam {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  pointer-events: none;
-  background: conic-gradient(
-    from var(--beam-angle),
-    transparent 0turn 0.55turn,
-    var(--beam-color, var(--chart-warn)) 0.85turn,
-    transparent 1turn
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .site-card--alert .site-card-beam {
-    animation: site-beam-spin 5.5s linear infinite;
+@media (max-width: 640px) {
+  .bento-grid {
+    grid-template-columns: 1fr;
   }
-}
 
-@keyframes site-beam-spin {
-  to {
-    --beam-angle: 360deg;
+  .site-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 }
 
@@ -3070,7 +3165,17 @@ html:not([data-theme="dark"]) .panel {
 
 /* 标题强调词「集成式」：只用品牌色区分，不加等宽/波浪划线等装饰 */
 .type-key {
+  /* 品牌词微渐变：单色橙系从亮到深（OpenHands 关键词高亮手法），纯色兜底放前面 */
   color: var(--accent-text);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 78%, #ffb27a) 0%,
+    var(--accent) 58%,
+    color-mix(in srgb, var(--accent) 82%, #7a3a00) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .hero-side {
@@ -3865,8 +3970,10 @@ a.event-card {
   }
 
   .hero-title {
-    font-size: 32px;
+    font-size: 38px;
+    line-height: 1.12;
   }
+
 
   /* hero 平板紧凑列：球列收窄给文字让位，其余结构不变 */
   .hero {
@@ -4014,11 +4121,12 @@ a.event-card {
   }
 
   .hero-title {
-    font-size: 28px;
+    font-size: 34px;
+    line-height: 1.14;
   }
 
   .landing-cta h2 {
-    font-size: 22px;
+    font-size: 26px;
   }
 
   .nav-inner {
@@ -4830,18 +4938,8 @@ a.event-card {
 }
 
 /* —— 首页叙事三区（能力总览 / 采集流水线 / 使用场景）——
- * 视觉规格对照 openhands.dev 实测：36px 陈述式区头、图标芯片横滑卡列、
- * 整块次级底舞台 + 虚线节点路径、mono 编号跳转卡；全部走本站 token。 */
-
-.landing-statement {
-  padding-top: 72px;
-}
-
-.landing-statement .landing-section-head h2 {
-  font-size: 36px;
-  line-height: 1.15;
-  letter-spacing: -0.015em;
-}
+ * 视觉规格对照 openhands.dev 实测：图标芯片横滑卡列、
+ * 整块次级底舞台 + 虚线节点路径、mono 编号跳转卡；区头字号走全页统一标尺。 */
 
 .landing-statement .landing-section-sub {
   font-size: 14.5px;
@@ -4849,277 +4947,9 @@ a.event-card {
   max-width: 640px;
 }
 
-/* 能力总览：横向滚动卡列（对齐 OpenHands automations 卡车），横滑看全六张 */
-.cap-row {
-  list-style: none;
-  margin: 0;
-  padding: 4px 4px 14px;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: min(316px, 78vw);
-  gap: 14px;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  scrollbar-width: none;
-}
-
-.cap-row::-webkit-scrollbar {
-  display: none;
-}
-
-.cap-card {
-  scroll-snap-align: start;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 24px 24px 22px;
-  background: var(--panel);
-  border: var(--card-border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-panel);
-  transition: border-color var(--dur) var(--ease);
-}
-
-.cap-card:hover {
-  border-color: var(--border-strong);
-}
-
-.cap-ico {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  background: var(--panel-2);
-  color: var(--accent-text);
-}
-
-.cap-title {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.cap-desc {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.75;
-  color: var(--text-2);
-}
-
-.cap-tag {
-  margin-top: auto;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--text-3);
-  background: var(--panel-2);
-  border-radius: 9999px;
-  padding: 5px 10px;
-}
-
-/* 采集流水线：整块舞台（次级底、大圆角）承载六步；桌面档虚线把节点串成路径 */
-.pipe-stage {
-  background: var(--panel-2);
-  border: var(--card-border);
-  border-radius: 20px;
-  padding: 44px 48px 48px;
-}
-
-.pipe-stage .landing-section-sub {
-  margin-bottom: 34px;
-}
-
-.pipe-band {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 20px;
-  position: relative;
-}
-
-.pipe-band::before {
-  content: "";
-  position: absolute;
-  top: 15px;
-  left: 34px;
-  right: 34px;
-  border-top: 1px dashed var(--border-strong);
-}
-
-.pipe-step {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.pipe-no {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9999px;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  font-size: 12.5px;
-  color: var(--accent-text);
-}
-
-.pipe-name {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.pipe-desc {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--text-2);
-}
-
-/* 使用场景：mono 编号 + 箭头的可点卡（对齐 OpenHands use cases），整卡直达功能页 */
-.use-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.use-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 24px 26px 26px;
-  background: var(--panel);
-  border: var(--card-border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-panel);
-  color: inherit;
-  text-decoration: none;
-  transition:
-    transform var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
-}
-
-.use-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--border-strong);
-}
-
-.use-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.use-no {
-  font-size: 13px;
-  color: var(--accent-text);
-}
-
-.use-go {
-  font-size: 16px;
-  color: var(--text-3);
-  transition:
-    color var(--dur),
-    transform var(--dur) var(--ease);
-}
-
-.use-card:hover .use-go {
-  color: var(--accent-text);
-  transform: translate(2px, -2px);
-}
-
-.use-title {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.use-desc {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.75;
-  color: var(--text-2);
-}
-
-/* 响应式：舞台横带 6→3→2→1 列（多行档撤掉串线），场景卡 2→1 列，卡列移动端自然横滑 */
-@media (max-width: 1024px) {
-  .pipe-band {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 24px 20px;
-  }
-
-  .pipe-band::before {
-    content: none;
-  }
-}
-
-@media (max-width: 768px) {
-  .use-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .landing-statement .landing-section-head h2 {
-    font-size: 27px;
-  }
-
-  .pipe-stage {
-    padding: 30px 22px 32px;
-    border-radius: 14px;
-  }
-
-  .pipe-band {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 22px 16px;
-  }
-}
-
-@media (max-width: 480px) {
-  .pipe-band {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* 04 数据从哪来：与常见问题同行双栏，本列内要点卡片竖排 */
-.landing-truth {
-  max-width: none;
-}
-
-.landing-points {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-}
-
-.landing-points li {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  padding: 14px 16px;
-  background: var(--panel);
-  border: var(--card-border);
-  border-radius: 12px;
-  font-size: 13.5px;
-  line-height: 1.75;
-  color: var(--text-2);
-}
-
-.landing-points-no {
-  flex-shrink: 0;
-  font-size: 15px;
-  color: var(--accent-text);
-}
-
 /* 05 FAQ 手风琴：限宽且真正居中（此前只有 max-width，整列吊在左边），靠间距与 +/− 组织 */
 .faq-list {
-  max-width: 720px;
+  max-width: 860px;
   margin: 0 auto;
   display: grid;
   gap: 2px;
@@ -5183,7 +5013,7 @@ a.event-card {
   max-width: 600px;
 }
 
-/* 尾部 CTA：居中大标题 + 主按钮 */
+/* 尾部 CTA：居中大标题 + 主按钮，底部径向氛围光托住收尾 */
 .landing-cta {
   position: relative;
   margin-top: 32px;
@@ -5191,11 +5021,33 @@ a.event-card {
   text-align: center;
 }
 
+.landing-cta::after {
+  content: "";
+  position: absolute;
+  inset: auto -10% 0;
+  height: 70%;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(
+    52% 90% at 50% 100%,
+    color-mix(in srgb, var(--accent) 6%, transparent),
+    transparent 75%
+  );
+}
+
+[data-theme="dark"] .landing-cta::after {
+  background: radial-gradient(
+    52% 90% at 50% 100%,
+    color-mix(in srgb, var(--accent) 9%, transparent),
+    transparent 75%
+  );
+}
+
 .landing-cta h2 {
-  font-size: 26px;
+  font-size: clamp(30px, 2.6vw, 38px);
   font-weight: 600;
-  letter-spacing: -0.01em;
-  margin: 0 0 30px;
+  letter-spacing: -0.015em;
+  margin: 0 0 32px;
 }
 
 /* 大屏增强档（≥1441）：内容仍锁 1440px 居中，首页排版整体放大一档，
@@ -5208,25 +5060,25 @@ a.event-card {
   }
 
   .hero-title {
-    font-size: 50px;
+    font-size: 68px;
   }
 
   .hero-sub {
-    font-size: 17px;
-    max-width: 560px;
-    margin-top: 26px;
+    font-size: 18px;
+    max-width: 580px;
+    margin-top: 28px;
   }
 
   .landing-section {
-    padding-top: 64px;
+    padding-top: 88px;
   }
 
   .landing-cta {
-    padding-top: 104px;
+    padding-top: 112px;
   }
 
   .landing-cta h2 {
-    font-size: 30px;
+    font-size: 42px;
   }
 
   .faq-item .faq-question {
@@ -5243,19 +5095,15 @@ a.event-card {
     animation: none;
   }
 
-  .use-card,
-  .use-go,
-  .cap-card {
-    transition: none;
-  }
-
-  .use-card:hover {
-    transform: none;
-  }
-
   .reveal {
     opacity: 1;
     transform: none;
+  }
+
+  .reveal .bento-card {
+    opacity: 1;
+    transform: none;
+    transition: none;
   }
 
   .landing-section::before,
@@ -6171,7 +6019,7 @@ a.event-card {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cellipse cx='12' cy='15.6' rx='5.6' ry='4.6'/%3E%3Cellipse cx='5.4' cy='10.2' rx='2' ry='2.7' transform='rotate(-18 5.4 10.2)'/%3E%3Cellipse cx='9.6' cy='7.4' rx='2' ry='2.8'/%3E%3Cellipse cx='14.4' cy='7.4' rx='2' ry='2.8'/%3E%3Cellipse cx='18.6' cy='10.2' rx='2' ry='2.7' transform='rotate(18 18.6 10.2)'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
-/* 站点卡猫耳：悬停时两只橘色耳朵从卡片上缘探出来 */
+/* 站点卡猫耳：悬停时两只橘色耳朵从卡上缘探出来 */
 .site-card {
   position: relative;
 }
@@ -6183,28 +6031,28 @@ a.event-card {
   top: 0;
   width: 0;
   height: 0;
-  border-left: 7px solid transparent;
-  border-right: 7px solid transparent;
-  border-top: 11px solid var(--cat-coat);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 9px solid var(--cat-coat);
   opacity: 0;
-  transform: translateY(5px);
+  transform: translateY(4px);
   transition:
     opacity 0.25s var(--ease),
     transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .site-card::before {
-  left: 18px;
+  left: 14px;
 }
 
 .site-card::after {
-  right: 18px;
+  right: 14px;
 }
 
 .site-card:hover::before,
 .site-card:hover::after {
   opacity: 1;
-  transform: translateY(-6px);
+  transform: translateY(-5px);
 }
 
 /* 首页空态：插画 + 一句话 */

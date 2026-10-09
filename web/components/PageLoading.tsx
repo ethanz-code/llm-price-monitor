@@ -571,59 +571,6 @@ const PANO_WIDTHS = [
   [84, 60, 92, 68, 100, 76],
 ];
 
-/** 站点总览锚点卡骨架：标签 + 大数字 + 概况行，对齐 .site-card--overview。 */
-function SiteOverviewSkeleton() {
-  return (
-    <div className="site-card site-card--wide site-card--overview" aria-hidden>
-      <Skel w={56} h={12} />
-      <Skel w={124} h={38} delay={60} />
-      <Skel w={168} h={12} delay={120} />
-    </div>
-  );
-}
-
-/** 站点卡骨架：名称行 + 检测色点条 + 统计行 + 公告行，对齐 .site-card。 */
-function SiteCardSkeleton({ index }: { index: number }) {
-  return (
-    <div className="site-card" aria-hidden>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        <Skel
-          w={8}
-          h={8}
-          style={{ borderRadius: "50%", flexShrink: 0 }}
-          delay={index * 110}
-        />
-        <Skel w={90} h={13} delay={index * 110 + 20} />
-        <Skel w={84} h={12} style={{ marginLeft: "auto" }} delay={index * 110 + 40} />
-      </div>
-      <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
-        {Array.from({ length: 15 }, (_, dot) => (
-          <Skel
-            key={dot}
-            w={8}
-            h={8}
-            style={{ borderRadius: "50%", flexShrink: 0 }}
-            delay={index * 110 + dot * 15}
-          />
-        ))}
-      </div>
-      <Skel w={150} h={12} style={{ marginTop: 10 }} delay={index * 110 + 60} />
-      <Skel
-        w={`${78 - (index % 3) * 9}%`}
-        h={12}
-        style={{ marginTop: 10 }}
-        delay={index * 110 + 80}
-      />
-    </div>
-  );
-}
-
 /** 榜单速览行骨架：#排名 / 模型 / 厂商 / 指数，对齐 .rank-row 四列模板。 */
 const RANK_COLS = "2.4em minmax(0, 1fr) 160px 4.5em";
 
@@ -738,68 +685,18 @@ export function LandingLoading() {
         ))}
       </section>
 
-      {/* 叙事三区骨架：能力总览（横滑图标卡列）→ 采集流水线（舞台横带）→ 使用场景（编号可点卡） */}
-      <section className="landing-section landing-statement" aria-hidden>
-        <div className="landing-section-head">
-          <Skel w={230} h={36} />
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <Skel w="46%" h={12} delay={80} />
-        </div>
-        <div className="cap-row" style={{ marginTop: 24 }}>
-          {[0, 1, 2, 3].map((row) => (
-            <div key={row} className="cap-card">
-              <Skel w={44} h={44} style={{ borderRadius: 10 }} delay={row * 70} />
-              <Skel w={`${64 - (row % 2) * 8}%`} h={15} delay={row * 70 + 20} />
-              <Skel w="88%" h={12} delay={row * 70 + 40} />
-              <Skel w={56} h={20} style={{ borderRadius: 9999, marginTop: "auto" }} delay={row * 70 + 55} />
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="landing-section landing-statement" aria-hidden>
-        <div className="pipe-stage">
-          <div className="landing-section-head">
-            <Skel w={250} h={36} />
+      {/* Bento 产品介绍骨架：1 大 + 3 小 */}
+      <section className="landing-section" aria-hidden>
+        <div className="bento-grid">
+          <div className="bento-card bento-card--wide">
+            <Skel w={170} h={16} />
+            <Skel w="62%" h={12} delay={60} />
           </div>
-          <div style={{ marginTop: 14, marginBottom: 30 }}>
-            <Skel w="52%" h={12} delay={80} />
-          </div>
-          <div className="pipe-band">
-            {[0, 1, 2, 3, 4, 5].map((step) => (
-              <div key={step} className="pipe-step">
-                <Skel w={30} h={30} style={{ borderRadius: 9999 }} delay={step * 60} />
-                <Skel w={52} h={15} delay={step * 60 + 20} />
-                <Skel w="90%" h={11} delay={step * 60 + 40} />
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="landing-section landing-statement" aria-hidden>
-        <div className="landing-section-head">
-          <Skel w={200} h={36} />
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <Skel w="40%" h={12} delay={80} />
-        </div>
-        <div className="use-grid" style={{ marginTop: 26 }}>
-          {[0, 1, 2, 3].map((row) => (
-            <div key={row} className="use-card">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                }}
-              >
-                <Skel w={22} h={13} delay={row * 70} />
-                <Skel w={14} h={14} delay={row * 70 + 15} />
-              </div>
-              <Skel w={96} h={17} delay={row * 70 + 25} />
-              <Skel w={`${76 - (row % 2) * 8}%`} h={12} delay={row * 70 + 35} />
+          {[0, 1, 2].map((row) => (
+            <div key={row} className="bento-card">
+              <Skel w={`${70 - row * 8}%`} h={15} delay={row * 70} />
+              <Skel w="88%" h={12} delay={row * 70 + 30} />
+              <Skel w="72%" h={12} delay={row * 70 + 50} />
             </div>
           ))}
         </div>
@@ -807,7 +704,7 @@ export function LandingLoading() {
 
       <section className="landing-section" aria-hidden>
         <div className="landing-section-head">
-          <Skel w={132} h={22} />
+          <Skel w={132} h={28} />
           <Skel w={64} h={13} delay={60} />
         </div>
         <div style={{ marginTop: 14 }}>
@@ -824,7 +721,7 @@ export function LandingLoading() {
       <section className="landing-section landing-duo" aria-hidden>
         <div>
           <div className="landing-section-head">
-            <Skel w={110} h={22} />
+            <Skel w={110} h={28} />
           </div>
           <div className="panel" style={{ marginTop: 20, padding: 16 }}>
             <Skel w="100%" h={210} style={{ borderRadius: 8 }} delay={120} />
@@ -832,27 +729,18 @@ export function LandingLoading() {
         </div>
         <div>
           <div className="landing-section-head">
-            <Skel w={96} h={22} />
+            <Skel w={96} h={28} />
             <Skel w={70} h={13} delay={60} />
           </div>
           <div className="landing-events" style={{ marginTop: 20 }}>
-            {[0, 1, 2].map((row) => (
-              <div key={row} className="side-note">
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Skel
-                    w={6}
-                    h={6}
-                    style={{ borderRadius: "50%", flexShrink: 0 }}
-                    delay={row * 130}
-                  />
-                  <Skel w={`${52 - row * 6}%`} h={13} delay={row * 130 + 30} />
+            {[0, 1, 2, 3].map((row) => (
+              <div key={row} className="event-row">
+                <Skel w={40} h={20} style={{ borderRadius: 6 }} delay={row * 120} />
+                <div style={{ flex: 1, display: "grid", gap: 5 }}>
+                  <Skel w={`${56 - row * 6}%`} h={13} delay={row * 120 + 30} />
+                  <Skel w={`${40 - row * 4}%`} h={11} delay={row * 120 + 55} />
                 </div>
-                <Skel
-                  w={`${70 - row * 8}%`}
-                  h={11}
-                  style={{ marginTop: 6 }}
-                  delay={row * 130 + 60}
-                />
+                <Skel w={64} h={11} delay={row * 120 + 80} />
               </div>
             ))}
           </div>
@@ -861,26 +749,35 @@ export function LandingLoading() {
 
       <section className="landing-section" aria-hidden>
         <div className="landing-section-head">
-          <Skel w={88} h={22} />
+          <Skel w={88} h={28} />
           <Skel w={96} h={13} delay={60} />
         </div>
         <div style={{ marginTop: 14 }}>
           <Skel w="38%" h={11} delay={100} />
         </div>
-        <div
-          className="site-cards"
-          style={{ marginTop: 16, gridTemplateColumns: "repeat(3, minmax(0,1fr))" }}
-        >
-          <SiteOverviewSkeleton />
-          {[0, 1, 2, 3, 4].map((index) => (
-            <SiteCardSkeleton key={index} index={index + 1} />
+        {/* 站点小卡网格骨架，对齐真实页 .site-grid / .site-card */}
+        <div className="site-grid" style={{ marginTop: 20 }}>
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((row) => (
+            <div key={row} className="site-card">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Skel
+                  w={8}
+                  h={8}
+                  style={{ borderRadius: "50%", flexShrink: 0 }}
+                  delay={row * 90}
+                />
+                <Skel w={`${68 - (row % 3) * 8}%`} h={13} delay={row * 90 + 20} />
+                <Skel w={32} h={13} style={{ marginLeft: "auto" }} delay={row * 90 + 40} />
+              </div>
+              <Skel w={64} h={11} delay={row * 90 + 60} />
+            </div>
           ))}
         </div>
       </section>
 
       <section className="landing-section" aria-hidden>
         <div className="landing-section-head">
-          <Skel w={110} h={22} />
+          <Skel w={110} h={28} />
           <Skel w={78} h={13} delay={60} />
         </div>
         <div style={{ marginTop: 14 }}>
@@ -893,7 +790,7 @@ export function LandingLoading() {
 
       <section className="landing-section" aria-hidden>
         <div className="landing-section-head">
-          <Skel w={132} h={22} />
+          <Skel w={132} h={28} />
         </div>
         <div style={{ display: "grid", gap: 14, marginTop: 18 }}>
           {[0, 1, 2, 3].map((row) => (

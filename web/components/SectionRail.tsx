@@ -4,14 +4,10 @@ import { useEffect, useState } from "react";
 
 /** 首页右侧吸顶区块目录（AA 同款）：IntersectionObserver 高亮当前区块，点击锚点跳转。 */
 const RAIL_ITEMS = [
-  { id: "sec-caps", label: "能力总览" },
-  { id: "sec-pipeline", label: "数据流程" },
-  { id: "sec-uses", label: "使用场景" },
   { id: "sec-latest", label: "最新价格" },
   { id: "sec-trend", label: "价格走势" },
-  { id: "sec-sites", label: "监控站点" },
+  { id: "sec-sites", label: "检测站点" },
   { id: "sec-rankings", label: "模型榜单" },
-  { id: "sec-data", label: "数据来源" },
   { id: "sec-faq", label: "常见问题" },
 ];
 

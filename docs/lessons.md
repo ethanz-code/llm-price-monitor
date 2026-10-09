@@ -70,8 +70,11 @@
 | 界面文案缺中文映射回退英文原文；下拉与已选标签排序不一致 | 映射表补齐任务类型中文名；显示与保存同口径（同序归一） | 提交 034269b / 62830d8 |
 | 新页面样式随意发挥 | 服从 design-guide.md（色彩 token、组件规范、去 AI 味清单） | design-guide.md |
 | 首页这类常驻动画页上 Browser Use 的 Playwright 定位点击卡 actionability 超时、导航/刷新后立即截图超时 | 元素确认可命中后改用坐标点击（cua.click）；截图前先等 2–3s 页面稳定，一次只拍一张 | 首页 2D 地球替换走查实测 |
+| 页面带自动轮播顶部横幅时坐标点击持续打偏（横幅展开/收起让全页元素 y 坐标漂移 ±70px，点 A 变点 B 还可能触发离开确认弹窗），且 Playwright 定位点击照卡 actionability | 最稳解是 playwright.evaluate 里按按钮文本精确匹配后直接调 DOM click()（React 组件也能触发）；受控组件赋值用原生 value setter + dispatch input/change 事件 | 腾讯云备案表单代填实测 |
 | 同一事件流多个页面各画各的：首页不折叠、追踪页折叠，站点名一边美化名一边原始 site_id，用户并排一看以为数据错乱 | 多页面共用数据源的展示口径（折叠/命名/排序）抽到 web/lib 单处共享，改口径只能改一处 | 提交 1e7ec68 |
 | 常驻动画页走查深水区：IAB 截图通道跑一阵后整体卡死（surface preparation timed out / capture failed for guest），force click 也被拖超时；fullPage 整页截图对 Reveal 懒显页全空白（下方 opacity:0 不触发） | 读 DOM 的 evaluate 始终可用；截图降级 Chrome DevTools MCP（独立实例互不拖累）；懒显页逐段滚动触发后再截视口图；受控下拉（如主题菜单）点不开时按「环境准备」预置 localStorage 再 reload | 首页叙事三区走查实测 |
+| 用 python 按行号替换大 CSS 块，旧行号在多次编辑后失效，一刀把 globals.css 砍掉 3300 行（hero 平板列/导航汉堡/动画全套全没），390px 出现横向溢出才暴露 | 大文件删改必须用「锚定内容」定位（str.index 断言锚点存在），替换后立刻 `wc -l` 对账 + grep 被删类名确认零残留；走查见溢出先用 `git stash` 对照基线定位是否新引入 | 首页站点区 Statuspage 化实测 |
+| 参考站只抓文字结构不截页面，做出来的「同构」设计全是小灰字（被用户打回两次） | 参考站必须真开浏览器逐屏截图，量标题字号、卡片 padding、图标做法、分段节奏再动手；监控站点列表直接抄行业事实标准 Atlassian Statuspage（状态横幅 + 一行一组件 + 90 天可用率条），不要自创瓷贴 | 首页重设计返工实录 |
 
 ## 5. 部署与运维
 

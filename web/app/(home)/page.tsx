@@ -1,19 +1,19 @@
 import Link from "next/link";
-import type { CSSProperties } from "react";
 import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
   eventMeta,
+  formatPrice,
   formatTime,
   isNoticeEvent,
   noticeExcerpt,
+  toCnyPrice,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { canonicalModel, lowestPriceRowPerModel, orderByReleaseDesc } from "@/lib/priceRows";
-import { foldEvents, groupNames } from "@/lib/events";
+import { foldEvents } from "@/lib/events";
 import {
   buildSiteViews,
-  latencyLevel,
   rateLevel,
   type RateLevel,
 } from "@/lib/channelStatus";
@@ -27,14 +27,8 @@ import type {
   StatusSnapshot,
 } from "@/lib/types";
 import { SiteSubmitButton } from "@/components/SiteSubmitModal";
-import { SiteGridSpotlight } from "@/components/SiteGridSpotlight";
 import { SectionRail } from "@/components/SectionRail";
 import { Reveal } from "@/components/Reveal";
-import {
-  CapabilityGrid,
-  PipelineSteps,
-  UseCaseCards,
-} from "@/components/LandingNarrative";
 import { HeroType } from "@/components/HeroType";
 import { HeroArea } from "@/components/HeroArea";
 import type { GlobeSite, SiteGeo } from "@/components/SiteGlobe";
@@ -44,8 +38,16 @@ import { SiteAlert } from "@/components/SiteAlert";
 import { DajuChartNap, DajuNap, DajuYarn } from "@/components/DajuArt";
 import { FaqList } from "@/components/FaqList";
 import { JsonLd } from "@/components/JsonLd";
+import { IconAim, IconMonitor, IconSync } from "@/components/icons";
 import { alerts, home, site } from "@/lib/copy";
 import { siteOrigin } from "@/lib/seo";
+
+/** Bento 小卡图标映射：icon 键 → components/icons.tsx 组件 */
+const BENTO_ICONS = {
+  sync: IconSync,
+  monitor: IconMonitor,
+  aim: IconAim,
+} as const;
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +66,7 @@ interface LandingData {
   error: string | null;
 }
 
-/** 渠道检测色点：三档色与详情页图表 statusColors 同一套（亮/暗各一组，见 globals.css --chart-*），
+/** 站点瓷贴状态色：与详情页图表 statusColors 同一套（亮/暗各一组，见 globals.css --chart-*），
  *  阈值一致：可用率 80/60 三档，延迟 1000/3000ms 三档。 */
 const STRIP_TONE: Record<RateLevel, string> = {
   ok: "var(--chart-ok)",
@@ -72,12 +74,15 @@ const STRIP_TONE: Record<RateLevel, string> = {
   down: "var(--chart-down)",
 };
 
-/** 站点卡点排用：正常点降到半强度（大面积重复的好状态不抢注意力），异常/延迟档保持全色。 */
-const STRIP_DOT_TONE: Record<RateLevel, string> = {
+/** 瓷贴状态点：正常点降到半强度（大面积重复的好状态不抢注意力），异常/延迟档保持全色。 */
+const TILE_DOT_TONE: Record<RateLevel, string> = {
   ok: "color-mix(in srgb, var(--chart-ok) 45%, transparent)",
   warn: "var(--chart-warn)",
   down: "var(--chart-down)",
 };
+
+/** 行列表封顶：首页只列这么多行，其余进「还有 N 个站点」链接 */
+const SITE_ROW_MAX = 18;
 
 async function loadLanding(): Promise<LandingData> {
   try {
@@ -176,12 +181,11 @@ export default async function LandingPage() {
   const latestEventGroups = foldEvents(feed?.events ?? []).slice(0, 4);
   const historyRecords = history?.records ?? [];
 
-  // 站点检测档案：可用率序列供星球悬停与站点卡片色点共用，延迟序列供站点卡片延迟着色；
+  // 站点检测档案：可用率序列供星球悬停与行列表状态共用；
   // 阈值与详情页一致：可用率 80/60 三档，延迟 1000/3000ms 三档
   const siteViews = buildSiteViews(status);
   const availBySite = siteViews.availability;
   const bucketsBySite = siteViews.uptimeBuckets;
-  const latencyBySite = siteViews.latency;
   const globeSites: GlobeSite[] = sites.map((site) => {
     const series = availBySite[site.id] ?? [];
     const latestPoint = series[series.length - 1];
@@ -200,20 +204,10 @@ export default async function LandingPage() {
       checks: series.length,
     };
   });
-  /** 站点卡片上的最近 15 次渠道检测色点 */
-  const stripOf = (siteId: string) => (availBySite[siteId] ?? []).slice(-15);
-  /** 站点当前延迟：取最新时刻各渠道里最高的一个（最差口径，与详情页着色共用同一阈值） */
-  const latestLatencyOf = (siteId: string): number | null => {
-    const series = latencyBySite[siteId] ?? [];
-    const last = series[series.length - 1];
-    if (!last) return null;
-    const values = Object.values(last.values);
-    return values.length > 0 ? Math.max(...values) : null;
-  };
   // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
   const statusSiteIds = new Set(status.map((row) => row.site_id));
 
-  // bento 排布与总览锚点卡：down 站放大靠前、warn 次之、无数据其后、停用垫底；
+  // 行列表（Statuspage 模式）：down 站排最前、warn 次之、无数据其后、停用垫底，封顶取前 SITE_ROW_MAX 行；
   // 平均可用率只算启用且有检测数据的站点，停用站的旧数据不掺进来
   const LEVEL_RANK: Record<RateLevel | "none" | "off", number> = {
     down: 0,
@@ -224,21 +218,19 @@ export default async function LandingPage() {
   };
   const rankOf = (site: (typeof sites)[number]) => {
     if (!site.enabled) return LEVEL_RANK.off;
-    const series = availBySite[site.id] ?? [];
-    const latest = series[series.length - 1];
+    const latest = (availBySite[site.id] ?? []).slice(-1)[0];
     if (!latest) return LEVEL_RANK.none;
     return LEVEL_RANK[rateLevel(latest.pct)];
   };
   const orderedSites = [...sites].sort((a, b) => rankOf(a) - rankOf(b));
-  const latestPcts = sites
-    .filter((site) => site.enabled)
-    .map((site) => (availBySite[site.id] ?? []).slice(-1)[0]?.pct)
-    .filter((pct): pct is number => pct != null);
-  const abnormalCount = latestPcts.filter((pct) => rateLevel(pct) !== "ok").length;
-  const avgAvailability =
-    latestPcts.length > 0
-      ? Math.round(latestPcts.reduce((sum, pct) => sum + pct, 0) / latestPcts.length)
-      : null;
+  const wallSites = orderedSites.slice(0, SITE_ROW_MAX);
+  /** 站点卡状态色：正常档半强度（大面积绿不抢眼），异常全色；阈值与详情页共用 */
+  const levelColor = (level: RateLevel) =>
+    level === "ok"
+      ? "color-mix(in srgb, var(--chart-ok) 55%, transparent)"
+      : level === "warn"
+        ? "var(--chart-warn)"
+        : "var(--chart-down)";
 
   // 首页精选：每个模型归一合并后只留综合价最低的一行，按目录发布日期倒序（新模型在前），
   // 与总览页模型下拉同一套口径；目录没收录的模型垫底按名称
@@ -298,17 +290,53 @@ export default async function LandingPage() {
           }
         />
 
-        {/* 叙事三区（能力总览 → 采集流水线 → 使用场景），先讲清产品是什么，再看活数据 */}
+        {/* Bento 产品介绍：大卡 = 主价值 + 真实价格行预览（Apple 式文/视觉分栏），小卡 = 图标芯片 + 能力一句话 */}
         <Reveal>
-          <CapabilityGrid />
-        </Reveal>
-
-        <Reveal>
-          <PipelineSteps />
-        </Reveal>
-
-        <Reveal>
-          <UseCaseCards />
+          <section className="landing-section" id="sec-intro">
+            <div className="bento-grid">
+              <Link href="/overview" className="bento-card bento-card--feature">
+                <div className="bento-copy">
+                  <span className="bento-title">{home.introBento.main.title}</span>
+                  <p className="bento-desc">{home.introBento.main.desc}</p>
+                  <span className="landing-more">{home.introBento.main.cta}</span>
+                </div>
+                <div className="bento-visual" aria-hidden>
+                  <div className="bento-mini-head">
+                    <span>站点</span>
+                    <span>模型</span>
+                    <span>输入价 /M</span>
+                  </div>
+                  {parentRows.slice(0, 3).map((row) => {
+                    const site = getSiteInfo(row.site_id, row.source_url);
+                    const converted = toCnyPrice(row.input_price, row.unit, rate);
+                    return (
+                      <div key={`${row.site_id}:${row.model}`} className="bento-mini-row">
+                        <span className="bento-mini-site">{site.name}</span>
+                        <span className="mono bento-mini-model">{row.model}</span>
+                        <span className="mono bento-mini-price">
+                          {converted !== null ? "¥" : ""}
+                          {formatPrice(converted ?? row.input_price)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <span className="bento-mini-src mono">llmprices.cn · 每行附来源链接 ↗</span>
+                </div>
+              </Link>
+              {home.introBento.items.map((item) => {
+                const Icon = BENTO_ICONS[item.icon as keyof typeof BENTO_ICONS];
+                return (
+                  <div key={item.title} className="bento-card">
+                    <span className="bento-icon" aria-hidden>
+                      <Icon size={20} />
+                    </span>
+                    <span className="bento-title">{item.title}</span>
+                    <p className="bento-desc">{item.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         </Reveal>
 
         {records.length > 0 && (
@@ -347,23 +375,20 @@ export default async function LandingPage() {
               </div>
               {latestEventGroups.length > 0 ? (
                 <div className="landing-events">
-                  {latestEventGroups.map((group, index) => {
+                  {latestEventGroups.slice(0, 5).map((group, index) => {
                     const event = group[0];
                     const meta = eventMeta(event.kind);
                     const site = isNoticeEvent(event)
                       ? getSiteInfo(event.site_id)
                       : getSiteInfo(
                           event.site_id,
-                          event.current?.source_url ??
-                            event.previous?.source_url,
+                          event.current?.source_url ?? event.previous?.source_url,
                         );
-                    const groups = groupNames(group);
                     return (
                       <Link
                         key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
                         href="/history"
                         className="event-row"
-                        title={groups.length > 1 ? `包含分组：${groups.join(" / ")}` : undefined}
                       >
                         <span className={`event-badge tone-${meta.tone}`}>
                           {meta.label}
@@ -376,12 +401,7 @@ export default async function LandingPage() {
                                 {noticeExcerpt(event.content)}
                               </span>
                             ) : (
-                              <>
-                                <span className="mono">{event.model}</span>
-                                {group.length > 1 && (
-                                  <span> · {group.length} 个分组</span>
-                                )}
-                              </>
+                              <span className="mono">{event.model}</span>
                             )}
                           </span>
                         </span>
@@ -416,138 +436,54 @@ export default async function LandingPage() {
             </div>
             <p className="landing-section-sub">{home.sectionSubs.sites}</p>
             {sites.length > 0 ? (
-              <SiteGridSpotlight className="site-cards">
-                <div className="site-card site-card--overview site-card--wide">
-                  <span className="site-overview-label">{home.sitesOverview.label}</span>
-                  {avgAvailability != null && (
-                    <span className="site-overview-row">
-                      <span
-                        className="site-overview-avg mono num"
-                        style={{ color: STRIP_TONE[rateLevel(avgAvailability)] }}
-                      >
-                        {avgAvailability}
-                        <span className="site-overview-pct">%</span>
-                      </span>
-                      <span className="site-overview-avg-label">
-                        {home.sitesOverview.avgLabel}
-                      </span>
-                    </span>
-                  )}
-                  <span className="site-overview-sub">
-                    {sites.length} {home.sitesOverview.sitesSuffix}
-                    {" · "}
-                    {abnormalCount > 0 ? (
-                      <em className="site-overview-abnormal">
-                        {home.sitesOverview.abnormal(abnormalCount)}
-                      </em>
-                    ) : (
-                      <em>{home.sitesOverview.allGood}</em>
-                    )}
-                  </span>
-                </div>
-                {orderedSites.map((site) => {
+              <div className="site-grid">
+                {wallSites.map((site) => {
                   const info = getSiteInfo(site.id, site.sourceUrl);
                   const statusHref = `/overview/status/${encodeURIComponent(site.id)}`;
-                  const strip = stripOf(site.id);
-                  const latestPoint = strip[strip.length - 1];
-                  const latestLatency = latestLatencyOf(site.id);
-                  const notice = overview?.notices?.[site.id];
-                  // down 站放大加旋转描边，warn 站只加描边不放大的克制告警
-                  const tone =
-                    site.enabled && latestPoint ? rateLevel(latestPoint.pct) : null;
-                  const alertTone = tone === "warn" || tone === "down" ? tone : null;
+                  const latest = (availBySite[site.id] ?? []).slice(-1)[0];
+                  const pct = site.enabled && latest ? latest.pct : null;
+                  const level = pct != null ? rateLevel(pct) : null;
                   return (
                     <Link
                       key={site.id}
                       href={statusHref}
-                      className={`site-card${alertTone ? " site-card--alert" : ""}${tone === "down" ? " site-card--wide" : ""}`}
-                      style={
-                        alertTone
-                          ? ({ "--beam-color": `var(--chart-${alertTone})` } as CSSProperties)
-                          : undefined
-                      }
+                      className={`site-card${site.enabled ? "" : " site-card--off"}`}
+                      title={`${info.name} · ${pct != null ? `最新正常 ${pct}%` : site.enabled ? home.empty.siteNoCheckRecord : home.empty.siteDisabled}`}
                     >
-                      <span aria-hidden className="site-card-glow" />
-                      {alertTone && <span aria-hidden className="site-card-beam" />}
-                      <div className="site-card-head">
+                      <span className="site-card-head">
                         <span
                           aria-hidden
-                          className="site-dot"
+                          className="site-card-dot"
                           style={{
-                            background: site.enabled
-                              ? "var(--accent)"
-                              : "var(--text-3)",
+                            background:
+                              level != null
+                                ? levelColor(level)
+                                : "var(--text-3)",
                           }}
                         />
-                        <span className="site-name">{info.name}</span>
-                        <span className="site-count mono">
-                          {site.models} 模型{site.enabled ? "" : ` · ${home.empty.siteDisabled}`}
+                        <span className="site-card-name">{info.name}</span>
+                        <span
+                          className="site-card-avg mono num"
+                          style={level ? { color: levelColor(level) } : undefined}
+                        >
+                          {pct != null ? `${pct}%` : "—"}
                         </span>
-                      </div>
-                      {strip.length > 0 && latestPoint ? (
-                        <>
-                          <div className="site-strip" aria-hidden>
-                            {strip.map((point, index) => (
-                              <span
-                                key={index}
-                                className={`site-strip-dot${index === strip.length - 1 ? " site-strip-dot--live" : ""}`}
-                                style={{
-                                  background: STRIP_DOT_TONE[rateLevel(point.pct)],
-                                }}
-                                title={`${formatTime(point.at)} · 正常 ${point.pct}%`}
-                              />
-                            ))}
-                          </div>
-                          <span className="site-card-more">
-                            近 {strip.length} {home.siteCard.checkSuffix}{" "}
-                            {latestPoint.pct}%
-                            {latestLatency != null && (
-                              <>
-                                {" "}
-                                · {home.siteCard.latencySuffix}{" "}
-                                <span
-                                  className="mono"
-                                  style={{
-                                    color: STRIP_TONE[latencyLevel(latestLatency)],
-                                  }}
-                                  title="延迟 ≥3000ms 红、≥1000ms 黄、其余绿，与站点检测详情页一致"
-                                >
-                                  {latestLatency} ms
-                                </span>
-                              </>
-                            )}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="site-card-nostatus">
-                          {statusSiteIds.has(site.id)
-                            ? home.empty.siteNoCheckRecord
-                            : home.empty.siteCheckNotEnabled}
-                        </span>
-                      )}
-                      <p
-                        className="site-notice"
-                        title={notice?.content ?? undefined}
-                      >
-                        {notice ? (
-                          <>
-                            {notice.captured_at ? (
-                              <span className="mono site-notice-time">
-                                {formatTime(notice.captured_at)}
-                              </span>
-                            ) : null}
-                            {noticeExcerpt(notice.content)}
-                          </>
-                        ) : (
-                          <span style={{ color: "var(--text-3)" }}>
-                            {home.empty.siteNotice}
-                          </span>
-                        )}
-                      </p>
+                      </span>
+                      <span className="site-card-meta">
+                        {site.models} 模型
+                        {site.enabled ? "" : ` · ${home.empty.siteDisabled}`}
+                      </span>
                     </Link>
                   );
                 })}
-              </SiteGridSpotlight>
+                {sites.length > wallSites.length && (
+                  <Link href="/overview" className="site-card site-card--more">
+                    <span className="site-card-more-label">
+                      {home.sitesOverview.more(sites.length - wallSites.length)}
+                    </span>
+                  </Link>
+                )}
+              </div>
             ) : (
               <div className="landing-empty">
                 <DajuNap width={150} />
@@ -602,37 +538,16 @@ export default async function LandingPage() {
           </Reveal>
         )}
 
-        {/* 数据来源 + 常见问题同行双栏（复用 duo 栅格，窄屏自动叠回单列） */}
+        {/* 常见问题：全内容宽度铺开 */}
         <Reveal>
-          <div className="landing-section landing-duo landing-duo-faq">
-            <div id="sec-data">
-              <div className="landing-section-head">
-                <div className="landing-section-title">
-                  <h2>{home.sections.dataSource}</h2>
-                </div>
-              </div>
-              <div className="landing-truth">
-                <ul className="landing-points">
-                  {home.dataPoints.map((point, index) => (
-                    <li key={point}>
-                      <span className="landing-points-no mono num" aria-hidden>
-                        {String(index + 1).padStart(2, "0")}
-                      </span>
-                      {point}
-                    </li>
-                  ))}
-                </ul>
+          <section className="landing-section" id="sec-faq">
+            <div className="landing-section-head">
+              <div className="landing-section-title">
+                <h2>{home.sections.faq}</h2>
               </div>
             </div>
-            <div id="sec-faq">
-              <div className="landing-section-head">
-                <div className="landing-section-title">
-                  <h2>{home.sections.faq}</h2>
-                </div>
-              </div>
-              <FaqList items={home.faq} />
-            </div>
-          </div>
+            <FaqList items={home.faq} />
+          </section>
         </Reveal>
 
         <Reveal>

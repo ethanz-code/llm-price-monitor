@@ -4,7 +4,9 @@ import pytest
 from llm_price_monitor.discover import (
     build_importable,
     classify_pricing,
+    harvest_html_links,
     harvest_awesome_api_proxy,
+    harvest_markdown_links,
     harvest_welfare,
     host_to_id,
     normalize_host,
@@ -87,3 +89,28 @@ def test_build_importable_excludes_existing_library_hosts():
     cands = {_cand("aihub365.cn").host: _cand("aihub365.cn"), _cand("fresh.example.com").host: _cand("fresh.example.com")}
     configs = build_importable(cands, probed, exclude_hosts={"aihub365.cn"})
     assert [c["id"] for c in configs] == ["fresh-example"]
+
+
+def test_origin_of_cleans_escaped_payload_urls():
+    # zuiquanapi 页面 JSON 转义存储：反斜杠必须剥掉，否则生成 https://x.y\/api/pricing 废链
+    assert origin_of("https://forapi.ai\\/register?aff=x") == "https://forapi.ai"
+    assert origin_of(r"http://www.nmoon.cc/\ ") == "http://www.nmoon.cc"
+
+
+def test_harvest_markdown_links_filters_noise_and_keeps_name():
+    readme = (
+        "### 站点\n\n"
+        "- [甲API](https://jia.example.com/register?aff=1)\n"
+        "- [项目主页](https://github.com/some/repo)\n"
+        "- [乙](http://yi.example.cn/)\n"
+    )
+    rows = harvest_markdown_links(readme, source="nav-repo")
+    assert [(r.host, r.name) for r in rows] == [("jia.example.com", "甲API"), ("yi.example.cn", "乙")]
+    assert rows[0].sources == ["nav-repo"]
+
+
+def test_harvest_html_links_skips_own_host_and_cleans_backslash():
+    html = '<a href="https://a.example.com/">a</a> <a href="https://nav.example.com/">nav</a>'
+    rows = harvest_html_links(html, source="nav-site", own_host="nav.example.com")
+    assert [r.host for r in rows] == ["a.example.com"]
+    assert harvest_html_links(r"https://b.example.com\/x", source="s", own_host="s.com")[0].host == "b.example.com"

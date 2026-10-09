@@ -74,8 +74,12 @@ def normalize_host(host: str) -> str:
 
 
 def origin_of(url: str) -> str | None:
-    """候选链接归一到 scheme://host（去掉 /register?aff=xxx 之类的推广路径）。"""
-    parts = urlsplit(url.strip())
+    """候选链接归一到 scheme://host（去掉 /register?aff=xxx 之类的推广路径）。
+
+    先剥掉转义 payload 里的反斜杠（zuiquanapi 页面是 JSON 转义存储，https://x.y\/path），
+    否则 urlsplit 会把尾部 \\ 当进 netloc，生成 https://x.y\/api/pricing 这类废链。
+    """
+    parts = urlsplit(url.replace("\\", "").strip())
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         return None
     host = parts.hostname.lower()
@@ -102,17 +106,34 @@ def host_to_id(host: str, taken: set[str]) -> str:
 
 # ---------- 聚合源 ----------
 
-# raw.githubusercontent.com 国内直连经常超时，全部挂 jsDelivr 镜像兜底
+# raw.githubusercontent.com 国内直连经常超时，全部 jsDelivr 镜像优先、raw 兜底
 AWESOME_README_URLS = (
-    "https://raw.githubusercontent.com/daheiai/awesome-api-proxy/main/README.md",
     "https://cdn.jsdelivr.net/gh/daheiai/awesome-api-proxy@main/README.md",
+    "https://raw.githubusercontent.com/daheiai/awesome-api-proxy/main/README.md",
 )
 WELFARE_SITES_URLS = (
-    "https://raw.githubusercontent.com/panxunying/ai-coding-welfare/main/data/sites.json",
     "https://cdn.jsdelivr.net/gh/panxunying/ai-coding-welfare@main/data/sites.json",
+    "https://raw.githubusercontent.com/panxunying/ai-coding-welfare/main/data/sites.json",
 )
 APISOU_BASE = "https://www.apisou.com"
 AIAPIPK_URL = "https://www.aiapipk.com"
+ZUIQUAN_URL = "https://zuiquanapi.com"
+
+# 导航仓库：README 里的站点 markdown 链接，通用解析（2026-10 实测外链数：46/26/33）
+GITHUB_NAV_READMES: dict[str, tuple[str, ...]] = {
+    "bubblevv-ai-api-gongyi-nav": (
+        "https://cdn.jsdelivr.net/gh/bubblevv/ai-api-gongyi-nav@main/README.md",
+        "https://raw.githubusercontent.com/bubblevv/ai-api-gongyi-nav/main/README.md",
+    ),
+    "ai-welfare-hub": (
+        "https://cdn.jsdelivr.net/gh/wynx1123/ai-welfare-hub@main/README.md",
+        "https://raw.githubusercontent.com/wynx1123/ai-welfare-hub/main/README.md",
+    ),
+    "ai-api-zhongzhuan": (
+        "https://cdn.jsdelivr.net/gh/1sh1ro/ai-api-zhongzhuan@main/README.md",
+        "https://raw.githubusercontent.com/1sh1ro/ai-api-zhongzhuan/main/README.md",
+    ),
+}
 
 # 表格行尾的「状态 | 可用率 | 评价净值」三列
 _AWESOME_TAIL = re.compile(r"\|\s*(在线|离线|未知)\s*\|\s*([\d.]+%)\s*\|\s*([+\-\d]+)\s*\|\s*$")
@@ -150,13 +171,34 @@ def harvest_welfare(text: str) -> list[Candidate]:
 
 def harvest_aiapipk(text: str) -> list[Candidate]:
     """解析 aiapipk.com 首页里的站点外链（页面没有站名结构化字段，先用域名当名字）。"""
+    return harvest_html_links(text, source="aiapipk", own_host="aiapipk.com")
+
+
+def harvest_html_links(text: str, *, source: str, own_host: str) -> list[Candidate]:
+    """从导航站 HTML/JS payload 里扒站点外链，域名当名字。"""
     out: list[Candidate] = []
     for url in re.findall(r'https?://[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}[^"\'<> ]*', text):
         origin = origin_of(url)
-        if origin is None or "aiapipk.com" in origin:
+        if origin is None or own_host in origin:
             continue
         host = urlsplit(origin).hostname or ""
-        out.append(Candidate(host, origin, host, ["aiapipk"]))
+        out.append(Candidate(host, origin, host, [source]))
+    return out
+
+
+def harvest_zuiquan(text: str) -> list[Candidate]:
+    """解析 zuiquanapi.com（awesome-api-proxy 的在线版，596+ 站实时状态）。"""
+    return harvest_html_links(text, source="zuiquanapi", own_host="zuiquanapi.com")
+
+
+def harvest_markdown_links(text: str, *, source: str) -> list[Candidate]:
+    """通用导航仓库 README 解析：抓站点 markdown 链接，github/linux.do 等噪声由 origin_of 过滤。"""
+    out: list[Candidate] = []
+    for name, url in re.findall(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", text):
+        origin = origin_of(url)
+        if origin is None:
+            continue
+        out.append(Candidate(urlsplit(origin).hostname or "", origin, name.strip(), [source]))
     return out
 
 
@@ -236,14 +278,26 @@ async def harvest(proxy: str | None) -> list[Candidate]:
             print(f"  源 {urls[0]} 拉取失败：{type(last_exc).__name__} {last_exc}")
             return []
 
-        awesome, welfare, aiapipk, apisou = await asyncio.gather(
+        async def nav_repos() -> list[Candidate]:
+            async def one(source: str, urls: tuple[str, ...]) -> list[Candidate]:
+                return await simple(lambda text: harvest_markdown_links(text, source=source), urls)
+
+            groups = await asyncio.gather(*(one(source, urls) for source, urls in GITHUB_NAV_READMES.items()))
+            return [cand for group in groups for cand in group]
+
+        awesome, welfare, aiapipk, apisou, zuiquan, repos = await asyncio.gather(
             simple(harvest_awesome_api_proxy, AWESOME_README_URLS, timeout=60.0),
             simple(harvest_welfare, WELFARE_SITES_URLS),
             simple(harvest_aiapipk, (AIAPIPK_URL,)),
             apisou_all(),
+            simple(harvest_zuiquan, (ZUIQUAN_URL,), timeout=60.0),
+            nav_repos(),
         )
-        print(f"  awesome-api-proxy {len(awesome)}、ai-coding-welfare {len(welfare)}、aiapipk {len(aiapipk)}、apisou {len(apisou)}")
-    return merge_candidates([awesome, welfare, aiapipk, apisou])
+        print(
+            f"  awesome-api-proxy {len(awesome)}、zuiquanapi {len(zuiquan)}、ai-coding-welfare {len(welfare)}、"
+            f"aiapipk {len(aiapipk)}、apisou {len(apisou)}、GitHub 导航仓库 {len(repos)}"
+        )
+    return merge_candidates([awesome, zuiquan, welfare, aiapipk, apisou, repos])
 
 
 # ---------- 探测 ----------
@@ -368,7 +422,12 @@ async def run_harvest(proxy: str | None) -> None:
     previous: list[Candidate] = []
     if out_file.exists():
         try:
-            previous = [Candidate(**item) for item in json.loads(out_file.read_text(encoding="utf-8"))["candidates"]]
+            previous = []
+            for item in json.loads(out_file.read_text(encoding="utf-8"))["candidates"]:
+                cand = Candidate(**item)
+                origin = origin_of(cand.url)  # 顺带清洗：旧池里可能有带转义反斜杠的 host/url
+                if origin is not None:
+                    previous.append(Candidate(urlsplit(origin).hostname or cand.host, origin, cand.name, cand.sources, cand.note, cand.meta))
         except Exception as exc:
             print(f"  已有 {out_file} 解析失败，按空池处理：{type(exc).__name__} {exc}")
     candidates = merge_candidates([fresh, previous])
@@ -381,11 +440,51 @@ async def run_harvest(proxy: str | None) -> None:
     print(f"本轮拉到 {len(fresh)}、已有池 {len(previous)}、合并去重后 {len(candidates)}（新增 {max(len(candidates) - len(previous), 0)}）→ {out_file}")
 
 
-async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | None) -> None:
+PROBE_CANDIDATE_PROXIES = (
+    # 本机常见代理端口（clash/mihomo 7890、clash verge 7897、surge 6152/6153、通用 1087/8118）
+    "http://127.0.0.1:7890",
+    "http://127.0.0.1:7897",
+    "http://127.0.0.1:6152",
+    "http://127.0.0.1:1087",
+    "http://127.0.0.1:8118",
+    "http://127.0.0.1:8889",
+)
+
+
+async def detect_local_proxy(timeout: float = 3.0) -> str | None:
+    """探测本机代理：端口有服务且能代理到 gstatic 204 才算可用，返回第一个通的地址。"""
+    for proxy in PROBE_CANDIDATE_PROXIES:
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout), trust_env=False) as client:
+                response = await client.get("https://www.gstatic.com/generate_204")
+                if response.status_code == 204:
+                    return proxy
+        except Exception:
+            continue
+    return None
+
+
+async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | None, retry_failed: bool) -> None:
     raw = json.loads((OUT_DIR / "candidates.json").read_text(encoding="utf-8"))
-    candidates = [Candidate(**item) for item in raw["candidates"]]
-    if take > 0:
-        candidates = candidates[:take]
+    all_candidates = {cand.url: cand for cand in (Candidate(**item) for item in raw["candidates"])}
+    if retry_failed:
+        # 只重测上轮没通过的（不可达/需登录大概率是直连被墙或超时），通过的保留不重复打扰
+        probed_file = OUT_DIR / "probed.json"
+        if not probed_file.exists():
+            raise SystemExit("没有 probed.json，先跑一轮不带 --retry-failed 的 probe")
+        previous = json.loads(probed_file.read_text(encoding="utf-8"))["results"]
+        failed_urls = {row["url"] for row in previous if not row["pricing_ok"]}
+        candidates = [cand for url, cand in all_candidates.items() if url in failed_urls]
+        stale_by_url = {row["url"]: row for row in previous if row["pricing_ok"]}
+        print(f"重测模式：上轮可用 {len(stale_by_url)} 个保留，重测失败/需登录 {len(candidates)} 个…")
+    else:
+        candidates = list(all_candidates.values())
+        stale_by_url = {}
+        if take > 0:
+            candidates = candidates[:take]
+    if proxy == "auto":
+        proxy = await detect_local_proxy()
+        print(f"本机代理探测：{'使用 ' + proxy if proxy else '没找到可用代理，继续直连'}")
     print(f"开始探测 {len(candidates)} 个候选（并发 {concurrency}，超时 {timeout}s）…")
     started = time.monotonic()
     probed = await probe(candidates, concurrency, timeout, proxy)
@@ -393,17 +492,22 @@ async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | No
     auth = [r for r in probed if r["auth_required"]]
     new_api = [r for r in probed if r["new_api"]]
     print(
-        f"完成（{time.monotonic() - started:.0f}s）：价格接口可用 {len(ok)}"
+        f"本轮完成（{time.monotonic() - started:.0f}s）：价格接口可用 {len(ok)}"
         f"（其中 new-api 系 {len([r for r in ok if r['new_api']])}）"
         f"、需登录 {len(auth)}、不可达/失败 {len(probed) - len(ok) - len(auth)}"
     )
+    # 重测模式下与上轮已通过的合并落盘，importable 始终基于全量结果生成
+    merged = list(stale_by_url.values()) + probed
+    recovered = len([r for r in probed if r["pricing_ok"]]) if retry_failed else 0
+    if retry_failed:
+        print(f"重测捞回 {recovered} 个（累计可用 {len(stale_by_url) + recovered}）")
 
-    cands_by_host = {cand.host: cand for cand in candidates}
+    cands_by_host = {cand.host: cand for cand in all_candidates.values()}
     in_library = existing_site_hosts()
-    importable = build_importable(cands_by_host, probed, exclude_hosts=set(in_library))
+    importable = build_importable(cands_by_host, merged, exclude_hosts=set(in_library))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "probed.json").write_text(
-        json.dumps({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "results": probed}, ensure_ascii=False, indent=1),
+        json.dumps({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "results": merged}, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
     (OUT_DIR / "importable.json").write_text(json.dumps(importable, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -437,7 +541,8 @@ def main() -> None:
     p_probe.add_argument("--take", type=int, default=0, help="只探测前 N 个（0=全部）")
     p_probe.add_argument("--concurrency", type=int, default=12)
     p_probe.add_argument("--timeout", type=float, default=10.0)
-    p_probe.add_argument("--proxy", help="可选代理，如 http://127.0.0.1:7890")
+    p_probe.add_argument("--proxy", help="可选代理，http://127.0.0.1:7890 或 auto=自动探测本机常见代理端口")
+    p_probe.add_argument("--retry-failed", action="store_true", help="只重测上轮未通过的站（配 --proxy auto 给被墙站翻案）")
     sub.add_parser("diff", help="只比对不探测：候选池里哪些站库里已有、哪些是新增")
     args = parser.parse_args()
     if args.command == "harvest":
@@ -445,7 +550,7 @@ def main() -> None:
     elif args.command == "diff":
         run_diff()
     else:
-        asyncio.run(run_probe(args.take, args.concurrency, args.timeout, args.proxy))
+        asyncio.run(run_probe(args.take, args.concurrency, args.timeout, args.proxy, args.retry_failed))
 
 
 if __name__ == "__main__":

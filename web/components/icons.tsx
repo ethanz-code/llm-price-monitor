@@ -279,57 +279,6 @@ export function IconFeedback(p: IconProps) {
   );
 }
 
-/** 价格走势：折线（lucide `chart-line`，ISC）。 */
-export function IconTrend(p: IconProps) {
-  return (
-    <Stroke {...p}>
-      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
-      <path d="m7 14 4-4 4 4 5-5" />
-    </Stroke>
-  );
-}
-
-/** 渠道探测：脉搏（lucide `activity`，ISC）。 */
-export function IconPulse(p: IconProps) {
-  return (
-    <Stroke {...p}>
-      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-    </Stroke>
-  );
-}
-
-/** 折扣：百分号（lucide `percent`，ISC）。 */
-export function IconPercent(p: IconProps) {
-  return (
-    <Stroke {...p}>
-      <line x1="19" x2="5" y1="5" y2="19" />
-      <circle cx="6.5" cy="6.5" r="2.5" />
-      <circle cx="17.5" cy="17.5" r="2.5" />
-    </Stroke>
-  );
-}
-
-/** 花费计算：计算器（lucide `calculator`，ISC）。 */
-export function IconCalculator(p: IconProps) {
-  return (
-    <Stroke {...p}>
-      <rect width="16" height="20" x="4" y="2" rx="2" />
-      <line x1="8" x2="16" y1="6" y2="6" />
-      <path d="M16 10h.01M12 10h.01M8 10h.01M12 14h.01M8 14h.01M12 18h.01M8 18h.01" />
-    </Stroke>
-  );
-}
-
-/** 公告：喇叭（lucide `megaphone`，ISC）。 */
-export function IconMegaphone(p: IconProps) {
-  return (
-    <Stroke {...p}>
-      <path d="m3 11 18-5v12L3 14v-3z" />
-      <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" />
-    </Stroke>
-  );
-}
-
 /** 企业微信官方标志（Tencent TDesign `logo-wecom`，MIT），单色 currentColor 填充。 */
 export function IconWecom(p: IconProps) {
   return (
