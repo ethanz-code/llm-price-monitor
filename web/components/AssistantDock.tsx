@@ -6,7 +6,12 @@ import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type ChatMessage = { role: "user" | "assistant"; content: string };
+type ChatMessage = { role: "user" | "assistant"; content: string; error?: boolean };
+
+/** 悬浮球与视口边缘的最小留白 */
+const FAB_EDGE = 12;
+/** 气泡尚未渲染时的兜底尺寸（首次夹取用），实际以量到的渲染尺寸为准 */
+const FAB_FALLBACK_SIZE = { width: 42, height: 42 };
 
 const SUGGESTED_QUESTIONS = [
   "最近采集情况怎么样？",
@@ -46,9 +51,25 @@ export function AssistantDock() {
 
   // 悬浮球可拖拽：位置存 localStorage，拖动超过阈值算拖拽、否则算点击
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const fabRef = useRef<HTMLButtonElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; posX: number; posY: number; moved: boolean } | null>(null);
 
+  // 夹取按气泡的真实渲染尺寸算：可用宽度是 clientWidth（不含滚动条），
+  // 差几个像素标签就会折行、气泡被压窄压高
+  function clampPos(x: number, y: number): { x: number; y: number } {
+    const rect = fabRef.current?.getBoundingClientRect();
+    const width = rect?.width || FAB_FALLBACK_SIZE.width;
+    const height = rect?.height || FAB_FALLBACK_SIZE.height;
+    const maxX = Math.max(FAB_EDGE, document.documentElement.clientWidth - width - FAB_EDGE);
+    const maxY = Math.max(FAB_EDGE, document.documentElement.clientHeight - height - FAB_EDGE);
+    return {
+      x: Math.min(Math.max(x, FAB_EDGE), maxX),
+      y: Math.min(Math.max(y, FAB_EDGE), maxY),
+    };
+  }
+
   useEffect(() => {
+    if (!available) return;
     const raw = localStorage.getItem("ai-fab-pos");
     if (raw) {
       try {
@@ -58,15 +79,11 @@ export function AssistantDock() {
         localStorage.removeItem("ai-fab-pos");
       }
     }
-  }, []);
-
-  function clampPos(x: number, y: number): { x: number; y: number } {
-    // 悬浮球约 100×44，夹取时按大致尺寸留边，避免拖出视口
-    return {
-      x: Math.min(Math.max(x, 8), window.innerWidth - 108),
-      y: Math.min(Math.max(y, 8), window.innerHeight - 52),
-    };
-  }
+    // 窗口变小后老位置可能被挤出可见区域，这里跟着收回来
+    const onResize = () => setPos((current) => (current ? clampPos(current.x, current.y) : current));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [available]);
 
   function onFabPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -111,15 +128,15 @@ export function AssistantDock() {
     const text = question.trim();
     if (!text || pending) return;
     setInput("");
-    // 带上最近几轮有内容的对话，后端才能理解"我刚才问了什么"这类指代
-    const history = messages.filter((message) => message.content.trim()).slice(-6);
+    // 带上最近几轮有内容的对话（报错占位不算），后端才能理解"我刚才问了什么"这类指代
+    const history = messages.filter((message) => message.content.trim() && !message.error).slice(-6);
     setMessages((prev) => [...prev, { role: "user", content: text }, { role: "assistant", content: "" }]);
     setPending(true);
-    const appendReply = (chunk: string) =>
+    const appendReply = (chunk: string, isError = false) =>
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
-        next[next.length - 1] = { role: "assistant", content: last.content + chunk };
+        next[next.length - 1] = { role: "assistant", content: last.content + chunk, error: last.error || isError };
         return next;
       });
     try {
@@ -130,7 +147,7 @@ export function AssistantDock() {
       });
       if (!res.ok || !res.body) {
         const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        appendReply(res.ok ? "服务没有返回内容，稍后再试试。" : `没答上来：${errorText(data)}`);
+        appendReply(res.ok ? "服务没有返回内容，稍后再试试。" : `没答上来：${errorText(data)}`, true);
         return;
       }
       const reader = res.body.getReader();
@@ -158,17 +175,17 @@ export function AssistantDock() {
               received = true;
               appendReply(payload.delta);
             }
-            if (payload.error) appendReply(`没答上来：${payload.error}`);
+            if (payload.error) appendReply(`没答上来：${payload.error}`, true);
           }
         }
       } catch {
         broken = true; // 流中断：保留已收到的部分，提示可重试
       }
       if (broken) {
-        appendReply(received ? "\n\n（连接中断了，以上回答可能不完整，可以重新问一次）" : "网络不太顺畅，稍后再试试。");
+        appendReply(received ? "\n\n（连接中断了，以上回答可能不完整，可以重新问一次）" : "网络不太顺畅，稍后再试试。", true);
       }
     } catch {
-      appendReply("网络不太顺畅，稍后再试试。");
+      appendReply("网络不太顺畅，稍后再试试。", true);
     } finally {
       setPending(false);
     }
@@ -178,15 +195,29 @@ export function AssistantDock() {
     <>
       <button
         type="button"
+        ref={fabRef}
         className={`ai-fab${pos ? " ai-fab-moved" : ""}`}
         style={pos ? { left: pos.x, top: pos.y } : undefined}
         aria-label="智能分析助手"
+        title="问一问"
         onPointerDown={onFabPointerDown}
         onPointerMove={onFabPointerMove}
         onPointerUp={onFabPointerUp}
       >
-        <span className="ai-fab-orb" aria-hidden />
-        <span className="ai-fab-text">问一问</span>
+        <svg
+          className="ai-fab-icon"
+          width="19"
+          height="19"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+        </svg>
       </button>
       {open && (
         <div

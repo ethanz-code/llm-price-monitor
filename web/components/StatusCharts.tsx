@@ -11,6 +11,7 @@ import {
 import { useNarrow } from "@/lib/useNarrow";
 import { StatusTrendChart } from "./StatusTrendChart";
 import { StatusLatencyChart } from "./StatusLatencyChart";
+import { StatusTpsChart } from "./StatusTpsChart";
 
 /** 渠道检测趋势：可用率（整站聚合、三档着色）与延迟（按渠道）两张图。
  *  两张图共用同一个时间轴窗口（比例制，拖任意一张另一张跟着联动）。 */
@@ -44,6 +45,18 @@ export function StatusCharts({
     [channels, narrow],
   );
   const showLatency = latencyModel.times.length >= 2;
+  const tpsModel = useMemo(
+    () =>
+      buildChannelModel(
+        channels,
+        // 0 / 负值当缺数处理
+        (dot) => (dot.tps != null && dot.tps > 0 ? dot.tps : null),
+        narrow,
+        (a, b) => (a.value >= b.value ? a : b),
+      ),
+    [channels, narrow],
+  );
+  const showTps = tpsModel.times.length >= 2;
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -60,6 +73,17 @@ export function StatusCharts({
           <StatusLatencyChart
             times={latencyModel.times}
             series={latencyModel.series}
+            window={window}
+            onWindowChange={setWindow}
+          />
+        </>
+      )}
+      {showTps && (
+        <>
+          <h3 className="section-title">出字速度趋势（TPS）</h3>
+          <StatusTpsChart
+            times={tpsModel.times}
+            series={tpsModel.series}
             window={window}
             onWindowChange={setWindow}
           />

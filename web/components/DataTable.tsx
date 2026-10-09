@@ -21,7 +21,7 @@ export interface DColumn<T> {
   render?: (value: any, row: T) => ReactNode;
   sorter?: (a: T, b: T) => number;
   defaultSortOrder?: "ascend" | "descend";
-  /** true = 窄屏（≤900px，同 .col-hide-m 断点）隐藏该列，保住核心列的可读性 */
+  /** true = 窄屏（≤1024px，同 .col-hide-m 断点）隐藏该列，保住核心列的可读性 */
   mobileHide?: boolean;
   /** true = 内容自适应截断：撑满单元格宽度，到列的真实边界才出省略号；长文本列（URL、模型名）用 */
   ellipsis?: boolean;
@@ -58,6 +58,7 @@ export function DataTable<T extends object>({
   rowClassName,
   childrenOf,
   fit,
+  dense,
   onRowClick,
 }: {
   columns: DColumn<T>[];
@@ -69,7 +70,7 @@ export function DataTable<T extends object>({
   footer?: ReactNode;
   /** 表格最小宽度（px），超出时容器横向滚动 */
   scrollX?: number;
-  /** 窄屏（≤900px）的最小宽度：mobileHide 藏列后 minWidth 不必维持桌面值，缺省回落 scrollX */
+  /** 窄屏（≤1024px）的最小宽度：mobileHide 藏列后 minWidth 不必维持桌面值，缺省回落 scrollX */
   mobileScrollX?: number;
   /** 行级 className（如高亮最优行） */
   rowClassName?: (row: T) => string | undefined;
@@ -77,6 +78,8 @@ export function DataTable<T extends object>({
   childrenOf?: (row: T) => readonly T[] | undefined;
   /** true = 表格按内容收缩，不撑满容器；适合列少的汇总表 */
   fit?: boolean;
+  /** true = 紧凑密度：表头/单元格上下留白比默认低一档；数据密集的对照表（厂商定价）用 */
+  dense?: boolean;
   /** 点击整行时的回调（如跳转详情页）；行内链接/按钮与行尾展开箭头不受影响 */
   onRowClick?: (row: T) => void;
 }) {
@@ -164,7 +167,7 @@ export function DataTable<T extends object>({
   }
 
   return (
-    <div className="dtable-wrap">
+    <div className={`dtable-wrap${dense ? " dtable-dense" : ""}`}>
       {fade.left && <span className="dtable-fade dtable-fade-l" aria-hidden />}
       {fade.right && <span className="dtable-fade dtable-fade-r" aria-hidden />}
       <div className="dtable-scroll" ref={scrollRef} onScroll={updateFade}>

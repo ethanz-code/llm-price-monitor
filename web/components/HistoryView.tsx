@@ -177,15 +177,9 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
 export function HistoryView({
   feed,
   history,
-  priceTotal,
-  noticeTotal = 0,
 }: {
   /** 价格事件与公告事件已按时间合并、按新到旧排序的动态流 */
   feed: FeedEvent[];
-  /** 价格事件全量总数（feed 可能被 limit 截断，计数用它才准确） */
-  priceTotal: number;
-  /** 公告事件全量总数 */
-  noticeTotal?: number;
   /** 历史接口数据，主要用于取汇率做价格折算 */
   history: HistoryListData;
 }) {
@@ -207,9 +201,9 @@ export function HistoryView({
   const filteredEvents = site === "all" ? feed : feed.filter((e) => e.site_id === site);
 
   return (
-    <div className="section-gap rise-in" style={{ display: "grid", gap: 24 }}>
+    <div className="rise-in" style={{ display: "grid", gap: 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <span style={{ fontWeight: 550, fontSize: 15 }}>事件（{priceTotal + noticeTotal}）</span>
+        <span style={{ fontWeight: 550, fontSize: 15 }}>事件</span>
         <Pick
           value={site}
           onChange={setSite}

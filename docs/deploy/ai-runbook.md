@@ -6,14 +6,14 @@
 
 | 事实 | 值 |
 | --- | --- |
-| 架构 | 双容器：`api`（FastAPI + 内置定时采集，容器内 8000）+ `web`（Next.js，容器内 3000），`docker compose` 编排 |
-| 对外端口 | 仅宿主 3000（前端）。8000 永不发布、永不放行公网 |
+| 架构 | 双容器：`api`（FastAPI + 内置定时采集，容器内 8437）+ `web`（Next.js，容器内 3000），`docker compose` 编排 |
+| 对外端口 | 仅宿主 3000（前端）。8437 永不发布、永不放行公网 |
 | 数据 | `./var/monitor.db`（SQLite，bind mount）。备份它 = 备份一切 |
 | 密钥 | 管理面板（/setup、系统设置）填写，存 `./var/monitor.db`；`.env` 只放可选的读接口封锁令牌 |
 | 健康检查 | `GET /api/health`（api 容器内返回 200）；compose 已自带 healthcheck。读接口封锁开启后 `/api/meta` 对匿名请求返回 401，不能再用来探活 |
 | 首次启动 | 库中无账号时访问管理页跳 `/setup` 创建管理员，**没有默认账号密码** |
 | 忘记密码 | `docker compose exec api price-admin` 重置 |
-| 反代烘焙 | 前端 `/api` 反代目标在 `next build` 时固定为 `http://api:8000`；改服务名需同步改 Dockerfile 的 ARG 与 compose 的 environment |
+| 反代烘焙 | 前端 `/api` 反代目标在 `next build` 时固定为 `http://api:8437`；改服务名需同步改 Dockerfile 的 ARG 与 compose 的 environment |
 | 构建资源 | 内存 ≥ 2 GB，不足先加 swap |
 
 ## 1. 固定约定
@@ -27,7 +27,7 @@
 ```bash
 cat /etc/os-release | head -2; free -h; df -h /
 docker -v && docker compose version          # 面板装的 Docker 同样算数
-ss -tlnp | grep -E ':(80|443|3000|8000)\s'   # 目标端口是否已被占
+ss -tlnp | grep -E ':(80|443|3000|8437)\s'   # 目标端口是否已被占
 docker ps -a                                  # 已有哪些容器，避免重名
 which 1pctl 2>/dev/null && echo HAS_1PANEL    # 1Panel
 test -d /www/server/panel && echo HAS_BT      # 宝塔
@@ -45,7 +45,7 @@ test -d /www/server/panel && echo HAS_BT      # 宝塔
 
 1. 不改、不停、不删面板已有的网站、容器、Nginx 配置、证书、计划任务。
 2. 不占用 80 / 443 / 22；这三个端口只让面板或既有 Nginx 接管。
-3. 8000 永不发布到宿主机、永不写进任何防火墙放行列表。
+3. 8437 永不发布到宿主机、永不写进任何防火墙放行列表。
 4. 3000 不对公网放行，反代可达即可。
 5. 不删除或覆盖 `var/`；密钥只在数据库里，不贴进对话记录、不上传任何外部服务。
 6. 不 kill 1Panel / 宝塔自身进程；不执行 `docker system prune -a` 这类会连面板容器一起清掉的命令。
@@ -68,7 +68,7 @@ test -d /www/server/panel && echo HAS_BT      # 宝塔
 
 | 层 | 谁控制 | 期望 |
 | --- | --- | --- |
-| 云厂商安全组 | 用户在控制台操作（AI 改不了，缺什么明确告诉用户去开） | 放行 22/80/443；不放 3000/8000 |
+| 云厂商安全组 | 用户在控制台操作（AI 改不了，缺什么明确告诉用户去开） | 放行 22/80/443；不放 3000/8437 |
 | 面板防火墙页 | 1Panel「主机安全」/ 宝塔「系统防火墙」 | 同上 |
 | 系统 firewalld / ufw | AI 可查：`ufw status` / `firewall-cmd --list-all` | 同上 |
 
@@ -78,7 +78,7 @@ test -d /www/server/panel && echo HAS_BT      # 宝塔
 cd /opt/llm-price-monitor
 docker compose ps                                                   # 两容器 Up (healthy)
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/     # 200
-docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/health').status)"  # 200
+docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8437/api/health').status)"  # 200
 curl -sI https://域名 | head -1                                      # 200/2xx，证书有效
 ```
 
@@ -101,7 +101,7 @@ curl -sI https://域名 | head -1                                      # 200/2xx
 | 症状 | 先执行 | 处置 |
 | --- | --- | --- |
 | api 容器重启循环 / unhealthy | `docker compose logs --tail=100 api` | 看日志定位；最近一次部署若是旧版本编排仍挂载 `.env`，先 `git pull` 再重新 up |
-| 首页能开、`/api` 全 404 | `docker compose exec web env \| grep PRICE` | 反代烘焙值不对 → 确认 Dockerfile ARG 与 compose environment 都是 `http://api:8000`，`docker compose build web` 后重新 up |
+| 首页能开、`/api` 全 404 | `docker compose exec web env \| grep PRICE` | 反代烘焙值不对 → 确认 Dockerfile ARG 与 compose environment 都是 `http://api:8437`，`docker compose build web` 后重新 up |
 | 反代 502 | `curl -I http://127.0.0.1:3000` | 容器挂了先看 logs；容器活着则是反代目标写错（1Panel 场景多半是写了 127.0.0.1） |
 | 构建卡死 / 被 OOM 杀 | `free -h` | 加 swap 后重新 build |
 | 磁盘满 | `docker system df` | `docker image prune -f`；`journalctl --vacuum-size=100M` |

@@ -12,8 +12,10 @@ import {
   buildUptimeBuckets,
   latencyLevel,
   rateLevel,
+  successRateLevel,
   type RateLevel,
 } from "@/lib/channelStatus";
+import type { Tone } from "@/components/ToneTag";
 import { getSiteInfo } from "@/lib/sites";
 import type { NoticeSnapshot, StatusSnapshot } from "@/lib/types";
 
@@ -25,6 +27,13 @@ const RATE_TONE: Record<RateLevel, string> = {
   ok: "var(--tone-green-text)",
   warn: "var(--tone-yellow-text)",
   down: "var(--tone-red-text)",
+};
+
+/** 指标型渠道（无状态词、以成功率表达健康度）状态标签的三档着色 */
+const RATE_TAG_TONE: Record<RateLevel, Tone> = {
+  ok: "green",
+  warn: "yellow",
+  down: "red",
 };
 
 /** 站点公告区：始终展示最新一次采集的内容（该内容已包含站点当前的公告列表） */
@@ -161,12 +170,23 @@ export default async function StatusDetailPage({
                     <span>渠道</span>
                     <span>状态</span>
                     <span className="ch-lat">延迟 · 7日可用率</span>
+                    <span className="ch-metrics">成功率 · 出字速度</span>
                     <span className="ch-upt">可用记录</span>
                     <span className="ch-rate">正常次数</span>
                   </div>
                   {channels.map((channel) => {
                     const last = channel.dots[channel.dots.length - 1];
                     const okCount = channel.dots.filter((dot) => dot.ok).length;
+                    // 指标型渠道：状态标签直接展示成功率并按三档着色，附最近几轮走势小字
+                    const metricTone =
+                      last?.rate != null
+                        ? RATE_TAG_TONE[successRateLevel(last.rate)]
+                        : null;
+                    const recentText = channel.recentRates?.length
+                      ? channel.recentRates
+                          .map((value) => Math.round(value))
+                          .join(" → ")
+                      : null;
                     const metrics = [
                       last?.latency != null ? `${last.latency}ms` : null,
                       channel.availability7d != null
@@ -195,9 +215,18 @@ export default async function StatusDetailPage({
                             </span>
                           )}
                         </span>
-                        <ToneTag tone={last?.ok ? "green" : "gray"}>
-                          {last?.status ?? "unknown"}
-                        </ToneTag>
+                        <span className="ch-state">
+                          <ToneTag
+                            tone={metricTone ?? (last?.ok ? "green" : "gray")}
+                          >
+                            {last?.status ?? "unknown"}
+                          </ToneTag>
+                          {recentText && (
+                            <span className="ch-sub mono">
+                              近三轮 {recentText}
+                            </span>
+                          )}
+                        </span>
                         <span
                           className="mono ch-lat"
                           style={
@@ -214,6 +243,18 @@ export default async function StatusDetailPage({
                           }
                         >
                           {metrics.join(" · ") || "—"}
+                        </span>
+                        <span className="mono ch-metrics">
+                          {[
+                            channel.successRate24h != null
+                              ? `24h ${channel.successRate24h.toFixed(2)}%`
+                              : null,
+                            last?.tps != null
+                              ? `${Math.round(last.tps)} tps`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "—"}
                         </span>
                         <span className="ch-upt">
                           <StatusUptimeBars buckets={uptimeBuckets} />

@@ -118,6 +118,7 @@ export function SiteNav() {
   const { mode, setMode } = useTheme();
   const [isAdmin, setIsAdmin] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [hidden, setHidden] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -139,6 +140,30 @@ export function SiteNav() {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  // 下滑藏起、上滑滑回:滚过约 80px 后下滑才藏,顶部一段距离内始终显示。
+  // 依赖 pathname:路由切换时重挂 effect 重置 lastY,避免跨页面残留旧基准;1px 死区过滤惯性抖动
+  useEffect(() => {
+    let lastY = window.scrollY;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const y = window.scrollY;
+        if (y <= 80) setHidden(false);
+        else if (y > lastY + 1) setHidden(true);
+        else if (y < lastY - 1) setHidden(false);
+        lastY = y;
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [pathname]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -162,6 +187,7 @@ export function SiteNav() {
     <header
       className="site-header"
       data-scrolled={scrolled ? "true" : undefined}
+      data-hidden={hidden ? "true" : undefined}
     >
       <div className="nav-inner">
         <Link href="/" className="brand-pill">

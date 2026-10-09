@@ -138,7 +138,7 @@ Next.js 16（App Router）+ React 19 服务端渲染，自研轻量 UI kit，支
 | `/setup` / `/login` | 首次设置向导 / 管理员登录 |
 | `/admin` | 管理面板：访问统计 / 站点管理 / 厂商定价源 / 采集任务 / 使用文档 / 系统设置 |
 
-`price-web` 支持 `--host`、`--port`、`--config` 参数；也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start`（或 `npm run dev`）起前端。前端反代目标默认 `http://127.0.0.1:8000`，用 `PRICE_WEB_API_URL` 修改。
+`price-web` 支持 `--host`、`--port`、`--config` 参数；也可以分开跑：`uv run price-web` 起 API，`cd web && npm run start`（或 `npm run dev`）起前端。前端反代目标默认 `http://127.0.0.1:8437`，用 `PRICE_WEB_API_URL` 修改。
 
 ## 📁 输出
 

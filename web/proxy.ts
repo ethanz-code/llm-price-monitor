@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000";
+const API_BASE = process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8437";
 
 /** 页面访问埋点：服务端把每次页面导航（首屏加载与客户端路由跳转）异步上报给
  *  FastAPI 落库，浏览器侧零脚本。排除 API 反代、Next 内部资源、静态文件与

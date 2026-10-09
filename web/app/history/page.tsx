@@ -1,9 +1,9 @@
 import { apiGet } from "@/lib/api";
 import type { FeedData, HistoryListData } from "@/lib/types";
-import { PageHeader } from "@/components/PageHeader";
+import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
 import { HistoryView } from "@/components/HistoryView";
-import { alerts, subtitles } from "@/lib/copy";
+import { alerts } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
 
@@ -25,16 +25,18 @@ export default async function HistoryPage() {
 
   return (
     <div className="page">
-      <PageHeader
-        title="事件追踪"
-        subtitle={subtitles.history}
-      />
       {error && <SiteAlert title={alerts.loadData.title} detail={error} fix={alerts.loadData.fix} />}
+      {feed && (
+        <PageDigest
+          items={[
+            { label: "价格事件", value: String(feed.price_total) },
+            { label: "公告", value: String(feed.notice_total) },
+          ]}
+        />
+      )}
       {feed && history && (
         <HistoryView
           feed={feed.events}
-          priceTotal={feed.price_total}
-          noticeTotal={feed.notice_total}
           history={history}
         />
       )}

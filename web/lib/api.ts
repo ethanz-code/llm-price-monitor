@@ -5,7 +5,7 @@
 // 部署开启读接口封锁（后端 PRICE_WEB_INTERNAL_TOKEN）后，服务端请求附带令牌自证内网身份；
 // 浏览器拿不到令牌，匿名只能看页面 HTML，调不到数据接口。
 const API_BASE =
-  typeof window === "undefined" ? (process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8000") : "";
+  typeof window === "undefined" ? (process.env.PRICE_WEB_API_URL ?? "http://127.0.0.1:8437") : "";
 const INTERNAL_TOKEN = process.env.PRICE_WEB_INTERNAL_TOKEN;
 
 function serverHeaders(): HeadersInit | undefined {

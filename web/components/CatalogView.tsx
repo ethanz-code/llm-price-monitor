@@ -74,7 +74,7 @@ export function CatalogView({
       ) : all ? (
         <CatalogAllTable data={all} />
       ) : (
-        <div className="panel section-gap" style={{ padding: "32px 28px", textAlign: "center" }}>
+        <div className="panel" style={{ padding: "32px 28px", textAlign: "center" }}>
           <div style={{ fontSize: 15, fontWeight: 550, marginBottom: 8 }}>全量渠道价还没生成</div>
           <p style={{ color: "var(--text-2)", fontSize: 13.5, lineHeight: 1.8, margin: "0 auto", maxWidth: 520 }}>
             它和官方定价由同一次同步一起生成；官方定价已就绪时，点下面的按钮立刻补上（需管理员登录）。

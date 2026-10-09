@@ -1,9 +1,9 @@
 import { apiGetOptional } from "@/lib/api";
 import type { CatalogData } from "@/lib/types";
-import { PageHeader } from "@/components/PageHeader";
+import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
 import { CatalogView } from "@/components/CatalogView";
-import { alerts, subtitles } from "@/lib/copy";
+import { alerts } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
 
@@ -29,10 +29,14 @@ export default async function CatalogPage({
 
   return (
     <div className="page">
-      <PageHeader
-        title="厂商定价"
-        subtitle={subtitles.catalog}
-      />
+      {official && (
+        <PageDigest
+          items={[
+            { label: "官方定价模型", value: String(Object.keys(official.models).length) },
+            ...(all ? [{ label: "全量渠道模型", value: String(Object.keys(all.models).length) }] : []),
+          ]}
+        />
+      )}
       {error && (
         <SiteAlert title={alerts.catalog.title} detail={error} fix={alerts.catalog.fix} />
       )}

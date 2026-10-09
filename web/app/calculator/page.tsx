@@ -1,9 +1,9 @@
 import { apiGetOptional } from "@/lib/api";
 import { decodeCalcState, EMPTY_STATE } from "@/lib/calculator";
 import { Calculator } from "@/components/Calculator";
-import { PageHeader } from "@/components/PageHeader";
+import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
-import { calculator, subtitles } from "@/lib/copy";
+import { calculator } from "@/lib/copy";
 import type { CatalogData, OverviewData } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -27,12 +27,20 @@ export default async function CalculatorPage({
 
   return (
     <div className="page">
-      <PageHeader title="花费计算" subtitle={subtitles.calculator} />
       {!catalog && !overview && (
         <SiteAlert
           title={calculator.loadFailed.title}
           detail="厂商定价与最新价格快照都还没准备好"
           fix={calculator.loadFailed.fix}
+        />
+      )}
+      {catalog && (
+        <PageDigest
+          items={[
+            { label: "官方价模型", value: String(Object.keys(catalog.models).length) },
+            ...(overview ? [{ label: "站点", value: String(new Set(overview.records.map((row) => row.site_id)).size) }] : []),
+            { label: "汇率", value: catalog.usd_cny_rate.toFixed(2) },
+          ]}
         />
       )}
       <Calculator catalog={catalog} overview={overview} initial={initial} />

@@ -11,7 +11,7 @@
 宿主机 3000 端口 ──► web 容器（Next.js :3000，唯一对外端口）
                         │  容器网络内 /api 反代
                         ▼
-                     api 容器（FastAPI :8000 + 内置调度，不对外发布）
+                     api 容器（FastAPI :8437 + 内置调度，不对外发布）
                         │
                         ▼
                      ./var/monitor.db（SQLite，bind mount 到宿主机）
@@ -20,7 +20,7 @@
 | 组件 | 端口 | 说明 |
 | --- | --- | --- |
 | web 容器 | 宿主 `3000` | Next.js 生产服务，页面与 `/api` 反代入口 |
-| api 容器 | 仅容器网络 `8000` | FastAPI 后端 + 内置定时采集，永不直接暴露公网 |
+| api 容器 | 仅容器网络 `8437` | FastAPI 后端 + 内置定时采集，永不直接暴露公网 |
 | `./var/` | — | SQLite 库、官方价目录、事件流等全部运行数据（密钥也在其中，见下） |
 
 ## 前置条件
@@ -82,7 +82,7 @@ server {
 }
 ```
 
-**防火墙三层都要确认**（详见 [ai-runbook.md](ai-runbook.md) 第 6 节）：云厂商安全组、面板防火墙页、系统 firewalld/ufw，均只放行 22/80/443；3000 与 8000 不对公网开放。
+**防火墙三层都要确认**（详见 [ai-runbook.md](ai-runbook.md) 第 6 节）：云厂商安全组、面板防火墙页、系统 firewalld/ufw，均只放行 22/80/443；3000 与 8437 不对公网开放。
 
 ## 验证
 
@@ -90,7 +90,7 @@ server {
 | --- | --- | --- |
 | 容器状态 | `docker compose ps` | 两个容器 `Up (healthy)` |
 | 前端 | `curl -I http://127.0.0.1:3000` | 200 |
-| API | `docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/meta').status)"` | 200 |
+| API | `docker compose exec api python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8437/api/meta').status)"` | 200 |
 | 公网 | 浏览器打开域名 | 能看到首页并完成 `/setup` |
 
 ## 日常运维
@@ -139,7 +139,7 @@ docker compose start api
 - **3000 端口被占用**：把 `docker-compose.yml` 里的 `"3000:3000"` 改成 `"8080:3000"`，反代目标同步改。
 - **构建卡死 / 内存不足**：1 GB 机器先加 2 GB swap：
   `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`，然后重新 build。
-- **首页能开但数据请求 404**：前端镜像构建时反代目标不对。确认 Dockerfile 的 `PRICE_WEB_API_URL` ARG 与 compose 里 web 的 environment 都是 `http://api:8000`，然后 `docker compose build web && docker compose up -d`。
+- **首页能开但数据请求 404**：前端镜像构建时反代目标不对。确认 Dockerfile 的 `PRICE_WEB_API_URL` ARG 与 compose 里 web 的 environment 都是 `http://api:8437`，然后 `docker compose build web && docker compose up -d`。
 - **磁盘越来越满**：`docker system df` 看占用，`docker image prune -f` 清掉旧构建的悬空镜像。
 - **时间不对**：镜像默认 `TZ=Asia/Shanghai`，需改时区时调整 Dockerfile / compose 里的 TZ。
 - **能否多开几个 api 副本扩容**：不能。定时调度与任务状态都在 api 进程内存里，多副本会重复采集、任务状态错乱，只允许单实例。

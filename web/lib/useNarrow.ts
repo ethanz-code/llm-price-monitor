@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-/** 是否处于窄屏（默认 ≤900px，与表格 .col-hide-m 藏列断点一致）。SSR 首帧按桌面渲染，挂载后同步真实视口。 */
-export function useNarrow(maxWidth = 900): boolean {
+/** 是否处于窄屏（默认 ≤1024px，与表格 .col-hide-m 藏列断点一致）。SSR 首帧按桌面渲染，挂载后同步真实视口。 */
+export function useNarrow(maxWidth = 1024): boolean {
   const query = `(max-width: ${maxWidth}px)`;
   const [narrow, setNarrow] = useState(false);
 

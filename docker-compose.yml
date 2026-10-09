@@ -20,7 +20,7 @@ services:
       # 与 web 服务共用同一个值，在同目录 .env 里生成一次即可：openssl rand -hex 32
       PRICE_WEB_INTERNAL_TOKEN: ${PRICE_WEB_INTERNAL_TOKEN:-}
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8437/api/health', timeout=5)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -37,11 +37,11 @@ services:
       api:
         condition: service_healthy
     environment:
-      PRICE_WEB_API_URL: http://api:8000 # 需与 Dockerfile 中 web-builder 的 ARG 保持一致
+      PRICE_WEB_API_URL: http://api:8437 # 需与 Dockerfile 中 web-builder 的 ARG 保持一致
       # 与 api 服务相同的封锁令牌：Next 服务端渲染请求据此直连数据接口
       PRICE_WEB_INTERNAL_TOKEN: ${PRICE_WEB_INTERNAL_TOKEN:-}
     ports:
-      - "3000:3000" # 唯一对外端口；8000 不发布，仅容器网络内可达。被占用时改成 "8080:3000" 并同步反代目标
+      - "3000:3000" # 唯一对外端口；8437 不发布，仅容器网络内可达。被占用时改成 "8080:3000" 并同步反代目标
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
       interval: 30s

@@ -123,7 +123,8 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "站点",
       dataIndex: "site_id",
-      width: 170,
+      // 不设固定宽度：与公告列一起平分剩余空间（两者都不设 width 即均分），
+      // 避免公告在宽屏独吞剩余宽度、也避免窄屏挤压价格列；手机端由 mobileScrollX 兜底
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
         // 状态列已去掉：确认/候选价是常态不挂标签；需认证/无数据挂标签，规则价用小字低调标注
@@ -163,7 +164,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       ),
       dataIndex: "input_price",
       align: "right",
-      width: 140,
+      width: 120,
       sorter: (a, b) => (effectiveCnyPrice(a, "input_price", rate) ?? -1) - (effectiveCnyPrice(b, "input_price", rate) ?? -1),
       render: (_v: number | null, row) => <PriceCell row={row} field="input_price" rate={rate} />,
     },
@@ -176,14 +177,14 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
       ),
       dataIndex: "output_price",
       align: "right",
-      width: 140,
+      width: 120,
       sorter: (a, b) => (effectiveCnyPrice(a, "output_price", rate) ?? -1) - (effectiveCnyPrice(b, "output_price", rate) ?? -1),
       render: (_v: number | null, row) => <PriceCell row={row} field="output_price" rate={rate} />,
     },
     {
       title: "分组",
       key: "group",
-      width: 140,
+      width: 110,
       mobileHide: true,
       render: (_v: unknown, row) => {
         const group = row.metadata?.group;
@@ -204,15 +205,10 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
         </>
       ),
       key: "discount",
-      width: 180,
+      width: 150,
       mobileHide: true,
       sorter: (a, b) => (a.discount?.input ?? 9) - (b.discount?.input ?? 9),
-      render: (_, row) => (
-        <span style={{ display: "inline-grid", gap: 3 }}>
-          <DiscountBars discount={row.discount} />
-          {row.discount?.region === "cn" && <ToneTag tone="green">国内基准</ToneTag>}
-        </span>
-      ),
+      render: (_, row) => <DiscountBars discount={row.discount} />,
     },
     {
       title: (
@@ -222,7 +218,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
         </>
       ),
       key: "channels",
-      width: 250,
+      width: 200,
       mobileHide: true,
       render: (_v: unknown, row) => {
         const dots = dotsByRowKey.get(rowKeyOf(row));
@@ -238,7 +234,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
     {
       title: "公告",
       key: "notice",
-      // 不设固定宽度：剩余空间都给公告；最多 3 行，超出 CSS 钳制，悬停看更长摘要
+      // 不设固定宽度：与站点列平分剩余空间，宽屏下不再独吞；最多 2 行，悬停看更长摘要
       mobileHide: true,
       render: (_v: unknown, row) => {
         const notice = data.notices?.[row.site_id];
@@ -258,14 +254,14 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
             <span
               style={{
                 display: "-webkit-box",
-                WebkitLineClamp: 3,
+                WebkitLineClamp: 2,
                 WebkitBoxOrient: "vertical",
                 overflow: "hidden",
                 whiteSpace: "normal",
                 lineHeight: 1.55,
               }}
             >
-              {noticeExcerpt(notice.content, 3)}
+              {noticeExcerpt(notice.content, 2)}
             </span>
           </Link>
         );
@@ -287,7 +283,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
               <span key={site.siteId} title={site.error ?? undefined} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                 <ToneTag tone={meta.tone}>{getSiteInfo(site.siteId).name || site.siteId}</ToneTag>
                 <span className="mono" style={{ color: "var(--text-2)", fontSize: 12.5 }}>
-                  {site.error || meta.label}
+                  {meta.label}
                 </span>
               </span>
             );
@@ -341,8 +337,9 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
           columns={columns}
           rows={parentRows}
           paginated
-          scrollX={1020}
-          mobileScrollX={500}
+          scrollX={870}
+          mobileScrollX={390}
+          dense
           onRowClick={(row) => router.push(`/overview/status/${encodeURIComponent(row.site_id)}`)}
           empty={
             <Empty

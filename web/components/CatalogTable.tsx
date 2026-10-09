@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
 import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
@@ -8,6 +8,7 @@ import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { ToneTag } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
+import { useNarrow } from "@/lib/useNarrow";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import type { CatalogData, CatalogEntry, PriceTier } from "@/lib/types";
 
@@ -33,9 +34,59 @@ const VENDOR_KEY: Record<string, string> = {
   xai: "xai",
 };
 
-/** 厂商 Logo：全量渠道优先用 models.dev 托管的品牌图，加载失败回落；官方视图走本地内置 SVG；都没有则首字母色块。 */
+/** models.dev 远程 logo：拉一次 SVG 文本内联进页面，单色版（fill=currentColor）才能跟随文字色适配暗色——
+ *  走 <img> 时外部样式进不去，currentColor 只能落到默认黑色。Promise 按 URL 缓存，同一 logo 多行只发一次请求；
+ *  拉取失败返回 null，回落外链 img。 */
+const remoteLogoPromises = new Map<string, Promise<string | null>>();
+
+function loadRemoteLogo(url: string): Promise<string | null> {
+  let promise = remoteLogoPromises.get(url);
+  if (!promise) {
+    promise = fetch(url)
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((text) => {
+        const safe = text.trimStart().startsWith("<svg") && !text.includes("<script") ? text : null;
+        // 无任何 fill/stroke 配色的纯形状 logo 默认黑，补 currentColor 让它跟随主题
+        if (safe && !/fill=|stroke=/.test(safe)) return safe.replace(/<svg\b/, '<svg fill="currentColor"');
+        return safe;
+      })
+      .catch(() => null);
+    remoteLogoPromises.set(url, promise);
+  }
+  return promise;
+}
+
+function useRemoteLogoSvg(url: string | null | undefined): string | null {
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    setSvg(null);
+    if (!url) return;
+    let alive = true;
+    loadRemoteLogo(url).then((text) => {
+      if (alive) setSvg(text);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [url]);
+  return svg;
+}
+
+/** 厂商 Logo：全量渠道优先内联 models.dev 托管的品牌 SVG（随主题适配，拉取失败回落外链 img）；
+ *  官方视图走本地内置 SVG；都没有则首字母色块。 */
 export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | null }) {
   const [failed, setFailed] = useState(false);
+  const remoteSvg = useRemoteLogoSvg(logo ?? null);
+  if (remoteSvg) {
+    return (
+      <span
+        aria-hidden
+        className="vendor-logo"
+        title={vendor}
+        dangerouslySetInnerHTML={{ __html: remoteSvg }}
+      />
+    );
+  }
   if (logo && !failed) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -80,6 +131,8 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
 export function CatalogTable({ data }: { data: CatalogData }) {
   const [keyword, setKeyword] = useState("");
   const [vendor, setVendor] = useState("all");
+  // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：厂商并入模型列，价格一列，避免横滑藏住最后一列
+  const phone = useNarrow(560);
 
   const vendors = useMemo(
     () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))),
@@ -130,18 +183,29 @@ export function CatalogTable({ data }: { data: CatalogData }) {
       title: (
         <>
           厂商价（输入/输出）<TermTip term="list_price" />
-          <span className="thead-unit thead-unit-block">USD / 1M tokens</span>
+          <span className="thead-unit thead-unit-block">$ / ¥ · 1M tokens</span>
         </>
       ),
       key: "list",
       align: "right",
       width: 190,
+      // list 两口径都是 USD 归一值（国内条目为人民币/汇率），排序跨币种可比
       sorter: (a, b) => (a.list?.input ?? 0) - (b.list?.input ?? 0),
-      render: (_, row) =>
-        isFreePrice(row.list) ? (
+      render: (_, row) => {
+        // 国内口径只展示定价源抓来的人民币原价；models.dev 换算出的分档/音频/国际价一概不出
+        if (row.region === "cn") {
+          return isFreePrice(row.list_cny) ? (
+            <ToneTag tone="green">免费</ToneTag>
+          ) : (
+            <span className="mono num" style={{ fontWeight: 550 }}>
+              ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
+            </span>
+          );
+        }
+        return isFreePrice(row.list) ? (
           <ToneTag tone="green">免费</ToneTag>
         ) : (
-          <span style={{ display: "inline-grid", gap: 2, justifyItems: "end" }}>
+          <span style={{ display: "inline-grid", gap: 1, justifyItems: "end" }}>
             <span className="mono num" style={{ fontWeight: 550 }}>
               ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}
             </span>
@@ -164,37 +228,9 @@ export function CatalogTable({ data }: { data: CatalogData }) {
                 音频 ${formatPrice(row.list_audio?.input)} / ${formatPrice(row.list_audio?.output)}
               </span>
             )}
-            {row.list_global && (
-              <span
-                className="mono num"
-                title="同厂商国际站列表价（参考）"
-                style={{ fontSize: 11.5, color: "var(--text-3)" }}
-              >
-                国际 ${formatPrice(row.list_global?.input)} / ${formatPrice(row.list_global?.output)}
-              </span>
-            )}
           </span>
-        ),
-    },
-    {
-      title: (
-        <>
-          换算价（输入/输出）<TermTip term="official_cny" />
-          <span className="thead-unit thead-unit-block">CNY / 1M tokens</span>
-        </>
-      ),
-      key: "list_cny",
-      align: "right",
-      width: 190,
-      sorter: (a, b) => (a.list_cny?.input ?? 0) - (b.list_cny?.input ?? 0),
-      render: (_, row) =>
-        isFreePrice(row.list) ? (
-          <span style={{ color: "var(--text-3)" }}>免费</span>
-        ) : (
-          <span className="mono num" style={{ color: "var(--text-2)" }}>
-            ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
-          </span>
-        ),
+        );
+      },
     },
     {
       title: (
@@ -263,6 +299,42 @@ export function CatalogTable({ data }: { data: CatalogData }) {
     },
   ];
 
+  // 手机列组：厂商（徽标+名称）与模型上下两行合并，价格列收窄，两列一屏放得下
+  const displayColumns: DColumn<Row>[] = phone
+    ? [
+        {
+          title: "厂商 / 模型",
+          key: "vendor-model",
+          width: 180,
+          render: (_, row: Row) => (
+            <span style={{ display: "inline-grid", gap: 2, justifyItems: "start" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--text-2)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <VendorBadge vendor={row.vendor} />
+                {row.vendor}
+                {row.region === "cn" && <ToneTag tone="green">国内</ToneTag>}
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {row.model}
+                </span>
+                {row.tier === "mainstream" && <ToneTag tone="gray">主流</ToneTag>}
+              </span>
+            </span>
+          ),
+        },
+        { ...columns[2], width: 160 },
+      ]
+    : columns;
+
   return (
     <div className="rise-in" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -305,11 +377,12 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         ) : (
           <DataTable<Row>
             rowKey="key"
-            columns={columns}
+            columns={displayColumns}
             rows={rows}
             paginated
-            scrollX={1410}
-            mobileScrollX={770}
+            scrollX={1220}
+            mobileScrollX={phone ? 340 : 600}
+            dense
             rowClassName={(row) => (row.tier === "flagship" ? "row-flagship" : undefined)}
           />
         )}
