@@ -198,12 +198,10 @@ export const footer = {
   brandLine:
     "我们检测各家 API 中转站的价格、渠道状态和公告，数据都抓自各站点公开页面，仅供使用参考，不构成任何使用推荐。\n最后祝大家 Vibe Coding 之路畅通无阻，永远用到低价不降智模型，天天 Happy.",
   links: {
-    overview: "站点数据",
     calculator: "花费计算",
     history: "事件追踪",
-    catalog: "厂商数据",
+    articles: "文章资讯",
     feedback: "提建议",
-    admin: "管理",
   },
   aria: {
     github: "GitHub 仓库",

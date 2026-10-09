@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -42,10 +43,13 @@ NEWAPI_ONEAPI_PRICING_GUIDANCE = """你正在分析中转站的价格接口响�
 
 # 证据超长被供应商拒绝时，按阶梯收紧单条证据文本上限逐级重试；None 表示不限制。
 EVIDENCE_CHAR_LADDER: tuple[int | None, ...] = (None, 240_000, 96_000, 40_000, 16_000)
-# 抽取按模型分批的大小：单批输出 JSON 控制在 max_tokens=4000 预算内（一条完整记录含
-# 分组 tiers 与证据引用约 300~700 tokens，思考型模型还会额外烧预算），批太大输出会在
-# 中途截断成非法 JSON；批太小则调用次数翻倍。
+# 抽取按模型分批的下限：实际批大小随 config.max_tokens 折算（1200 tokens/条安全余量，
+# 4000 预算=4/批、16000=12/批），见 extract()。批太大输出会在 max_tokens 中途截断成
+# 非法 JSON，批太小则调用次数与重复系统提示翻倍。
 AI_EXTRACT_BATCH_SIZE = 4
+# 批间并发行数：批间相互独立（各自证据/缓存键/调用），总输出 token 不变，省的是
+# 请求排队与证据重发的串行等待；4 路对供应商是温和压力，模型池冷却名单线程安全（GIL 原子写）
+AI_EXTRACT_CONCURRENCY = 4
 
 # 单站 AI 提取的总时长预算（× 批次数）：分批提取与换模型回退都没有总上限，链路整体
 # 抖动时（如凌晨 sudocode 单站拖 10.8 小时）一个站就能占住采集互斥名额拖垮整轮调度。
@@ -363,32 +367,63 @@ expected_models：
             raise AIExtractionError(f"站点 {spec.id} 未配置目标模型 models")
         own = client is None
         client = client or ai_http_client(self.config)
+        # 批大小随输出预算走：一条完整记录约 300~700 tokens（分组多更肥），按 1200/条折减给
+        # 思考型模型留余量——max_tokens=4000 → 4 条/批（旧默认），16000 → 12 条/批；
+        # 批越大，每批重复发送的系统提示与规则（数 K tokens）和调用开销省得越多
+        batch_size = max(AI_EXTRACT_BATCH_SIZE, min(12, int(self.config.max_tokens or 16000) // 1200))
         # 整轮预算随批次数等比放大：600s 按单批时代的正常最慢耗时标定，监控清单 40 模型
         # 10 批次的全量提取正常就要 10 分钟起步，固定 600s 贴线必爆
-        batch_count = max(1, -(-len(expected) // AI_EXTRACT_BATCH_SIZE))
+        batch_count = max(1, -(-len(expected) // batch_size))
         budget_seconds = _ai.SITE_AI_BUDGET_SECONDS * batch_count
         deadline = time.monotonic() + budget_seconds
         try:
             records: list[PriceRecord] = []
             # 分批抽取：单批输出控制在 max_tokens 预算内；任一批失败整轮失败，不落半份数据。
-            # 批间检查 deadline，防止慢模型+换模型重试把一轮采集拖到小时级；预算耗尽时
-            # 保留已完成批次（直采兜底和定价快照承接都能用上），一个批次都没成才整轮报错
-            try:
-                for start in range(0, len(expected), AI_EXTRACT_BATCH_SIZE):
-                    if time.monotonic() > deadline:
-                        raise AIBudgetExhaustedError(
-                            f"AI 提取超出单站 {budget_seconds} 秒预算（共 {batch_count} 批），剩余批次不再发起"
-                        )
-                    batch = expected[start:start + AI_EXTRACT_BATCH_SIZE]
-                    # 逐批留痕：单批十几秒到两分钟，成功路径无日志时测试弹窗只能干等，
-                    # 任务列表也看不出整轮是卡死还是在正常推进
-                    tasklog.emit(
-                        f"[{spec.id}] AI 解析模型名：第 {start // AI_EXTRACT_BATCH_SIZE + 1}/{batch_count} 批（{len(batch)} 个模型）"
+            # 批间相互独立（各自证据、各自缓存键、各自调用），按 AI_EXTRACT_CONCURRENCY 路并行
+            # 发起、按批次顺序收结果落记录；deadline 随批次进线程，慢模型+换模型重试超预算的
+            # 批次自己报错。worker 线程不共享主线程的 tasklog 出口，逐线程重绑转发过程日志
+            batches = [expected[start : start + batch_size] for start in range(0, len(expected), batch_size)]
+            sink = tasklog.current_sink()
+            workers = max(1, min(AI_EXTRACT_CONCURRENCY, len(batches)))
+
+            def run_batch(index: int) -> list[PriceRecord]:
+                if sink is not None:
+                    tasklog.bind(sink)
+                # 预算在批次开工入口检查：串行拦住后续批次，并行拦住还没开工的槽位
+                if time.monotonic() > deadline:
+                    raise AIBudgetExhaustedError(
+                        f"AI 提取超出单站 {budget_seconds} 秒预算（共 {batch_count} 批），剩余批次不再发起"
                     )
-                    records.extend(self._extract_batch(spec, page_text, responses, batch, page_sources, client, deadline))
+                batch = batches[index]
+                # 逐批留痕：单批十几秒到两分钟，成功路径无日志时测试弹窗只能干等，
+                # 任务列表也看不出整轮是卡死还是在正常推进
+                tasklog.emit(
+                    f"[{spec.id}] AI 解析模型名：第 {index + 1}/{batch_count} 批（{len(batch)} 个模型）"
+                )
+                return self._extract_batch(spec, page_text, responses, batch, page_sources, client, deadline)
+
+            budget_error: AIBudgetExhaustedError | None = None
+            try:
+                if workers <= 1:
+                    for index in range(len(batches)):
+                        records.extend(run_batch(index))
+                else:
+                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"ai-extract-{spec.id}") as executor:
+                        futures = [executor.submit(run_batch, index) for index in range(len(batches))]
+                        for future in futures:
+                            try:
+                                records.extend(future.result())
+                            except AIBudgetExhaustedError as exc:
+                                # 预算耗尽的批次产出为零，warn 一次继续收其余批次；
+                                # 所有批次都颗粒无收时按整轮预算失败报错
+                                budget_error = budget_error or exc
             except AIBudgetExhaustedError:
                 if not records:
                     raise
+                budget_error = budget_error or AIBudgetExhaustedError("预算耗尽")
+            if budget_error is not None and not records:
+                raise budget_error
+            if budget_error is not None:
                 tasklog.emit(
                     f"[{spec.id}] AI 提取超出单站 {budget_seconds} 秒预算，保留已完成 {len(records)} 条，剩余批次不再发起",
                     "warn",

@@ -182,6 +182,7 @@ export function AdminSettings() {
   const [proxyControllerUrl, setProxyControllerUrl] = useState("");
   const [proxyControllerSecret, setProxyControllerSecret] = useState("");
   const [proxySwitchGroup, setProxySwitchGroup] = useState("");
+  const [proxySwitchNodeFilter, setProxySwitchNodeFilter] = useState("");
   const [aiMaxInputChars, setAiMaxInputChars] = useState("");
   const [aiMaxTokens, setAiMaxTokens] = useState("");
   const [saving, setSaving] = useState(false);
@@ -248,6 +249,7 @@ export function AdminSettings() {
         setProxyControllerUrl(typeof loaded.settings.proxy_controller_url === "string" ? loaded.settings.proxy_controller_url : "");
         setProxyControllerSecret(typeof loaded.settings.proxy_controller_secret === "string" ? loaded.settings.proxy_controller_secret : "");
         setProxySwitchGroup(typeof loaded.settings.proxy_switch_group === "string" ? loaded.settings.proxy_switch_group : "");
+        setProxySwitchNodeFilter(typeof loaded.settings.proxy_switch_node_filter === "string" ? loaded.settings.proxy_switch_node_filter : "");
     } catch {
       setData({ settings: {}, ai: {} });
     }
@@ -336,6 +338,7 @@ export function AdminSettings() {
       proxy_controller_url: controllerText || null,
       proxy_controller_secret: proxyControllerSecret.trim() || null,
       proxy_switch_group: switchGroupText || null,
+      proxy_switch_node_filter: proxySwitchNodeFilter.trim() || null,
       wxpusher_app_token: wxToken.trim() || null,
       wxpusher_uid: wxUid.trim() || null,
       schedule: scheduleOut,
@@ -501,24 +504,18 @@ export function AdminSettings() {
         <div style={{ display: "grid" }}>
           <SettingsSection
             title="采集调度"
-            description="各项采集的定时间隔（分钟），保存后立即生效；0 = 关闭定时只手动跑，鼠标悬停各项看用途"
+            description="各项采集多久自动跑一次（分钟），保存后立即生效；填 0 表示关闭定时，只手动采集"
           >
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "10px 18px" }}>
-              {SCHEDULE_ITEMS.map((item) => (
-                <label
-                  key={item.key}
-                  title={item.hint}
-                  style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, fontSize: 13, color: "var(--text-2)" }}
-                >
-                  <span style={{ whiteSpace: "nowrap" }}>{item.label}</span>
-                  <Input
-                    value={schedule[item.key] ?? ""}
-                    onChange={(value) => setSchedule((prev) => ({ ...prev, [item.key]: value }))}
-                    style={{ width: 80 }}
-                  />
-                </label>
-              ))}
-            </div>
+            {SCHEDULE_ITEMS.map((item) => (
+              <SettingRow key={item.key} label={`${item.label}间隔（分钟）`} hint={item.hint}>
+                <Input
+                  value={schedule[item.key] ?? ""}
+                  onChange={(value) => setSchedule((prev) => ({ ...prev, [item.key]: value }))}
+                  placeholder={`默认 ${DEFAULT_SCHEDULE_MINUTES[item.key]}`}
+                  style={{ width: 120, maxWidth: "100%" }}
+                />
+              </SettingRow>
+            ))}
           </SettingsSection>
           <SettingsSection
             title="采集出口"
@@ -568,6 +565,14 @@ export function AdminSettings() {
                 value={proxySwitchGroup}
                 onChange={setProxySwitchGroup}
                 placeholder="例如 节点选择"
+                style={{ width: 260, maxWidth: "100%" }}
+              />
+            </SettingRow>
+            <SettingRow label="切换节点范围" hint="只在名字含关键词的节点里换出口，模糊匹配、英文不分大小写；多个关键词用逗号分隔（如「香港」或「香港,hk」）。留空表示组内所有节点都可换">
+              <Input
+                value={proxySwitchNodeFilter}
+                onChange={setProxySwitchNodeFilter}
+                placeholder="留空 = 不限地区"
                 style={{ width: 260, maxWidth: "100%" }}
               />
             </SettingRow>

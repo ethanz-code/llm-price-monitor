@@ -2,7 +2,9 @@
 把节点切到「对该站实测可达」的其他节点，让采集换个出口再试一次。
 
 只在系统设置里配齐了控制接口（proxy_controller_url + proxy_switch_group，密钥无则留空）
-才启用；切换改变的是整台机器的代理出口，所以刻意克制：
+才启用；proxy_switch_node_filter 可选，填关键词（逗号分隔，模糊包含、忽略大小写）后
+只挑名字含任一关键词的节点（如「香港」或「hk」）。
+切换改变的是整台机器的代理出口，所以刻意克制：
 - 冷却：同一目标域名切换后 10 分钟内不再切，连环被拉黑也不连环换出口；
 - 全局串行：多个站点同时失败只允许一个切换流程在跑；
 - 证据：候选节点用 mihomo 的 delay 端点对「失败的那个目标网址」实测（它会用该节点
@@ -40,12 +42,15 @@ def configure_settings(provider: Callable[[], dict]) -> None:
     _settings_provider = provider
 
 
-def _controller() -> tuple[str, str, str]:
+def _controller() -> tuple[str, str, str, list[str]]:
     settings = _settings_provider() or {}
     url = str(settings.get("proxy_controller_url") or "").strip().rstrip("/")
     secret = str(settings.get("proxy_controller_secret") or "").strip()
     group = str(settings.get("proxy_switch_group") or "").strip()
-    return url, secret, group
+    # 切换节点范围：逗号分隔（中英文皆可）的关键词，模糊包含、忽略大小写；留空不限制
+    filter_raw = str(settings.get("proxy_switch_node_filter") or "")
+    keywords = [kw.strip().lower() for kw in filter_raw.replace("，", ",").split(",") if kw.strip()]
+    return url, secret, group, keywords
 
 
 def _request(base: str, secret: str, path: str, *, method: str = "GET", body: dict | None = None, timeout: float = 8.0) -> Any:
@@ -65,7 +70,7 @@ def auto_switch_for(host: str, target_url: str) -> str | None:
 
     未启用、冷却中、没有可达节点都返回 None（调用方按原样失败上报，不重试）。
     """
-    base, secret, group = _controller()
+    base, secret, group, node_filter = _controller()
     if not base or not group:
         return None
     now = time.monotonic()
@@ -74,7 +79,7 @@ def auto_switch_for(host: str, target_url: str) -> str | None:
             return None
         _switched_at[host] = now  # 先占坑：切换失败也要等冷却，避免连环折腾
     try:
-        node = _switch_to_reachable(base, secret, group, target_url)
+        node = _switch_to_reachable(base, secret, group, node_filter, target_url)
     except Exception as exc:  # 控制接口抖动不能反过来打断采集，留痕后按无节点处理
         tasklog.emit(f"[{host}] 自动切换代理节点失败：{exc}", "warn")
         return None
@@ -83,12 +88,13 @@ def auto_switch_for(host: str, target_url: str) -> str | None:
     return node
 
 
-def _switch_to_reachable(base: str, secret: str, group: str, target_url: str) -> str | None:
+def _switch_to_reachable(base: str, secret: str, group: str, node_filter: list[str], target_url: str) -> str | None:
     group_data = _request(base, secret, f"/proxies/{urllib.parse.quote(group, safe='')}") or {}
     members = [
         member
         for member in group_data.get("all") or []
         if isinstance(member, str) and member.strip() and not any(mark in member for mark in _INFO_NODE_MARKS)
+        and (not node_filter or any(keyword in member.lower() for keyword in node_filter))
     ]
     current = str(group_data.get("now") or "")
     candidates = [member for member in members if member != current][:_MAX_DELAY_PROBES]

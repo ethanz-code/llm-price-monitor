@@ -1245,8 +1245,12 @@ def test_reseed_missing_seed_file(workspace: Path):
     assert response.status_code == 400 and "种子文件不存在" in response.json()["detail"]
 
 
-def test_default_seed_ships_ai_without_key(workspace: Path):
+def test_default_seed_ships_ai_without_key(workspace: Path, monkeypatch):
     """仓库自带种子：预置了 AI base_url 与模型列表、不含任何密钥；空库首次启动即写入。"""
+    from llm_price_monitor.webapi import tasks
+
+    # 种子的调度间隔非零（price=180、discovery=1440），打桩任务提交防调度线程真发采集
+    monkeypatch.setattr(tasks, "submit", lambda kind, fn: "stub")
     seed = Path(__file__).resolve().parent.parent / "config" / "default-seed.json"
     client = TestClient(create_app(seed))
     assert client.post("/api/setup", json={"username": "admin", "password": "s3cret"}).status_code == 200

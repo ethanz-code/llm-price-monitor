@@ -1456,7 +1456,8 @@ def test_ai_extract_budget_scales_with_batch_count(monkeypatch):
         result = {"models": [], "cross_validation": {"status": "none", "conflicts": []}}
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+    # max_tokens=4000 → 4 条/批，5 个模型正好 2 批
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret", max_tokens=4000))
     real_fallback = ai_mod.request_with_model_fallback
 
     def spy_fallback(*args, **kwargs):
@@ -1516,7 +1517,8 @@ def test_ai_extract_budget_exhaustion_keeps_completed_batches(monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
     try:
-        extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret"))
+        # max_tokens=4000 → 4 条/批：5 个模型拆 2 批，第一批把时钟推过总预算后第二批被入口拦下
+        extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="ai-secret", max_tokens=4000))
         spec = SiteSpec(
             id="demo", adapter="browser", network={"url": "https://demo.test/pricing"},
             models=tuple(ModelTarget(name) for name in ("demo-model", "m2", "m3", "m4", "m5")),
@@ -3595,13 +3597,15 @@ def test_ai_extract_splits_expected_models_into_batches_of_four():
     targets = [f"model-{index:02d}" for index in range(17)]
     seen_batches: list[list[str]] = []
     handler = _ai_extract_handler(seen_batches)
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    # max_tokens=4000 → 4 条/批（旧默认口径，批大小随 max_tokens 折算）
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k", max_tokens=4000))
     records = extractor.extract(
         spec, "", [],
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         expected_models=targets,
     )
-    assert seen_batches == [targets[0:4], targets[4:8], targets[8:12], targets[12:16], targets[16:17]]
+    # 批次 4 路并行发起，完成顺序不定；切批边界与最终记录覆盖不变
+    assert sorted(seen_batches) == sorted([targets[0:4], targets[4:8], targets[8:12], targets[12:16], targets[16:17]])
     assert sorted(record.model for record in records) == targets
 
 
@@ -3610,15 +3614,16 @@ def test_ai_extract_batch_failure_fails_whole_round():
     targets = [f"model-{index:02d}" for index in range(5)]
     seen_batches: list[list[str]] = []
     handler = _ai_extract_handler(seen_batches, fail_second=True)
-    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    # max_tokens=4000 → 4 条/批，5 个模型才拆成 2 批，第二批失败才会发生
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k", max_tokens=4000))
     with pytest.raises(AIExtractionError):
         extractor.extract(
             spec, "", [],
             client=httpx.Client(transport=httpx.MockTransport(handler)),
             expected_models=targets,
         )
-    # 第一批已成功也不返回半份数据
-    assert len(seen_batches) == 1
+    # 第一批已成功也不返回半份数据；并行下第二批可能已同时开工，但结果整体丢弃
+    assert 1 <= len(seen_batches) <= 2
 
 
 def test_ai_cache_key_ignores_order_and_noise_fields():
@@ -4027,3 +4032,19 @@ def test_evidence_ladder_shrinks_on_dashscope_input_length_error():
     assert len(sizes) >= 2
     assert sizes[0] > 120_000
     assert sizes[-1] <= 120_000
+
+
+def test_ai_extract_batch_size_scales_with_max_tokens():
+    """批大小随 max_tokens 折算：16000 预算 → 12 条/批（70 模型 6 批而非 18 批）。"""
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    targets = [f"model-{index:02d}" for index in range(17)]
+    seen_batches: list[list[str]] = []
+    handler = _ai_extract_handler(seen_batches)
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    records = extractor.extract(
+        spec, "", [],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        expected_models=targets,
+    )
+    assert sorted(seen_batches) == sorted([targets[0:12], targets[12:17]])
+    assert sorted(record.model for record in records) == targets

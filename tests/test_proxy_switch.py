@@ -91,6 +91,58 @@ def test_switch_returns_none_when_nothing_reachable(monkeypatch_proxy):
     assert controller.selected == []
 
 
+def test_switch_respects_node_filter(monkeypatch_proxy):
+    """配置了节点范围关键词后，只在名字含关键词的节点里实测与切换。"""
+    controller = monkeypatch_proxy(FakeController(
+        members=["🇯🇵日本高速02|CTCU|0.5x", "🇭🇰香港高速01|BGP|CMCU", "🇭🇰香港高速02|BGP|CMCU"],
+        delays={"🇭🇰香港高速01|BGP|CMCU": 120, "🇭🇰香港高速02|BGP|CMCU": 60},
+        now="🇯🇵日本高速02|CTCU|0.5x",
+    ))
+    proxy_switch.configure_settings(lambda: {
+        "proxy_controller_url": "http://127.0.0.1:9097",
+        "proxy_controller_secret": SECRET,
+        "proxy_switch_group": "节点组",
+        "proxy_switch_node_filter": "香港，🇭🇰",  # 中文逗号同样拆分
+    })
+    node = proxy_switch.auto_switch_for("demo.test", "https://demo.test/api/pricing")
+    assert node == "🇭🇰香港高速02|BGP|CMCU"
+    assert "🇯🇵日本高速02|CTCU|0.5x" not in controller.probed  # 范围外节点不实测
+
+
+def test_node_filter_matches_case_insensitively(monkeypatch_proxy):
+    """关键词模糊包含且忽略大小写：小写 hk 命中大写 HK 节点名。"""
+    controller = monkeypatch_proxy(FakeController(
+        members=["HK-01", "US-02", "JP-03"],
+        delays={"HK-01": 100, "US-02": 50, "JP-03": 80},
+        now="JP-03",
+    ))
+    proxy_switch.configure_settings(lambda: {
+        "proxy_controller_url": "http://127.0.0.1:9097",
+        "proxy_controller_secret": SECRET,
+        "proxy_switch_group": "节点组",
+        "proxy_switch_node_filter": "hk",
+    })
+    node = proxy_switch.auto_switch_for("demo.test", "https://demo.test/api/pricing")
+    assert node == "HK-01"
+    assert "US-02" not in controller.probed and "JP-03" not in controller.probed
+
+
+def test_switch_returns_none_when_node_filter_excludes_all(monkeypatch_proxy):
+    controller = monkeypatch_proxy(FakeController(
+        members=["🇯🇵日本高速02|CTCU|0.5x", "🇸🇬新加坡高速01|BGP|CTCU"],
+        delays={"🇯🇵日本高速02|CTCU|0.5x": 100},
+        now="🇯🇵日本高速02|CTCU|0.5x",
+    ))
+    proxy_switch.configure_settings(lambda: {
+        "proxy_controller_url": "http://127.0.0.1:9097",
+        "proxy_controller_secret": SECRET,
+        "proxy_switch_group": "节点组",
+        "proxy_switch_node_filter": "香港",
+    })
+    assert proxy_switch.auto_switch_for("demo.test", "https://demo.test/api/pricing") is None
+    assert controller.selected == [] and controller.probed == []
+
+
 def test_switch_is_rate_limited_per_host(monkeypatch_proxy):
     controller = monkeypatch_proxy(FakeController(
         members=["节点A", "节点B"],

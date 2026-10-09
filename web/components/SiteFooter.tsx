@@ -49,12 +49,10 @@ export function SiteFooter() {
       <div className="site-footer-meta">
         <span>© 2026 {site.name}</span>
         <span className="site-footer-meta-links">
-          <Link href="/overview">{footer.links.overview}</Link>
           <Link href="/calculator">{footer.links.calculator}</Link>
           <Link href="/history">{footer.links.history}</Link>
-          <Link href="/catalog">{footer.links.catalog}</Link>
+          <Link href="/articles">{footer.links.articles}</Link>
           <button type="button" onClick={() => setFeedbackOpen(true)}>{footer.links.feedback}</button>
-          <Link href="/admin" className="footer-admin-link">{footer.links.admin}</Link>
         </span>
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />

@@ -2226,6 +2226,126 @@ html:not([data-theme="dark"]) .panel {
   text-decoration: underline;
 }
 
+/* ---------- 文章页 ---------- */
+
+/* 阅读栏：页头、正文、文末链接共用同一列 860px，整体左对齐；
+   桌面居中靠 margin-inline auto，移动端由 .page 的侧边距兜底 */
+.article-wrap {
+  max-width: 860px;
+  margin-inline: auto;
+}
+
+.article-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 0 0 20px;
+}
+
+.article-body h2 {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 36px 0 12px;
+  text-wrap: balance;
+}
+
+.article-body p {
+  font-size: 14.5px;
+  font-weight: 400;
+  line-height: 1.85;
+  margin: 0 0 14px;
+}
+
+.article-body strong {
+  font-weight: 600;
+}
+
+.article-body a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-text) 35%, transparent);
+  text-underline-offset: 3px;
+}
+
+.article-body a:hover {
+  text-decoration-color: currentcolor;
+}
+
+.article-body blockquote {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 0 0 14px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.article-body ul {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.article-body li {
+  font-size: 14.5px;
+  line-height: 1.8;
+}
+
+.article-body li::marker {
+  color: var(--text-3);
+}
+
+.article-back {
+  margin-top: 44px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* 文章列表卡片：标题行左文右日期，摘要在下 */
+.article-list {
+  display: grid;
+  gap: 16px;
+}
+
+.article-card {
+  display: block;
+  padding: 22px 24px;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--dur) var(--ease);
+}
+
+.article-card:hover {
+  border-color: var(--border-strong);
+}
+
+.article-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.article-card-head h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.article-card .article-meta {
+  margin: 0;
+}
+
+.article-card p {
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.7;
+  margin: 8px 0 12px;
+}
+
 /* 实时亮点：无边框统计条，发丝线分列 */
 .landing-stats {
   display: grid;
@@ -3512,11 +3632,6 @@ button.footer-icon {
 
 .site-footer-meta-links button:hover {
   color: var(--text);
-}
-
-/* 管理入口刻意低调：与版权同色，hover 才点亮 */
-.footer-admin-link {
-  opacity: 0.75;
 }
 
 /* ---- 管理面板 ---- */
