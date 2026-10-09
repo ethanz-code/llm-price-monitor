@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DataTable, type DColumn } from "./DataTable";
 import { Empty } from "./ui";
-import { IconMonitor } from "./icons";
+import { DajuSit } from "./DajuArt";
 import { ToneTag, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
@@ -343,7 +343,7 @@ export function OverviewTable({ data, statusDots }: { data: OverviewData; status
           onRowClick={(row) => router.push(`/overview/status/${encodeURIComponent(row.site_id)}`)}
           empty={
             <Empty
-              icon={<IconMonitor size={18} />}
+              icon={<DajuSit width={30} />}
               title="还没有价格数据"
               description="完成一轮采集后，这里会展示各站点的最新快照。"
             />

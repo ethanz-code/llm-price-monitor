@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { Sel } from "./ui";
+import { DajuYarn } from "./DajuArt";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { currencySymbol, formatPrice, formatTime, toCnyPrice } from "@/lib/format";
 import type { TrendRecord } from "@/lib/types";
@@ -83,6 +84,9 @@ export function HeroTrendChart({
     return (
       <div>
         <span className="hero-side-title">模型最低价</span>
+        <div className="trend-empty-art">
+          <DajuYarn width={150} />
+        </div>
         <p style={{ color: "var(--text-3)", fontSize: 13, lineHeight: 1.6, margin: "10px 0 0" }}>
           价格走势还在积累：每小时记一次全站最低价，攒够两个小时就能画出第一条线。
         </p>

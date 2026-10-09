@@ -4,7 +4,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast, Btn, Check, Empty, Input, Modal, Seg, Sel, Switch, Tip } from "./ui";
-import { IconAppstore, IconCheck } from "./icons";
+import { IconCheck, IconChevronRight, IconClose, IconLock, IconPlus } from "./icons";
+import { DajuSit } from "./DajuArt";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
 import { getSiteInfo } from "@/lib/sites";
@@ -578,34 +579,40 @@ type PriceFields = {
   headersText: string;
   headless: HeadlessForm;
   ratioUrl: string;
-  ratioHeadersText: string;
 };
 
-/** 网页模式·无头浏览器子弹窗的表单数据（localStorage/headers 用行数组方便增删） */
+/** 网页模式·Headless子弹窗的表单数据（localStorage 用行数组方便增删） */
 type HeadlessForm = {
   enabled: boolean;
   cookies: { name: string; value: string }[];
   localStorage: { key: string; value: string }[];
-  headers: { key: string; value: string }[];
   waitSeconds: string;
 };
 
-/** 站点配置 → 凭证注入规则初值。
- *  没配过 auth_inject 的老站点按当前生效的老行为回显（Authorization: Bearer <access token>），
- *  用户看到的规则就是实际发出去的头，改完保存即收编进 auth_inject。 */
+/** 站点配置 → 凭证注入规则初值，展示与后端 auth_inject_headers 的实际注入行为对齐：
+ *  配过 auth_inject（哪怕个别目标被清空）就只按配置回显，没配的目标显示为空——后端对它不会注入；
+ *  完全没配过才按老行为回显（Authorization: Bearer <access token>），且站点真有 token 才回显。
+ *  没配认证的站点什么都不注入，也就不显示规则，免得看到一条永远发不出去的头。 */
 function injectFromConfig(
-  config: Pick<SiteConfig, "auth_header" | "auth_prefix" | "auth_inject">,
+  config: Pick<SiteConfig, "auth_token" | "auth_header" | "auth_prefix" | "auth_inject">,
 ): Record<InjectTarget, InjectRule> {
-  const legacyHeader =
-    typeof config.auth_header === "string" && config.auth_header.trim() ? config.auth_header.trim() : "Authorization";
-  const legacyPrefix = typeof config.auth_prefix === "string" ? config.auth_prefix : "Bearer ";
-  const legacy: InjectRule = { header: legacyHeader, value: `${legacyPrefix}\${access_token}` };
+  const hasToken = typeof config.auth_token === "string" && config.auth_token.trim() !== "";
+  const hasInjectRules =
+    config.auth_inject !== null && typeof config.auth_inject === "object" && Object.keys(config.auth_inject).length > 0;
+  const legacy: InjectRule | null =
+    hasToken && !hasInjectRules
+      ? {
+          header: typeof config.auth_header === "string" && config.auth_header.trim() ? config.auth_header.trim() : "Authorization",
+          value: `${typeof config.auth_prefix === "string" ? config.auth_prefix : "Bearer "}\${access_token}`,
+        }
+      : null;
+  const none: InjectRule = { header: "", value: "" };
   return Object.fromEntries(
     INJECT_TARGETS.map((target) => {
       const rule = config.auth_inject?.[target];
       const header = typeof rule?.header === "string" ? rule.header : "";
       const value = typeof rule?.value === "string" ? rule.value : "";
-      return [target, header.trim() && value.trim() ? { header, value } : { ...legacy }];
+      return [target, header.trim() && value.trim() ? { header, value } : (legacy ?? none)];
     }),
   ) as Record<InjectTarget, InjectRule>;
 }
@@ -621,7 +628,29 @@ function injectRules(inject: Record<InjectTarget, InjectRule>): Record<string, {
   return Object.keys(rules).length > 0 ? rules : null;
 }
 
-/** 站点配置 → 无头浏览器表单初值 */
+/** 统一认证头单框 → 注入规则：按第一个冒号拆成 头名/值；拆不出完整一对返回 null（贴的不是整行请求头） */
+function parseAuthLine(text: string): InjectRule | null {
+  const trimmed = text.trim();
+  const colon = trimmed.indexOf(":");
+  if (colon <= 0) return null;
+  const header = trimmed.slice(0, colon).trim();
+  const value = trimmed.slice(colon + 1).trim();
+  return header && value ? { header, value } : null;
+}
+
+/** 三处注入规则是否完全一致：一致时单框回显整行，不一致留空并默认展开微调区 */
+function injectUniform(inject: Record<InjectTarget, InjectRule>): boolean {
+  return INJECT_TARGETS.every(
+    (target) => inject[target].header === inject.price.header && inject[target].value === inject.price.value,
+  );
+}
+
+/** 一条规则整批复制到三处目标（「插入到三处」的载体，会覆盖微调区之前的单独改动） */
+function allTargetsRule(rule: InjectRule): Record<InjectTarget, InjectRule> {
+  return Object.fromEntries(INJECT_TARGETS.map((target) => [target, { ...rule }])) as Record<InjectTarget, InjectRule>;
+}
+
+/** 站点配置 → Headless表单初值 */
 function headlessFromConfig(config: SiteConfig): HeadlessForm {
   const headless = config.network?.headless;
   return {
@@ -630,10 +659,6 @@ function headlessFromConfig(config: SiteConfig): HeadlessForm {
       .filter((item): item is { name: string; value: string } => typeof item?.name === "string")
       .map((item) => ({ name: item.name, value: typeof item.value === "string" ? item.value : "" })),
     localStorage: Object.entries(headless?.localStorage ?? {}).map(([key, value]) => ({
-      key,
-      value: typeof value === "string" ? value : "",
-    })),
-    headers: Object.entries(headless?.headers ?? {}).map(([key, value]) => ({
       key,
       value: typeof value === "string" ? value : "",
     })),
@@ -765,17 +790,20 @@ function SubModalFooter({
   onConfirm,
   confirmDisabled,
   confirmTitle,
+  confirmLabel,
 }: {
   onCancel: () => void;
   onConfirm: () => void;
   confirmDisabled?: boolean;
   confirmTitle?: string;
+  /** 覆盖主按钮文案：认证子弹窗拦截未插入时换成「插入并确定」 */
+  confirmLabel?: string;
 }) {
   return (
     <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
       <Btn onClick={onCancel}>取消</Btn>
       <Btn variant="primary" disabled={confirmDisabled} title={confirmTitle} onClick={onConfirm}>
-        确定
+        {confirmLabel ?? "确定"}
       </Btn>
     </div>
   );
@@ -783,11 +811,16 @@ function SubModalFooter({
 
 /* ---------- 子弹窗：请求头编辑区（各地址专用请求头共用） ---------- */
 
-/** 单个地址的专用请求头编辑区：行编辑 + 覆盖提醒。warningKeys 为该地址 headers 里写死的认证头提示。 */
+/** 只读注入行的悬停提示：值由凭证注入统一管理，这里只展示 */
+const INJECTED_TITLE = "由「认证与续签 → 凭证注入」统一管理，采集时自动带上；要改去那里";
+
+/** 单个地址的专用请求头编辑区：行编辑 + 覆盖提醒。warningKeys 为该地址 headers 里写死的认证头提示；
+ * injected 为该地址的凭证注入规则，有值时在最上方只读展示（采集时它优先于下面手写的同名头）。 */
 function HeadersEditor({
   rows,
   onChange,
   warningKeys,
+  injected,
   hint = "只发给这个地址；认证头在「认证与续签 → 凭证注入」里配，这里写的同名头会被它盖掉",
   keyPlaceholder = "名字，如 X-API-Key",
   valuePlaceholder = "值",
@@ -795,6 +828,7 @@ function HeadersEditor({
   rows: KvRow[];
   onChange: (next: KvRow[]) => void;
   warningKeys: string[];
+  injected?: InjectRule | null;
   /** 传 null 表示这条规则已在同一弹窗里说过一次，不再重复 */
   hint?: string | null;
   keyPlaceholder?: string;
@@ -817,6 +851,15 @@ function HeadersEditor({
           {cookieKeys.join("、")} 里写死了 Cookie；凭证注入没往这处塞 Cookie 时照常发送，塞了则以注入的为准
         </span>
       )}
+      {injected && injected.header.trim() && injected.value.trim() && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Input value={injected.header} disabled title={INJECTED_TITLE} ariaLabel="凭证注入的头名（只读）" style={{ flex: 1, minWidth: 120 }} />
+          <Input value={injected.value} disabled title={INJECTED_TITLE} ariaLabel="凭证注入的值（只读）" style={{ flex: 2, minWidth: 160 }} />
+          <span title={INJECTED_TITLE} style={{ width: 28, display: "inline-flex", justifyContent: "center", color: "var(--text-3)" }} aria-hidden>
+            <IconLock size={14} />
+          </span>
+        </div>
+      )}
       <KeyValueRows rows={rows} onChange={onChange} keyPlaceholder={keyPlaceholder} valuePlaceholder={valuePlaceholder} ariaPrefix="请求头" />
     </div>
   );
@@ -828,12 +871,15 @@ function StatusSubModal({
   initialUrl,
   initialHeadersText,
   warningKeys,
+  injected,
   onCommit,
   onClose,
 }: {
   initialUrl: string;
   initialHeadersText: string;
   warningKeys: string[];
+  /** 渠道状态这一路的凭证注入规则，有值时在请求头区只读展示 */
+  injected?: InjectRule | null;
   onCommit: (url: string, headersText: string) => void;
   onClose: () => void;
 }) {
@@ -861,7 +907,7 @@ function StatusSubModal({
             style={{ width: "min(380px, 100%)" }}
           />
         </SettingRow>
-        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
+        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} injected={injected} />
       </div>
     </Modal>
   );
@@ -873,12 +919,15 @@ function NoticeSubModal({
   initialUrl,
   initialHeadersText,
   warningKeys,
+  injected,
   onCommit,
   onClose,
 }: {
   initialUrl: string;
   initialHeadersText: string;
   warningKeys: string[];
+  /** 站点公告这一路的凭证注入规则，有值时在请求头区只读展示 */
+  injected?: InjectRule | null;
   onCommit: (url: string, headersText: string) => void;
   onClose: () => void;
 }) {
@@ -904,7 +953,7 @@ function NoticeSubModal({
             style={{ width: "min(380px, 100%)" }}
           />
         </SettingRow>
-        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
+        <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} injected={injected} />
       </div>
     </Modal>
   );
@@ -965,6 +1014,17 @@ function AuthSubModal({
   const [refreshTokenField, setRefreshTokenField] = useState(initial.refreshTokenField);
   // 凭证注入规则：把上面的 token 塞进价格/渠道状态/公告三处请求，头名与值都可改
   const [inject, setInject] = useState<Record<InjectTarget, InjectRule>>(initial.inject);
+  // 统一认证头单框：三处初始一致时回显整行，不一致留空并展开微调区；只作插入工具，不随微调区回写
+  const [injectBox, setInjectBox] = useState(() => {
+    const first = initial.inject.price;
+    return injectUniform(initial.inject) && first.header.trim() && first.value.trim()
+      ? `${first.header}: ${first.value}`
+      : "";
+  });
+  const [fineTuneOpen, setFineTuneOpen] = useState(() => !injectUniform(initial.inject));
+  const [insertedAck, setInsertedAck] = useState(false);
+  // 确定被拦截后置位：注入区红字提醒，底部主按钮变成「插入并确定」
+  const [insertNotice, setInsertNotice] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 测试成功后暂存的新 token：点确定才随表单一并回写主弹窗草稿，取消则全部丢弃
@@ -1023,6 +1083,19 @@ function AuthSubModal({
     mode === "token" && INJECT_TARGETS.some((target) => inject[target].value.includes(REFRESH_VAR))
       ? `「固定令牌」没有 Refresh Token，值里引用 ${REFRESH_VAR} 的规则采集时会报错；要用它就把认证方式换成「登录会话自动续签」`
       : "";
+  // 单框解析与插入判定：解析结果与三处当前值一致才算已插入；头名比较不区分大小写，避免无谓的重复提醒
+  const parsedInject = parseAuthLine(injectBox);
+  const injectParseError =
+    injectBox.trim() && !parsedInject ? "按 头名: 值 的格式贴，冒号前是头名，如 Authorization: Bearer eyJ…" : "";
+  const boxApplied =
+    parsedInject !== null &&
+    INJECT_TARGETS.every(
+      (target) =>
+        inject[target].header.trim().toLowerCase() === parsedInject.header.toLowerCase() &&
+        inject[target].value.trim() === parsedInject.value,
+    );
+  const pendingInsert = injectBox.trim() !== "" && !boxApplied;
+  const threeUniform = injectUniform(inject);
 
   const overrides = (): RefreshOverride => ({
     method,
@@ -1081,17 +1154,30 @@ function AuthSubModal({
     }
   }
 
-  function commit() {
+  // 把单框解析出的整行认证头整批覆盖到三处；微调区里之前的单独改动随之统一
+  function applyInsert() {
+    if (!parsedInject) return;
+    setInject(allTargetsRule(parsedInject));
+    setInsertedAck(true);
+    setInsertNotice(false);
+  }
+
+  function commit(injectOverride?: Record<InjectTarget, InjectRule>) {
     // 登录会话必须有续签地址，否则配置落不下去；不打算配就切回其他方式
     if (mode === "session" && !url.trim()) {
       setTestResult({ ok: false, text: "先点开「续签接口」填上地址；不配认证就把方式切回「无需认证」" });
       return;
     }
-    if (injectError) {
+    if (injectError && !injectOverride) {
       setTestResult({ ok: false, text: injectError });
       return;
     }
-    onCommit(fields(), rotation ?? undefined);
+    // 单框里有内容但还没插入：拦下来提醒，底部主按钮变成「插入并确定」；不要了就清空输入框
+    if (pendingInsert && !injectOverride) {
+      setInsertNotice(true);
+      return;
+    }
+    onCommit({ ...fields(), inject: injectOverride ?? inject }, rotation ?? undefined);
   }
 
   // 取消也把换新凭证带回主弹窗：测试这一下就可能把旧 Refresh Token 作废，丢掉只能回浏览器重新抓。
@@ -1105,7 +1191,19 @@ function AuthSubModal({
   }
 
   return (
-    <Modal open onClose={discard} title="认证与续签" width={640} footer={<SubModalFooter onCancel={discard} onConfirm={commit} />}>
+    <Modal
+      open
+      onClose={discard}
+      title="认证与续签"
+      width={640}
+      footer={
+        <SubModalFooter
+          onCancel={discard}
+          onConfirm={() => commit(insertNotice && parsedInject ? allTargetsRule(parsedInject) : undefined)}
+          confirmLabel={insertNotice && parsedInject ? "插入并确定" : undefined}
+        />
+      }
+    >
       <div style={{ display: "grid", gap: 14 }}>
         {/* 三种方式互斥，选中才显示对应输入区；被切走方式的配置在点确定时清掉 */}
         <SettingRow
@@ -1192,7 +1290,7 @@ function AuthSubModal({
             </div>
             <button type="button" className="disclosure-row" aria-expanded={showAdvanced} onClick={() => setAdvancedOverride(!showAdvanced)}>
               <span className="caret" aria-hidden>
-                ▸
+                <IconChevronRight size={13} />
               </span>
               <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>续签接口</span>
               {url.trim() ? (
@@ -1285,37 +1383,99 @@ function AuthSubModal({
             )}
           </div>
         )}
-        {/* 凭证注入：把上面的 token 送到三处采集请求，固定令牌与登录会话都适用 */}
+        {/* 凭证注入：三处一致是常态，只留一个整行输入框 + 插入按钮；个别站点要按目标区分时展开微调区 */}
         {mode !== "none" && (
           <div style={{ display: "grid", gap: 8 }}>
             <span style={{ fontSize: 13.5 }}>凭证注入</span>
             <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              决定上面的 token 怎么带进采集请求：头名填 Authorization 就是认证头，填 cookie 就塞进 Cookie；
-              值里可以用 {ACCESS_VAR} 和 {REFRESH_VAR}，续签换新后自动跟着变。头名清空 = 那处不带
+              决定上面的 token 怎么带进采集请求：把浏览器 F12 里的整行认证头贴到下面，点插入，
+              价格、渠道状态、站点公告三处就都带上了；值里可以用 {ACCESS_VAR} 和 {REFRESH_VAR}，续签换新后自动跟着变
             </span>
-            <div style={{ display: "grid", gap: 8 }}>
-              {INJECT_TARGETS.map((target) => (
-                <div key={target} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ width: 64, fontSize: 12.5, color: "var(--text-2)", flexShrink: 0 }}>
-                    {INJECT_LABELS[target]}
-                  </span>
-                  <Input
-                    value={inject[target].header}
-                    ariaLabel={`${INJECT_LABELS[target]}注入的头名`}
-                    onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], header: value } })}
-                    placeholder="头名，如 Authorization 或 cookie"
-                    style={{ flex: 1, minWidth: 0 }}
-                  />
-                  <Input
-                    value={inject[target].value}
-                    ariaLabel={`${INJECT_LABELS[target]}注入的值`}
-                    onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], value } })}
-                    placeholder={`值，如 Bearer ${ACCESS_VAR}`}
-                    style={{ flex: 1.6, minWidth: 0 }}
-                  />
-                </div>
-              ))}
+            <div style={{ display: "flex", gap: 8 }}>
+              <Input
+                value={injectBox}
+                ariaLabel="统一认证头"
+                onChange={(value) => {
+                  setInjectBox(value);
+                  setInsertedAck(false);
+                  setInsertNotice(false);
+                }}
+                placeholder="贴 F12 里的整行认证头，如 Authorization: Bearer eyJ…"
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <Btn disabled={!parsedInject} onClick={applyInsert}>
+                插入到三处
+              </Btn>
             </div>
+            {injectParseError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{injectParseError}</span>}
+            {insertedAck && <span style={{ fontSize: 12, color: "var(--tone-green-text)" }}>已插入到三处，点确定生效</span>}
+            {!threeUniform && (
+              <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>
+                三处当前不一样：想让某处不带认证就在「按目标微调」里清空那一行；要统一就贴整行认证头点插入
+              </span>
+            )}
+            <button
+              type="button"
+              className="disclosure-row"
+              aria-expanded={fineTuneOpen}
+              onClick={() => setFineTuneOpen(!fineTuneOpen)}
+            >
+              <span className="caret" aria-hidden>
+                <IconChevronRight size={13} />
+              </span>
+              <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>按目标微调</span>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  color: "var(--text-3)",
+                }}
+              >
+                {threeUniform
+                  ? inject.price.header.trim()
+                    ? `三处一致：${inject.price.header}`
+                    : "三处都不注入"
+                  : "三处不一致"}
+              </span>
+            </button>
+            {fineTuneOpen && (
+              <div style={{ display: "grid", gap: 8 }}>
+                {INJECT_TARGETS.map((target) => (
+                  <div key={target} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ width: 64, fontSize: 12.5, color: "var(--text-2)", flexShrink: 0 }}>
+                      {INJECT_LABELS[target]}
+                    </span>
+                    <Input
+                      value={inject[target].header}
+                      ariaLabel={`${INJECT_LABELS[target]}注入的头名`}
+                      onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], header: value } })}
+                      placeholder="头名，如 Authorization 或 cookie"
+                      style={{ flex: 1, minWidth: 0 }}
+                    />
+                    <Input
+                      value={inject[target].value}
+                      ariaLabel={`${INJECT_LABELS[target]}注入的值`}
+                      onChange={(value) => setInject({ ...inject, [target]: { ...inject[target], value: value } })}
+                      placeholder={`值，如 Bearer ${ACCESS_VAR}`}
+                      style={{ flex: 1.6, minWidth: 0 }}
+                    />
+                  </div>
+                ))}
+                <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                  哪处不想注入就把那一行清空；这里改的值不会被单框回写，再点一次插入才会整批覆盖
+                </span>
+              </div>
+            )}
+            {insertNotice && (
+              <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>
+                {parsedInject
+                  ? "上面贴的认证头还没插入到三处，点右下角「插入并确定」一并完成；不想要就清空输入框"
+                  : "输入框里的内容不是 头名: 值 的格式，插不进去；改好再试，或者清空它"}
+              </span>
+            )}
             {injectError && <span style={{ fontSize: 12, color: "var(--tone-red-text)" }}>{injectError}</span>}
             {injectWarning && <span style={{ fontSize: 12, color: "var(--tone-yellow-text)" }}>{injectWarning}</span>}
           </div>
@@ -1325,7 +1485,7 @@ function AuthSubModal({
   );
 }
 
-/* ---------- 子弹窗：网页模式·无头浏览器 ---------- */
+/* ---------- 子弹窗：网页模式·Headless ---------- */
 
 /** 键值对编辑区：多行两列输入 + 删除/添加按钮；Cookie 和 localStorage 共用 */
 function KeyValueRows({
@@ -1334,18 +1494,39 @@ function KeyValueRows({
   keyPlaceholder,
   valuePlaceholder,
   ariaPrefix,
+  quickFill,
 }: {
   rows: { key: string; value: string }[];
   onChange: (next: { key: string; value: string }[]) => void;
   keyPlaceholder: string;
   valuePlaceholder: string;
   ariaPrefix: string;
+  /** 传入时在列表上方给一个快捷按钮，把这段文本（如 ${access_token}）填进一行，免手打 */
+  quickFill?: string;
 }) {
   // 底部永远留一行空行当"添加"入口（只在显示层补，不进数据）；保存时空行自动忽略
   const last = rows[rows.length - 1];
   const display = !last || last.key.trim() || last.value.trim() ? [...rows, { key: "", value: "" }] : rows;
+
+  function insertQuickFill() {
+    if (!quickFill) return;
+    const tail = rows[rows.length - 1];
+    onChange(
+      tail && !tail.key.trim() && !tail.value.trim()
+        ? [...rows.slice(0, -1), { key: tail.key, value: quickFill }]
+        : [...rows, { key: "", value: quickFill }]
+    );
+  }
+
   return (
     <div style={{ display: "grid", gap: 6 }}>
+      {quickFill && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Btn variant="text" size="sm" onClick={insertQuickFill} title={`值里带 ${ACCESS_VAR} 就引用站点令牌，续签换新后自动跟着变`}>
+            <IconPlus size={13} /> 插入 {ACCESS_VAR}
+          </Btn>
+        </div>
+      )}
       {display.map((row, index) => {
         const ghost = index === display.length - 1 && !row.key.trim() && !row.value.trim();
         return (
@@ -1374,7 +1555,7 @@ function KeyValueRows({
                 title="删除"
                 onClick={() => onChange(display.filter((_, i) => i !== index))}
               >
-                <span style={{ fontSize: 15, lineHeight: 1 }}>×</span>
+                <IconClose size={13} />
               </Btn>
             )}
           </div>
@@ -1384,7 +1565,7 @@ function KeyValueRows({
   );
 }
 
-/** 无头浏览器配置区（受控）：价格采集子弹窗内使用；开关在「采集方式」分段控件上，这里按形态展开内容 */
+/** Headless 配置区（受控）：价格采集子弹窗内使用；只在网页模式下显示 */
 function HeadlessSection({
   value,
   onChange,
@@ -1392,96 +1573,72 @@ function HeadlessSection({
   value: HeadlessForm;
   onChange: (next: HeadlessForm) => void;
 }) {
-  // Cookie 与 localStorage 统一用 key/value 行编辑，写回时再映射回 name/value
+  // Cookie 用 key/value 行编辑，写回时再映射回 name/value
   const cookieRows = value.cookies.map((item) => ({ key: item.name, value: item.value }));
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      {!value.enabled && (
-        <div style={{ display: "grid", gap: 6 }}>
-          <span style={{ fontSize: 13.5 }}>自定义请求头</span>
-          <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            自动回退无头浏览器时会带上这些请求头（Referer、X-Token 之类），平时普通抓取也会用
-          </span>
-          <KeyValueRows
-            rows={value.headers}
-            onChange={(rows) => onChange({ ...value, headers: rows })}
-            keyPlaceholder="名字，如 X-Token"
-            valuePlaceholder="值"
-            ariaPrefix="自定义请求头"
-          />
-        </div>
-      )}
-      {value.enabled && (
-        <>
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 13.5 }}>Cookie</span>
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              登录站点后按 F12 → 应用（Application）→ Cookies，把需要的键值抄进来；只填名字和值，域名、路径会按采集地址自动带上
-            </span>
-            <KeyValueRows
-              rows={cookieRows}
-              onChange={(rows) =>
-                onChange({ ...value, cookies: rows.map((row) => ({ name: row.key, value: row.value })) })
-              }
-              keyPlaceholder="名字，如 session"
-              valuePlaceholder="值，如 abc123"
-              ariaPrefix="Cookie"
-            />
-          </div>
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 13.5 }}>localStorage</span>
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-              浏览器不会把 localStorage 发给服务器，它只在页面内部被脚本读取；页面的 JS 靠它取登录信息时才需要填
-            </span>
-            <KeyValueRows
-              rows={value.localStorage}
-              onChange={(rows) => onChange({ ...value, localStorage: rows })}
-              keyPlaceholder="键，如 token"
-              valuePlaceholder="值"
-              ariaPrefix="localStorage"
-            />
-          </div>
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 13.5 }}>自定义请求头</span>
-            <KeyValueRows
-              rows={value.headers}
-              onChange={(rows) => onChange({ ...value, headers: rows })}
-              keyPlaceholder="名字，如 X-Token"
-              valuePlaceholder="值"
-              ariaPrefix="自定义请求头"
-            />
-          </div>
-          <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
-            <Input
-              value={value.waitSeconds}
-              type="number"
-              ariaLabel="等待时间（秒）"
-              onChange={(next) => onChange({ ...value, waitSeconds: next })}
-              style={{ width: 100 }}
-            />
-          </SettingRow>
-        </>
-      )}
+      <div style={{ display: "grid", gap: 6 }}>
+        <span style={{ fontSize: 13.5 }}>Cookie</span>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+          {"登录站点后按 F12 → 应用（Application）→ Cookies，把需要的键值抄进来；只填名字和值，域名、路径会按采集地址自动带上。值里带 ${access_token} 就是「认证与续签」里管的站点令牌，续签换新后自动跟着变"}
+        </span>
+        <KeyValueRows
+          rows={cookieRows}
+          onChange={(rows) =>
+            onChange({ ...value, cookies: rows.map((row) => ({ name: row.key, value: row.value })) })
+          }
+          keyPlaceholder="名字，如 session"
+          valuePlaceholder="值，如 abc123"
+          ariaPrefix="Cookie"
+          quickFill={ACCESS_VAR}
+        />
+      </div>
+      <div style={{ display: "grid", gap: 6 }}>
+        <span style={{ fontSize: 13.5 }}>localStorage</span>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+          {"浏览器不会把 localStorage 发给服务器，只在页面内部被脚本读取；页面的 JS 靠它取登录信息时才需要填。值填 ${access_token} 就是「认证与续签」里管的站点令牌，续签换新后自动跟着变"}
+        </span>
+        <KeyValueRows
+          rows={value.localStorage}
+          onChange={(rows) => onChange({ ...value, localStorage: rows })}
+          keyPlaceholder="键，如 token"
+          valuePlaceholder="值"
+          ariaPrefix="localStorage"
+          quickFill={ACCESS_VAR}
+        />
+      </div>
+      <SettingRow label="等待时间（秒）" hint="页面加载后等多久再读价格，页面慢就调大">
+        <Input
+          value={value.waitSeconds}
+          type="number"
+          ariaLabel="等待时间（秒）"
+          onChange={(next) => onChange({ ...value, waitSeconds: next })}
+          style={{ width: 100 }}
+        />
+      </SettingRow>
     </div>
   );
 }
 
-/* ---------- 子弹窗：价格采集（采集方式 + 价格接口 + 无头浏览器 + 倍率接口） ---------- */
+/* ---------- 子弹窗：价格采集（采集方式 + 价格接口 + Headless + 倍率接口） ---------- */
 
-/** 采集方式：接口直采（抓到网页壳才自动换无头） / 网页模式（直接用无头浏览器开页面）。只作用于价格采集 */
+/** 采集方式：接口直采（纯接口请求，抓到空壳即失败） / 网页模式（直接用 Headless 浏览器开页面）。只作用于价格采集 */
 type CollectMode = "api" | "browser";
 
-const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（无头浏览器）" };
+const COLLECT_LABELS: Record<CollectMode, string> = { api: "接口直采", browser: "网页模式（Headless）" };
 
 function PriceSubModal({
   initial,
   warningKeys,
+  injected,
   onCommit,
   onClose,
 }: {
   initial: PriceFields;
-  /** 价格接口与倍率接口 headers 里写死认证头的覆盖提醒 */
+  /** 价格接口 headers 里写死认证头的覆盖提醒 */
   warningKeys: string[];
+  /** 价格采集这一路的凭证注入规则，有值时在请求头区只读展示 */
+  injected?: InjectRule | null;
   onCommit: (next: PriceFields) => void;
   onClose: () => void;
 }) {
@@ -1489,7 +1646,6 @@ function PriceSubModal({
   const [headerRows, setHeaderRows] = useState<KvRow[]>(() => dictToRows(initial.headersText));
   const [headless, setHeadless] = useState(initial.headless);
   const [ratioUrl, setRatioUrl] = useState(initial.ratioUrl);
-  const [ratioHeaderRows, setRatioHeaderRows] = useState<KvRow[]>(() => dictToRows(initial.ratioHeadersText));
 
   // 采集方式只影响价格这一路（渠道状态、公告始终走接口），所以收在本弹窗里
   function setCollectMode(next: CollectMode) {
@@ -1510,11 +1666,9 @@ function PriceSubModal({
         ...headless,
         cookies: headless.cookies.filter((item) => item.name.trim()),
         localStorage: headless.localStorage.filter((item) => item.key.trim()),
-        headers: headless.headers.filter((item) => item.key.trim()),
         waitSeconds: String(waitSeconds),
       },
       ratioUrl,
-      ratioHeadersText: rowsToText(ratioHeaderRows),
     });
   }
 
@@ -1533,7 +1687,7 @@ function PriceSubModal({
           hint={
             headless.enabled
               ? "页面要在浏览器里跑 JS 才能显示价格（直接抓是空壳，常见于单页应用）时选它：每次都用真浏览器打开并渲染，Cookie、localStorage 登录态一并注入"
-              : "先当接口请求（Cookie 等登录态照常随请求头带上）；抓到的 HTML 里没有价格时自动换无头浏览器重试，一般站点选这个就够"
+              : "先当接口请求（Cookie 等登录态照常随请求头带上）；抓到空壳页（常见于单页应用）就采不到价格，换成「网页模式（Headless）」就好，一般站点选这个就够"
           }
         >
           <Seg
@@ -1558,15 +1712,19 @@ function PriceSubModal({
               style={{ width: "min(380px, 100%)" }}
             />
           </SettingRow>
-          <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} />
-          <HeadlessSection value={headless} onChange={setHeadless} />
+          {/* 请求头只在接口直采下编辑；网页模式不发送请求头，配置照旧保存，切回接口直采恢复显示 */}
+          {!headless.enabled && (
+            <HeadersEditor rows={headerRows} onChange={setHeaderRows} warningKeys={warningKeys} injected={injected} />
+          )}
+          {/* 浏览器登录态（Cookie/localStorage/等待时间）只在网页模式下编辑；接口直采纯接口请求 */}
+          {headless.enabled && <HeadlessSection value={headless} onChange={setHeadless} />}
         </div>
 
-        {/* 下块：倍率接口（公开接口，没有无头浏览器） */}
+        {/* 下块：倍率接口（一般公开接口，Headless 不参与；要专用请求头时走高级 JSON） */}
         <div style={{ display: "grid", gap: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
           <SettingRow
             label="倍率接口 URL"
-            hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价"
+            hint="填站点的倍率查询地址，采集时按倍率把厂商基准价换算成实售价；留空就直接用基准价。接口要专用请求头时，在「高级 JSON」里给 ratio_url 配 headers"
           >
             <Input
               value={ratioUrl}
@@ -1575,7 +1733,6 @@ function PriceSubModal({
               style={{ width: "min(380px, 100%)" }}
             />
           </SettingRow>
-          <HeadersEditor rows={ratioHeaderRows} onChange={setRatioHeaderRows} warningKeys={[]} hint={null} />
         </div>
       </div>
     </Modal>
@@ -1740,7 +1897,7 @@ function SiteModal({
   const [refreshCookieName, setRefreshCookieName] = useState(
     typeof initial.token_refresh?.refresh_cookie_name === "string" ? initial.token_refresh.refresh_cookie_name : "",
   );
-  // 网页模式·无头浏览器表单草稿
+  // 网页模式·Headless表单草稿
   const [headless, setHeadless] = useState<HeadlessForm>(() => headlessFromConfig(initial));
   const [activeSub, setActiveSub] = useState<SubKey | null>(null);
   const [advanced, setAdvanced] = useState(JSON.stringify(initial, null, 2));
@@ -1798,14 +1955,8 @@ function SiteModal({
       pick((base[section] as { headers?: Record<string, unknown> } | null)?.headers ?? {}).map(
         (key) => `${section}.headers.${key}`,
       );
-    // 倍率接口支持 {url, headers} 对象形态，headers 里写死认证头同样会覆盖
-    const ratio = base.network?.ratio_url;
-    const ratioKeys =
-      ratio !== null && typeof ratio === "object"
-        ? pick((ratio as { headers?: Record<string, unknown> }).headers ?? {}).map((key) => `ratio_url.headers.${key}`)
-        : [];
     return {
-      price: [...sectionKeys("network"), ...ratioKeys],
+      price: sectionKeys("network"),
       status: sectionKeys("status"),
       notice: sectionKeys("notice"),
     };
@@ -1978,13 +2129,13 @@ function SiteModal({
     setActiveSub(null);
   }
 
-  // 价格采集子弹窗确定：价格接口（地址/请求头/无头浏览器）与倍率接口（地址/请求头）一并写回草稿
+  // 价格采集子弹窗确定：价格接口（地址/请求头/Headless）与倍率接口地址一并写回草稿；
+  // 倍率专用请求头不在表单里编辑，按当前草稿原样带回（高级 JSON 改过会经 configToForm 同步进来）
   function commitPrice(next: PriceFields) {
     setUrl(next.url);
     setEndpointHeadersText(next.headersText);
     setHeadless(next.headless);
     setRatioUrl(next.ratioUrl);
-    setRatioHeadersText(next.ratioHeadersText);
     // 站点 ID 留空时按采集地址域名自动生成（如 aihub365.cn → aihub365-cn），少一个必填项
     const derivedId = id.trim() ? "" : siteIdFromUrl(next.url);
     if (derivedId) setId(derivedId);
@@ -2000,18 +2151,15 @@ function SiteModal({
       setOptionalDict(network, "headers", next.headersText);
       // 倍率接口：有专用请求头时存成对象，否则存纯地址（兼容旧配置的简单形态）
       const ratioTrimmed = next.ratioUrl.trim();
-      const ratioHeaders = textToDict(next.ratioHeadersText);
+      const ratioHeaders = textToDict(ratioHeadersText);
       if (ratioTrimmed) {
         network.ratio_url =
           Object.keys(ratioHeaders).length > 0 ? { url: ratioTrimmed, headers: ratioHeaders } : ratioTrimmed;
       } else {
         delete network.ratio_url;
       }
-      // 无头浏览器：开关关且内容全空时移除该字段
-      const hasData =
-        next.headless.cookies.length > 0 ||
-        next.headless.localStorage.length > 0 ||
-        next.headless.headers.length > 0;
+      // Headless：开关关且内容全空时移除该字段
+      const hasData = next.headless.cookies.length > 0 || next.headless.localStorage.length > 0;
       if (next.headless.enabled || hasData) {
         network.headless = {
           enabled: next.headless.enabled,
@@ -2020,9 +2168,6 @@ function SiteModal({
             : {}),
           ...(next.headless.localStorage.length > 0
             ? { localStorage: Object.fromEntries(next.headless.localStorage.map((item) => [item.key.trim(), item.value])) }
-            : {}),
-          ...(next.headless.headers.length > 0
-            ? { headers: Object.fromEntries(next.headless.headers.map((item) => [item.key.trim(), item.value])) }
             : {}),
           wait_seconds: Number(next.headless.waitSeconds) || 0,
         };
@@ -2099,7 +2244,7 @@ function SiteModal({
   }
 
   const headlessConfigured =
-    headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0 || headless.headers.length > 0;
+    headless.enabled || headless.cookies.length > 0 || headless.localStorage.length > 0;
 
   // 认证子弹窗确定：按所选认证方式写回草稿。三种方式互斥，被切走方式的配置一并清掉，
   // 否则配置里残留半套认证，重开弹窗时方式又会反推回旧的
@@ -2274,7 +2419,7 @@ function SiteModal({
             />
           </SettingRow>
           {/* 认证方式收在「认证与续签」弹窗里，和它控制的输入区在一起；入口卡片标注已配置状态 */}
-          <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加">
+          <SettingRow label="目标模型" hint="从 models.dev 目录搜索勾选；站点自己的别名或新模型，输入后回车也能加。只填 * 表示全量采集该站点所有模型">
             <ModelMultiSelect
               value={models}
               onChange={(next) => {
@@ -2348,9 +2493,9 @@ function SiteModal({
             headersText: endpointHeadersText,
             headless,
             ratioUrl,
-            ratioHeadersText,
           }}
           warningKeys={headerOverrideWarnings.price}
+          injected={injectInitial.price}
           onCommit={commitPrice}
           onClose={() => setActiveSub(null)}
         />
@@ -2381,6 +2526,7 @@ function SiteModal({
           initialUrl={statusUrl}
           initialHeadersText={statusHeadersText}
           warningKeys={headerOverrideWarnings.status}
+          injected={injectInitial.status}
           onCommit={commitStatus}
           onClose={() => setActiveSub(null)}
         />
@@ -2390,6 +2536,7 @@ function SiteModal({
           initialUrl={noticeUrl}
           initialHeadersText={noticeHeadersText}
           warningKeys={headerOverrideWarnings.notice}
+          injected={injectInitial.notice}
           onCommit={commitNotice}
           onClose={() => setActiveSub(null)}
         />
@@ -2494,14 +2641,14 @@ function SitesGuide() {
     },
     {
       when: "直接抓页面是空壳（价格靠 JS 算，如单页应用）",
-      how: "先试接口直采，抓不到会自动换无头浏览器重试；确认要渲染就选「网页模式」，Cookie、localStorage 从 F12 → 应用 → Cookies 里抄",
+      how: "采集方式选「网页模式（Headless）」，每次用真浏览器打开渲染，Cookie、localStorage 从 F12 → 应用 → Cookies 里抄；接口直采不再自动换浏览器重试",
     },
     { when: "渠道状态、站点公告", how: "各自卡片里填地址就行，认证自动沿用站点凭证；被拒时会自动续签一次再试" },
   ];
   const notes = [
     "认证在「认证与续签」里配一处：凭证注入把 token 送到价格、渠道状态、公告三处，接口请求头里手写的认证头会被它盖掉并自动移除",
     "要让某处带 Cookie（如 new_api_refresh），在凭证注入那行把头名填成 cookie、值填成 new_api_refresh=${refresh_token}，续签换新会自动跟着变",
-    "localStorage 不会发给服务器，只在页面脚本内部读取；页面的 JS 靠它取登录信息时才需要填",
+    "localStorage 不会发给服务器，只在页面脚本内部读取；页面的 JS 靠它取登录信息时才需要填。值填 ${access_token} 就是「认证与续签」里管的站点令牌，续签换新后自动跟着变",
     "配完点行内的「测试」马上验证；站点行的红/黄小标就是最近一次采集的异常提示",
   ];
   return (
@@ -2703,7 +2850,7 @@ export function AdminSites() {
       {/* 配置速查：默认收起的一行说明条，展开后按场景给"怎么配" */}
       <div className="panel" style={{ padding: "10px 16px", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <span style={{ fontSize: 13, color: "var(--text-2)" }}>各种情况怎么配？接口直采还是无头浏览器、令牌过期怎么办，速查里都有</span>
+          <span style={{ fontSize: 13, color: "var(--text-2)" }}>各种情况怎么配？接口直采还是网页模式（Headless）、令牌过期怎么办，速查里都有</span>
           <Btn variant="text" size="sm" onClick={() => setGuideOpen((open) => !open)}>
             {guideOpen ? "收起速查" : "展开速查"}
           </Btn>
@@ -2725,7 +2872,7 @@ export function AdminSites() {
             mobileScrollX={560}
             empty={
               <Empty
-                icon={<IconAppstore size={18} />}
+                icon={<DajuSit width={30} />}
                 title="还没有站点"
                 description="添加第一个监控目标后，这里会展示各站点与模型的采集状态。"
                 action={

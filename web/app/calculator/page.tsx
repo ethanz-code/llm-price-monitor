@@ -26,7 +26,7 @@ export default async function CalculatorPage({
   const initial = search.size > 0 ? decodeCalcState(search) : EMPTY_STATE;
 
   return (
-    <div className="page">
+    <div className="page page-calc">
       {!catalog && !overview && (
         <SiteAlert
           title={calculator.loadFailed.title}

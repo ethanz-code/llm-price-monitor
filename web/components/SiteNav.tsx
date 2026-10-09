@@ -16,6 +16,7 @@ import { LogoMark } from "./LogoMark";
 import { useTheme } from "@/app/providers";
 import { fetchAuthState } from "@/lib/api";
 import { nav, site } from "@/lib/copy";
+import { useAuthPage } from "@/lib/useAuthPage";
 import type { ThemeMode } from "@/theme";
 
 const ITEMS = nav.items;
@@ -114,6 +115,7 @@ function ThemeMenu() {
 /** 透明浮动导航：logo 胶囊居左，菜单与主题切换靠右；管理员登录后追加"管理"入口。 */
 export function SiteNav() {
   const pathname = usePathname();
+  const isAuthPage = useAuthPage();
   const selected = `/${pathname.split("/")[1] ?? ""}`;
   const { mode, setMode } = useTheme();
   const [isAdmin, setIsAdmin] = useState(false);
@@ -182,6 +184,9 @@ export function SiteNav() {
       window.removeEventListener("keydown", onKey);
     };
   }, [menuOpen]);
+
+  // 登录/首次设置页不渲染全站导航；hook 已全部调用完才判断，保证钩子顺序稳定
+  if (isAuthPage) return null;
 
   return (
     <header

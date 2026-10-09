@@ -34,6 +34,7 @@ import type { GlobeSite, SiteGeo } from "@/components/SiteGlobe";
 import { HeroTrendChart } from "@/components/HeroTrendChart";
 import { SnapshotPreview } from "@/components/SnapshotPreview";
 import { SiteAlert } from "@/components/SiteAlert";
+import { DajuChartNap, DajuNap, DajuYarn } from "@/components/DajuArt";
 import { alerts, home } from "@/lib/copy";
 
 export const dynamic = "force-dynamic";
@@ -53,6 +54,13 @@ interface LandingData {
  *  阈值一致：可用率 80/60 三档，延迟 1000/3000ms 三档。 */
 const STRIP_TONE: Record<RateLevel, string> = {
   ok: "var(--chart-ok)",
+  warn: "var(--chart-warn)",
+  down: "var(--chart-down)",
+};
+
+/** 站点卡点排用：正常点降到半强度（大面积重复的好状态不抢注意力），异常/延迟档保持全色。 */
+const STRIP_DOT_TONE: Record<RateLevel, string> = {
+  ok: "color-mix(in srgb, var(--chart-ok) 45%, transparent)",
   warn: "var(--chart-warn)",
   down: "var(--chart-down)",
 };
@@ -290,9 +298,10 @@ export default async function LandingPage() {
                   })}
                 </div>
               ) : (
-                <p style={{ color: "var(--text-3)", fontSize: 13, margin: 0 }}>
-                  {home.empty.events}
-                </p>
+                <div className="landing-empty-compact">
+                  <DajuYarn width={72} />
+                  <span>{home.empty.events}</span>
+                </div>
               )}
             </div>
           </section>
@@ -345,7 +354,7 @@ export default async function LandingPage() {
                                 key={index}
                                 className="site-strip-dot"
                                 style={{
-                                  background: STRIP_TONE[rateLevel(point.pct)],
+                                  background: STRIP_DOT_TONE[rateLevel(point.pct)],
                                 }}
                                 title={`${formatTime(point.at)} · 正常 ${point.pct}%`}
                               />
@@ -402,7 +411,10 @@ export default async function LandingPage() {
                 })}
               </div>
             ) : (
-              <p style={{ color: "var(--text-2)" }}>{home.empty.sites}</p>
+              <div className="landing-empty">
+                <DajuNap width={150} />
+                <p>{home.empty.sites}</p>
+              </div>
             )}
           </section>
         </Reveal>
@@ -461,6 +473,9 @@ ${termPriceLines.join("\n")}${
 
         <Reveal>
           <section className="landing-cta">
+            <div className="landing-cta-art">
+              <DajuChartNap width={300} />
+            </div>
             <h2>{home.ctaTitle}</h2>
             <Link href="/overview">
               <Btn variant="primary" size="lg">

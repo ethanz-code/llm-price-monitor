@@ -37,17 +37,19 @@ def _limits() -> tuple[int, int]:
     logs = max_logs if isinstance(max_logs, int) and not isinstance(max_logs, bool) and max_logs >= 1 else DEFAULT_MAX_LOG_LINES
     return runs, logs
 
-# 全量采集与三类拆分采集写同一份价格快照/状态时序，彼此互斥（读-改-写不能并发）；
-# catalog-refresh 只写独立文档，不参与这组互斥
+# 全量采集与三类拆分采集写同一份价格快照/状态时序，彼此互斥（读-改-写不能并发）
 COLLECT_KINDS = frozenset({"collect", "collect-test", "collect-price", "collect-status", "collect-notice"})
+# 目录刷新与单厂商源刷新都读-改-写同一份 catalog 文档，二者同样互斥（但不与价格/状态采集互斥）
+CATALOG_KINDS = frozenset({"catalog-refresh", "vendor-source-refresh"})
 
 
 def _conflict_of(kind: str) -> str | None:
-    """返回与 kind 冲突的运行中任务 id；全量与拆分采集之间跨 kind 互斥。"""
+    """返回与 kind 冲突的运行中任务 id；同组任务彼此互斥。"""
     if kind in _RUNNING_KINDS:
         return _RUNNING_KINDS[kind]
-    if kind in COLLECT_KINDS:
-        return next((_RUNNING_KINDS[k] for k in COLLECT_KINDS if k in _RUNNING_KINDS), None)
+    for group in (COLLECT_KINDS, CATALOG_KINDS):
+        if kind in group:
+            return next((_RUNNING_KINDS[k] for k in group if k in _RUNNING_KINDS), None)
     return None
 
 

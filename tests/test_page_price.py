@@ -1,4 +1,4 @@
-"""通用定价页拉取脚本（page_price）：三种确定性解析、无头兜底与 AI 兜底的证据校验。"""
+"""通用定价页拉取脚本（page_price）：三种确定性解析、Headless 兜底与 AI 兜底的证据校验。"""
 from __future__ import annotations
 
 import json
@@ -164,7 +164,8 @@ def test_fetch_static_markdown() -> None:
     assert by_key(result["models"], "glm5.3flash")["input_price"] == 0.8
 
 
-def test_fetch_falls_back_to_headless_for_js_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_renders_only_when_headless_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    """空壳页不再自动换 Headless 渲染：只有显式 headless=True 才走浏览器。"""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=JS_SHELL_PAGE)
 
@@ -175,10 +176,18 @@ def test_fetch_falls_back_to_headless_for_js_shell(monkeypatch: pytest.MonkeyPat
         return HTML_PAGE
 
     monkeypatch.setattr(page_price, "fetch_page_html", fake_fetch_page_html)
-    result = fetch_page_prices("https://example.com/pricing", transport=httpx.MockTransport(handler))
+
+    plain = fetch_page_prices("https://example.com/pricing", transport=httpx.MockTransport(handler))
+    assert rendered_calls == []
+    assert plain["method"] == "none"
+    assert any("没有拿到价格" in warning for warning in plain["warnings"])
+
+    rendered = fetch_page_prices(
+        "https://example.com/pricing", transport=httpx.MockTransport(handler), headless=True
+    )
     assert rendered_calls == ["https://example.com/pricing"]
-    assert result["method"] == "headless-html"
-    assert len(result["models"]) == 2
+    assert rendered["method"] == "headless-html"
+    assert len(rendered["models"]) == 2
 
 
 def _ai_response(models: list[dict]) -> dict:
@@ -371,3 +380,27 @@ def test_parse_html_time_tier_column():
         {"context": "空闲时段", "input_price": 1.0, "output_price": 4.0},
         {"context": "高峰时段", "input_price": 2.0, "output_price": 8.0},
     ]
+
+
+def test_fetch_page_prices_ai_fallback_uses_rendered_text(monkeypatch):
+    """显式 headless 渲染成功但静态解析不出：AI 兜底必须看渲染后的正文，而不是渲染前的 JS 空壳。"""
+    from llm_price_monitor.config import AIConfig
+
+    monkeypatch.setattr(page_price, "fetch_page_html", lambda url, headers, user_agent: "<html>claude-x 渲染后价格 $3.00</html>")
+    captured: dict[str, str] = {}
+
+    def fake_ai_extract(text: str, source_url: str, ai_config: AIConfig, client: httpx.Client):
+        captured["text"] = text
+        return [], []
+
+    monkeypatch.setattr(page_price, "_ai_extract", fake_ai_extract)
+    ai_config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", enabled=True)
+    result = fetch_page_prices(
+        "https://demo.test/pricing",
+        ai_config=ai_config,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="<html>loading…</html>")),
+        headless=True,
+    )
+    assert "渲染后价格" in captured["text"]
+    assert "<html>loading…</html>" not in captured["text"]
+    assert result["method"] == "none"  # 假抽取不产出记录，只验证喂给 AI 的文本来源

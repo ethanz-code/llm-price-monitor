@@ -407,7 +407,7 @@ export function ShareSiteCard({
   const hiddenCount = Math.max(channels.length - shown.length, 0);
   // 最近 15 次整站检测色点：与站点卡片上的色点条同口径
   const recent = availability.slice(-15);
-  const brandName = "LLM 价格监控";
+  const brandName = "大橘";
   const brandDesc = share.brandDesc;
 
   return (

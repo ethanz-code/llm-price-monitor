@@ -4,8 +4,9 @@
 解析两层：new-api 包装 {success, message, data}（data 为 Markdown 正文）直接取 data；
 非 JSON 响应按文本原样保留——notice.url 也可以指向纯文本/Markdown 公告页。
 new-api 系的多条公告（后台"公告"管理发布）走公开的 /api/status → data.announcements
-数组；拿得到就按"标题 + 日期 + 正文"分节拼进公告正文（置顶公告在前，最新在前），
-拿不到（非 new-api、接口 404/失败）就回落到只存 /api/notice 的单条公告。
+数组；拿得到就按"标题 + 日期 + 正文"分节拼进公告正文（置顶公告在前，最新在前）。
+接口 404 / 200 非 JSON / 形态不符视为站点没有多条公告功能，只存 /api/notice 的单条
+公告；接口存在但请求失败（超时/连接拒绝/5xx/401）照常抛错，不静默降级。
 正文为空视为站点未设置公告，调用方不入库；变化检测由调用方对正文做文本比较生成事件。
 404 分两种：未配置 notice.url（自动推导）时视为站点没有公告接口，返回 None 由调用方
 静默跳过；显式配置了 notice.url 的 404 是配置错误，照常抛错暴露给采集错误列表。
@@ -20,7 +21,6 @@ import httpx
 
 from llm_price_monitor.adapters import build_request_kwargs, http_error_message, resolve_endpoint
 from llm_price_monitor.ai import AIConfig, extract_notice_content
-from llm_price_monitor.tasklog import emit as tasklog_emit
 from llm_price_monitor.config import AuthRequiredError, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import redact_url
 
@@ -58,20 +58,27 @@ def _fetch_announcements(
 ) -> list[dict[str, Any]]:
     """拉取 /api/status 的 announcements 公告列表（new-api 系的多条公告）。
 
-    接口缺失、非 JSON、字段不符或请求失败一律返回空列表——公告列表拿不到时
-    回落到只存 /api/notice 的单条公告，不让公告采集整体失败。
+    接口 404、200 但非 JSON、响应形态不符视为站点没有多条公告功能，返回空列表
+    只用 /api/notice 单条公告；接口存在但请求失败（超时/连接拒绝/5xx/401）照常
+    抛错暴露给采集错误列表——少拿了多条公告不允许静默降级。
     """
     url = _resolve_status_url(spec)
     if url is None:
         return []
+    entry = resolve_endpoint({"url": url, "headers": _site_headers(spec)}, spec=spec, label="notice")
     try:
-        entry = resolve_endpoint({"url": url, "headers": _site_headers(spec)}, spec=spec, label="notice")
         response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="notice"))
+    except httpx.HTTPError as exc:
+        raise PriceMonitorError(f"多条公告接口（/api/status）请求失败：{exc}") from exc
+    if response.status_code == 404:
+        return []
+    try:
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, ValueError, PriceMonitorError) as exc:
-        tasklog_emit(f"[{spec.id}] 多条公告接口不可用，已跳过：{exc}")
-        return []
+    except httpx.HTTPStatusError as exc:
+        raise PriceMonitorError(f"多条公告接口（/api/status）返回 HTTP {response.status_code}") from exc
+    except ValueError:
+        return []  # 200 但非 JSON：多半是前端路由兜底的 HTML 页，站点没有该接口
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
         return []
     items = payload["data"].get("announcements")

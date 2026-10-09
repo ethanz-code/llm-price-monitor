@@ -1,6 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- 品牌色与 web/app/globals.css 一致：accent #C8FF00 / accent-contrast #111418（XML 注释内不允许双连字符） -->
+  <!-- 探头的大橘（品牌 Logo），与 components/DajuArt.tsx DajuPeek square 同款：accent #C8FF00 / coat #F0913C / stripe #D4741E / ink #43290F（XML 注释内不允许双连字符） -->
+  <defs>
+    <clipPath id="peekClip"><rect width="64" height="64" rx="14"/></clipPath>
+  </defs>
   <rect width="64" height="64" rx="14" fill="#C8FF00"/>
-  <polyline points="14,45 27,31 35,37 42.8,27.4" fill="none" stroke="#111418" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="48" cy="21" r="4.5" fill="#111418"/>
+  <g clip-path="url(#peekClip)">
+    <circle cx="32" cy="50" r="24" fill="#F0913C" stroke="#43290F" stroke-width="2.6"/>
+    <path d="M17.5 31 Q12.5 16 14.5 15 Q16.5 14.5 26.5 28.5 Z" fill="#F0913C" stroke="#43290F" stroke-width="2.6" stroke-linejoin="round"/>
+    <path d="M46.5 31 Q51.5 16 49.5 15 Q47.5 14.5 37.5 28.5 Z" fill="#F0913C" stroke="#43290F" stroke-width="2.6" stroke-linejoin="round"/>
+    <path d="M32 27.5 L32 35" stroke="#D4741E" stroke-width="3" stroke-linecap="round"/>
+    <path d="M25.8 31.5 L25.2 37" stroke="#D4741E" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M38.2 31.5 L38.8 37" stroke="#D4741E" stroke-width="2.6" stroke-linecap="round"/>
+    <circle cx="23.5" cy="44" r="3" fill="#43290F"/>
+    <circle cx="40.5" cy="44" r="3" fill="#43290F"/>
+    <path d="M26.5 50.5 Q29.5 53.6 32 50.5 Q34.5 53.6 37.5 50.5" fill="none" stroke="#43290F" stroke-width="2.6" stroke-linecap="round"/>
+  </g>
 </svg>

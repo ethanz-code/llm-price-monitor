@@ -47,6 +47,23 @@ export function Illustration404() {
       <rect x="186" y="8" width="14" height="14" fill="url(#il-tile-g)" />
       <rect x="170" y="14" width="10" height="10" fill="url(#il-tile-0)" opacity="0.7" />
       <rect x="158" y="6" width="7" height="7" fill="url(#il-tile-0)" opacity="0.45" />
+
+      {/* 大橘：蹲在左下角，抬头看着掉出画面的曲线 */}
+      <g>
+        <path d="M42 150 Q34 148 36 140" style={{ stroke: "var(--cat-coat)" }} strokeWidth="5" strokeLinecap="round" fill="none" />
+        <path d="M40 152 C38 132 46 122 56 122 C66 122 71 132 70 152 Z" style={{ fill: "var(--cat-coat)" }} />
+        <ellipse cx="52" cy="142" rx="7" ry="9" style={{ fill: "var(--cat-cream)" }} />
+        <polygon points="44,105 42,93 53,100" style={{ fill: "var(--cat-coat)" }} />
+        <polygon points="55,100 64,92 62,105" style={{ fill: "var(--cat-coat)" }} />
+        <circle cx="53" cy="112" r="12" style={{ fill: "var(--cat-coat)" }} />
+        <path d="M49 102.5 q1.8 4 0 8" style={{ stroke: "var(--cat-stripe)" }} strokeWidth="3" strokeLinecap="round" fill="none" />
+        <path d="M56 102 q1.8 4 0 8.5" style={{ stroke: "var(--cat-stripe)" }} strokeWidth="3" strokeLinecap="round" fill="none" />
+        <circle cx="49.5" cy="111" r="1.7" style={{ fill: "var(--cat-ink)" }} />
+        <circle cx="57.5" cy="111" r="1.7" style={{ fill: "var(--cat-ink)" }} />
+        <polygon points="51.9,114.5 53,115.7 54.1,114.5" style={{ fill: "var(--cat-ink)" }} />
+        <ellipse cx="48.5" cy="151" rx="4" ry="2.5" style={{ fill: "var(--cat-cream)" }} />
+        <ellipse cx="57" cy="151" rx="4" ry="2.5" style={{ fill: "var(--cat-cream)" }} />
+      </g>
     </svg>
   );
 }

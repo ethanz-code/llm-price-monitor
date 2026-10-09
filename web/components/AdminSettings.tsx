@@ -25,10 +25,14 @@ const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
 /** 数据保留天数配置项：与后端 settings 的 retention_*_days 字段一一对应；价格/状态事件与公告永不清理。 */
 const DEFAULT_RETENTION_DAYS = 90;
 
-const RETENTION_ITEMS: { key: string; label: string; hint: string }[] = [
-  { key: "retention_price_days", label: "价格趋势点", hint: "画价格走势图用的历史点，超期自动清掉" },
-  { key: "retention_status_days", label: "渠道状态记录", hint: "渠道可用性的历史检查结果，超期自动清掉" },
-  { key: "retention_visit_days", label: "访问统计明细", hint: "每天的浏览量、来访设备等明细，超期自动清掉" },
+/** AI 调用日志保留天数：与后端 settings.retention_ai_log_days 对应；成功率与按天趋势基于它。 */
+const DEFAULT_AI_LOG_RETENTION_DAYS = 7;
+
+const RETENTION_ITEMS: { key: string; label: string; hint: string; default: number }[] = [
+  { key: "retention_price_days", label: "价格趋势点", hint: "画价格走势图用的历史点，超期自动清掉", default: DEFAULT_RETENTION_DAYS },
+  { key: "retention_status_days", label: "渠道状态记录", hint: "渠道可用性的历史检查结果，超期自动清掉", default: DEFAULT_RETENTION_DAYS },
+  { key: "retention_visit_days", label: "访问统计明细", hint: "每天的浏览量、来访设备等明细，超期自动清掉", default: DEFAULT_RETENTION_DAYS },
+  { key: "retention_ai_log_days", label: "AI 调用日志", hint: "AI 请求的成功/失败与 token 记录，AI 成功率和按天趋势基于它", default: DEFAULT_AI_LOG_RETENTION_DAYS },
 ];
 
 /** 任务记录与日志上限配置项：与后端 settings 的 max_task_* 字段一一对应，超出即淘汰最旧。 */
@@ -38,8 +42,20 @@ const DEFAULT_MAX_LOG_LINES = 500;
 /** AI 助手每 IP 每日提问上限：与后端 settings.assistant_daily_limit 对应；0 = 不限制。 */
 const DEFAULT_ASSISTANT_DAILY_LIMIT = 10;
 
+/** AI 助手每 IP 每小时提问上限（防单访客高频刷问题）：与后端 settings.assistant_hourly_limit 对应；0 = 不限制。 */
+const DEFAULT_ASSISTANT_HOURLY_LIMIT = 10;
+
+/** 单次请求喂给 AI 的证据上限与回复 token 上限：与后端 ai.max_input_chars / ai.max_tokens 对应。 */
+const DEFAULT_AI_MAX_INPUT_CHARS = 60000;
+const DEFAULT_AI_MAX_TOKENS = 4000;
+
 function modelsToText(models: SiteConfig["models"]): string {
   return (models ?? []).join(", ");
+}
+
+/** 解析模型列表输入框：逗号/换行分隔，去空白、去重、保序；体检与保存共用同一口径。 */
+function parsePoolText(text: string): string[] {
+  return [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
 }
 
 /** 密钥输入：password 型 + 显隐切换，避免旁人瞥屏或截图泄露。 */
@@ -94,6 +110,10 @@ type TestTarget = "ai" | "wxpusher";
 type TestOutcome = { ok: boolean; text: string };
 
 type TestResponse = { elapsed_ms: number; model?: string; reply?: string };
+
+type ModelProbeResult = { model: string; ok: boolean; reply?: string; error?: string; duration_ms: number };
+
+type ModelProbeReport = { tested_at: number | null; results: Record<string, ModelProbeResult> };
 
 type SeedResponse = {
   mode: "skip_existing" | "overwrite";
@@ -167,9 +187,17 @@ export function AdminSettings() {
   const [maxTaskRuns, setMaxTaskRuns] = useState("");
   const [maxLogLines, setMaxLogLines] = useState("");
   const [assistantDailyLimit, setAssistantDailyLimit] = useState("");
+  const [assistantHourlyLimit, setAssistantHourlyLimit] = useState("");
+  const [aiMaxInputChars, setAiMaxInputChars] = useState("");
+  const [aiMaxTokens, setAiMaxTokens] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<TestTarget | null>(null);
   const [results, setResults] = useState<Partial<Record<TestTarget, TestOutcome>>>({});
+  const [probing, setProbing] = useState(false);
+  const [probeResults, setProbeResults] = useState<Record<string, ModelProbeResult>>({});
+  const [probeTotal, setProbeTotal] = useState(0);
+  const [probeTestedAt, setProbeTestedAt] = useState<number | null>(null);
+  const [probeWarnOpen, setProbeWarnOpen] = useState(false);
   const [seeding, setSeeding] = useState<"skip_existing" | "overwrite" | null>(null);
   const [seedWarnOpen, setSeedWarnOpen] = useState(false);
 
@@ -185,6 +213,8 @@ export function AdminSettings() {
         setAiModels(modelsToText((ai.models as SiteConfig["models"]) ?? []));
         setAiApiKey(typeof ai.api_key === "string" ? ai.api_key : "");
         setAiTimeout(String(typeof ai.timeout === "number" ? ai.timeout : 60));
+        setAiMaxInputChars(typeof ai.max_input_chars === "number" && Number.isFinite(ai.max_input_chars) ? String(ai.max_input_chars) : "");
+        setAiMaxTokens(typeof ai.max_tokens === "number" && Number.isFinite(ai.max_tokens) ? String(ai.max_tokens) : "");
         const rawSchedule = (loaded.settings.schedule ?? {}) as Record<string, unknown>;
         const nextSchedule: Record<string, string> = {};
         for (const item of SCHEDULE_ITEMS) {
@@ -213,6 +243,11 @@ export function AdminSettings() {
             ? String(loaded.settings.assistant_daily_limit)
             : "",
         );
+        setAssistantHourlyLimit(
+          typeof loaded.settings.assistant_hourly_limit === "number" && Number.isFinite(loaded.settings.assistant_hourly_limit)
+            ? String(loaded.settings.assistant_hourly_limit)
+            : "",
+        );
     } catch {
       setData({ settings: {}, ai: {} });
     }
@@ -220,6 +255,12 @@ export function AdminSettings() {
 
   useEffect(() => {
     void load();
+    apiSend<ModelProbeReport>("/api/settings/test-models", "GET")
+      .then((report) => {
+        setProbeResults(report.results ?? {});
+        setProbeTestedAt(report.tested_at ?? null);
+      })
+      .catch(() => {});
   }, []);
 
   async function save() {
@@ -235,11 +276,11 @@ export function AdminSettings() {
       }
       scheduleOut[item.key] = value;
     }
-    // 保留天数留空 = 回默认值 90 天；非法输入直接拦截，不发请求
+    // 保留天数留空 = 回各项默认值；非法输入直接拦截，不发请求
     const retentionOut: Record<string, number> = {};
     for (const item of RETENTION_ITEMS) {
       const text = (retention[item.key] ?? "").trim();
-      const value = text ? Number.parseFloat(text) : DEFAULT_RETENTION_DAYS;
+      const value = text ? Number.parseFloat(text) : item.default;
       if (!Number.isFinite(value) || value < 1 || !Number.isInteger(value)) {
         toast(`${item.label}保留天数需是不小于 1 的整数`);
         return;
@@ -259,11 +300,17 @@ export function AdminSettings() {
       toast("单任务日志行数上限需是不小于 1 的整数");
       return;
     }
-    // 助手限次留空 = 回默认 10 次；0 = 不限制；非法输入直接拦截，不发请求
+    // 助手限次留空 = 回默认值；0 = 不限制；非法输入直接拦截，不发请求
     const assistantLimitText = assistantDailyLimit.trim();
     const assistantLimitOut = assistantLimitText ? Number.parseFloat(assistantLimitText) : DEFAULT_ASSISTANT_DAILY_LIMIT;
     if (!Number.isFinite(assistantLimitOut) || assistantLimitOut < 0 || !Number.isInteger(assistantLimitOut)) {
       toast("AI 助手每日提问上限需是不小于 0 的整数（0 为不限制）");
+      return;
+    }
+    const assistantHourText = assistantHourlyLimit.trim();
+    const assistantHourOut = assistantHourText ? Number.parseFloat(assistantHourText) : DEFAULT_ASSISTANT_HOURLY_LIMIT;
+    if (!Number.isFinite(assistantHourOut) || assistantHourOut < 0 || !Number.isInteger(assistantHourOut)) {
+      toast("AI 助手每小时提问上限需是不小于 0 的整数（0 为不限制）");
       return;
     }
     const settings = {
@@ -275,6 +322,7 @@ export function AdminSettings() {
       max_task_runs: maxRuns,
       max_task_log_lines: maxLogLinesOut,
       assistant_daily_limit: assistantLimitOut,
+      assistant_hourly_limit: assistantHourOut,
     };
     // Base URL 留空 = 暂不启用 AI；填了就必须是完整 http(s) 地址，否则要到调用时才报错
     const base = aiBaseUrl.trim();
@@ -289,6 +337,19 @@ export function AdminSettings() {
       toast("AI 超时需是大于 0 的数字（秒）");
       return;
     }
+    // 输入/输出上限留空 = 回默认值；非法输入直接拦截，不发请求
+    const maxInputText = aiMaxInputChars.trim();
+    const maxInputChars = maxInputText ? Number.parseFloat(maxInputText) : DEFAULT_AI_MAX_INPUT_CHARS;
+    if (!Number.isFinite(maxInputChars) || maxInputChars < 1 || !Number.isInteger(maxInputChars)) {
+      toast("单次输入上限需是不小于 1 的整数（字符）");
+      return;
+    }
+    const maxTokensText = aiMaxTokens.trim();
+    const maxTokens = maxTokensText ? Number.parseFloat(maxTokensText) : DEFAULT_AI_MAX_TOKENS;
+    if (!Number.isFinite(maxTokens) || maxTokens < 1 || !Number.isInteger(maxTokens)) {
+      toast("单次回复上限需是不小于 1 的整数（token）");
+      return;
+    }
     const ai: Record<string, unknown> = {
       ...data.ai,
       enabled: true,
@@ -297,6 +358,8 @@ export function AdminSettings() {
       models: aiModels.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
       api_key: aiApiKey.trim() || null,
       timeout,
+      max_input_chars: maxInputChars,
+      max_tokens: maxTokens,
     };
     setSaving(true);
     try {
@@ -334,6 +397,47 @@ export function AdminSettings() {
     } finally {
       setTesting(null);
     }
+  }
+
+  /** 一键体检模型池：先弹费用确认，确认后分批交给后端实测，边测边出结果。 */
+  function runProbeAll() {
+    const pool = parsePoolText(aiModels);
+    if (!pool.length) {
+      toast("请先填写 AI 模型列表");
+      return;
+    }
+    setProbeWarnOpen(true);
+  }
+
+  async function doProbeAll(pool: string[]) {
+    setProbing(true);
+    setProbeResults({});
+    setProbeTotal(pool.length);
+    const acc: Record<string, ModelProbeResult> = {};
+    try {
+      for (let i = 0; i < pool.length; i += 8) {
+        const res = await apiSend<{ results: ModelProbeResult[] }>("/api/settings/test-models", "POST", {
+          models: pool.slice(i, i + 8),
+          reset: i === 0,
+        });
+        for (const item of res.results) acc[item.model] = item;
+        setProbeResults({ ...acc });
+      }
+      const okCount = Object.values(acc).filter((item) => item.ok).length;
+      toast(`模型池体检完成：${okCount} 个可用，${pool.length - okCount} 个不可用`);
+    } catch (error) {
+      toast(`体检中断：${errorText(error)}`);
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  function copyOkModels() {
+    const list = Object.values(probeResults)
+      .filter((item) => item.ok)
+      .map((item) => item.model);
+    if (!list.length) return;
+    void navigator.clipboard.writeText(list.join(", ")).then(() => toast("可用模型列表已复制，粘贴回模型列表保存即可"));
   }
 
   async function runSeed(mode: "skip_existing" | "overwrite") {
@@ -386,14 +490,14 @@ export function AdminSettings() {
           </SettingsSection>
           <SettingsSection
             title="数据保留"
-            description="这些记录超过保留天数会自动清掉；价格的变动事件、渠道状态事件和站点公告不受影响，会一直保留。留空表示默认 90 天"
+            description="这些记录超过保留天数会自动清掉；价格的变动事件、渠道状态事件和站点公告不受影响，会一直保留。留空表示默认值"
           >
             {RETENTION_ITEMS.map((item) => (
               <SettingRow key={item.key} label={`${item.label}保留（天）`} hint={item.hint}>
                 <Input
                   value={retention[item.key] ?? ""}
                   onChange={(value) => setRetention((prev) => ({ ...prev, [item.key]: value }))}
-                  placeholder={`默认 ${DEFAULT_RETENTION_DAYS}`}
+                  placeholder={`默认 ${item.default}`}
                   style={{ width: 120, maxWidth: "100%" }}
                 />
               </SettingRow>
@@ -465,11 +569,108 @@ export function AdminSettings() {
                 </Btn>
               </div>
             </SettingRow>
+            <SettingRow
+              label="模型池体检"
+              hint="对列表里每个模型各发一次最小请求（15 秒内没回话按失败计），用已保存的配置实测，会产生少量 token 费用；改过配置先保存再测"
+            >
+              <Btn size="sm" loading={probing} onClick={runProbeAll}>
+                一键测试全部模型
+              </Btn>
+            </SettingRow>
+            {(probing || Object.keys(probeResults).length > 0) && (
+              <div style={{ display: "grid", gap: 8 }}>
+                {probing && (
+                  <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                    已测 {Object.keys(probeResults).length}/{probeTotal}，边测边出结果…
+                  </span>
+                )}
+                {Object.values(probeResults).map((item) => (
+                  <div key={item.model} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, minWidth: 0 }}>
+                    <span
+                      className="mono"
+                      title={item.model}
+                      style={{ width: 200, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    >
+                      {item.model}
+                    </span>
+                    {item.ok ? <span className="tag tone-green">可用</span> : <span className="tag tone-red">失败</span>}
+                    <span
+                      title={item.ok ? item.reply : item.error}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: item.ok ? "var(--text-3)" : "var(--text-2)",
+                      }}
+                    >
+                      {item.ok ? `回复：${item.reply}` : item.error}
+                    </span>
+                    <span style={{ flexShrink: 0, color: "var(--text-3)" }}>{item.duration_ms}ms</span>
+                  </div>
+                ))}
+                {(() => {
+                  const okModels = Object.values(probeResults)
+                    .filter((item) => item.ok)
+                    .map((item) => item.model);
+                  if (!okModels.length) return null;
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12.5, color: "var(--text-2)", whiteSpace: "nowrap" }}>
+                        可用 {okModels.length} 个：
+                      </span>
+                      <code
+                        className="mono"
+                        title={okModels.join(", ")}
+                        style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
+                        {okModels.join(", ")}
+                      </code>
+                      {!probing && (
+                        <Btn size="sm" onClick={copyOkModels}>
+                          复制可用列表
+                        </Btn>
+                      )}
+                    </div>
+                  );
+                })()}
+                {!probing && probeTestedAt && (
+                  <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                    上次体检完成时间：{new Date(probeTestedAt * 1000).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            )}
+            <SettingRow label="单次输入上限（字符）" hint="发给 AI 的页面证据超出就截断；调大能看全更大的页面，token 消耗也更大">
+              <Input
+                value={aiMaxInputChars}
+                onChange={setAiMaxInputChars}
+                placeholder={`默认 ${DEFAULT_AI_MAX_INPUT_CHARS}`}
+                style={{ width: 120, maxWidth: "100%" }}
+              />
+            </SettingRow>
+            <SettingRow label="单次回复上限（token）" hint="模型单次最多生成多少 token，一般不用改">
+              <Input
+                value={aiMaxTokens}
+                onChange={setAiMaxTokens}
+                placeholder={`默认 ${DEFAULT_AI_MAX_TOKENS}`}
+                style={{ width: 120, maxWidth: "100%" }}
+              />
+            </SettingRow>
             <SettingRow label="AI 助手每 IP 每日提问上限" hint="每个访客每天最多向 AI 助手提多少个问题，超了当天就不再回答；填 0 表示不限制">
               <Input
                 value={assistantDailyLimit}
                 onChange={setAssistantDailyLimit}
                 placeholder={`默认 ${DEFAULT_ASSISTANT_DAILY_LIMIT}`}
+                style={{ width: 120, maxWidth: "100%" }}
+              />
+            </SettingRow>
+            <SettingRow label="AI 助手每 IP 每小时提问上限" hint="每个访客每小时最多向 AI 助手提多少个问题，防止单人高频刷问题；填 0 表示不限制">
+              <Input
+                value={assistantHourlyLimit}
+                onChange={setAssistantHourlyLimit}
+                placeholder={`默认 ${DEFAULT_ASSISTANT_HOURLY_LIMIT}`}
                 style={{ width: 120, maxWidth: "100%" }}
               />
             </SettingRow>
@@ -532,6 +733,41 @@ export function AdminSettings() {
               </span>
               <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>
                 没提到的配置不动；种子列了站点才会整体替换站点，默认种子不会清空你的站点。
+              </span>
+            </div>
+          </Modal>
+          <Modal
+            open={probeWarnOpen}
+            onClose={() => setProbeWarnOpen(false)}
+            title={`开始体检 ${parsePoolText(aiModels).length} 个模型？`}
+            footer={
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <Btn onClick={() => setProbeWarnOpen(false)}>取消</Btn>
+                <Btn
+                  variant="primary"
+                  loading={probing}
+                  onClick={() => {
+                    setProbeWarnOpen(false);
+                    void doProbeAll(parsePoolText(aiModels));
+                  }}
+                >
+                  开始测试
+                </Btn>
+              </div>
+            }
+          >
+            <div style={{ display: "grid", gap: 10, fontSize: 13.5, lineHeight: 1.7 }}>
+              <span>
+                会对列表里的每个模型各发一条「请只回复 ok」的真实请求，<strong>按你服务商的 token 单价计费</strong>
+                ；模型越多花费越多，几十个模型通常也就几分钱，但请知悉这是真实调用。
+              </span>
+              <span style={{ color: "var(--text-3)", fontSize: 12.5 }}>
+                每个模型 15 秒内没回话按失败计；全部测完预计{" "}
+                {(() => {
+                  const seconds = Math.max(1, Math.ceil(parsePoolText(aiModels).length / 8) * 5);
+                  return seconds < 60 ? `${seconds} 秒` : `1~${Math.ceil(seconds / 60)} 分钟`;
+                })()}
+                ，期间可以停在页面看结果逐行出现。
               </span>
             </div>
           </Modal>

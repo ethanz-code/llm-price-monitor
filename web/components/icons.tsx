@@ -207,6 +207,34 @@ export function IconChevronDown(p: IconProps) {
   );
 }
 
+export function IconChevronRight(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="m9 18 6-6-6-6" />
+    </Stroke>
+  );
+}
+
+export function IconLock(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <rect x={3} y={11} width={18} height={11} rx={2} />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </Stroke>
+  );
+}
+
+/** 历史会话：时钟回拨（lucide `history`，ISC）。 */
+export function IconHistory(p: IconProps) {
+  return (
+    <Stroke {...p}>
+      <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3.5 2" />
+    </Stroke>
+  );
+}
+
 export function IconClose(p: IconProps) {
   return (
     <Stroke {...p}>

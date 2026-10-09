@@ -19,8 +19,8 @@ from llm_price_monitor.ai import (
     AIExtractionError,
     _fit_text,
     ai_content,
-    ai_request,
     json_content,
+    request_with_model_fallback,
 )
 from llm_price_monitor.config import AIConfig, AuthRequiredError, PriceMonitorError, SiteSpec
 from llm_price_monitor.evidence import payload_hash, redact_url
@@ -85,12 +85,10 @@ def _status_from_text(text: str) -> dict[str, Any] | None:
 def ai_extract_status(
     config: AIConfig, text: str, url: str, client: httpx.Client | None = None
 ) -> dict[str, Any]:
-    """AI 兜底：把 HTML/JS 文本整理成状态 JSON 对象；页面原文不变时直接复用缓存结果。"""
-    ai_model = config.pick_model()
-    if not config.base_url or not ai_model:
-        raise PriceMonitorError("配置文件 ai.base_url 或 ai.models 未配置")
-    if not config.api_key:
-        raise PriceMonitorError("配置文件 ai.api_key 未配置")
+    """AI 兜底：把 HTML/JS 文本整理成状态 JSON 对象；页面原文不变时直接复用缓存结果。
+
+    走统一的换模型回退链路：抽中的模型失败自动换下一个，成败都写 AI 日志（scene=渠道状态）。
+    """
     cache_key = payload_hash({"version": 1, "kind": "status", "url": url, "text": text})
     cached = config.cache.cache_get(cache_key) if config.cache is not None else None
     if isinstance(cached, dict):
@@ -114,12 +112,10 @@ def ai_extract_status(
 
 网页内容：
 {_fit_text(text, config.max_input_chars)}"""
-    url_endpoint, headers, request_body = ai_request(config, ai_model, system, user)
     own = client is None
     client = client or httpx.Client(timeout=config.timeout)
     try:
-        response = client.post(url_endpoint, headers=headers, json=request_body, timeout=config.timeout)
-        response.raise_for_status()
+        _, response = request_with_model_fallback(config, system, user, client=client, scene="渠道状态")
         result = json_content(ai_content(config.api_format, response.json()))
         if config.cache is not None:
             config.cache.cache_put(cache_key, result)

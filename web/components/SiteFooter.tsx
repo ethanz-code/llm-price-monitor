@@ -4,15 +4,18 @@ import { useState } from "react";
 import Link from "next/link";
 import { IconGithub, IconMail, IconWecom } from "./icons";
 import { LogoMark } from "./LogoMark";
+import { DajuSit } from "./DajuArt";
 import { FeedbackModal } from "./FeedbackModal";
 import { CONTACT_EMAIL, ContactModal } from "./ContactModal";
 import { ChromeMosaic } from "./ChromeMosaic";
 import { footer, site } from "@/lib/copy";
+import { useAuthPage } from "@/lib/useAuthPage";
 
 /** 全站页脚：品牌 + 一句话说明合并数据免责；联系方式图标与低调管理入口在底行。 */
 export function SiteFooter() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
+  if (useAuthPage()) return null;
   return (
     <footer className="site-footer">
       <ChromeMosaic />
@@ -23,6 +26,10 @@ export function SiteFooter() {
             <span style={{ fontWeight: 600, color: "var(--text)" }}>{site.name}</span>
           </div>
           <p>{footer.brandLine}</p>
+          <p className="footer-watch-line">
+            <DajuSit width={17} />
+            {footer.watchLine}
+          </p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
               className="footer-icon"

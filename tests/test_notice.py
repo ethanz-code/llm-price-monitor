@@ -182,14 +182,43 @@ def test_fetch_site_notice_reads_top_level_announcements():
     assert "全线降至 2 折" in record["content"]
 
 
-def test_fetch_site_notice_falls_back_when_status_unavailable():
-    """/api/status 失败（非 new-api 或接口挂了）：回落只存 /api/notice 单条公告。"""
+def test_fetch_site_notice_raises_when_status_endpoint_fails():
+    """/api/status 存在但请求失败（5xx/超时）：照常报错，不再静默回落单条公告。"""
     spec = _spec(None)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/notice":
             return httpx.Response(200, json={"success": True, "data": "单条公告"})
         return httpx.Response(500, text="boom")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(PriceMonitorError, match="多条公告接口"):
+            fetch_site_notice(spec, client, 10.0, "ua/1")
+
+
+def test_fetch_site_notice_skips_status_when_absent():
+    """/api/status 404：站点没有多条公告功能，只用 /api/notice 单条公告。"""
+    spec = _spec(None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/notice":
+            return httpx.Response(200, json={"success": True, "data": "单条公告"})
+        return httpx.Response(404, text="not found")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        record = fetch_site_notice(spec, client, 10.0, "ua/1")
+    assert record["parse"] == "json"
+    assert record["content"] == "单条公告"
+
+
+def test_fetch_site_notice_skips_status_when_not_json():
+    """/api/status 返回 200 HTML（前端路由兜底）：视为站点没有该接口，不报错。"""
+    spec = _spec(None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/notice":
+            return httpx.Response(200, json={"success": True, "data": "单条公告"})
+        return httpx.Response(200, text="<html>SPA shell</html>")
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         record = fetch_site_notice(spec, client, 10.0, "ua/1")

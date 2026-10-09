@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Btn, Input, Seg, toast } from "./ui";
 import { IconCheck } from "./icons";
+import { DajuAwake, DajuNap } from "./DajuArt";
 import { formatPrice, looseIncludes, formatDiscount } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import { calculator } from "@/lib/copy";
@@ -39,7 +40,7 @@ function symbolOf(currency: string): string {
   return "";
 }
 
-/** 目录条目 → 候选模型：缓存价缺失就留空，不填估算值。 */
+/** 目录条目 → 候选模型：缓存命中价缺失就留空，不填估算值；缓存写入价不进计算，不展示。 */
 function optionFromCatalog(key: string, entry: CatalogEntry): Option {
   return {
     value: key,
@@ -49,7 +50,6 @@ function optionFromCatalog(key: string, entry: CatalogEntry): Option {
       input: entry.list?.input ?? null,
       output: entry.list?.output ?? null,
       cacheRead: entry.cache?.read ?? null,
-      cacheWrite: entry.cache?.write ?? null,
     },
     currency: entry.currency || "USD",
   };
@@ -68,7 +68,6 @@ function optionFromRecord(row: OverviewRecord): Option {
       input: row.input_price ?? null,
       output: row.output_price ?? null,
       cacheRead: null,
-      cacheWrite: null,
     },
     currency: unit.split("/")[0]?.trim().toUpperCase() || "",
   };
@@ -327,13 +326,19 @@ export function Calculator({
       {/* 结果 */}
       <div className="panel calc-block calc-result">
         <div className="calc-head">
-          <span className="calc-label">{calculator.resultTitle}</span>
+          <span className="calc-label" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {result.lines.length > 0 && <DajuAwake width={20} />}
+            {calculator.resultTitle}
+          </span>
           <Btn variant="ghost" size="sm" onClick={copyLink}>
             {calculator.copyLink}
           </Btn>
         </div>
         {result.lines.length === 0 ? (
-          <p className="calc-empty">{calculator.emptyResult}</p>
+          <div className="calc-empty">
+            <DajuNap width={110} />
+            {calculator.emptyResult}
+          </div>
         ) : (
           <>
             <div className="calc-total">

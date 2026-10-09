@@ -12,8 +12,10 @@ from llm_price_monitor.ai import (
     ai_content,
     ai_request,
     ai_stream_fallback,
+    ai_stream_messages_fallback,
     ping_model,
     provider_error_detail,
+    request_with_model_fallback,
 )
 from llm_price_monitor.config import AIConfig, ModelTarget, PriceMonitorError, SiteSpec, load_config, sites_from_raw
 from llm_price_monitor.evidence import decode_response_body as _decode_response_body, is_preferred_response_url as _is_preferred_response_url, repair_mojibake as _repair_mojibake, target_page_text as _target_page_text
@@ -643,6 +645,66 @@ def test_ai_extractor_supports_anthropic_messages_format():
     assert "system" in seen["body"]
 
 
+_ASSISTANT_TOOLS = [
+    {"type": "function", "function": {"name": "get_prices", "description": "查询模型最新价格", "parameters": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}}
+]
+_ASSISTANT_MESSAGES = [
+    {"role": "system", "content": "你是助手"},
+    {"role": "user", "content": "demo 站什么价？"},
+    {"role": "assistant", "content": "我先查价格", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_prices", "arguments": '{"site": "demo"}'}}]},
+    {"role": "tool", "tool_call_id": "c1", "content": '{"prices": []}'},
+]
+
+
+def test_ai_request_builds_anthropic_tools_payload():
+    """anthropic 的多轮消息与工具定义转换：system 提顶层、tool_use/tool_result 块、input_schema。"""
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="anthropic")
+    url, headers, body = ai_request(config, "m", "sys", "user", messages=_ASSISTANT_MESSAGES, tools=_ASSISTANT_TOOLS)
+    assert url.endswith("/v1/messages")
+    assert headers["x-api-key"] == "k"
+    assert body["system"] == "你是助手"
+    assert body["tools"] == [{"name": "get_prices", "description": "查询模型最新价格", "input_schema": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}]
+    assert body["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "demo 站什么价？"}]},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "我先查价格"},
+            {"type": "tool_use", "id": "c1", "name": "get_prices", "input": {"site": "demo"}},
+        ]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": '{"prices": []}'}]},
+    ]
+
+
+def test_ai_request_builds_responses_tools_payload():
+    """Responses API 的多轮消息与工具定义转换：instructions 提顶层、function_call/function_call_output 项。"""
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="openai_responses")
+    url, headers, body = ai_request(config, "m", "sys", "user", messages=_ASSISTANT_MESSAGES, tools=_ASSISTANT_TOOLS)
+    assert url.endswith("/v1/responses")
+    assert headers["authorization"] == "Bearer k"
+    assert body["instructions"] == "你是助手"
+    assert body["tools"] == [{"type": "function", "name": "get_prices", "description": "查询模型最新价格", "parameters": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}]
+    assert body["input"] == [
+        {"role": "user", "content": "demo 站什么价？"},
+        {"role": "assistant", "content": "我先查价格"},
+        {"type": "function_call", "call_id": "c1", "name": "get_prices", "arguments": '{"site": "demo"}'},
+        {"type": "function_call_output", "call_id": "c1", "output": '{"prices": []}'},
+    ]
+
+
+def test_ai_request_builds_gemini_tools_payload():
+    """Gemini 的多轮消息与工具定义转换：systemInstruction、functionCall/functionResponse 部件。"""
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="gemini")
+    url, headers, body = ai_request(config, "m", "sys", "user", messages=_ASSISTANT_MESSAGES, tools=_ASSISTANT_TOOLS)
+    assert url.endswith(":generateContent")
+    assert headers["x-goog-api-key"] == "k"
+    assert body["systemInstruction"] == {"parts": [{"text": "你是助手"}]}
+    assert body["tools"] == [{"functionDeclarations": [{"name": "get_prices", "description": "查询模型最新价格", "parameters": {"type": "object", "properties": {"site": {"type": "string"}}, "required": []}}]}]
+    assert body["contents"] == [
+        {"role": "user", "parts": [{"text": "demo 站什么价？"}]},
+        {"role": "model", "parts": [{"text": "我先查价格"}, {"functionCall": {"name": "get_prices", "args": {"site": "demo"}, "id": "c1"}}]},
+        {"role": "user", "parts": [{"functionResponse": {"name": "get_prices", "response": {"result": '{"prices": []}'}, "id": "c1"}}]},
+    ]
+
+
 def test_ai_request_uses_random_model_from_models_list():
     spec = SiteSpec(id="demo", models=(ModelTarget("demo-model"),))
     config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
@@ -668,6 +730,183 @@ def test_ai_stream_error_carries_response_body(monkeypatch):
     # 透出的是解析后的报错要点，不是整段 JSON 原文
     assert "Free quota exhausted" in str(exc_info.value)
     assert '"error"' not in str(exc_info.value)
+
+
+def test_ai_stream_transport_error_is_logged(monkeypatch):
+    """流式请求的传输错误同样留痕：未出字按连接抖动记录，池子耗尽补一条整次失败。"""
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    with pytest.raises(AIExtractionError) as exc_info:
+        list(ai_stream_fallback(config, "", "hi", scene="测试"))
+    assert "timed out" in str(exc_info.value)
+    assert [(row["model"], row["status"]) for row in rows] == [("m-a", "transport"), ("m-a", "error")]
+
+
+def _sse_response(chunks: list[dict]) -> httpx.Response:
+    lines = "".join(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+    return httpx.Response(200, content=lines.encode("utf-8"))
+
+
+def test_ai_stream_messages_pseudo_tool_call_falls_back_to_next_model(monkeypatch):
+    """模型不走 tool_calls 协议、把调用过程当正文“演”出来：按失败换下一个模型，假动作文本不漏给用户。
+
+    回归背景：qwen-vl-max 对“Claude 和 GPT 哪个便宜”回过一段“调用工具：get_model_price(...)”
+    的解说正文且无真实 tool_calls，工具循环把它当最终答案流给了用户，看起来像卡住。
+    """
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)  # 固定模型顺序 m-a → m-b
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "m-a":
+            return _sse_response([{"choices": [{"delta": {"content": "正在查询…\n\n调用工具：get_model_price(\"Cloud\")"}}]}])
+        return _sse_response([{"choices": [{"delta": {"content": "Claude 的输入价更低。"}}]}])
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a", "m-b"), api_key="k")
+    failures: list[tuple[str, str]] = []
+    events = list(ai_stream_messages_fallback(
+        config, [{"role": "user", "content": "Claude 和 GPT 哪个便宜？"}], [{"type": "function", "function": {"name": "get_prices"}}], scene="测试",
+        on_model_failure=lambda model, error: failures.append((model, error)),
+    ))
+    text = "".join(event["text"] for event in events if event["type"] == "delta")
+    assert text == "Claude 的输入价更低。"
+    assert events[-1]["type"] == "finish" and events[-1]["tool_calls"] == []
+    assert [(row["model"], row["status"]) for row in rows] == [("m-a", "fallback"), ("m-b", "ok")]
+    assert "tool_calls" in rows[0]["error"]
+    assert failures == [("m-a", "模型把工具调用当正文输出，未走 tool_calls 协议")]  # 冷却名单回调
+
+
+def test_ai_stream_messages_anthropic_tool_events(monkeypatch):
+    """anthropic 流式工具调用：content_block_start/input_json_delta 拼装成完整 tool_calls。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path.endswith("/v1/messages")
+        assert body["stream"] is True and body["tools"][0]["name"] == "get_prices"
+        chunks = [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 10}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "get_prices"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"site\": \"de"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "mo\"}"}},
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 5}},
+        ]
+        return _sse_response(chunks)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="anthropic")
+    events = list(ai_stream_messages_fallback(config, _ASSISTANT_MESSAGES, _ASSISTANT_TOOLS, scene="测试"))
+    assert [event["type"] for event in events] == ["finish"]
+    assert events[0]["tool_calls"] == [{"id": "toolu_1", "type": "function", "name": "get_prices", "arguments": '{"site": "demo"}'}]
+    assert events[0]["usage"]["prompt_tokens"] == 10 and events[0]["usage"]["completion_tokens"] == 5
+
+
+def test_ai_stream_messages_responses_tool_events(monkeypatch):
+    """Responses API 流式工具调用：output_item.added + function_call_arguments.delta 拼装。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/responses")
+        chunks = [
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_prices", "arguments": ""}},
+            {"type": "response.function_call_arguments.delta", "item_id": "fc_1", "call_id": "call_1", "delta": "{\"site\": "},
+            {"type": "response.function_call_arguments.delta", "item_id": "fc_1", "call_id": "call_1", "delta": "\"demo\"}"},
+            {"type": "response.completed", "response": {"usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}}},
+        ]
+        return _sse_response(chunks)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="openai_responses")
+    events = list(ai_stream_messages_fallback(config, _ASSISTANT_MESSAGES, _ASSISTANT_TOOLS, scene="测试"))
+    assert [event["type"] for event in events] == ["finish"]
+    assert events[0]["tool_calls"] == [{"id": "call_1", "type": "function", "name": "get_prices", "arguments": '{"site": "demo"}'}]
+    assert events[0]["usage"]["total_tokens"] == 10
+
+
+def test_ai_stream_messages_gemini_tool_events(monkeypatch):
+    """Gemini 流式：文本 part 产出增量，functionCall part（参数是完整对象）拼成 tool_calls。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert ":streamGenerateContent" in str(request.url)
+        chunks = [
+            {"candidates": [{"content": {"parts": [{"text": "查一下"}]}}]},
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "get_prices", "args": {"site": "demo"}}}]}}]},
+            {"usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 4, "totalTokenCount": 12}},
+        ]
+        return _sse_response(chunks)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m",), api_key="k", api_format="gemini")
+    events = list(ai_stream_messages_fallback(config, _ASSISTANT_MESSAGES, _ASSISTANT_TOOLS, scene="测试"))
+    # 工具轮的文本部件按解说处理不外流（防伪调用泄漏），只产出 finish
+    assert [event["type"] for event in events] == ["finish"]
+    finish = events[0]
+    assert finish["tool_calls"] == [{"id": "tool_0", "type": "function", "name": "get_prices", "arguments": '{"site": "demo"}'}]
+    assert finish["usage"]["total_tokens"] == 12
+
+
+def test_ai_stream_messages_tool_round_narration_is_not_streamed(monkeypatch):
+    """带工具轮的解说正文只留在会话上下文里，用户只收到 finish（真实工具调用）。"""
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            {"choices": [{"delta": {"content": "我先查一下价格。"}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "get_prices", "arguments": "{\"site\":"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": " \"demo\"}"}}]}}]},
+        ]
+        return _sse_response(chunks)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    events = list(ai_stream_messages_fallback(
+        config, [{"role": "user", "content": "demo 站现在什么价？"}], [{"type": "function", "function": {"name": "get_prices"}}], scene="测试",
+    ))
+    assert [event["type"] for event in events] == ["finish"]
+    assert events[0]["tool_calls"][0]["name"] == "get_prices"
+    assert events[0]["tool_calls"][0]["arguments"] == '{"site": "demo"}'
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["response_excerpt"] == "我先查一下价格。"
+
+
+def test_ai_transport_error_is_logged(monkeypatch):
+    """传输层失败（超时/连接重置/SSL EOF）也要落 AI 日志并按渠道故障换模型。
+
+    回归背景：以前只捕获 HTTPStatusError，传输错误直接往上抛，AI 日志一条不留，
+    报错在成功率里彻底隐形（SSL 抖动环境下尤为常见）。
+    """
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection reset by peer", request=request)
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("m-a",), api_key="k")
+    with pytest.raises(httpx.ConnectError):
+        request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    # 单模型池：先留一条「连接抖动」痕迹（不算报错失败），池子耗尽再补一条整次失败
+    assert [(row["model"], row["status"]) for row in rows] == [("m-a", "transport"), ("m-a", "error")]
+    assert "connection reset by peer" in rows[0]["error"]
+    assert "模型池全部失败" in rows[1]["error"]
 
 
 def test_provider_error_detail_parses_each_provider_shape():
@@ -758,7 +997,7 @@ def test_target_model_aliases_select_one_page_card():
 
 
 def test_browser_adapter_requires_explicit_target_model():
-    with pytest.raises(PriceMonitorError, match="不会自动检测所有模型"):
+    with pytest.raises(PriceMonitorError, match="未配置目标模型 models；全量采集请配置"):
         NetworkAdapter().collect(
             SiteSpec(id="demo", adapter="browser", network={"url": "https://demo.test/pricing"}),
             httpx.Client(),
@@ -1178,6 +1417,24 @@ other-model
     assert "other-model" not in evidence
 
 
+def test_target_page_text_legend_excludes_digit_bearing_price_rows():
+    """图例只收说明行：无货币符号但含数字的价格行不得混进共享字段说明（\\d 正则笔误回归）。"""
+    text = """模型 输入 缓存写 缓存读 输出
+输入 0.002 输出 0.008
+claude-fable-5
+¥14.00
+¥17.50
+¥1.40
+¥70.00
+"""
+
+    evidence = _target_page_text(text, ["claude-fable-5"])
+
+    legend = evidence.split("目标模型卡片")[0]
+    assert "页面共享价格字段说明：模型 输入 缓存写 缓存读 输出" in legend
+    assert "0.002" not in legend
+
+
 def test_ai_result_merges_context_tiers_and_keeps_unified_default_rule():
     extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",)))
     result = {
@@ -1491,6 +1748,20 @@ def test_fingerprint_ignores_ai_noise_and_detects_real_price_changes():
 
     # 缓存价属于价格口径：变了要发事件
     assert classify(base, {**base, "metadata": {**base["metadata"], "cache_read_price": 0.3}}) == "changed"
+
+    # 价格变了但 price_status 同时变（如确认价→推断价）：按真实价格变化发 changed，不能当状态抖动吞掉
+    assert classify(base, {**base, "input_price": 3.0, "price_status": "rule_only"}) == "changed"
+    # 只有状态抖动、价格没变：仍判 status_changed（事件层过滤，不发事件）
+    assert classify(base, {**base, "price_status": "rule_only"}) == "status_changed"
+
+
+def test_parse_scalar_keeps_non_json_js_array_as_text():
+    """压缩 JS 的数组常不是合法 JSON（.15 前导点、单引号）：原样保留文本，别崩掉整条解析链。"""
+    from llm_price_monitor.adapters import _parse_scalar
+
+    assert _parse_scalar("[1, 0.15]") == [1, 0.15]  # 合法 JSON 照常解析
+    assert _parse_scalar("[1,.15]") == "[1,.15]"  # 非法 JSON 原样返回，不抛异常
+    assert _parse_scalar("[1, 'x']") == "[1, 'x']"
 
 
 def test_site_status_from_records_flags_auth_and_unavailable():
@@ -2010,6 +2281,37 @@ def test_refresh_site_token_rotates_set_cookie_credential(tmp_path: Path):
     assert (access2, refresh2) == ("at_2", "sid1.secret3")
 
 
+def test_refresh_site_token_body_sends_json_content_type_alongside_extra_headers(tmp_path: Path):
+    """配了站点请求头的 body 型续签也要带 content-type: application/json（回归：配任何头时默认头曾整体丢失）。"""
+    from llm_price_monitor import token_refresh
+
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(200, json={"data": {"access_token": "at_body"}})
+
+    raw_site = {
+        "id": "body-site",
+        "models": ["m"],
+        "network": {"url": "https://body.test/api/pricing"},
+        "token_refresh": {
+            "url": "https://body.test/api/user/auth/refresh",
+            "method": "POST",
+            "headers": {"user-agent": "ua-custom"},
+            "body": '{"refresh_token": "${refresh_token}"}',
+            "refresh_token": "rt_old",
+        },
+    }
+    (spec,) = sites_from_raw([raw_site])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        access, refresh = token_refresh.refresh_site_token(spec, client, timeout=5, user_agent="ua")
+
+    assert (access, refresh) == ("at_body", "rt_old")
+    assert seen["content_type"] == "application/json"
+
+
 def test_refresh_site_token_without_rotation_keeps_old_credential():
     """不配 refresh_cookie_name 时行为不变：body 里没有新 refresh_token 就沿用旧值（不轮换的站点）。"""
     from llm_price_monitor import token_refresh
@@ -2331,3 +2633,107 @@ def test_canonical_site_config_pops_response_sample_residue():
 
     canonical, _ = canonical_site_config({"id": "x", "token_refresh": {"response_sample": "{}"}})
     assert canonical == {"id": "x"}
+
+
+def test_site_models_wildcard_must_be_alone():
+    with pytest.raises(ValueError, match="不能再列出其他模型"):
+        sites_from_raw([{"id": "demo", "models": ["*", "demo-model"]}])
+    (site,) = sites_from_raw([{"id": "demo", "models": ["*"]}])
+    assert site.collect_all is True
+
+
+def test_network_pricing_collect_all_enumerates_every_model_and_group():
+    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
+    records = _network_pricing_records(spec, [{
+        "url": "https://demo.test/api/pricing",
+        "status": 200,
+        "resource_type": "fetch",
+        "payload": {
+            "group_ratio": {"default": 1, "vip": 0.5},
+            "data": [
+                {"model_name": "model-a", "enable_groups": ["default", "vip"], "model_ratio": 2, "completion_ratio": 2},
+                {"model_name": "model-b", "model_ratio": 1, "completion_ratio": 1},
+            ],
+        },
+    }])
+
+    by_key = {(record.model, record.metadata.get("group")): record for record in records}
+    assert set(by_key) == {("model-a", "default"), ("model-a", "vip"), ("model-b", "default")}
+    assert by_key[("model-a", "vip")].input_price == 2.0
+    assert by_key[("model-a", "default")].input_price == 4.0
+    assert by_key[("model-b", "default")].input_price == 2.0
+    assert all(record.price_status == "confirmed" for record in records)
+
+
+def test_platform_pricing_collect_all_parses_every_supported_model():
+    from llm_price_monitor.adapters import platform_pricing_records
+
+    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/api/models"})
+    payload = {"data": [{"platforms": [{"supported_models": [
+        {"name": "model-x", "pricing": {"final_prices": [{"group_name": "default", "input_price": 1e-6, "output_price": 2e-6}]}},
+        {"name": "model-y", "pricing": {"final_prices": [{"group_name": "default", "input_price": 3e-6, "output_price": 4e-6}]}},
+    ]}]}]}
+    records = platform_pricing_records(spec, [{"url": "https://demo.test/api/models", "status": 200, "resource_type": "fetch", "payload": payload}])
+    assert {(record.model, record.input_price, record.output_price) for record in records} == {
+        ("model-x", 1.0, 2.0),
+        ("model-y", 3.0, 4.0),
+    }
+
+
+def test_base_price_entries_collect_all_keeps_every_site_model():
+    from llm_price_monitor.adapters import _entry_matches_targets, _records_from_base_entries
+
+    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
+    entries = [
+        {"provider": "openai", "name": "GPT", "models": ["gpt-5", "gpt-5-mini"], "input": 1, "output": 2},
+        {"provider": "zhipu", "name": "GLM", "models": ["glm-5.3"], "input": 3, "output": 4},
+    ]
+    assert all(_entry_matches_targets(entry, spec) for entry in entries)
+    assert _entry_matches_targets({"models": ["  "]}, spec) is False
+
+    records = _records_from_base_entries(spec, entries, [], "https://demo.test/pricing", adapter_label="browser_network")
+    assert sorted(record.model for record in records) == ["glm-5.3", "gpt-5", "gpt-5-mini"]
+    by_model = {record.model: record for record in records}
+    assert by_model["glm-5.3"].input_price == 3
+    assert by_model["glm-5.3"].metadata["currency"] == "USD"
+
+
+def test_ai_collect_all_prompt_switches_to_full_catalog_scope():
+    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
+    body = _ai_request_body(spec, "页面上的模型卡片", [])
+    assert "通配全量" in body["messages"][0]["content"]
+    user = body["messages"][1]["content"]
+    assert "全部模型（未限定清单）" in user
+    assert "不得遗漏" in user
+
+
+def test_ai_collect_all_keeps_models_without_configured_targets():
+    spec = SiteSpec(id="demo", models=(ModelTarget("*"),), network={"url": "https://demo.test/pricing"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = {
+            "models": [{
+                "model": "fresh-model", "observed_model": "fresh-model", "aliases": [],
+                "input_price": 1, "output_price": 2, "unit": "CNY/1M tokens", "currency": "CNY",
+                "status": "confirmed", "confidence": 0.9, "group": "default",
+                "network_evidence": [], "page_evidence": [], "notes": "",
+            }],
+            "cross_validation": {"status": "none", "conflicts": []},
+        }
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    records = extractor.extract(
+        spec, "",
+        [{"url": "https://demo.test/api/pricing", "resource_type": "fetch", "status": 200, "payload": {"data": [{"model_name": "fresh-model"}]}}],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert [record.model for record in records] == ["fresh-model"]
+    assert records[0].input_price == 1
+
+
+def test_ai_extract_without_models_or_wildcard_still_fails():
+    spec = SiteSpec(id="demo", network={"url": "https://demo.test/pricing"})
+    extractor = AIPriceExtractor(AIConfig(base_url="https://ai.test/v1", models=("test-model",), api_key="k"))
+    with pytest.raises(AIExtractionError, match="未配置目标模型"):
+        extractor.extract(spec, "", [])

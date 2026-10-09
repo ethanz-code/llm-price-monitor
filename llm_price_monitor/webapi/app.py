@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from llm_price_monitor.browser_setup import ensure_browser_ready
 from llm_price_monitor.catalog import jsonio
-from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, config_from_store
+from llm_price_monitor.config import DEFAULT_SCHEDULE_MINUTES, MonitorSettings, config_from_store
 from llm_price_monitor import ai
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi import auth, routes, scheduler, tasks
@@ -35,24 +35,13 @@ EVENTS_FILE = Path("var/price-events.jsonl")
 
 
 def _settings_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
+    """种子文件 settings 里允许导入的键：MonitorSettings 全部字段 + schedule（不在字段里，单独校验）。"""
     raw = raw if isinstance(raw, dict) else {}
-    doc = {
+    return {
         key: raw[key]
-        for key in (
-            "timeout",
-            "user_agent",
-            "random_user_agent",
-            "user_agent_platforms",
-            "user_agent_chrome_versions",
-            "user_agent_version_window",
-            "retention_price_days",
-            "retention_visit_days",
-            "retention_status_days",
-            "schedule",
-        )
+        for key in (*MonitorSettings.__dataclass_fields__, "schedule")
         if key in raw
     }
-    return doc
 
 
 def _ai_seed_document(raw: dict[str, Any]) -> dict[str, Any]:
@@ -123,12 +112,30 @@ def _ensure_schedule_defaults(store: Store) -> None:
     store.set_document("settings", settings)
 
 
+def _ensure_settings_defaults(store: Store) -> None:
+    """settings 里缺失的字段补上默认值：设置页直接读库展示，补齐后每项都有数可显。
+
+    只补缺、不覆盖已有值；对老库相当于一次性把新增配置项落库。
+    """
+    settings = store.get_document("settings") or {}
+    missing = {}
+    for key, field in MonitorSettings.__dataclass_fields__.items():
+        if key in settings:
+            continue
+        value = field.default
+        missing[key] = list(value) if isinstance(value, tuple) else value
+    if missing:
+        settings.update(missing)
+        store.set_document("settings", settings)
+
+
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="llm-price-monitor", docs_url=None, redoc_url=None)
     app.state.config_path = config_path
     # 创建时才解析路径：create_app 常在测试中被 monkeypatch.chdir 包裹，模块级常量会绑错目录
     store = Store(Path(os.getenv("PRICE_MONITOR_DB") or DB_PATH))
     _seed_store(store, config_path)
+    _ensure_settings_defaults(store)
     _ensure_schedule_defaults(store)
     tasks.attach_store(store)  # 历史任务连同日志落 SQLite，重启后仍可查看
     app.state.store = store

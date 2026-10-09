@@ -724,6 +724,50 @@ def test_settings_test_probes_external_services_with_form_values(workspace: Path
     assert client.post("/api/settings/test", json={"target": "nope"}).status_code == 422
 
 
+def test_settings_test_models_probes_pool_and_persists(workspace: Path, monkeypatch) -> None:
+    """模型池批量体检：逐模型返回可用状态与报错原文，结果落库可回看；reset 开新轮。"""
+    import llm_price_monitor.webapi.routes.settings as settings_routes
+
+    client = _admin_client(workspace)
+
+    # 未配置 Base URL 时给出可读的 400；空列表同理
+    assert client.post("/api/settings/test-models", json={"models": ["m1"]}).status_code == 400
+    assert client.put("/api/settings", json={
+        "settings": {}, "ai": {"base_url": "https://saved.test/v1", "models": ["a"]},
+    }).status_code == 200
+    assert client.post("/api/settings/test-models", json={"models": []}).status_code == 400
+    assert client.post("/api/settings/test-models", json={"models": [f"m{i}" for i in range(41)]}).status_code == 400
+
+    seen: list[tuple[str, float | None]] = []
+
+    def fake_ping(config, model, *, client=None, timeout=None):
+        seen.append((model, timeout))
+        if model == "bad-model":
+            raise RuntimeError("boom")
+        return "ok"
+
+    monkeypatch.setattr(settings_routes, "ping_model", fake_ping)
+
+    # 第一批 reset 开新轮：好模型带回复，坏模型带报错原文
+    first = client.post("/api/settings/test-models", json={"models": ["good-a", "bad-model"], "reset": True}).json()
+    assert [item["model"] for item in first["results"]] == ["good-a", "bad-model"]
+    assert first["results"][0]["ok"] is True and first["results"][0]["reply"] == "ok"
+    assert first["results"][1]["ok"] is False and "boom" in first["results"][1]["error"]
+    # 用的是已保存配置 + 短超时（不拖住整轮）
+    assert seen == [("good-a", settings_routes.PROBE_TIMEOUT_SECONDS), ("bad-model", settings_routes.PROBE_TIMEOUT_SECONDS)]
+
+    # 第二批不 reset：结果合并进同一轮，落库可回看
+    client.post("/api/settings/test-models", json={"models": ["good-b"]}).json()
+    report = client.get("/api/settings/test-models").json()
+    assert set(report["results"].keys()) == {"good-a", "bad-model", "good-b"}
+    assert report["tested_at"] is not None
+
+    # 再开一轮 reset：旧结果清空
+    client.post("/api/settings/test-models", json={"models": ["fresh"], "reset": True}).json()
+    report = client.get("/api/settings/test-models").json()
+    assert set(report["results"].keys()) == {"fresh"}
+
+
 def test_analytics_track_public_with_dedup_and_validation(workspace: Path):
     """访问埋点公开可写：记录 IP/UA 并解析设备；30 秒内同 IP 同路径去重；非法路径 400。"""
     # summary 为管理员接口，统一用已登录客户端发起；track 本身公开。
@@ -804,10 +848,37 @@ def test_ai_logs_summary_endpoint(workspace: Path):
         prompt_tokens=10, completion_tokens=20, total_tokens=30,
     )
     body = admin.get("/api/ai-logs/summary").json()
-    assert body["total"] == 1 and body["ok"] == 1
+    assert body["total"] == 1 and body["ok"] == 1 and body["success_rate"] == 100.0
     assert (body["prompt_tokens"], body["completion_tokens"], body["total_tokens"]) == (10, 20, 30)
     assert len(body["daily"]) == 7 and body["daily"][-1]["ok"] == 1
     assert body["scenes"] == [{"name": "助手问答", "calls": 1}]
+
+
+def test_ai_logs_endpoint_clamps_limit_and_offset(workspace: Path):
+    """limit 负数按 1、offset 负数按 0：SQLite 的 LIMIT -1 是不限量，不能放行。"""
+    from llm_price_monitor.store import Store
+
+    admin = _admin_client(workspace)
+    store = Store(workspace / "var" / "monitor.db")
+    store.add_ai_log(scene="助手问答", model="m1", status="ok", duration_ms=100)
+    body = admin.get("/api/ai-logs?limit=-1&offset=-5").json()
+    assert body["total"] == 1 and len(body["logs"]) == 1
+
+
+def test_catalog_tasks_are_mutually_exclusive():
+    """目录刷新与单厂商源刷新都读-改-写同一份 catalog 文档，必须互相冲突（与采集组无关）。"""
+    from llm_price_monitor.webapi import tasks
+
+    tasks._RUNNING_KINDS.clear()
+    try:
+        tasks._RUNNING_KINDS["catalog-refresh"] = "task-1"
+        assert tasks._conflict_of("vendor-source-refresh") == "task-1"
+        assert tasks._conflict_of("collect-price") is None
+        tasks._RUNNING_KINDS.clear()
+        tasks._RUNNING_KINDS["vendor-source-refresh"] = "task-2"
+        assert tasks._conflict_of("catalog-refresh") == "task-2"
+    finally:
+        tasks._RUNNING_KINDS.clear()
 
 
 def test_store_purge_visits_keeps_recent(workspace: Path):
@@ -913,18 +984,23 @@ def test_reseed_modes(workspace: Path):
     admin = _admin_client(workspace)
     seed_path = workspace / "config.json"  # _config 写入、create_app 记住的种子路径
 
-    # skip_existing：库中没有 timeout → 写入；schedule 已存在 → 跳过；ai.enabled 已存在 → 跳过
+    # skip_existing：启动时默认值已把 settings 全字段落库，种子声明值不再视为"缺失"；
+    # 手动删掉 timeout 后才重新可补
     seed_path.write_text(json.dumps({
         "settings": {"timeout": 99, "schedule": {"price": 123, "status": 0, "notice": 0, "catalog": 0}},
         "ai": {"enabled": True},
         "sites": [],
     }), encoding="utf-8")
     result = admin.post("/api/seed", json={"mode": "skip_existing"}).json()
+    assert result["settings_written"] == []
+    assert admin.get("/api/settings").json()["settings"]["timeout"] == 20  # 保持启动默认值
+    store = admin.app.state.store
+    settings_doc = store.get_document("settings")
+    del settings_doc["timeout"]
+    store.set_document("settings", settings_doc)
+    result = admin.post("/api/seed", json={"mode": "skip_existing"}).json()
     assert set(result["settings_written"]) == {"timeout"}
-    assert result["ai_written"] == [] and result["sites_written"] == 0 and result["sites_replaced"] is False
-    settings = admin.get("/api/settings").json()["settings"]
-    assert settings["timeout"] == 99
-    assert settings["schedule"]["price"] == 0  # 已存在，未被种子覆盖
+    assert admin.get("/api/settings").json()["settings"]["timeout"] == 99
     assert admin.get("/api/settings").json()["ai"]["enabled"] is False
     assert len(admin.get("/api/sites").json()["sites"]) == 1
 
@@ -977,6 +1053,39 @@ def test_default_seed_ships_ai_without_key(workspace: Path):
     assert isinstance(data["ai"].get("models"), list) and len(data["ai"]["models"]) >= 3
     assert "api_key" not in data["ai"]  # 种子不含密钥，Key 由向导/设置页填写后存数据库
     assert data["settings"]["schedule"]["price"] == 60 and data["settings"]["schedule"]["catalog"] == 1440
+
+
+def test_settings_defaults_written_to_db(workspace: Path):
+    """启动时把 settings 里缺失的字段按默认值落库：设置页每项都有数可显，老库升级也能补齐。"""
+    from llm_price_monitor.config import MonitorSettings
+
+    client = _admin_client(workspace)
+    # 库里只存过一个键：启动后其余字段全部补上默认值
+    client.app.state.store.set_document("settings", {"timeout": 30})
+    from llm_price_monitor.webapi.app import _ensure_settings_defaults
+    _ensure_settings_defaults(client.app.state.store)
+
+    settings = client.app.state.store.get_document("settings")
+    for key in MonitorSettings.__dataclass_fields__:
+        assert key in settings, f"settings 缺字段 {key}"
+    assert settings["timeout"] == 30  # 已有值不被覆盖
+    assert settings["assistant_hourly_limit"] == 10
+    assert settings["retention_ai_log_days"] == 7
+    assert settings["random_user_agent"] is False
+    assert settings["user_agent_platforms"] == []
+    assert settings["wxpusher_app_token"] is None
+
+
+def test_first_startup_seeds_full_settings_defaults(workspace: Path):
+    """空库首次启动：种子文件的 settings 连同缺失默认值一起写入，assistant_hourly_limit 等新键可直接读出。"""
+    seed_path = workspace / "config.json"
+    seed_path.write_text(json.dumps({"settings": {}, "ai": {"enabled": False}, "sites": []}), encoding="utf-8")
+    client = TestClient(create_app(seed_path))
+    assert client.post("/api/setup", json={"username": "admin", "password": "s3cret"}).status_code == 200
+    settings = client.get("/api/settings").json()["settings"]
+    assert settings["assistant_hourly_limit"] == 10
+    assert settings["assistant_daily_limit"] == 10
+    assert settings["retention_ai_log_days"] == 7
 
 
 def test_collect_task_logs_in_detail_and_list_summary(workspace: Path, monkeypatch):
@@ -1357,7 +1466,12 @@ def test_assistant_daily_ip_limit(workspace: Path, monkeypatch):
         def json(self) -> dict:
             return {"choices": [{"message": {"content": "答"}}]}
 
+    def fake_events(*_args: object, **_kwargs: object):
+        yield {"type": "delta", "text": "答"}
+        yield {"type": "finish", "finish_reason": "stop", "tool_calls": [], "usage": None}
+
     monkeypatch.setattr(assistant_routes.httpx, "post", lambda *args, **kwargs: _FakeResponse())
+    monkeypatch.setattr(assistant_routes, "ai_stream_messages_fallback", fake_events)
     config_path = _config(workspace)
     doc = json.loads(config_path.read_text(encoding="utf-8"))
     doc["ai"] = {"enabled": True, "base_url": "https://ai.test/v1", "models": ["m-a"], "api_key": "sk-x"}

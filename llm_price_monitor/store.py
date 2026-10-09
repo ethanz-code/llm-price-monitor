@@ -169,6 +169,26 @@ def _price_event_group(payload: dict[str, Any]) -> str:
 # AI 日志里 prompt / 回复 / 错误原文的入库截断长度：完整证据可能几十万字符，整段入库会撑爆库
 _AI_LOG_TEXT_CHARS = 500
 
+# 报错分组的正文截取长度：同一种报错开头一致（403 免费额度、enable_thinking 拒收等），
+# 请求 ID、具体数值等差异都在更靠后的位置，取头部即可稳定归组
+_AI_ERROR_KIND_HEAD = 60
+
+
+def ai_error_kind(error: str | None) -> str:
+    """报错分组键：HTTP 状态码 + 报错正文开头（空白归一后截 60 字符）；没有报错文案返回空串。
+
+    「报错判定」按这个键把历史报错归组勾选，键会存进 settings.ai_ignored_errors，
+    所以规则必须只依赖入库文案本身，不随查询时间变化。
+    """
+    if not error:
+        return ""
+    text = " ".join(error.strip().split())
+    prefix = ""
+    if text.startswith("HTTP ") and len(text) > 8 and text[5:8].isdigit():
+        prefix = text[:8]
+        text = text[9:]
+    return f"{prefix} {text[:_AI_ERROR_KIND_HEAD]}".strip()
+
 
 def _clip_ai_log_text(value: str | None) -> str | None:
     if value is None:
@@ -289,15 +309,17 @@ class Store:
                     (new_id, prefix_len + 1, prefix_len, f"{old_id}:"),
                 )
                 conn.execute("UPDATE documents SET name = ? WHERE name = ?", (f"status_ref:{new_id}", f"status_ref:{old_id}"))
-                row = conn.execute("SELECT content FROM documents WHERE name = 'collect_status'").fetchone()
-                if row:
-                    merged = json.loads(row[0]) or {}
-                    if old_id in merged:
-                        merged[new_id] = merged.pop(old_id)
-                        conn.execute(
-                            "UPDATE documents SET content = ? WHERE name = 'collect_status'",
-                            (json.dumps(merged, ensure_ascii=False),),
-                        )
+                # collect_status 与 site_collect_health 都是 site_id → 状态 的文档，改名同步搬迁（与 delete_site 对齐）
+                for doc_name in ("collect_status", "site_collect_health"):
+                    row = conn.execute("SELECT content FROM documents WHERE name = ?", (doc_name,)).fetchone()
+                    if row:
+                        merged = json.loads(row[0]) or {}
+                        if old_id in merged:
+                            merged[new_id] = merged.pop(old_id)
+                            conn.execute(
+                                "UPDATE documents SET content = ? WHERE name = ?",
+                                (json.dumps(merged, ensure_ascii=False), doc_name),
+                            )
         return renamed
 
     def replace_sites(self, configs: list[dict[str, Any]]) -> None:
@@ -547,7 +569,7 @@ class Store:
 
     # ---------- AI 请求日志 ----------
 
-    # 日志保留天数：写入时顺带清理，超过即淘汰
+    # 日志保留天数兜底值：settings.retention_ai_log_days 未配置时生效；写入时顺带清理，超过即淘汰
     AI_LOG_RETENTION_DAYS = 7
 
     def add_ai_log(
@@ -586,7 +608,25 @@ class Store:
                     response_excerpt,
                 ),
             )
-            conn.execute("DELETE FROM ai_logs WHERE ts < ?", (now - self.AI_LOG_RETENTION_DAYS * 86400,))
+            conn.execute("DELETE FROM ai_logs WHERE ts < ?", (now - self._ai_log_retention_days(conn) * 86400,))
+
+    def _ai_log_retention_days(self, conn: sqlite3.Connection) -> int:
+        """AI 日志保留天数：settings.retention_ai_log_days（保存期已校验不小于 1），未配置回默认 7。"""
+        row = conn.execute("SELECT content FROM documents WHERE name = 'settings'").fetchone()
+        if row:
+            value = (json.loads(row[0]) or {}).get("retention_ai_log_days")
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                return value
+        return self.AI_LOG_RETENTION_DAYS
+
+    def _ai_ignored_error_kinds(self, conn: sqlite3.Connection) -> frozenset[str]:
+        """「报错判定」里被勾成不算失败的报错组：settings.ai_ignored_errors（ai_error_kind 的键）。"""
+        row = conn.execute("SELECT content FROM documents WHERE name = 'settings'").fetchone()
+        if row:
+            value = (json.loads(row[0]) or {}).get("ai_ignored_errors")
+            if isinstance(value, list):
+                return frozenset(item for item in value if isinstance(item, str) and item)
+        return frozenset()
 
     def read_ai_logs(
         self, *, limit: int = 100, offset: int = 0, scene: str | None = None, status: str | None = None
@@ -616,17 +656,40 @@ class Store:
     def ai_logs_summary(self, *, trend_days: int = 7) -> dict[str, Any]:
         """AI 调用统计聚合：全部保留记录的 KPI、按天趋势与场景/模型分布。
 
-        成功率按尝试次数计：status=ok 占比；fallback（换模型重试）、param_retry（换参数重试）与 error 都算未成功。
+        成功率 = ok / (total - transport - ignored)，即成功尝试占「有效尝试」的比例。每次请求尝试各记
+        一条日志：报错后换模型（fallback）或换参数（param_retry）重试的尝试是失败的一种，重试成功的
+        另记一条 ok；模型池全部失败的整次失败记 error 行，同样计入失败。两类东西不算失败也从分母剔除：
+        连接抖动（transport，超时/SSL 断开等未收到响应），以及「报错判定」里被勾掉不算的报错组
+        （settings.ai_ignored_errors，分组键见 ai_error_kind）。
         按天序列补零对齐，日期统一用本地时区（与 visit_summary 的口径一致）。
         """
         today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         cutoff = today0 - (trend_days - 1) * 86400
         with self._conn() as conn:
+            ignored_kinds = self._ai_ignored_error_kinds(conn)
+            kind_counts: dict[str, int] = {}
+            kind_samples: dict[str, str] = {}
+            ignored_rows = 0
+            for row in conn.execute("SELECT status, error FROM ai_logs").fetchall():
+                if row["status"] in ("ok", "transport"):
+                    continue
+                kind = ai_error_kind(row["error"])
+                if not kind:
+                    continue
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+                kind_samples.setdefault(kind, str(row["error"] or "")[:120])
+                if kind in ignored_kinds:
+                    ignored_rows += 1
+            error_kinds = [
+                {"key": key, "count": count, "sample": kind_samples[key], "ignored": key in ignored_kinds}
+                for key, count in sorted(kind_counts.items(), key=lambda item: (-item[1], item[0]))
+            ]
             totals = conn.execute(
                 "SELECT COUNT(*) AS total,"
                 " COALESCE(SUM(status = 'ok'), 0) AS ok,"
                 " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
                 " COALESCE(SUM(status = 'param_retry'), 0) AS param_retry,"
+                " COALESCE(SUM(status = 'transport'), 0) AS transport,"
                 " COALESCE(SUM(status = 'error'), 0) AS error,"
                 " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
                 " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
@@ -639,6 +702,7 @@ class Store:
                     int(row["ok"]),
                     int(row["fallback"]),
                     int(row["param_retry"]),
+                    int(row["transport"]),
                     int(row["error"]),
                     int(row["prompt_tokens"]),
                     int(row["completion_tokens"]),
@@ -648,6 +712,7 @@ class Store:
                     " COALESCE(SUM(status = 'ok'), 0) AS ok,"
                     " COALESCE(SUM(status = 'fallback'), 0) AS fallback,"
                     " COALESCE(SUM(status = 'param_retry'), 0) AS param_retry,"
+                    " COALESCE(SUM(status = 'transport'), 0) AS transport,"
                     " COALESCE(SUM(status = 'error'), 0) AS error,"
                     " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
                     " COALESCE(SUM(completion_tokens), 0) AS completion_tokens"
@@ -668,26 +733,35 @@ class Store:
                 )
             ]
         today = date.fromtimestamp(time.time())
-        zeros = (0, 0, 0, 0, 0, 0)
+        zeros = (0, 0, 0, 0, 0, 0, 0)
         daily = [
             {
                 "day": (today - timedelta(days=offset)).isoformat()[5:],
                 "ok": values[0],
                 "fallback": values[1],
                 "param_retry": values[2],
-                "error": values[3],
-                "prompt_tokens": values[4],
-                "completion_tokens": values[5],
+                "transport": values[3],
+                "error": values[4],
+                "prompt_tokens": values[5],
+                "completion_tokens": values[6],
             }
             for offset in range(trend_days - 1, -1, -1)
             for values in [by_day.get((today - timedelta(days=offset)).isoformat(), zeros)]
         ]
+        total = int(totals["total"])
+        answered = total - int(totals["transport"]) - ignored_rows
         return {
-            "total": int(totals["total"]),
+            "total": total,
+            # 成功率口径见 docstring：ok / (total - transport - ignored)，没有有效尝试时为 None
+            "success_rate": round(int(totals["ok"]) / answered * 100, 1) if answered else None,
             "ok": int(totals["ok"]),
             "fallback": int(totals["fallback"]),
             "param_retry": int(totals["param_retry"]),
+            "transport": int(totals["transport"]),
             "error": int(totals["error"]),
+            # 「报错判定」里被勾成不算失败的报错组涉及的尝试条数：不计失败、不进成功率分母
+            "ignored": ignored_rows,
+            "error_kinds": error_kinds,
             "prompt_tokens": int(totals["prompt_tokens"]),
             "completion_tokens": int(totals["completion_tokens"]),
             "total_tokens": int(totals["total_tokens"]),

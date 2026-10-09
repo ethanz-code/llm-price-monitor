@@ -89,10 +89,10 @@ def test_fetch_price_uses_httpx_when_headless_disabled(monkeypatch):
 
 def test_fetch_price_browser_failure_raises_like_collect_failure(monkeypatch):
     def fail_fetch(url: str, headless_config: dict) -> str:
-        raise RuntimeError("无头浏览器采集失败：超时")
+        raise RuntimeError("Headless采集失败：超时")
 
     monkeypatch.setattr("llm_price_monitor.tracker._fetch_page_via_browser", fail_fetch)
-    with pytest.raises(RuntimeError, match="无头浏览器采集失败"):
+    with pytest.raises(RuntimeError, match="Headless采集失败"):
         fetch_price("https://demo.test/pricing", "gpt-5.6-luna", network={"headless": {"enabled": True}})
 
 
@@ -117,12 +117,12 @@ _PAGE_HTML = '<html><body>{category:"text",models:["gpt-5.6-luna"],provider:"dem
 def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    calls: list[str] = []
+    calls: list[tuple[str, dict | None]] = []
 
     def fake_fetch_page_html(
-        url: str, headless_config: dict, user_agent: str | None = None, extra_headers: dict[str, str] | None = None
+        url: str, headless_config: dict, user_agent: str | None = None, *, spec=None
     ) -> str:
-        calls.append(url)
+        calls.append((url, spec.id if spec is not None else None))
         assert user_agent == "test-ua"  # UA 应与 HTTP 采集路径保持一致传入浏览器
         return _PAGE_HTML
 
@@ -133,7 +133,9 @@ def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         records = NetworkAdapter().collect(_spec({"enabled": True}), client, 20.0, "test-ua")
-    assert calls == ["https://demo.test/pricing"]
+    # 浏览器链路不做请求头注入，登录态只走 cookies/localStorage；站点配置要传入，
+    # localStorage 值里的 ${access_token} 等凭证占位符靠它展开
+    assert calls == [("https://demo.test/pricing", "demo")]
     record = next(item for item in records if item.model == "gpt-5.6-luna")
     assert record.input_price == 3.3 and record.output_price == 9.9
 
@@ -141,7 +143,7 @@ def test_network_adapter_uses_browser_when_headless_enabled(monkeypatch):
 def test_network_adapter_keeps_httpx_when_headless_disabled(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    def fail_fetch(url: str, headless_config: dict, user_agent: str | None = None) -> str:
+    def fail_fetch(url: str, headless_config: dict, user_agent: str | None = None, *, spec=None) -> str:
         raise AssertionError("未启用 headless 时不应走浏览器分支")
 
     monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", fail_fetch)
@@ -153,6 +155,24 @@ def test_network_adapter_keeps_httpx_when_headless_disabled(monkeypatch):
         records = NetworkAdapter().collect(_spec(None), client, 20.0, "test-ua")
     record = next(item for item in records if item.model == "gpt-5.6-luna")
     assert record.input_price == 3.3 and record.output_price == 9.9
+
+
+def test_network_adapter_html_shell_fails_without_auto_headless(monkeypatch):
+    from llm_price_monitor.adapters import NetworkAdapter
+    from llm_price_monitor.config import PriceMonitorError
+
+    # 接口直采抓到空壳页就按失败上报，不再自动换Headless重试；
+    # 需要渲染的站点必须显式切「网页模式」
+    def fail_fetch(url: str, headless_config: dict, user_agent: str | None = None, *, spec=None) -> str:
+        raise AssertionError("未启用 headless 时不应走浏览器分支")
+
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", fail_fetch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text='<html><body><div id="root"></div></body></html>')
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client, pytest.raises(PriceMonitorError):
+        NetworkAdapter().collect(_spec(None), client, 20.0, "test-ua")
 
 
 # ---------- 倍率接口独立请求头（ratio_url 对象形态） ----------
@@ -171,7 +191,7 @@ def _ratio_json() -> httpx.Response:
 def test_ratio_url_object_with_headers(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None: _RATIO_PAGE)
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None, spec=None: _RATIO_PAGE)
     seen: list[httpx.Headers] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -191,7 +211,7 @@ def test_ratio_url_object_with_headers(monkeypatch):
 def test_ratio_url_string_still_works(monkeypatch):
     from llm_price_monitor.adapters import NetworkAdapter
 
-    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None: _RATIO_PAGE)
+    monkeypatch.setattr("llm_price_monitor.browser_fetch.fetch_page_html", lambda url, cfg, user_agent=None, spec=None: _RATIO_PAGE)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "ratio.test":
@@ -268,7 +288,7 @@ def test_fetch_page_html_wraps_failure_as_price_monitor_error(monkeypatch):
     from llm_price_monitor.config import PriceMonitorError
 
     _fake_playwright(monkeypatch, {}, fail=True)
-    with pytest.raises(PriceMonitorError, match="无头浏览器采集"):
+    with pytest.raises(PriceMonitorError, match="Headless采集"):
         fetch_page_html("https://demo.test/pricing", {"enabled": True})
 
 
@@ -290,6 +310,58 @@ def test_fetch_page_html_expands_env_and_passes_user_agent(monkeypatch):
     assert captured["cookies"][0]["value"] == "tk-1"
     assert '"tk-1"' in captured["script"]
     assert captured["ua"] == "ua-1"
+
+
+def test_local_storage_expands_access_token_placeholder(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import SiteSpec
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    spec = SiteSpec(id="demo", auth_token="tk-9")
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {"enabled": True, "localStorage": {"token": "Bearer ${access_token}", "note": "static"}},
+        spec=spec,
+    )
+    assert '"Bearer tk-9"' in captured["script"]
+    assert '"static"' in captured["script"]
+
+
+def test_local_storage_access_token_placeholder_skipped_without_token(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    # 还没拿到 Access Token（新站点或刚清空）：引用它的条目不写入，等续签补上后下次采集自然带上
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {"enabled": True, "localStorage": {"token": "${access_token}", "note": "static"}},
+    )
+    assert '"token"' not in captured["script"]
+    assert '"static"' in captured["script"]
+
+
+def test_local_storage_refresh_token_placeholder_expands_and_reports_missing(monkeypatch):
+    from llm_price_monitor.browser_fetch import fetch_page_html
+    from llm_price_monitor.config import PriceMonitorError, SiteSpec
+
+    captured: dict = {}
+    _fake_playwright(monkeypatch, captured)
+    spec = SiteSpec(id="demo", token_refresh={"refresh_token": "rf-1"})
+    fetch_page_html(
+        "https://demo.test/pricing",
+        {"enabled": True, "localStorage": {"refresh": "${refresh_token}"}},
+        spec=spec,
+    )
+    assert '"rf-1"' in captured["script"]
+
+    with pytest.raises(PriceMonitorError, match="没有 Refresh Token"):
+        fetch_page_html(
+            "https://demo.test/pricing",
+            {"enabled": True, "localStorage": {"refresh": "${refresh_token}"}},
+            spec=SiteSpec(id="demo"),
+        )
 
 
 def test_ratio_headers_config_validation():

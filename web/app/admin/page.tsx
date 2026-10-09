@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
+import type { ReactNode } from "react";
 import { apiGet } from "@/lib/api";
-import { eventMeta, formatDiscount, formatTime, isNoticeEvent } from "@/lib/format";
+import { eventMeta, formatDiscount, formatTime, isNoticeEvent, successRateTone, toneText } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import type { FeedData, OverviewData } from "@/lib/types";
+import type { AiLogSummary, FeedData, OverviewData } from "@/lib/types";
 import { SiteAlert } from "@/components/SiteAlert";
 import { CollectErrorsCard } from "@/components/CollectErrorsCard";
 import { TrafficPanel } from "@/components/TrafficPanel";
@@ -34,6 +35,8 @@ export default async function AdminOverviewPage() {
   let overview: OverviewData | null = null;
   let events: FeedData | null = null;
   let error: string | null = null;
+  // AI 统计是次要信息：与主数据并行取，读不到就不显示对应 KPI，不影响整页
+  const aiPromise = apiGet<AiLogSummary>("/api/ai-logs/summary", headers).catch(() => null);
   try {
     [overview, events] = await Promise.all([
       apiGet<OverviewData>("/api/overview", headers),
@@ -43,6 +46,7 @@ export default async function AdminOverviewPage() {
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
+  const aiSummary = await aiPromise;
 
   const records = overview?.records ?? [];
   const siteIds = new Set(records.map((row) => row.site_id));
@@ -50,7 +54,7 @@ export default async function AdminOverviewPage() {
   const inputs = records.map((row) => row.discount?.input).filter((v): v is number => v !== null && v !== undefined);
   const avgInput = inputs.length ? inputs.reduce((a, b) => a + b, 0) / inputs.length : null;
 
-  const kpis: { label: string; value: string; hint: string; tip?: TermKey }[] = [
+  const kpis: { label: string; value: string; hint: ReactNode; color?: string; tip?: TermKey }[] = [
     { label: "监控站点", value: String(siteIds.size), hint: "个" },
     { label: "价格记录", value: String(records.length), hint: "条" },
     { label: "事件总数", value: String((events?.price_total ?? 0) + (events?.notice_total ?? 0)), hint: "条" },
@@ -61,6 +65,28 @@ export default async function AdminOverviewPage() {
       hint: "相对厂商价",
     },
   ];
+
+  // AI 调用与成功率：口径与 AI 日志页一致（成功率 = ok / (total - transport - ignored)）
+  if (aiSummary) {
+    const rate = aiSummary.success_rate;
+    const failure = aiSummary.total - aiSummary.ok - aiSummary.transport - aiSummary.ignored;
+    kpis.push({
+      label: "AI 调用",
+      value: aiSummary.total.toLocaleString("en-US"),
+      hint: "次",
+    });
+    kpis.push({
+      label: "AI 成功率",
+      value: rate !== null ? `${rate.toFixed(1)}%` : "—",
+      color: toneText(successRateTone(rate)),
+      hint: (
+        <>
+          成功 {aiSummary.ok}
+          {failure > 0 && <span style={{ color: toneText("red") }}> · 失败 {failure}</span>}
+        </>
+      ),
+    });
+  }
 
   return (
     <>
@@ -76,7 +102,7 @@ export default async function AdminOverviewPage() {
                   {card.label}
                   {card.tip && <TermTip term={card.tip} />}
                 </div>
-                <div className="dash-stat-value">
+                <div className="dash-stat-value" style={card.color ? { color: card.color } : undefined}>
                   {card.value}
                   <span className="dash-stat-hint">{card.hint}</span>
                 </div>

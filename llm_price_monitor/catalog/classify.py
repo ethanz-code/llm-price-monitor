@@ -1,4 +1,4 @@
-"""AI 档位判定：把目录模型清单交给 AI 分级（flagship 顶级 / mainstream 主流）。
+"""AI 档位判定：把目录模型清单交给 AI 挑选当前旗舰（flagship），其余不标记。
 
 判定结果与输入指纹一起持久化在目录条目里（tier / tier_fp），刷新时指纹未变的模型
 不重复调用 AI；AI 未配置、调用失败或返回不可解析时静默跳过，页面不亮旗舰。
@@ -23,34 +23,39 @@ context（上下文 token 上限，可能缺失）、output_modalities（输出�
 
 请对清单中每个模型输出档位：
 - "flagship"：该厂商当前综合能力最强的旗舰模型（当前代最强主力档，通常也是定价最高的主力）；
-- "mainstream"：当前在售、被广泛使用的主力系列（旗舰之外的主力档位，如 pro / max / 标准版）；
-- null：预览与实验模型、图像/音频/embedding/实时等专用产物、小参数低成本档、已过时的旧代模型。
+- null：非旗舰的其余模型，包括主流档（pro / max / 标准版）、预览与实验模型、图像/音频/embedding/实时等专用产物、小参数低成本档、已过时的旧代模型。
 
-规则：flagship 从严，每厂商通常 1-2 个，证据不足就给 mainstream 或 null；只依据清单内信息判断。
-发布日期是判定"当前代"的硬依据，也决定主流档：同一厂商内已有明显更新的代次在售时（两代发布间隔很长），
-发布日期较久的旧代模型一律给 null，不得 flagship 也不得 mainstream——哪怕它仍在售、曾是当年的主力
-（如 gpt-4-turbo 之于更新的 GPT 代次）。仅当整个清单都属于旧代、厂商没有更新替代在售时，旧代主力才可给 mainstream。
-只输出 JSON：{"verdicts": [{"model": "<清单中的 model 原文>", "tier": "flagship" | "mainstream" | null}]}，
+规则：flagship 从严，每厂商通常 1-2 个，证据不足就给 null；只依据清单内信息判断。
+发布日期是判定"当前代"的硬依据：同一厂商内已有明显更新的代次在售时（两代发布间隔很长），
+发布日期较久的旧代模型一律给 null，不得 flagship——哪怕它仍在售、曾是当年的主力
+（如 gpt-4-turbo 之于更新的 GPT 代次）。仅当整个清单都属于旧代、厂商没有更新替代在售时，旧代主力才可给 flagship。
+只输出 JSON：{"verdicts": [{"model": "<清单中的 model 原文>", "tier": "flagship" | null}]}，
 verdicts 必须覆盖清单中每个模型。"""
 
 # 单次 AI 请求的模型数上限：控制输出体积，避免 max_tokens 截断
 BATCH_SIZE = 40
 
-VALID_TIERS = ("flagship", "mainstream", None)
+VALID_TIERS = ("flagship", None)
 
-# 同厂商已有约 18 个月内的代次在售时，发布超过该期限的旧代不给 flagship/mainstream
+# 指纹版本：判定口径变化（如去掉 mainstream）时递增，强制存量条目下一轮重新判定
+FINGERPRINT_VERSION = 2
+
+# 同厂商已有约 18 个月内的代次在售时，发布超过该期限的旧代不给 flagship
 STALE_DAYS = 550
 
 
 def _is_stale(entry: dict[str, Any], cutoff: date) -> bool:
     """发布日期早于 cutoff 视为旧代；缺失或无法解析的日期不参与硬校验。"""
-    raw = entry.get("release_date")
-    if not raw:
-        return False
+    text = str(entry.get("release_date") or "")
     try:
-        released = date.fromisoformat(str(raw)[:10])
+        released = date.fromisoformat(text[:10])
     except ValueError:
-        return False
+        if len(text) != 7:
+            return False
+        try:
+            released = date.fromisoformat(text + "-01")  # 月粒度（如 2024-09）按当月 1 号参与校验
+        except ValueError:
+            return False
     return released < cutoff
 
 
@@ -61,7 +66,7 @@ def ai_available(config: AIConfig) -> bool:
 def tier_fingerprint(entry: dict[str, Any]) -> str:
     """档位判定的输入指纹：名称/描述/厂商/发布日期变了才需要重新判定。"""
     raw = json.dumps(
-        [entry.get("model"), entry.get("name"), entry.get("description"), entry.get("vendor"), entry.get("release_date")],
+        [FINGERPRINT_VERSION, entry.get("model"), entry.get("name"), entry.get("description"), entry.get("vendor"), entry.get("release_date")],
         ensure_ascii=False,
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
@@ -118,7 +123,7 @@ def _demote_stale_models(output: dict[str, Any]) -> None:
         if not has_recent:
             continue
         for entry in entries:
-            if _is_stale(entry, cutoff) and entry.get("tier") in ("flagship", "mainstream"):
+            if _is_stale(entry, cutoff) and entry.get("tier") == "flagship":
                 entry["tier"] = None
 
 

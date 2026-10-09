@@ -13,9 +13,9 @@ export function HeroBackdrop() {
       <svg width="100%" height="100%" viewBox="0 0 1440 620" preserveAspectRatio="xMidYMid slice">
         <defs>
           <linearGradient id="hb-beam" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" style={{ stopColor: "var(--glow-green)" }} stopOpacity="0.9" />
-            <stop offset="0.6" style={{ stopColor: "var(--glow-green)" }} stopOpacity="0.3" />
-            <stop offset="1" style={{ stopColor: "var(--glow-green)" }} stopOpacity="0" />
+            <stop offset="0" style={{ stopColor: "var(--glow-accent)" }} stopOpacity="0.9" />
+            <stop offset="0.6" style={{ stopColor: "var(--glow-accent)" }} stopOpacity="0.3" />
+            <stop offset="1" style={{ stopColor: "var(--glow-accent)" }} stopOpacity="0" />
           </linearGradient>
           <filter id="hb-soft" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="70" />

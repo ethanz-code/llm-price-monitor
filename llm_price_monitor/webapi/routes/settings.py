@@ -1,8 +1,9 @@
-"""系统设置端点：读取、保存与外链实测（AI / WxPusher）。"""
+"""系统设置端点：读取、保存与外链实测（AI / WxPusher），以及模型池批量体检。"""
 from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,6 +16,10 @@ from llm_price_monitor.ai import ping_model, provider_error_detail
 from llm_price_monitor.config import ai_from_raw, schedule_from_raw, settings_from_raw
 from llm_price_monitor.store import Store
 from llm_price_monitor.webapi.seed import MODES, apply_seed
+
+# 模型池体检：单模型 15 秒内没答完按失败计；单次请求上限 40 个，前端分批调
+PROBE_TIMEOUT_SECONDS = 15.0
+PROBE_MAX_BATCH = 40
 
 
 class SettingsBody(BaseModel):
@@ -30,6 +35,11 @@ class SettingsTestBody(BaseModel):
     target: Literal["ai", "wxpusher"]
     settings: dict[str, Any] | None = None
     ai: dict[str, Any] | None = None
+
+
+class ModelsProbeBody(BaseModel):
+    models: list[str]
+    reset: bool = False
 
 
 def mask_api_key(key: str) -> str:
@@ -125,7 +135,7 @@ def build_router(store: Store) -> APIRouter:
                 raise ValueError("请先填写 WxPusher App Token")
             wxpusher.send_wxpusher(
                 app_token=token,
-                content="【LLM 价格监控】这是一条测试推送，收到即表示通知配置有效。",
+                content="【大橘】这是一条测试推送，收到即表示通知配置有效。",
                 summary="测试推送",
                 uid=str(merged_settings.get("wxpusher_uid") or "").strip() or None,
             )
@@ -138,5 +148,57 @@ def build_router(store: Store) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"目标服务返回了错误：{provider_error_detail(exc.response)}") from exc
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=400, detail=f"连接目标服务失败: {exc}") from exc
+
+    @router.get("/api/settings/test-models")
+    def get_models_probe() -> dict[str, Any]:
+        """回看上一轮模型池体检结果（documents.model_probe）；没测过返回空。"""
+        doc = store.get_document("model_probe")
+        if not doc:
+            return {"tested_at": None, "results": {}}
+        return {"tested_at": doc.get("tested_at"), "results": doc.get("results", {})}
+
+    @router.post("/api/settings/test-models")
+    def probe_models(body: ModelsProbeBody) -> dict[str, Any]:
+        """批量实测模型池：对每个模型发一次最小对话请求，逐个返回可用状态与报错原文。
+
+        用已保存的配置（密钥完整不出后端）；结果合并进 documents.model_probe 供面板回看。
+        不写 ai_logs——体检是探针流量，混进日志会污染按口径统计的成功率。
+        """
+        models = list(dict.fromkeys(item.strip() for item in body.models if item.strip()))
+        if not models:
+            raise HTTPException(status_code=400, detail="模型列表为空，请先填写 AI 模型列表")
+        if len(models) > PROBE_MAX_BATCH:
+            raise HTTPException(status_code=400, detail=f"单次最多测 {PROBE_MAX_BATCH} 个模型，请分批调用")
+        try:
+            ai_config = ai_from_raw(store.get_document("ai") or {}, cache=None)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not ai_config.base_url:
+            raise HTTPException(status_code=400, detail="请先填写并保存 AI Base URL 再体检模型池")
+
+        def probe_one(model: str) -> dict[str, Any]:
+            started = time.monotonic()
+            elapsed = lambda: round((time.monotonic() - started) * 1000)
+            try:
+                reply = ping_model(ai_config, model, timeout=PROBE_TIMEOUT_SECONDS)
+                return {"model": model, "ok": True, "reply": reply[:80], "duration_ms": elapsed()}
+            except httpx.HTTPStatusError as exc:
+                return {"model": model, "ok": False, "error": provider_error_detail(exc.response), "duration_ms": elapsed()}
+            except httpx.HTTPError as exc:
+                return {"model": model, "ok": False, "error": f"连接失败：{exc}", "duration_ms": elapsed()}
+            except ValueError as exc:
+                return {"model": model, "ok": False, "error": f"返回了非 JSON 响应：{exc}", "duration_ms": elapsed()}
+            except Exception as exc:  # 单个模型异常不炸整批
+                return {"model": model, "ok": False, "error": str(exc), "duration_ms": elapsed()}
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            results = list(executor.map(probe_one, models))
+
+        doc = {"tested_at": time.time(), "results": {}} if body.reset else (store.get_document("model_probe") or {"tested_at": time.time(), "results": {}})
+        merged: dict[str, Any] = dict(doc.get("results") or {})
+        for item in results:
+            merged[item["model"]] = item
+        store.set_document("model_probe", {"tested_at": time.time(), "results": merged})
+        return {"results": results}
 
     return router

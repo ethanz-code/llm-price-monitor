@@ -7,7 +7,7 @@
 import pytest
 
 from llm_price_monitor import visitor_geo
-from llm_price_monitor.webapi import scheduler
+from llm_price_monitor.webapi import scheduler, tasks
 
 
 @pytest.fixture(autouse=True)
@@ -25,3 +25,6 @@ def _isolated_runtime(tmp_path, monkeypatch):
     )
     yield
     scheduler.stop_scheduler()
+    # 任务注册表进程级共享（reset 注释本就要求"测试间需要显式清场"）：上一个测试残留的
+    # 运行中任务（如在途的目录刷新线程）会让下一个测试提交同类任务撞互斥被 409 拒绝
+    tasks.reset()

@@ -8,6 +8,7 @@ export const EVENT_META: Record<string, { label: string; tone: Tone }> = {
   price_increased: { label: "涨价", tone: "red" },
   price_decreased: { label: "降价", tone: "green" },
   restored: { label: "恢复", tone: "green" },
+  recovered: { label: "恢复", tone: "green" },
   status_changed: { label: "状态变化", tone: "yellow" },
   group_removed: { label: "分组下线", tone: "red" },
   group_added: { label: "分组上线", tone: "green" },
@@ -191,6 +192,17 @@ export function dayKey(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 事件流分节标题：今天 / 昨天 / 9月25日（跨年补年份）。 */
+export function dayLabel(ts: number): string {
+  const d = new Date(ts * 1000);
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diff = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86400000);
+  if (diff === 0) return "今天";
+  if (diff === 1) return "昨天";
+  const thisYear = new Date().getFullYear();
+  return `${d.getMonth() + 1}月${d.getDate()}日${d.getFullYear() !== thisYear ? ` ${d.getFullYear()}` : ""}`;
+}
+
 export function formatTime(ts: number | undefined | null): string {
   if (!ts) return "—";
   const d = new Date(ts * 1000);
@@ -216,6 +228,19 @@ export function discountTone(value: number | null | undefined): Tone {
   if (value <= 0.5) return "green";
   if (value <= 0.8) return "yellow";
   return "red";
+}
+
+/** 成功率语义色：按"每次尝试各记一条、报错重试计失败"的低基线口径定档——≥80% 绿、60~80% 黄、<60% 红，无数据灰；概览页与 AI 日志页共用同一档位。 */
+export function successRateTone(rate: number | null | undefined): Tone {
+  if (rate === null || rate === undefined) return "gray";
+  if (rate >= 80) return "green";
+  if (rate >= 60) return "yellow";
+  return "red";
+}
+
+/** Tone → 文本色 CSS 变量，与 .tone-* 标签同源，双主题自动适配。 */
+export function toneText(tone: Tone): string {
+  return `var(--tone-${tone}-text)`;
 }
 
 /** 采集状态语义：key 与后端 price_status / collect_status 文档对齐。 */

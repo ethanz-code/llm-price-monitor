@@ -6,10 +6,12 @@ import { useState } from "react";
 import { IconFeedback, IconWecom } from "./icons";
 import { ContactModal } from "./ContactModal";
 import { FeedbackModal } from "./FeedbackModal";
+import { useAuthPage } from "@/lib/useAuthPage";
 
 export function SideFab() {
   const [contactOpen, setContactOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  if (useAuthPage()) return null;
   return (
     <>
       <div className="side-fab-group">

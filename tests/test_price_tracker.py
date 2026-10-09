@@ -1,6 +1,14 @@
 import httpx
+import pytest
 
-from llm_price_monitor.tracker import detect_site_kind, extract_price, fetch_newapi_price, fetch_price, newapi_price_record
+from llm_price_monitor.tracker import (
+    GroupRatioUnavailableError,
+    detect_site_kind,
+    extract_price,
+    fetch_newapi_price,
+    fetch_price,
+    newapi_price_record,
+)
 
 
 def test_extract_price_from_model_price_text():
@@ -99,6 +107,24 @@ def test_newapi_regular_ratio_applies_group_and_cache_multipliers():
     assert record.metadata["cache_read_price"] == 0.08000000000000002
     assert record.metadata["cache_create_price"] == 1.0
     assert record.unit == "CNY/1M tokens"
+
+
+def test_newapi_missing_group_ratio_is_not_inferred_from_other_fields():
+    """group_ratio 未覆盖的分组不再从 group_definitions / first_topup_offer 静默推断倍率。"""
+    payload = {
+        "group_ratio": {},
+        "group_definitions": [{"id": "vip", "label": "VIP", "ratio": 0.5}],
+        "first_topup_offer": {"group": "vip", "ratio": 0.3},
+        "data": [{
+            "model_name": "gpt-5.6-luna",
+            "enable_groups": ["vip"],
+            "model_ratio": 0.5,
+            "completion_ratio": 4,
+        }],
+    }
+
+    with pytest.raises(GroupRatioUnavailableError):
+        newapi_price_record(payload, "gpt-5.6-luna", "https://newapi.test/api/pricing", group="vip")
 
 
 def test_newapi_currency_can_be_explicitly_configured_as_usd():

@@ -4,7 +4,7 @@ import { DataTable, type DColumn } from "./DataTable";
 import { formatDiscount, formatPrice, discountTone, toCnyPrice, recordStatusKey } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
 import type { OverviewRecord } from "@/lib/types";
-import { ToneTag, RulePriceMark } from "./ToneTag";
+import { ToneNum, RulePriceMark } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 
@@ -121,9 +121,9 @@ export function SnapshotPreview({
       mobileHide: true,
       render: (_, row) =>
         row.discount ? (
-          <span style={{ display: "inline-flex", gap: 6 }}>
-            <ToneTag tone={discountTone(row.discount.input)}>入 {formatDiscount(row.discount.input)}</ToneTag>
-            <ToneTag tone={discountTone(row.discount.output)}>出 {formatDiscount(row.discount.output)}</ToneTag>
+          <span style={{ display: "inline-flex", gap: 10 }}>
+            <ToneNum tone={discountTone(row.discount.input)}>入 {formatDiscount(row.discount.input)}</ToneNum>
+            <ToneNum tone={discountTone(row.discount.output)}>出 {formatDiscount(row.discount.output)}</ToneNum>
           </span>
         ) : (
           <span style={{ color: "var(--text-3)" }}>—</span>

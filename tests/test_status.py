@@ -142,6 +142,28 @@ def test_ai_extract_status_sends_status_prompt_and_parses_json():
     assert "渠道" in captured["body"]["messages"][0]["content"]
 
 
+def test_ai_extract_status_falls_back_to_next_model(monkeypatch):
+    """渠道状态 AI 兜底接入统一换模型链路：首模型失败自动换下一个，全程留 AI 日志。"""
+    import llm_price_monitor.ai as ai_mod
+
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)  # 固定模型顺序 bad → good
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        if body["model"] == "bad-model":
+            return httpx.Response(500, json={"error": {"message": "boom"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"items": []}'}}]})
+
+    ai = AIConfig(enabled=True, base_url="https://ai.test/v1", models=("bad-model", "good-model"), api_key="k")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = ai_extract_status(ai, "<html>渠道全部正常</html>", "https://demo.test/status", client=client)
+    assert result == {"items": []}
+    assert [(row["model"], row["status"]) for row in rows] == [("bad-model", "fallback"), ("good-model", "ok")]
+    assert rows[0]["scene"] == "渠道状态"  # 失败与成功都可在后台 AI 日志按场景回查
+
+
 # ---------- diff ----------
 
 def test_diff_status_reports_path_level_changes():

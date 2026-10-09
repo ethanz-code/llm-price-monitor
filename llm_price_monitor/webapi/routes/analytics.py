@@ -61,7 +61,7 @@ def build_router(store: Store) -> APIRouter:
             try:
                 wxpusher.send_wxpusher(
                     app_token=settings.wxpusher_app_token,
-                    content=f"【LLM 价格监控】收到新的建议\n联系方式：{contact or '未留'}\n\n{content}",
+                    content=f"【大橘】收到新的建议\n联系方式：{contact or '未留'}\n\n{content}",
                     summary=content[:100],
                     uid=settings.wxpusher_uid,
                 )

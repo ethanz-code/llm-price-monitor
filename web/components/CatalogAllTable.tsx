@@ -5,7 +5,7 @@ import { DataTable, type DColumn } from "./DataTable";
 import { Empty, Input, Pick } from "./ui";
 import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
-import { ToneTag } from "./ToneTag";
+import { ToneNum } from "./ToneTag";
 import { VendorBadge } from "./CatalogTable";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
 import { useNarrow } from "@/lib/useNarrow";
@@ -76,7 +76,7 @@ export function CatalogAllTable({ data }: { data: CatalogData }) {
       sorter: (a, b) => (a.list?.input ?? 0) - (b.list?.input ?? 0),
       render: (_, row) =>
         isFreePrice(row.list) ? (
-          <ToneTag tone="green">免费</ToneTag>
+          <ToneNum tone="green">免费</ToneNum>
         ) : (
           <span className="mono num" style={{ fontWeight: 550 }}>
             ${formatPrice(row.list?.input)} / ${formatPrice(row.list?.output)}

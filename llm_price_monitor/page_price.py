@@ -5,7 +5,7 @@ new-api 接口并按配置的模型清单过滤；本模块面向厂商官方定
 全部模型价格"，不预设模型清单。
 
 流水线：抓取 → 确定性解析（Markdown 表格 / HTML 表格 / JSON 价格表，任一命中即停）
-→ 无头浏览器渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
+→ Headless 渲染兜底（JS 空壳页）→ AI 兜底（模型名与档位价格数字必须在页面文本中
 字面出现，防幻觉，结果一律标记 candidate）。同一模型的多档价格（高峰/空闲时段、
 不同上下文档）逐档保留：AI 档位带 name（含页面里的时段定义），静态解析把时段/档位
 列收进 context；AI 兜底的基准档取标准档（如高峰时段），静态解析按页面行序取第一档。
@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from llm_price_monitor.adapters import _looks_like_html, _parse_base_price_entries
+from llm_price_monitor.adapters import _parse_base_price_entries
 from llm_price_monitor.ai import (
     AIExtractionError,
     ai_content,
@@ -263,7 +263,7 @@ def parse_html_tables(text: str, source_url: str) -> list[dict[str, Any]] | None
     try:
         collector.feed(text)
     except Exception:
-        return None  # 残缺 HTML 交给无头渲染或 AI 兜底
+        return None  # 残缺 HTML 交给Headless 渲染或 AI 兜底
     records: list[dict[str, Any]] = []
     for header, rows in collector.tables:
         parsed = _records_from_grid(header, rows, source_url=source_url)
@@ -486,7 +486,8 @@ def fetch_page_prices(
         text = response.text
 
         parsed = _parse_text(text, final_url, "static")
-        if parsed is None and (headless or _looks_like_html(text)):
+        rendered: str | None = None
+        if parsed is None and headless:
             try:
                 rendered = fetch_page_html(url, {}, user_agent=user_agent)
                 parsed = _parse_text(rendered, final_url, "headless")
@@ -494,7 +495,8 @@ def fetch_page_prices(
                 warnings.append(str(exc))
         if parsed is None and ai_config is not None and ai_config.enabled:
             try:
-                records, ai_warnings = _ai_extract(text, final_url, ai_config, client)
+                # 渲染成功但静态解析不出时，AI 兜底必须看渲染后的正文——原始 text 多半是 JS 空壳
+                records, ai_warnings = _ai_extract(rendered or text, final_url, ai_config, client)
                 warnings.extend(ai_warnings)
                 if records:
                     parsed = (records, "ai")
@@ -505,7 +507,7 @@ def fetch_page_prices(
 
     records, method = parsed if parsed else ([], "none")
     if parsed is None:
-        warnings.append("静态解析、无头渲染与 AI 兜底都没有拿到价格")
+        warnings.append("静态解析、Headless 渲染与 AI 兜底都没有拿到价格")
     return {
         "url": url,
         "final_url": final_url,
@@ -551,7 +553,7 @@ def main() -> None:
     parser.add_argument("url", help="定价页 URL（Markdown / HTML 表格 / JSON 价格表均可）")
     parser.add_argument("--out", help="结果写入的 JSON 文件；省略时打印到 stdout")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="抓取超时秒数（默认 45）")
-    parser.add_argument("--headless", action="store_true", help="静态解析为空时尝试无头浏览器渲染（默认仅 JS 空壳页自动触发）")
+    parser.add_argument("--headless", action="store_true", help="静态解析为空时尝试Headless 渲染（默认仅 JS 空壳页自动触发）")
     parser.add_argument("--no-ai", action="store_true", help="禁用 AI 兜底")
     parser.add_argument("--ai-base-url", help="AI 兜底的接口地址（默认读 PRICE_MONITOR_DB 库里的 ai 配置）")
     parser.add_argument("--ai-api-key", help="AI 兜底的密钥")

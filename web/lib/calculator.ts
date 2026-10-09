@@ -1,8 +1,9 @@
 /** 花费计算：单价（每 100 万 token）× 用量 → 各档小计与总价。
  *  与 React 无关的纯函数：便于单测，也供 URL 编解码复用。文案不在此文件，统一放 copy.ts。 */
 
-/** 四个计费档（与站点价目卡一致）。缓存存储价只展示不进总价——没有存储量数据。 */
-export type PriceKey = "input" | "output" | "cacheRead" | "cacheWrite";
+/** 三个计费档（与站点价目卡一致）。缓存写入/存储价不进总价：收几次取决于
+ *  缓存前缀多大、多久重建一次，"总量+命中率"的口径撑不起这个假设，硬算会失真。 */
+export type PriceKey = "input" | "output" | "cacheRead";
 
 export type CalcPrices = Record<PriceKey, number | null>;
 
@@ -22,7 +23,7 @@ export interface CalcResult {
   total: number;
 }
 
-export const PRICE_KEYS: PriceKey[] = ["input", "output", "cacheRead", "cacheWrite"];
+export const PRICE_KEYS: PriceKey[] = ["input", "output", "cacheRead"];
 
 /** 单价口径：目录与站点价统一按每 100 万 token 标价。 */
 const TOKENS_PER_UNIT = 1_000_000;
@@ -60,7 +61,8 @@ export function parseHitRate(text: string): number {
 }
 
 /** 总花费 = 缓存命中部分×命中价 + 未命中输入×输入价 + 输出×输出价。
- *  输入按命中率切成命中/未命中两段（不另计缓存存储）；某一档没单价就整段不计，不编数。 */
+ *  输入按命中率切成命中/未命中两段（不含缓存写入/存储费，见 PriceKey 注释）；
+ *  某一档没单价就整段不计，不编数。 */
 export function calcCost(prices: CalcPrices, usage: CalcUsage): CalcResult {
   const hit = parseHitRate(usage.hitRate != null ? String(usage.hitRate) : "") / 100;
   const totalTokens = positiveTokens(usage.total);
@@ -140,7 +142,6 @@ export const EMPTY_PRICES: CalcPrices = {
   input: null,
   output: null,
   cacheRead: null,
-  cacheWrite: null,
 };
 
 export const EMPTY_STATE: CalcState = {
@@ -159,7 +160,7 @@ const PARAM = {
   model: "m",
   site: "s",
   currency: "cur",
-  price: { input: "pi", output: "po", cacheRead: "pr", cacheWrite: "pw" },
+  price: { input: "pi", output: "po", cacheRead: "pr" },
   total: "t",
   hit: "h",
 } as const;

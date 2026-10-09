@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from llm_price_monitor.config import config_from_store
-from llm_price_monitor.store import Store
+from llm_price_monitor.config import config_from_store, settings_from_raw
+from llm_price_monitor.store import Store, ai_error_kind
 from llm_price_monitor.webapi.app import create_app
 
 
@@ -252,22 +252,26 @@ def test_prune_price_groups_keeps_only_selected_groups(tmp_path: Path):
 
 
 def test_ai_logs_summary(tmp_path: Path):
-    """AI 调用汇总：KPI 合计、按天补零（本地时区）与场景/模型分布；fallback/param_retry 是失败尝试不算成功。"""
+    """AI 调用汇总：KPI 合计、按天补零（本地时区）与场景/模型分布；成功率 = ok / (total - transport)，报错重试计失败、连接抖动剔除。"""
     store = Store(tmp_path / "monitor.db")
     store.add_ai_log(scene="助手问答", model="m1", status="ok", duration_ms=1000, prompt_tokens=100, completion_tokens=50, total_tokens=150)
     store.add_ai_log(scene="助手问答", model="m2", status="fallback", duration_ms=2000, error="限流")
     store.add_ai_log(scene="价格抽取", model="m1", status="ok", duration_ms=3000, prompt_tokens=200, completion_tokens=100, total_tokens=300)
     store.add_ai_log(scene="价格抽取", model="m1", status="error", duration_ms=4000, error="超时")
     store.add_ai_log(scene="价格抽取", model="m3", status="param_retry", duration_ms=500, error="enable_thinking 受限")
+    store.add_ai_log(scene="价格抽取", model="m3", status="transport", duration_ms=600, error="连接失败，未收到响应｜SSLEOFError")
     # 把前两条挪到昨天，验证按天聚合与补零
     with sqlite3.connect(store.path) as conn:
         conn.execute("UPDATE ai_logs SET ts = ts - 86400 WHERE id <= 2")
 
     summary = store.ai_logs_summary()
-    assert summary["total"] == 5
-    assert (summary["ok"], summary["fallback"], summary["param_retry"], summary["error"]) == (2, 1, 1, 1)
+    assert summary["total"] == 6
+    assert (summary["ok"], summary["fallback"], summary["param_retry"], summary["transport"], summary["error"]) == (2, 1, 1, 1, 1)
+    # 成功率 = ok / (total - transport)：报错后换模型、换参数重试的尝试计入失败；
+    # 连接抖动没收到供应商答复，不算失败也从分母剔除
+    assert summary["success_rate"] == 40.0
     assert (summary["prompt_tokens"], summary["completion_tokens"], summary["total_tokens"]) == (300, 150, 450)
-    assert summary["avg_duration_ms"] == 2100
+    assert summary["avg_duration_ms"] == 1850
 
     today = time.strftime("%m-%d")
     yesterday = time.strftime("%m-%d", time.localtime(time.time() - 86400))
@@ -277,6 +281,84 @@ def test_ai_logs_summary(tmp_path: Path):
     assert summary["daily"][-2]["day"] == yesterday and summary["daily"][-1]["day"] == today
     assert summary["daily"][-2]["ok"] == 1 and summary["daily"][-2]["fallback"] == 1
     assert summary["daily"][-1]["ok"] == 1 and summary["daily"][-1]["error"] == 1 and summary["daily"][-1]["param_retry"] == 1
+    assert summary["daily"][-1]["transport"] == 1
 
-    assert {s["name"]: s["calls"] for s in summary["scenes"]} == {"助手问答": 2, "价格抽取": 3}
-    assert {m["name"]: m["calls"] for m in summary["models"]} == {"m1": 3, "m2": 1, "m3": 1}
+    assert {s["name"]: s["calls"] for s in summary["scenes"]} == {"助手问答": 2, "价格抽取": 4}
+    assert {m["name"]: m["calls"] for m in summary["models"]} == {"m1": 3, "m2": 1, "m3": 2}
+
+
+def test_ai_error_kind_groups_same_shape_errors():
+    """报错分组键：同形态报错归同组（HTTP 码 + 正文开头），请求 ID 等尾部差异不影响分组。"""
+    quota_a = 'HTTP 403：{"error":{"message":"Free quota exhausted. To continue accessing","id":"chatcmpl-aaa"}}'
+    quota_b = 'HTTP 403：{"error":{"message":"Free quota exhausted. To continue accessing","id":"chatcmpl-bbb"}}'
+    thinking = "HTTP 400：<400> InternalError.Algo.InvalidParameter: The value of the enable_thinking parameter is restricted to True."
+    assert ai_error_kind(quota_a) == ai_error_kind(quota_b) != ai_error_kind(thinking)
+    assert ai_error_kind("模型池全部失败，最后一次错误 ReadTimeout: timed out").startswith("模型池全部失败")
+    assert ai_error_kind(None) == ""
+
+
+def test_ai_logs_summary_excludes_marked_error_kinds(tmp_path: Path):
+    """「报错判定」勾掉的报错组：不计失败、不进成功率分母，error_kinds 回传分组与勾选状态。"""
+    store = Store(tmp_path / "monitor.db")
+    store.add_ai_log(scene="价格抽取", model="m1", status="ok", duration_ms=100)
+    store.add_ai_log(scene="价格抽取", model="m2", status="fallback", duration_ms=200, error="HTTP 403：Free quota exhausted（Quota.FreeTierOnly）")
+    store.add_ai_log(scene="价格抽取", model="m3", status="fallback", duration_ms=300, error="HTTP 403：Free quota exhausted（Quota.FreeTierOnly）")
+    store.add_ai_log(scene="价格抽取", model="m4", status="error", duration_ms=400, error="HTTP 500：upstream boom")
+    quota_kind = ai_error_kind("HTTP 403：Free quota exhausted（Quota.FreeTierOnly）")
+
+    summary = store.ai_logs_summary()
+    assert summary["ignored"] == 0 and summary["success_rate"] == 25.0
+    assert [(kind["key"], kind["count"], kind["ignored"]) for kind in summary["error_kinds"]] == [
+        (quota_kind, 2, False),
+        (ai_error_kind("HTTP 500：upstream boom"), 1, False),
+    ]
+
+    store.set_document("settings", {"ai_ignored_errors": [quota_kind]})
+    summary = store.ai_logs_summary()
+    # 4 条里 2 条 403 被豁免：失败只剩 500 那条；成功率 = 1 ok ÷ (4 - 2) 有效尝试
+    assert summary["ignored"] == 2 and summary["success_rate"] == 50.0
+    assert [kind["ignored"] for kind in summary["error_kinds"]] == [True, False]
+
+
+def test_settings_validates_ai_ignored_errors():
+    """settings.ai_ignored_errors 必须是非空字符串数组，保存时去重去首尾空白。"""
+    raw = {"ai_ignored_errors": ["HTTP 403：Free quota", "HTTP 403：Free quota", "  HTTP 500：boom  "]}
+    assert settings_from_raw(raw, resolve_env=False).ai_ignored_errors == ("HTTP 403：Free quota", "HTTP 500：boom")
+    with pytest.raises(ValueError):
+        settings_from_raw({"ai_ignored_errors": "HTTP 403"}, resolve_env=False)
+    with pytest.raises(ValueError):
+        settings_from_raw({"ai_ignored_errors": [1]}, resolve_env=False)
+    with pytest.raises(ValueError):
+        settings_from_raw({"ai_ignored_errors": [" "]}, resolve_env=False)
+
+
+def test_add_ai_log_respects_configured_retention(tmp_path: Path):
+    """AI 日志保留天数读 settings.retention_ai_log_days：未配置回默认 7 天。"""
+    import time as _time
+
+    store = Store(tmp_path / "monitor.db")
+    store.add_ai_log(scene="s", model="m", status="ok", duration_ms=1)
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE ai_logs SET ts = ?", (_time.time() - 3 * 86400,))
+    store.add_ai_log(scene="s", model="m2", status="ok", duration_ms=1)  # 默认 7 天：3 天前的还在
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ai_logs").fetchone()[0] == 2
+
+    store.set_document("settings", {"retention_ai_log_days": 1})
+    store.add_ai_log(scene="s", model="m3", status="ok", duration_ms=1)  # 配 1 天：3 天前的被清掉
+    with sqlite3.connect(store.path) as conn:
+        remaining = {row[0] for row in conn.execute("SELECT model FROM ai_logs")}
+    assert remaining == {"m2", "m3"}
+
+
+def test_rename_site_moves_collect_health(tmp_path: Path):
+    """站点改名要同步搬迁 collect_status 与 site_collect_health（与删除站点的清理对齐）。"""
+    store = Store(tmp_path / "monitor.db")
+    store.upsert_site("old-id", {"id": "old-id", "models": ["m"], "network": {"url": "https://old.test/api/pricing"}})
+    store.set_document("collect_status", {"old-id": {"price": "ok"}, "keep": {}})
+    store.set_document("site_collect_health", {"old-id": {"price": "请求失败"}, "keep": {}})
+
+    assert store.rename_site("old-id", "new-id")
+
+    assert store.get_document("collect_status") == {"new-id": {"price": "ok"}, "keep": {}}
+    assert store.get_document("site_collect_health") == {"new-id": {"price": "请求失败"}, "keep": {}}

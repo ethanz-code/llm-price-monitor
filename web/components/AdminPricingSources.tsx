@@ -17,7 +17,8 @@ import type {
   VendorSourceModel,
 } from "@/lib/types";
 import { DataTable, type DColumn } from "./DataTable";
-import { IconNodes, IconPlus } from "./icons";
+import { IconPlus } from "./icons";
+import { DajuSit } from "./DajuArt";
 import { RiskLink } from "./RiskLink";
 import { SiteAlert } from "./SiteAlert";
 import { ToneTag, type Tone } from "./ToneTag";
@@ -349,7 +350,7 @@ export function AdminPricingSources() {
             scrollX={900}
             empty={
               <Empty
-                icon={<IconNodes size={18} />}
+                icon={<DajuSit width={30} />}
                 title="还没有厂商定价源"
                 description="从上面的覆盖检测里一键添加，或直接配置一个厂商的公开定价页地址。"
                 action={
@@ -600,7 +601,7 @@ function SourceDetailModal({ vendor, onClose }: { vendor: string; onClose: () =>
           </div>
           {(source.models ?? []).length === 0 ? (
             <Empty
-              icon={<IconNodes size={18} />}
+              icon={<DajuSit width={30} />}
               title="没有取到模型价格"
               description={source.last_error ?? "该页面可能没有结构化价目，或抓取时页面尚未渲染。"}
             />

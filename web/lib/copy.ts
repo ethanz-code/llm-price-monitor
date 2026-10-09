@@ -6,8 +6,8 @@
 
 /** 品牌与站点级描述（浏览器标签、搜索结果、分享摘要） */
 export const site = {
-  name: "LLM 价格监控",
-  title: "LLM 价格监控 — 中转站价格逐条可溯源",
+  name: "大橘",
+  title: "大橘 Daju — 中转站价格逐条可溯源",
   description:
     "哪个中转站价格更低、服务更稳？每条数据都附来源链接，点开就能核对。",
 };
@@ -32,7 +32,7 @@ export const nav = {
 /** 首页 */
 export const home = {
   /** Hero 大标题打字机逐行打出 */
-  typeLines: ["中转站", "集成式检测平台"],
+  typeLines: ["中转站", "价格逐条可溯源"],
   heroSub:
     "自己用的中转站，是不是时不时就不能用？想找个靠谱的，先来对照各家价格和渠道状态。平台不偏向任何中转站，使用需谨慎，Token 少充值。",
   heroButtons: {
@@ -40,7 +40,7 @@ export const home = {
     secondary: "算一笔花费 →",
   },
   intro:
-    "这是一个自动化的中转站监测面板：定时抓取各站点的模型价格、公告和渠道可用性，每条数据都附来源链接。不推荐、不评分，只做对照。",
+    "这里持续记录各家站点的模型价格、公告和渠道可用性，每条数据都附来源链接，点开就能核对。不推荐、不评分，只做对照。",
   sections: {
     latestPrice: "最新价格",
     trend: "价格走势",
@@ -115,7 +115,6 @@ export const calculator = {
     input: "输入",
     output: "输出",
     cacheRead: "缓存命中",
-    cacheWrite: "缓存存储",
   },
   priceTitle: "单价 · 每百万 token",
   usageTotal: "用量",
@@ -160,6 +159,8 @@ export const alerts = {
 export const footer = {
   brandLine:
     "盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成对任何站点的使用推荐。",
+  /** 品牌猫大橘的一句话：交代它在干嘛，顺带呼应「盯价格」 */
+  watchLine: "大橘蹲守中，价格一动就知道。",
   links: {
     catalog: "厂商定价",
     feedback: "提建议",

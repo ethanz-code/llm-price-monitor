@@ -87,7 +87,8 @@ def refresh_site_token(spec: SiteSpec, client: httpx.Client, timeout: float, use
     kwargs: dict[str, Any] = {"params": params, "headers": extra_headers, "timeout": timeout}
     if body_template is not None and method != "GET":
         kwargs["content"] = body_template.replace("${refresh_token}", refresh_token)
-        kwargs["headers"] = {**extra_headers, **({} if extra_headers else {"content-type": "application/json"})}
+        if not any(name.casefold() == "content-type" for name in extra_headers):
+            kwargs["headers"] = {**extra_headers, "content-type": "application/json"}
     response = client.request(method, url, **kwargs)
     if response.status_code in {401, 403}:
         raise PriceMonitorError(f"续签接口返回 HTTP {response.status_code}，refresh_token 可能已失效")

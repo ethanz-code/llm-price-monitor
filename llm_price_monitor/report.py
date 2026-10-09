@@ -19,6 +19,7 @@ import httpx
 from llm_price_monitor import tasklog
 from llm_price_monitor.adapters import ADAPTERS
 from llm_price_monitor.config import AuthRequiredError, ChangeKind, MonitorConfig, PriceMonitorError, SiteSpec
+from llm_price_monitor.http_retry import build_client
 from llm_price_monitor.tracker import PriceRecord
 from llm_price_monitor.units import round2, tier_unit_per_1m
 from llm_price_monitor.useragent import choose_user_agent
@@ -97,6 +98,13 @@ def classify(previous: dict[str, Any] | None, current: dict[str, Any]) -> Change
     if previous.get("price_status") == "unavailable" and current.get("price_status") == "confirmed":
         return "recovered"
     if previous.get("price_status") != current.get("price_status"):
+        # 屏蔽掉状态字段再比一次：价格本体（数值/档位/缓存价）也变了就是真实价格变化，
+        # 不能当成纯状态抖动丢事件；requires_auth 属于状态语义，一并归一
+        def without_status(item: dict[str, Any]) -> dict[str, Any]:
+            return {**item, "price_status": None, "requires_auth": None}
+
+        if fingerprint(without_status(previous)) != fingerprint(without_status(current)):
+            return "changed"
         return "status_changed"
     return "changed"
 
@@ -646,7 +654,7 @@ def scan_prices(
     started = time.time()
     selected_user_agent = choose_user_agent(config, user_agent)
     own = client is None
-    client = client or httpx.Client(follow_redirects=True)
+    client = client or build_client()
     latest = store.latest_all() if store is not None else {}
     try:
         records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)
@@ -675,7 +683,7 @@ def scan_statuses(
     """独立渠道状态采集：与价格采集解耦，可按自己的周期定时执行。"""
     selected_user_agent = choose_user_agent(config, user_agent)
     own = client is None
-    client = client or httpx.Client(follow_redirects=True)
+    client = client or build_client()
     try:
         scan = _scan_statuses(config, client, selected_user_agent, store)
         if persist and store is not None:
@@ -699,7 +707,7 @@ def scan_notices(
     """独立站点公告采集：与价格采集解耦，可按自己的周期定时执行。"""
     selected_user_agent = choose_user_agent(config, user_agent)
     own = client is None
-    client = client or httpx.Client(follow_redirects=True)
+    client = client or build_client()
     try:
         scan = _scan_notices(config, client, selected_user_agent, store)
         if persist and store is not None:
@@ -724,7 +732,7 @@ def run_once(
     started = time.time()
     selected_user_agent = choose_user_agent(config, user_agent)
     own = client is None
-    client = client or httpx.Client(follow_redirects=True)
+    client = client or build_client()
     latest = store.latest_all() if store is not None else {}
     try:
         records, history_rows, events, errors, site_status, removed_keys = _scan_prices(config, client, selected_user_agent, store, latest, persist)

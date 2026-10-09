@@ -159,34 +159,10 @@ class GroupRatioUnavailableError(ValueError):
     """站点未公开该分组的倍率，无法确定性计价。"""
 
 
-def _fallback_group_ratios(payload: dict[str, Any]) -> dict[str, float]:
-    """group_ratio 未覆盖的分组，从 group_definitions / first_topup_offer 取倍率。"""
-    fallback: dict[str, float] = {}
-    definitions = payload.get("group_definitions")
-    if isinstance(definitions, list):
-        for definition in definitions:
-            if not isinstance(definition, dict):
-                continue
-            ratio = _number(definition.get("ratio"))
-            if ratio is None:
-                continue
-            for key in (definition.get("id"), definition.get("label")):
-                if isinstance(key, str) and key:
-                    fallback.setdefault(key, ratio)
-    offer = payload.get("first_topup_offer")
-    if isinstance(offer, dict):
-        ratio = _number(offer.get("ratio"))
-        group = offer.get("group")
-        if ratio is not None and isinstance(group, str) and group:
-            fallback.setdefault(group, ratio)
-    return fallback
-
-
 def _ratio_group(
     item: dict[str, Any],
     ratios: dict[str, Any],
     group: str | None,
-    fallback_ratios: dict[str, float] | None = None,
 ) -> tuple[str | None, float]:
     enabled_groups = [name for name in item.get("enable_groups", []) if isinstance(name, str) and name]
     selected = group
@@ -203,8 +179,6 @@ def _ratio_group(
     if enabled_groups and selected not in enabled_groups:
         raise ValueError(f"模型 {item.get('model_name')} 不支持分组 {selected}")
     multiplier = _number(ratios.get(selected))
-    if multiplier is None and fallback_ratios:
-        multiplier = _number(fallback_ratios.get(selected))
     if multiplier is None:
         if selected == "default" or group is None:
             # 未标注分组的模型缺倍率时维持旧 1.0 基准，不因分组校验中断整站采集
@@ -336,8 +310,7 @@ def newapi_price_record(
     ratios = payload.get("group_ratio", {})
     if not isinstance(ratios, dict):
         raise ValueError("New API 响应的 group_ratio 必须是对象")
-    fallback_ratios = _fallback_group_ratios(payload)
-    selected_group, multiplier = _ratio_group(item, ratios, group, fallback_ratios)
+    selected_group, multiplier = _ratio_group(item, ratios, group)
     denomination_v2 = _number(payload.get("billing_denomination_version")) == 2
     cny_rate = _number(payload.get("pricing_cny_rate")) if denomination_v2 else None
     currency_multiplier = 1.0
@@ -432,7 +405,7 @@ def _record_from_json(payload: Any, model: str, source_url: str, *, metadata: di
 
 
 def _fetch_page_via_browser(url: str, headless_config: dict) -> str:
-    """启用 network.headless 时用无头浏览器渲染网页并返回 HTML；失败按采集失败抛错。"""
+    """启用 network.headless 时用Headless 渲染网页并返回 HTML；失败按采集失败抛错。"""
     from llm_price_monitor.browser_fetch import fetch_page_html
 
     return fetch_page_html(url, headless_config)

@@ -249,7 +249,14 @@ def network_pricing_records(
     captured: list[dict[str, Any]],
     resolved_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> list[PriceRecord]:
-    """只用 HTTP JSON 响应计算价格；支持 New API 和字段映射响应。"""
+    """只用 HTTP JSON 响应计算价格；支持 New API 和字段映射响应。
+
+    metadata.adapter 标签只描述「价格怎么解析出来的」，与采集是否走了浏览器无关
+    （"browser" 是历史命名：证据结构沿用了浏览器捕获事件的格式，实际可能纯 HTTP）：
+    - browser_network：直采解析成功（new-api JSON，或 HTML 里内嵌的价格表）
+    - network：拿到了 new-api JSON 但没解析出目标价格
+    - browser_ai：AI 从页面文本提取成功（见 ai.py AIPriceExtractor）
+    """
     response_source_url = str(captured[0].get("url") or "") if captured else str(spec.network.get("url") or "")
     ordered = sorted(
         captured,
@@ -258,24 +265,41 @@ def network_pricing_records(
         ),
     )
     records: dict[str, PriceRecord] = {}
-    attempted_groups: dict[str, set[str | None]] = {target.name: set() for target in spec.models}
-    failures: dict[str, list[str]] = {target.name: [] for target in spec.models}
+    attempted_groups: dict[str, set[str | None]] = {}
+    failures: dict[str, list[str]] = {}
+    # 全量采集（models: ["*"]）：目标模型不预置，逐响应从 data[].model_name 现场展开
+    effective_targets: list[ModelTarget] = []
     for response in ordered:
         payload = response.get("payload")
         if not isinstance(payload, dict):
             continue
         data = [value for value in payload.get("data", []) if isinstance(value, dict)]
+        if spec.collect_all:
+            targets = [
+                ModelTarget(name)
+                for name in dict.fromkeys(
+                    str(value.get("model_name", "")).strip()
+                    for value in data
+                    if str(value.get("model_name", "")).strip()
+                )
+            ]
+            effective_targets.extend(targets)
+        else:
+            targets = list(spec.models)
+        for target in targets:
+            attempted_groups.setdefault(target.name, set())
+            failures.setdefault(target.name, [])
         # 目标名 → 该目标可接受的名字（标准名 + AI 别名）；站点侧名字按精确优先、
         # 版本号省略兜底分配到目标，歧义时不给匹配，避免把别的版本的价格挂上来
         accepted = {
             target.name: (target.name, *(resolved_aliases or {}).get(target.name, ()))
-            for target in spec.models
+            for target in targets
         }
         matched = resolve_site_names(
             [str(value.get("model_name", "")) for value in data if str(value.get("model_name", ""))],
             accepted,
         )
-        for target in spec.models:
+        for target in targets:
             site_name = matched.get(target.name)
             item = _newapi_item(data, site_name)
             if item is None:
@@ -319,13 +343,13 @@ def network_pricing_records(
                     metadata["matched_model_name"] = site_name
                 record.metadata = metadata
                 records[record_key] = record
-    for target in spec.models:
-        groups = attempted_groups[target.name] or {"default"}
+    for target in (effective_targets if spec.collect_all else list(spec.models)):
+        groups = attempted_groups.get(target.name) or {"default"}
         for selected_group in groups:
             record_key = f"{target.name}:{selected_group or ''}"
             if record_key in records:
                 continue
-            reason = "; ".join(dict.fromkeys(failures[target.name])) or "未捕获可识别的 one-api/new-api 定价 JSON 响应"
+            reason = "; ".join(dict.fromkeys(failures.get(target.name, []))) or "未捕获可识别的 one-api/new-api 定价 JSON 响应"
             records[record_key] = PriceRecord(
                 target.name,
                 None,
@@ -369,10 +393,14 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
             for model in models:
                 if not isinstance(model, dict):
                     continue
-                target = next(
-                    (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
-                    None,
-                )
+                if spec.collect_all:
+                    name = str(model.get("name", "")).strip()
+                    target = ModelTarget(name) if name else None
+                else:
+                    target = next(
+                        (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
+                        None,
+                    )
                 if target is None:
                     continue
                 pricing = model.get("pricing") or {}
@@ -422,7 +450,7 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
 
 
 class _BrowserPageResponse:
-    """无头浏览器抓到的页面伪装成 httpx.Response 的最小接口，让后续 HTML 解析路径直接复用。"""
+    """Headless抓到的页面伪装成 httpx.Response 的最小接口，让后续 HTML 解析路径直接复用。"""
 
     def __init__(self, url: str, text: str) -> None:
         self.url = url
@@ -431,7 +459,7 @@ class _BrowserPageResponse:
         self.headers: dict[str, str] = {}
 
     def json(self) -> Any:
-        raise ValueError("无头浏览器页面没有 JSON 载荷")
+        raise ValueError("Headless页面没有 JSON 载荷")
 
     def raise_for_status(self) -> None:
         return None
@@ -469,7 +497,7 @@ class NetworkAdapter:
     ) -> list[PriceRecord]:
         """单次采集，不重试。"""
         if not spec.models:
-            raise PriceMonitorError("不会自动检测所有模型；请在 models 中配置目标模型并在 network.url 配置接口地址")
+            raise PriceMonitorError(f"站点 {spec.id} 未配置目标模型 models；全量采集请配置 models: [\"*\"]")
         network = spec.network if isinstance(spec.network, dict) else {}
         url_value = network.get("url")
         if isinstance(url_value, dict):
@@ -483,14 +511,9 @@ class NetworkAdapter:
         if isinstance(headless_config, dict) and headless_config.get("enabled"):
             from llm_price_monitor.browser_fetch import fetch_page_html
 
-            # 无头请求带上与 HTTP 链路相同的自定义请求头，两条链路指纹一致
-            headers = {
-                name: value
-                for name, value in build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"].items()
-                if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
-            }
+            # 浏览器链路不做请求头注入，登录态只走 cookies/localStorage（值可引用当前凭证）
             response: Any = _BrowserPageResponse(
-                entry.url, fetch_page_html(entry.url, headless_config, user_agent, extra_headers=headers),
+                entry.url, fetch_page_html(entry.url, headless_config, user_agent, spec=spec)
             )
         else:
             response = client.get(entry.url, **build_request_kwargs(entry, spec, user_agent, timeout, target="price"))
@@ -528,35 +551,16 @@ class NetworkAdapter:
         ai_page_text = response.text
         ai_captured = [captured]
         if not response_is_json:
-            try:
-                return self._collect_from_html(spec, network, entry, client, timeout, user_agent, ai, response, captured)
-            except PriceMonitorError:
-                # 纯 HTTP 抓到的多半是壳页面或风控质询页：自动改用无头浏览器重试一次。
-                # 站点配置里已启用无头时请求本身就走无头，不会进这条 HTTP 分支；
-                # 未装 playwright 或无头仍失败时返回 None，维持原报错。
-                if isinstance(response, httpx.Response):
-                    browser_response = self._headless_page_response(network, entry, spec, user_agent, timeout)
-                    if browser_response is not None:
-                        return self._collect_from_html(
-                            spec, network, entry, client, timeout, user_agent, ai, browser_response,
-                            {
-                                "url": str(browser_response.url),
-                                "status": browser_response.status_code,
-                                "resource_type": "fetch",
-                                "source": "model_list",
-                                "preferred_response": True,
-                                "payload": None,
-                                "content_type": "text/html",
-                                "text": browser_response.text,
-                            },
-                        )
-                raise
+            # 接口直采不做Headless自动回退：抓到空壳/风控页就按采集失败上报，
+            # 需要浏览器渲染的站点由管理员显式切到「网页模式」（headless.enabled）
+            return self._collect_from_html(spec, network, entry, client, timeout, user_agent, ai, response, captured)
         if looks_like_newapi_pricing(payload):
             direct_records = network_pricing_records(spec, [captured])
             # Always let AI inspect New API/One API model names when enabled.
             # It resolves informal configured labels to evidence-backed
             # model_name aliases; pricing itself remains deterministic.
-            if ai is not None and ai.enabled and ai.base_url and ai.pick_model():
+            # 全量采集没有预置目标名可解析，直读已覆盖全部模型，跳过这轮 AI。
+            if ai is not None and ai.enabled and ai.base_url and ai.pick_model() and not spec.collect_all:
                 try:
                     ai_records = AIPriceExtractor(ai).extract(
                         spec, "", [captured], client=client,
@@ -671,6 +675,7 @@ class NetworkAdapter:
                 )
                 entry_evidence = [rate_evidence[0], *entry_evidence]
                 source_url = ratio[0]
+            # HTML 解析成功与 JSON 直采共用 browser_network 标签（含义见 network_pricing_records docstring）
             records = _records_from_base_entries(
                 spec, entries, entry_evidence, source_url, adapter_label="browser_network",
                 resolve_rate=resolve_rate,
@@ -684,32 +689,7 @@ class NetworkAdapter:
             )
         raise PriceMonitorError(f"站点 {spec.id} 返回 HTML/文本响应，且未配置可用 AI")
 
-    def _headless_page_response(
-        self,
-        network: dict[str, Any],
-        entry: EndpointRequest,
-        spec: SiteSpec,
-        user_agent: str,
-        timeout: float,
-    ) -> Any | None:
-        """纯 HTTP 抓取失败时的无头浏览器重试；未装 playwright 或仍失败时返回 None。
 
-        无头请求带上与 HTTP 链路相同的自定义请求头（指纹一致，避免风控放行
-        HTTP 却拦浏览器），cookies/localStorage/等待秒数照常按站点配置注入。
-        """
-        from llm_price_monitor.browser_fetch import fetch_page_html
-
-        headless_config = network.get("headless") if isinstance(network.get("headless"), dict) else {}
-        headers = {
-            name: value
-            for name, value in build_request_kwargs(entry, spec, user_agent, timeout, target="price")["headers"].items()
-            if name.casefold() not in {"host", "content-length", "content-type", "cookie", "user-agent"}
-        }
-        try:
-            html = fetch_page_html(entry.url, headless_config or {}, user_agent, extra_headers=headers)
-        except PriceMonitorError:
-            return None
-        return _BrowserPageResponse(entry.url, html)
 
 
 
@@ -800,7 +780,12 @@ def _parse_scalar(value: str) -> Any:
     if value.startswith('"'):
         return value[1:-1]
     if value.startswith("["):
-        return json.loads(value)
+        try:
+            return json.loads(value)
+        except ValueError:
+            # 压缩 JS 的数组常不是合法 JSON（.15 前导点小数、单引号字符串等），
+            # 原样返回文本，别让单个字段崩掉整条解析链
+            return value
     if value == "null":
         return None
     if value in {"true", "false"}:
@@ -862,7 +847,12 @@ def _parse_base_price_entries(text: str) -> list[dict[str, Any]]:
 
 
 def _entry_matches_targets(entry: dict[str, Any], spec: SiteSpec) -> bool:
-    """基准价表条目是否命中配置的目标模型；站点省略版本号的写法也算命中。"""
+    """基准价表条目是否命中配置的目标模型；站点省略版本号的写法也算命中。
+
+    全量采集（models: ["*"]）时任何带模型名的条目都算命中。
+    """
+    if spec.collect_all:
+        return any(str(model).strip() for model in entry.get("models") or [])
     return bool(resolve_site_names(
         [str(model) for model in entry.get("models") or []],
         {target.name: (target.name,) for target in spec.models},
@@ -999,14 +989,28 @@ def _records_from_base_entries(
     entry_by_name: dict[str, dict[str, Any]] = {}
     for item in entries:
         for model in item["models"]:
-            entry_by_name.setdefault(str(model), item)
-    matched = resolve_site_names(
-        list(entry_by_name),
-        {target.name: (target.name,) for target in spec.models},
-    )
-    for target in spec.models:
-        site_name = matched.get(target.name, "")
-        entry = entry_by_name.get(site_name)
+            name = str(model).strip()
+            if name:
+                entry_by_name.setdefault(name, item)
+    if spec.collect_all:
+        # 全量：基准价表里每个站点模型名各成一条记录，大小写重复取首个
+        seen: set[str] = set()
+        pairs: list[tuple[ModelTarget, str, dict[str, Any] | None]] = []
+        for name, entry in entry_by_name.items():
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            pairs.append((ModelTarget(name), name, entry))
+    else:
+        matched = resolve_site_names(
+            list(entry_by_name),
+            {target.name: (target.name,) for target in spec.models},
+        )
+        pairs = [
+            (target, matched.get(target.name, ""), entry_by_name.get(matched.get(target.name, "")))
+            for target in spec.models
+        ]
+    for target, site_name, entry in pairs:
         if entry is None:
             records.append(_base_entry_unavailable(spec, target.name, source_url, evidence, f"基准价表中未找到模型 {target.name}", adapter_label))
             continue

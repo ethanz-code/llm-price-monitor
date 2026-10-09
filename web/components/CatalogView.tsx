@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Btn, Seg, toast } from "./ui";
+import { Btn, Input, Pick, Seg, toast } from "./ui";
+import { IconSearch } from "./icons";
 import { apiSend } from "@/lib/api";
 import { CatalogTable } from "./CatalogTable";
 import { CatalogAllTable } from "./CatalogAllTable";
@@ -23,7 +24,15 @@ export function CatalogView({
 }) {
   const [view, setView] = useState<CatalogViewKey>(initialView);
   const [refreshing, setRefreshing] = useState(false);
+  const [keyword, setKeyword] = useState("");
+  const [vendor, setVendor] = useState("all");
   const router = useRouter();
+
+  // 官方定价视图的厂商下拉选项；筛选控件与视图切换同处一行工具栏
+  const vendors = useMemo(
+    () => Array.from(new Set(Object.values(official?.models ?? {}).map((entry) => entry.vendor))),
+    [official],
+  );
 
   function switchView(next: string) {
     setView(next as CatalogViewKey);
@@ -63,14 +72,36 @@ export function CatalogView({
             { value: "all", label: "全量渠道" },
           ]}
         />
-        {view === "all" && (
-          <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-            覆盖 models.dev 收录的全部渠道，比价参考用；折扣仍以官方定价为准。
-          </span>
+        {view === "official" && official ? (
+          <>
+            <Input
+              placeholder="搜索模型或厂商"
+              style={{ flex: "1 1 260px", maxWidth: "min(420px, 100%)" }}
+              value={keyword}
+              onChange={setKeyword}
+              prefix={<IconSearch size={14} />}
+            />
+            <Pick
+              value={vendor}
+              onChange={setVendor}
+              style={{ width: 160, maxWidth: "100%" }}
+              options={[{ value: "all", label: "全部厂商" }, ...vendors.map((v) => ({ value: v, label: v }))]}
+            />
+          </>
+        ) : (
+          view === "all" && (
+            <span style={{ color: "var(--text-2)", fontSize: 13 }}>
+              覆盖 models.dev 收录的全部渠道，比价参考用；折扣仍以官方定价为准。
+            </span>
+          )
         )}
       </div>
       {view === "official" ? (
-        official ? <CatalogTable data={official} /> : <CatalogEmptyState />
+        official ? (
+          <CatalogTable data={official} keyword={keyword} vendor={vendor} />
+        ) : (
+          <CatalogEmptyState />
+        )
       ) : all ? (
         <CatalogAllTable data={all} />
       ) : (

@@ -430,6 +430,7 @@ export function Input({
   type,
   autoComplete,
   ariaLabel,
+  title,
 }: {
   value?: string;
   defaultValue?: string;
@@ -442,6 +443,7 @@ export function Input({
   type?: string;
   autoComplete?: string;
   ariaLabel?: string;
+  title?: string;
 }) {
   return (
     <span className="input-wrap" style={style}>
@@ -455,6 +457,7 @@ export function Input({
         type={type}
         autoComplete={autoComplete}
         aria-label={ariaLabel}
+        title={title}
         onChange={(event) => onChange?.(event.target.value)}
       />
       {suffix}
@@ -526,6 +529,7 @@ export function Alert({
   children,
   className,
   band,
+  icon,
 }: {
   tone?: "info" | "warn";
   /** 省略时只渲染正文，用于页面顶部的说明行 */
@@ -534,10 +538,12 @@ export function Alert({
   className?: string;
   /** 全宽色带变体：去边框圆角，用 tone 底色通栏铺在内容区 */
   band?: boolean;
+  /** 自定义左侧图标；省略时用警示圈图标 */
+  icon?: ReactNode;
 }) {
   return (
     <div className={`alert alert-${tone}${band ? " alert-band" : ""}${className ? ` ${className}` : ""}`}>
-      <IconAlertCircle size={14} className="alert-icon" />
+      {icon ?? <IconAlertCircle size={14} className="alert-icon" />}
       <div>
         {title && <div className="alert-title">{title}</div>}
         {children && <div className="alert-desc">{children}</div>}

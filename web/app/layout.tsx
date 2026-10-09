@@ -19,7 +19,7 @@ const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono"
 export const metadata: Metadata = {
   title: {
     default: site.title,
-    template: "%s · LLM 价格监控",
+    template: "%s · 大橘",
   },
   description: site.description,
   openGraph: {

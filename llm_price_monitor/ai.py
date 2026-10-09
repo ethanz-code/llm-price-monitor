@@ -196,21 +196,26 @@ def request_with_model_fallback(
     max_tokens: int | None = None,
     client: httpx.Client | None = None,
     scene: str = "AI 请求",
+    timeout: float | None = None,
 ) -> tuple[str, httpx.Response]:
     """从模型池随机抽一个开始请求，模型自身报错（见 _MODEL_FALLBACK_STATUSES）自动换下一个。
 
     思考不可关的模型拒收 enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。
+    连接失败（超时/连接重置/SSL EOF 等传输错误）与模型报错同样换下一个并留痕。
     prompt 超长与 401 属于请求级/配置级问题，换模型无意义，原样抛出；池子耗尽时抛最后一个错误。
-    返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。
+    返回 (实际使用的模型, 响应)。每次尝试都写入 AI 请求日志。timeout 可覆盖配置的单次请求超时
+    （如助手场景收紧死线），不传用 config.timeout。
     """
     pool = model_pool(config)
     if not pool:
         raise AIExtractionError("配置文件 ai.models 未配置")
     order = pool[:]
     random.shuffle(order)
+    request_timeout = timeout or config.timeout
     passed_client = client is not None
     client = client or httpx.Client(timeout=config.timeout)
-    last_exc: httpx.HTTPStatusError | None = None
+    last_exc: httpx.HTTPError | None = None
+    last_error_text = ""
     try:
         for model in order:
             url, headers, base_body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=json_mode)
@@ -222,9 +227,9 @@ def request_with_model_fallback(
                 try:
                     # 未传 client 时走 httpx.post：调用方（测试/监控）可以统一替换这个入口
                     response = (
-                        client.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                        client.post(url, headers=headers, json=request_body, timeout=request_timeout)
                         if passed_client
-                        else httpx.post(url, headers=headers, json=request_body, timeout=config.timeout)
+                        else httpx.post(url, headers=headers, json=request_body, timeout=request_timeout)
                     )
                     response.raise_for_status()
                     duration_ms = int((time.monotonic() - started) * 1000)
@@ -255,25 +260,43 @@ def request_with_model_fallback(
                         raise
                     log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
                     last_exc = exc
+                    last_error_text = error_text
+                    break
+                except httpx.TransportError as exc:
+                    # 传输层失败（超时/连接重置/SSL EOF 等，没拿到 HTTP 响应）：以前直接往上抛、一条日志
+                    # 都不留；按渠道故障处理——留痕后换下一个模型（同一 base_url，多半是整台机器在抖）。
+                    # 记 transport 而非 fallback：连接抖动不算报错失败，成功率也不把它算进去
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    last_error_text = f"{type(exc).__name__}: {exc}"
+                    log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + last_error_text, prompt_excerpt=user)
+                    last_exc = exc
                     break
         assert last_exc is not None
+        # 模型池全部失败的整次失败也补一条 error 行：成功率按最终结果统计时才不会漏掉这种失败
+        log_ai_request(
+            scene=scene, model=model, status="error", duration_ms=0,
+            error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=user,
+        )
         raise last_exc
     finally:
         if not passed_client:
             client.close()
 
 
-def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None, scene: str = "AI 请求") -> Iterator[str]:
+def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None, scene: str = "AI 请求", timeout: float | None = None) -> Iterator[str]:
     """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。
 
     思考不可关的模型拒收 enable_thinking=false 时，先翻成 true 同模型重试一次，再考虑换模型。
+    传输错误（超时/SSL 等）同样处理：还没出字就换下一个并留痕，已出字再断记一条失败后抛出。
+    timeout 覆盖单次请求超时，不传用 config.timeout；四种接口结构都支持。
     """
     pool = model_pool(config)
     if not pool:
         raise AIExtractionError("配置文件 ai.models 未配置")
     order = pool[:]
     random.shuffle(order)
-    last_exc: httpx.HTTPStatusError | None = None
+    last_exc: httpx.HTTPError | None = None
+    last_error_text = ""
     for model in order:
         attempts: list[bool | None] = [None]
         # 只有 chat_completions 的请求体带 enable_thinking；其他结构翻参重试只会白发一次同样的请求
@@ -283,7 +306,7 @@ def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: 
             started = time.monotonic()
             received: list[str] = []
             try:
-                for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens, enable_thinking=enable_thinking):
+                for chunk in ai_stream(config, model, system, user, max_tokens=max_tokens, enable_thinking=enable_thinking, timeout=timeout):
                     received.append(chunk)
                     yield chunk
                 log_ai_request(
@@ -302,23 +325,363 @@ def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: 
                 if exc.response.status_code == 401 or status == "error":
                     raise AIExtractionError(error_text) from exc
                 last_exc = exc
+                last_error_text = error_text
+                break
+            except httpx.TransportError as exc:
+                # 传输层失败（超时/连接重置/SSL EOF 等）：以前直接往上抛、一条日志不留。还没出字就当渠道
+                # 故障留痕换下一个模型，记 transport（连接抖动，不算报错失败）；已经出字再断只能原样报错，
+                # 半截回答没法换模型重来
+                duration_ms = int((time.monotonic() - started) * 1000)
+                detail = f"{type(exc).__name__}: {exc}"
+                if received:
+                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + detail, prompt_excerpt=user)
+                    raise AIExtractionError(f"流式输出中断：{detail}") from exc
+                log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + detail, prompt_excerpt=user)
+                last_exc = exc
+                last_error_text = detail
                 break
     assert last_exc is not None
-    # 整个模型池都失败：把状态码和供应商报错要点一起报出去，这才是用户该看到的真实原因
-    raise AIExtractionError(f"模型池全部失败，最后一次错误 {provider_error_detail(last_exc.response)}") from last_exc
+    # 整个模型池都失败：补一条 error 行（成功率按最终结果统计时才不会漏掉这种失败），
+    # 并把状态码和供应商报错要点一起报出去，这才是用户该看到的真实原因
+    log_ai_request(
+        scene=scene, model=model, status="error", duration_ms=0,
+        error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=user,
+    )
+    raise AIExtractionError(f"模型池全部失败，最后一次错误 {last_error_text}") from last_exc
 
 
-def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None) -> str:
+class _StreamErrorPayload(Exception):
+    """HTTP 200 但流里带 error 数据帧：部分供应商（如 MiniMax）参数报错不走状态码。"""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def _stream_chat_events(
+    config: AIConfig,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    enable_thinking: bool | None,
+    timeout: float | None = None,
+) -> Iterator[dict[str, Any]]:
+    """单模型流式对话：四种接口结构都产出 {"type":"delta","text"} 增量与最后的 finish 事件。
+
+    finish 事件带 finish_reason、按分片拼装完整的 tool_calls 与 usage；HTTP/网络错误原样抛出。
+    timeout 覆盖单次请求超时；流式没有总时长限制（read 超时只管字节间隔），这里按墙钟死线兜底，
+    连续吐字的思考型模型拖过死线同样掐断换人。
+    """
+    url, headers, body = ai_request(config, model, "", "", messages=messages, tools=tools, json_mode=False)
+    if enable_thinking is not None and "enable_thinking" in body:
+        body["enable_thinking"] = enable_thinking
+    api_format = config.api_format
+    if api_format in {"chat_completions", "openai_responses", "anthropic"}:
+        body["stream"] = True
+    elif api_format == "gemini":
+        url = url.replace(":generateContent", ":streamGenerateContent?alt=sse")
+    request_timeout = timeout or config.timeout
+    tool_acc: dict[Any, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
+    started = time.monotonic()
+    with httpx.Client(timeout=request_timeout) as client:
+        with client.stream("POST", url, headers=headers, json=body) as response:
+            if response.is_error:
+                # 供应商报错时先读出响应体：流式响应默认不读正文，后续取 .text 会直接抛 ResponseNotRead
+                response.read()
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if time.monotonic() - started > request_timeout:
+                    raise httpx.ReadTimeout(f"模型流式输出超过 {int(request_timeout)} 秒仍未完成", request=response.request)
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if "error" in payload:
+                    # 200 状态码下的报错帧（含 anthropic 流内 error 事件）：抛给上层走翻参/换模型分支
+                    err = payload["error"]
+                    message = err.get("message") if isinstance(err, dict) else str(err)
+                    raise _StreamErrorPayload(str(message or "上游返回错误帧"))
+                if api_format == "chat_completions":
+                    if isinstance(payload.get("usage"), dict):
+                        usage = payload["usage"]
+                    choices = payload.get("choices")
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                    text = delta.get("content")
+                    if isinstance(text, str) and text:
+                        yield {"type": "delta", "text": text}
+                    for tc in delta.get("tool_calls") or []:
+                        if not isinstance(tc, dict):
+                            continue
+                        index = tc.get("index") if isinstance(tc.get("index"), int) else len(tool_acc)
+                        slot = tool_acc.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            slot["id"] = str(tc["id"])
+                        function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                        if function.get("name"):
+                            slot["name"] = str(function["name"])
+                        if isinstance(function.get("arguments"), str):
+                            slot["arguments"] += function["arguments"]
+                    if choice.get("finish_reason"):
+                        finish_reason = str(choice["finish_reason"])
+                elif api_format == "anthropic":
+                    kind = payload.get("type")
+                    if kind == "message_start":
+                        message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+                        message_usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+                        if message_usage.get("input_tokens") is not None:
+                            usage = {"prompt_tokens": message_usage.get("input_tokens")}
+                    elif kind == "content_block_start":
+                        block = payload.get("content_block") if isinstance(payload.get("content_block"), dict) else {}
+                        if block.get("type") == "tool_use":
+                            slot = tool_acc.setdefault(payload.get("index") if isinstance(payload.get("index"), int) else len(tool_acc), {"id": "", "name": "", "arguments": ""})
+                            if block.get("id"):
+                                slot["id"] = str(block["id"])
+                            if block.get("name"):
+                                slot["name"] = str(block["name"])
+                    elif kind == "content_block_delta":
+                        delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
+                        if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str) and delta["text"]:
+                            yield {"type": "delta", "text": delta["text"]}
+                        elif delta.get("type") == "input_json_delta" and isinstance(delta.get("partial_json"), str):
+                            slot = tool_acc.setdefault(payload.get("index") if isinstance(payload.get("index"), int) else len(tool_acc), {"id": "", "name": "", "arguments": ""})
+                            slot["arguments"] += delta["partial_json"]
+                    elif kind == "message_delta":
+                        delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
+                        if delta.get("stop_reason"):
+                            finish_reason = "tool_calls" if delta["stop_reason"] == "tool_use" else str(delta["stop_reason"])
+                        delta_usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+                        if delta_usage.get("output_tokens") is not None:
+                            usage = usage or {}
+                            usage["completion_tokens"] = delta_usage.get("output_tokens")
+                elif api_format == "openai_responses":
+                    kind = payload.get("type")
+                    if kind == "response.output_text.delta" and isinstance(payload.get("delta"), str) and payload["delta"]:
+                        yield {"type": "delta", "text": payload["delta"]}
+                    elif kind == "response.output_item.added":
+                        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+                        if item.get("type") == "function_call":
+                            item_id = str(item.get("id") or f"fc_{len(tool_acc)}")
+                            slot = tool_acc.setdefault(item_id, {"id": "", "name": "", "arguments": ""})
+                            slot["id"] = str(item.get("call_id") or item_id)
+                            if item.get("name"):
+                                slot["name"] = str(item["name"])
+                            if isinstance(item.get("arguments"), str):
+                                slot["arguments"] += item["arguments"]
+                    elif kind == "response.function_call_arguments.delta":
+                        item_id = str(payload.get("item_id") or "")
+                        slot = tool_acc.setdefault(item_id, {"id": str(payload.get("call_id") or ""), "name": "", "arguments": ""})
+                        if not slot["id"]:
+                            slot["id"] = str(payload.get("call_id") or "")
+                        if isinstance(payload.get("delta"), str):
+                            slot["arguments"] += payload["delta"]
+                    elif kind == "response.completed":
+                        completed = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+                        completed_usage = completed.get("usage") if isinstance(completed.get("usage"), dict) else {}
+                        if completed_usage:
+                            usage = {"prompt_tokens": completed_usage.get("input_tokens"), "completion_tokens": completed_usage.get("output_tokens"), "total_tokens": completed_usage.get("total_tokens")}
+                        finish_reason = "tool_calls" if tool_acc else "stop"
+                elif api_format == "gemini":
+                    candidates = payload.get("candidates")
+                    if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+                        content = candidates[0].get("content")
+                        parts = content.get("parts") if isinstance(content, dict) and isinstance(content.get("parts"), list) else []
+                        for part in parts:
+                            if not isinstance(part, dict):
+                                continue
+                            if isinstance(part.get("text"), str) and part["text"]:
+                                yield {"type": "delta", "text": part["text"]}
+                            call = part.get("functionCall") if isinstance(part.get("functionCall"), dict) else None
+                            if call:
+                                index = len(tool_acc)
+                                tool_acc[index] = {
+                                    "id": str(call.get("id") or f"tool_{index}"),
+                                    "name": str(call.get("name") or ""),
+                                    "arguments": json.dumps(call.get("args") or {}, ensure_ascii=False),
+                                }
+                    if isinstance(payload.get("usageMetadata"), dict):
+                        meta = payload["usageMetadata"]
+                        usage = {"prompt_tokens": meta.get("promptTokenCount"), "completion_tokens": meta.get("candidatesTokenCount"), "total_tokens": meta.get("totalTokenCount")}
+                        if finish_reason is None and tool_acc:
+                            finish_reason = "tool_calls"
+    tool_calls = [
+        {
+            "id": tool_acc[index]["id"] or f"call_{index}",
+            "type": "function",
+            "name": tool_acc[index]["name"],
+            "arguments": tool_acc[index]["arguments"] or "{}",
+        }
+        for index in tool_acc
+    ]
+    yield {"type": "finish", "finish_reason": finish_reason, "tool_calls": tool_calls, "usage": usage}
+
+
+# 模型没走 tool_calls 协议、把调用过程当正文"演"出来的特征（如“调用工具：get_prices(...)”）：
+# 这类输出对用户是假动作噪声，按失败处理换下一个模型
+_PSEUDO_TOOL_CALL_RE = re.compile(r"(调用工具|函数调用|tool_call)\s*[:：]?\s*[`\"']?\w+\s*\(", re.IGNORECASE)
+
+
+def ai_stream_messages_fallback(
+    config: AIConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    *,
+    scene: str = "AI 请求",
+    on_model_failure: Any | None = None,
+    timeout: float | None = None,
+) -> Iterator[dict[str, Any]]:
+    """带工具配置的多轮消息流式对话：产出 delta 事件，最后产出 {"type":"finish", …}。
+
+    四种接口结构都支持（工具定义按结构自动转换）；换模型/翻参重试/传输错误的语义与
+    ai_stream_fallback 一致：首个增量产出前失败换下一个模型，已产出后再失败记失败并抛出。
+    每次尝试写一条 AI 请求日志。on_model_failure(model, error) 在每个模型被放弃
+    （fallback/transport/伪工具调用/空响应/流中断）时回调，供调用方记冷却名单；
+    timeout 覆盖单次请求超时（如助手场景的收紧死线）。
+    """
+    pool = model_pool(config)
+    if not pool:
+        raise AIExtractionError("配置文件 ai.models 未配置")
+
+    def notify_failure(model: str, error_text: str) -> None:
+        if on_model_failure is not None:
+            on_model_failure(model, error_text)
+
+    order = pool[:]
+    random.shuffle(order)
+    prompt_excerpt = str(messages[-1].get("content") or "")[:300] if messages else ""
+    last_exc: Exception | None = None
+    last_error_text = ""
+    for model in order:
+        # 只有 chat_completions 的请求体带 enable_thinking；其他结构翻参重试只会白发一次同样的请求
+        attempts: list[bool | None] = [None]
+        if config.enable_thinking is False and config.api_format == "chat_completions":
+            attempts.append(True)
+        for enable_thinking in attempts:
+            started = time.monotonic()
+            received = False
+            text_parts: list[str] = []
+            # 带工具的请求先缓冲正文再定性：工具轮的解说/伪调用不能漏给用户，漏出去就没法干净换模型
+            deferred: list[dict[str, Any]] = []
+            finish: dict[str, Any] = {"type": "finish", "finish_reason": None, "tool_calls": [], "usage": None}
+            try:
+                for event in _stream_chat_events(config, model, messages, tools, enable_thinking, timeout):
+                    if event["type"] == "delta":
+                        received = True
+                        text_parts.append(event["text"])
+                        if tools is None:
+                            yield event
+                        else:
+                            deferred.append(event)
+                    else:
+                        finish = event
+                usage = finish.get("usage") if isinstance(finish.get("usage"), dict) else {}
+                tool_names = "、".join(tc["name"] for tc in finish["tool_calls"])
+                answer_text = "".join(text_parts)
+                if not answer_text.strip() and not tool_names:
+                    # 既无正文也无工具调用：这个模型的空响应不可用，换下一个模型，不让整题失败
+                    log_ai_request(scene=scene, model=model, status="fallback", duration_ms=int((time.monotonic() - started) * 1000), error="模型返回了空内容", prompt_excerpt=prompt_excerpt)
+                    notify_failure(model, "模型返回了空内容")
+                    last_exc = AIExtractionError("模型返回了空内容")
+                    last_error_text = "模型返回了空内容"
+                    break
+                if tools is not None and not tool_names and _PSEUDO_TOOL_CALL_RE.search(answer_text):
+                    # 有工具可用却不走 tool_calls 协议，把调用过程当正文演出来：对用户是假动作，换下一个模型
+                    log_ai_request(scene=scene, model=model, status="fallback", duration_ms=int((time.monotonic() - started) * 1000), error="模型把工具调用当正文输出，未走 tool_calls 协议", prompt_excerpt=prompt_excerpt)
+                    notify_failure(model, "模型把工具调用当正文输出，未走 tool_calls 协议")
+                    last_exc = AIExtractionError("模型把工具调用当正文输出")
+                    last_error_text = "模型把工具调用当正文输出"
+                    break
+                if not tool_names:
+                    # 只有真正给用户的正文才放行：带工具轮的解说正文只留在会话上下文里
+                    for event in deferred:
+                        yield event
+                log_ai_request(
+                    scene=scene, model=model, status="ok", duration_ms=int((time.monotonic() - started) * 1000),
+                    prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+                    total_tokens=usage.get("total_tokens"),
+                    prompt_excerpt=prompt_excerpt,
+                    response_excerpt=answer_text or ("调用工具 " + tool_names),
+                )
+                yield finish
+                return
+            except httpx.HTTPStatusError as exc:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                error_text = provider_error_detail(exc.response)
+                if _thinking_restricted(exc.response) and config.enable_thinking is False and enable_thinking is None:
+                    log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
+                    continue
+                status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
+                log_ai_request(scene=scene, model=model, status=status, duration_ms=duration_ms, error=error_text, prompt_excerpt=prompt_excerpt)
+                if exc.response.status_code == 401 or status == "error":
+                    raise AIExtractionError(error_text) from exc
+                notify_failure(model, error_text)
+                last_exc = exc
+                last_error_text = error_text
+                break
+            except _StreamErrorPayload as exc:
+                # 200 + 错误帧：按错误文案走与状态码相同的分支（思考受限翻参，其余换模型）
+                duration_ms = int((time.monotonic() - started) * 1000)
+                error_text = exc.message
+                if received and tools is None:
+                    # 无工具的流已经把正文放给用户了，半截回答没法换模型重来
+                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + error_text, prompt_excerpt=prompt_excerpt)
+                    notify_failure(model, "流式输出中断｜" + error_text)
+                    raise AIExtractionError(f"流式输出中断：{error_text}") from exc
+                if "enable_thinking" in error_text and config.enable_thinking is False and enable_thinking is None:
+                    log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
+                    continue
+                log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=prompt_excerpt)
+                notify_failure(model, error_text)
+                last_exc = exc
+                last_error_text = error_text
+                break
+            except httpx.TransportError as exc:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                detail = f"{type(exc).__name__}: {exc}"
+                if received and tools is None:
+                    # 无工具的流已经把正文放给用户了，半截回答没法换模型重来
+                    log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error="流式输出中断｜" + detail, prompt_excerpt=prompt_excerpt)
+                    notify_failure(model, "流式输出中断｜" + detail)
+                    raise AIExtractionError(f"流式输出中断：{detail}") from exc
+                # 带工具的流正文还攥在手里没放出去，按连接抖动处理换下一个模型即可
+                log_ai_request(scene=scene, model=model, status="transport", duration_ms=duration_ms, error="连接失败，未收到响应｜" + detail, prompt_excerpt=prompt_excerpt)
+                notify_failure(model, "连接失败，未收到响应｜" + detail)
+                last_exc = exc
+                last_error_text = detail
+                break
+    assert last_exc is not None
+    log_ai_request(
+        scene=scene, model=model if order else "", status="error", duration_ms=0,
+        error="模型池全部失败，最后一次错误 " + last_error_text, prompt_excerpt=prompt_excerpt,
+    )
+    raise AIExtractionError(f"模型池全部失败，最后一次错误 {last_error_text}") from last_exc
+
+
+def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None, timeout: float | None = None) -> str:
     """发送一次最小对话请求验证 AI 配置连通性，返回模型回复文本；HTTP/网络错误原样抛出。
 
     思考不可关的模型拒收 enable_thinking=false：翻成 true 重试一次，避免把可用配置误判为不通。
+    timeout 缺省用配置值；模型池批量体检传短超时，个别慢模型按失败计，不拖住整轮。
     """
+    request_timeout = config.timeout if timeout is None else timeout
     url, headers, base_body = ai_request(config, model, "", "连接测试，请只回复 ok", max_tokens=8, json_mode=False)
-    own_client = client or httpx.Client(timeout=config.timeout)
+    own_client = client or httpx.Client(timeout=request_timeout)
     try:
-        response = own_client.post(url, headers=headers, json=base_body, timeout=config.timeout)
+        response = own_client.post(url, headers=headers, json=base_body, timeout=request_timeout)
         if _thinking_restricted(response) and base_body.get("enable_thinking") is False:
-            response = own_client.post(url, headers=headers, json={**base_body, "enable_thinking": True}, timeout=config.timeout)
+            response = own_client.post(url, headers=headers, json={**base_body, "enable_thinking": True}, timeout=request_timeout)
         response.raise_for_status()
     finally:
         if client is None:
@@ -354,10 +717,11 @@ def _stream_delta(api_format: str, payload: dict[str, Any]) -> str:
     raise AIExtractionError(f"未知的 AI 接口结构: {api_format}")
 
 
-def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_tokens: int | None = None, enable_thinking: bool | None = None) -> Iterator[str]:
+def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_tokens: int | None = None, enable_thinking: bool | None = None, timeout: float | None = None) -> Iterator[str]:
     """流式对话：逐段产出模型输出文本；四种接口结构都走各自的 stream 模式，HTTP 错误原样抛出。
 
     enable_thinking 供换模型重试链路覆盖配置值（翻参重试）；None 表示按配置，且只对带该参数的接口结构生效。
+    timeout 覆盖单次请求超时，不传用 config.timeout。
     """
     url, headers, body = ai_request(config, model, system, user, max_tokens=max_tokens, json_mode=False)
     if enable_thinking is not None and "enable_thinking" in body:
@@ -367,7 +731,7 @@ def ai_stream(config: AIConfig, model: str, system: str, user: str, *, max_token
         body["stream"] = True
     elif api_format == "gemini":
         url = url.replace(":generateContent", ":streamGenerateContent?alt=sse")
-    with httpx.Client(timeout=config.timeout) as client:
+    with httpx.Client(timeout=timeout or config.timeout) as client:
         with client.stream("POST", url, headers=headers, json=body) as response:
             if response.is_error:
                 # 供应商报错时先读出响应体：流式响应默认不读正文，后续取 .text 会直接抛 ResponseNotRead
@@ -470,6 +834,146 @@ def _anthropic_endpoint(base_url: str) -> str:
     return f"{base}/v1/messages"
 
 
+def _arguments_object(arguments: str) -> dict[str, Any]:
+    """模型给出的工具参数 JSON 串 → 对象；坏 JSON 容错成空参，让工具层返回可自纠的错误。"""
+    try:
+        parsed = json.loads(arguments) if str(arguments or "").strip() else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_specs_for(api_format: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """OpenAI 风格的工具定义（assistant TOOL_SPECS）转成各接口结构的原生形状。"""
+    if api_format == "chat_completions":
+        return tools
+    specs = [spec["function"] for spec in tools if spec.get("type") == "function" and isinstance(spec.get("function"), dict)]
+    if api_format == "openai_responses":
+        return [
+            {"type": "function", "name": spec.get("name", ""), "description": spec.get("description", ""), "parameters": spec.get("parameters") or {"type": "object", "properties": {}}}
+            for spec in specs
+        ]
+    if api_format == "anthropic":
+        return [
+            {"name": spec.get("name", ""), "description": spec.get("description", ""), "input_schema": spec.get("parameters") or {"type": "object", "properties": {}}}
+            for spec in specs
+        ]
+    if api_format == "gemini":
+        return [
+            {
+                "functionDeclarations": [
+                    {"name": spec.get("name", ""), "description": spec.get("description", ""), "parameters": spec.get("parameters") or {"type": "object", "properties": {}}}
+                    for spec in specs
+                ]
+            }
+        ]
+    raise AIExtractionError(f"未知的 AI 接口结构: {api_format}")
+
+
+def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """内部多轮消息 → Anthropic 的 (system, messages)；tool_result 属 user 轮，同角色相邻则合并。"""
+    system_parts: list[str] = []
+    turns: list[dict[str, Any]] = []
+
+    def append(role: str, blocks: list[dict[str, Any]]) -> None:
+        blocks = [block for block in blocks if block and not (block.get("type") == "text" and not block.get("text"))]
+        if not blocks:
+            return
+        if turns and turns[-1]["role"] == role:
+            turns[-1]["content"].extend(blocks)
+        else:
+            turns.append({"role": role, "content": blocks})
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            system_parts.append(str(message.get("content") or ""))
+        elif role == "user":
+            append("user", [{"type": "text", "text": str(message.get("content") or "")}])
+        elif role == "assistant":
+            blocks = [{"type": "text", "text": str(message["content"])}] if message.get("content") else []
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": str(call.get("id") or ""),
+                    "name": str(function.get("name") or ""),
+                    "input": _arguments_object(str(function.get("arguments") or "")),
+                })
+            append("assistant", blocks)
+        elif role == "tool":
+            append("user", [{"type": "tool_result", "tool_use_id": str(message.get("tool_call_id") or ""), "content": str(message.get("content") or "")}])
+    return "\n\n".join(part for part in system_parts if part), turns
+
+
+def _responses_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """内部多轮消息 → Responses API 的 (instructions, input)；工具调用与结果用 function_call 项表达。"""
+    instructions: list[str] = []
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            instructions.append(str(message.get("content") or ""))
+        elif role == "user":
+            items.append({"role": "user", "content": str(message.get("content") or "")})
+        elif role == "assistant":
+            if message.get("content"):
+                items.append({"role": "assistant", "content": str(message["content"])})
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                items.append({
+                    "type": "function_call",
+                    "call_id": str(call.get("id") or ""),
+                    "name": str(function.get("name") or ""),
+                    "arguments": str(function.get("arguments") or "{}"),
+                })
+        elif role == "tool":
+            items.append({"type": "function_call_output", "call_id": str(message.get("tool_call_id") or ""), "output": str(message.get("content") or "")})
+    return "\n\n".join(part for part in instructions if part), items
+
+
+def _gemini_contents(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """内部多轮消息 → Gemini 的 (systemInstruction, contents)；functionResponse 必须带工具名。"""
+    system_parts: list[str] = []
+    contents: list[dict[str, Any]] = []
+    call_names: dict[str, str] = {}
+
+    def append(role: str, parts: list[dict[str, Any]]) -> None:
+        parts = [part for part in parts if part and not ("text" in part and not part.get("text"))]
+        if not parts:
+            return
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"].extend(parts)
+        else:
+            contents.append({"role": role, "parts": parts})
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            system_parts.append(str(message.get("content") or ""))
+        elif role == "user":
+            append("user", [{"text": str(message.get("content") or "")}])
+        elif role == "assistant":
+            parts = [{"text": str(message["content"])}] if message.get("content") else []
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                call_id = str(call.get("id") or "")
+                name = str(function.get("name") or "")
+                call_names[call_id] = name
+                function_call: dict[str, Any] = {"name": name, "args": _arguments_object(str(function.get("arguments") or ""))}
+                if call_id:
+                    function_call["id"] = call_id
+                parts.append({"functionCall": function_call})
+            append("model", parts)
+        elif role == "tool":
+            call_id = str(message.get("tool_call_id") or "")
+            function_response: dict[str, Any] = {"name": call_names.get(call_id, ""), "response": {"result": str(message.get("content") or "")}}
+            if call_id:
+                function_response["id"] = call_id
+            append("user", [{"functionResponse": function_response}])
+    return "\n\n".join(part for part in system_parts if part), contents
+
+
 def ai_request(
     config: AIConfig,
     model: str,
@@ -478,32 +982,44 @@ def ai_request(
     *,
     max_tokens: int | None = None,
     json_mode: bool = True,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
-    """按配置的接口结构（config.api_format）构造请求 URL、headers 与 body；只构造不发送。"""
+    """按配置的接口结构（config.api_format）构造请求 URL、headers 与 body；只构造不发送。
+
+    messages 传入完整对话（工具循环的多轮消息）时替代 system/user 组装；tools 为 OpenAI
+    function calling 风格的工具定义，四种接口结构都会转成各自的工具协议。
+    """
     limit = config.max_tokens if max_tokens is None else max_tokens
     if config.api_format == "openai_responses":
-        input_messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
-        body = {
-            "model": model,
-            "input": input_messages,
-            "max_output_tokens": limit,
-            "temperature": 0,
-        }
-        if json_mode:
+        if messages is not None:
+            instructions, items = _responses_messages(messages)
+            body: dict[str, Any] = {"model": model, "input": items, "max_output_tokens": limit, "temperature": 0}
+            if instructions:
+                body["instructions"] = instructions
+        else:
+            input_messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+            body = {"model": model, "input": input_messages, "max_output_tokens": limit, "temperature": 0}
+        if json_mode and not tools:
             body["text"] = {"format": {"type": "json_object"}}
+        if tools:
+            body["tools"] = _tool_specs_for("openai_responses", tools)
+            body["tool_choice"] = "auto"
         headers = {"content-type": "application/json"}
         if config.api_key:
             headers["authorization"] = f"Bearer {config.api_key}"
         return _responses_endpoint(config.base_url), headers, body
     if config.api_format == "anthropic":
-        body: dict[str, Any] = {
-            "model": model,
-            "max_tokens": limit,
-            "temperature": 0,
-            "messages": [{"role": "user", "content": user}],
-        }
-        if system:
-            body["system"] = system
+        if messages is not None:
+            system_text, turns = _anthropic_messages(messages)
+        else:
+            system_text, turns = system, [{"role": "user", "content": user}]
+        body: dict[str, Any] = {"model": model, "max_tokens": limit, "temperature": 0, "messages": turns}
+        if system_text:
+            body["system"] = system_text
+        if tools:
+            body["tools"] = _tool_specs_for("anthropic", tools)
+            body["tool_choice"] = {"type": "auto"}
         return (
             _anthropic_endpoint(config.base_url),
             {"content-type": "application/json", "x-api-key": config.api_key or "", "anthropic-version": "2023-06-01"},
@@ -518,21 +1034,26 @@ def ai_request(
         else:
             url = f"{base}/v1beta/models/{model}:generateContent"
         generation_config: dict[str, Any] = {"temperature": 0, "maxOutputTokens": limit}
-        if json_mode:
+        if json_mode and not tools:
             generation_config["responseMimeType"] = "application/json"
-        gemini_body: dict[str, Any] = {
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": generation_config,
-        }
-        if system:
-            gemini_body["systemInstruction"] = {"parts": [{"text": system}]}
+        if messages is not None:
+            system_instruction, contents = _gemini_contents(messages)
+        else:
+            system_instruction, contents = system, [{"role": "user", "parts": [{"text": user}]}]
+        gemini_body: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
+        if system_instruction:
+            gemini_body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        if tools:
+            gemini_body["tools"] = _tool_specs_for("gemini", tools)
+            gemini_body["toolConfig"] = {"functionCallingConfig": {"mode": "auto"}}
         return url, {"content-type": "application/json", "x-goog-api-key": config.api_key or ""}, gemini_body
     if config.api_format != "chat_completions":
         raise AIExtractionError(f"未知的 AI 接口结构: {config.api_format}")
     headers = {"content-type": "application/json"}
     if config.api_key:
         headers["authorization"] = f"Bearer {config.api_key}"
-    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+    if messages is None:
+        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
     body = {
         "model": model,
         "temperature": 0,
@@ -543,6 +1064,9 @@ def ai_request(
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
     return ai_endpoint(config.base_url), headers, body
 
 
@@ -757,18 +1281,40 @@ class AIPriceExtractor:
         max_chars: int | None = None,
     ) -> tuple[str, str, list[dict[str, str]], list[dict[str, Any]]]:
         evidence, _, filtered_page_text, filtered_page_sources, clean_responses = self._evidence(spec, page_text, responses, expected_models, page_sources, max_chars=max_chars)
+        expected = expected_models or []
+        if expected:
+            scope_line = "只分析 expected_models 指定的目标模型，不要识别其他模型。"
+            id_rule = (
+                "若页面卡片或结构中明确出现 expected_models 的精确 model ID，价格归属以该 ID 为准，"
+                "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
+            )
+        else:
+            scope_line = "expected_models 为通配全量：采集证据中出现的每一个模型，不得遗漏任何带价格信息的模型，也不要输出证据中不存在的模型。"
+            id_rule = (
+                "若页面卡片或结构中明确出现某个模型的精确 model ID，价格归属以该 ID 为准，"
+                "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
+            )
         system = (
             NEWAPI_ONEAPI_PRICING_GUIDANCE
             + "\n\n你是模型价格数据抽取器。只能使用 user 消息中的网页证据，禁止凭常识补全或猜测价格。"
-            "只分析 expected_models 指定的目标模型，不要识别其他模型。"
-            "调用方只提供标准模型名；请从证据中自动识别展示名、供应商前缀、版本写法和接口 model ID，"
+            + scope_line
+            + "调用方只提供标准模型名；请从证据中自动识别展示名、供应商前缀、版本写法和接口 model ID，"
             "并按输出结构填入 observed_model 与 aliases（aliases 要求见下方规则 2）。"
-            "若页面卡片或结构中明确出现 expected_models 的精确 model ID，价格归属以该 ID 为准，"
-            "优先于 display_name、上游模型名或备注名，即使这些名称与 ID 不一致。"
-            "若页面卡片已明确标注精确 model ID 和站点价格，即使网络响应没有同名模型记录，"
+            + id_rule
+            + "若页面卡片已明确标注精确 model ID 和站点价格，即使网络响应没有同名模型记录，"
             "也要保留该页面价格并标 candidate，不得输出 unavailable，也不得用网络中的相似模型价格替代。"
             "必须只返回 JSON，不要 Markdown，不要解释。"
         )
+        if expected:
+            output_rule = "- 只输出 expected_models 中的目标模型；model 必须填标准名，页面显示名和接口模型 ID 分别填进 observed_model 与 aliases，忽略其他模型。"
+            trim_rule = "- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。"
+            unavailable_rule = "- 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。"
+            models_line = json.dumps(expected_models, ensure_ascii=False)
+        else:
+            output_rule = "- 输出证据中出现的每一个模型，不得遗漏；model 填该模型的接口原始 ID 或页面标准显示名，同一模型的其他写法填进 observed_model 与 aliases。"
+            trim_rule = "- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要裁剪、过滤或只取第一条，响应里的每个模型都要保留。"
+            unavailable_rule = "- 只为证据中确实出现、但按上述规则仍拿不到价格的模型输出 unavailable，不要为没有证据的模型编造记录。"
+            models_line = "全部模型（未限定清单）"
         user = f"""请将以下价格页面证据标准化。
 
 输出结构必须是：
@@ -798,7 +1344,7 @@ class AIPriceExtractor:
 }}
 
 规则：
-- 只输出 expected_models 中的目标模型；model 必须填标准名，页面显示名和接口模型 ID 分别填进 observed_model 与 aliases，忽略其他模型。
+{output_rule}
 - aliases：确认模型后必须至少列出接口原始 ID、规范展示名、供应商前缀 ID 三种形式（如识别到 gpt-5.6-sol，aliases 为 ["gpt-5.6-sol", "GPT-5.6 Sol", "openai/gpt-5.6-sol"]）；只允许基于已确认 ID 做格式规范化，不得把其他模型当别名。
 - 监控目标是站点实际售价，不是官方参考价：页面同时出现站点价与“官方价”时必须填站点价；official_pricing、official_price 等官方价字段只能作参考证据，绝不能填入 input_price 或 output_price。
 - input_price、output_price 不明确时填 null，不得把倍率或余额当成价格。页面多个价格的显示顺序不等于归属；只有页面明确标注来源时才映射，否则填 null 并在 notes 说明无法映射。
@@ -808,16 +1354,16 @@ class AIPriceExtractor:
 - 同一 page_evidence 中的“页面共享价格字段说明”是页面模型卡片共用的表头或字段定义；只有它明确给出字段顺序时，才可将同一卡片的数值映射为输入、输出或缓存价格，不得把其他模型的数值当表头或目标模型价格。
 - currency/unit 必须依据证据中的币种标识（如 ¥/元/人民币/$/USD、priceMicroUsd 等字段名）填写；证据完全没说明币种时按人民币回退，填 CNY 与 "CNY/1M tokens" 并在 notes 说明；不得凭字段是纯数字就猜 USD。
 - 价格按分组或上下文长度变化时，必须保留所有分组和 tiers（每个 tier 记 context_min/context_max、输入/输出和缓存价格），group 缺省为 default；上下文阶梯边界必须按证据原文填写（如 context_max=278000 与下一档 context_min=278001），不要猜测或改写。统一定价的站点也要输出一个 default 分组和一个无上限 tier，不要因为没有梯度就输出 unavailable。
-- model_list 的 network_evidence 是完整原始响应，可能同时包含多个模型、多个分组和多段上下文价格；不要因为当前 expected_models 只有一个就裁剪、过滤或只取第一条，只在最终 models 输出中保留目标模型。
+{trim_rule}
 - 响应使用公式、倍率或字段名不清晰时，保留原始 pricing_rules 并在 notes 说明未能换算成确定单价，不要丢弃原始规则；status=rule_only 用于只有 quota 倍率、公式或计费规则的站点。
 - 每个模型必须独立建立证据闭环：模型名称、输入价格、输出价格必须出现在同一条页面或网络证据中；严禁把一个模型的价格复制、平均、换算或推断到另一个模型，严禁用其他模型的价格填补缺失字段。
 - notes 每条不超过 120 字，只写关键字段依据（如"两组三元组，大组为官方价，小组合计基础价×倍率"）；推导过程不要在多条记录里重复，完整原文引用放 quote。
 - status=confirmed 只有在网络响应证据和页面可见证据都存在且一致时才允许；cross_validation.conflicts 只能描述同一个模型的证据冲突，不同模型之间不要生成冲突。
 - network_evidence 和 page_evidence 只能引用下方证据中真实出现的 source、URL 和 quote；quote 只保留能证明当前模型及价格的短原文片段，每条最多 500 个字符，不得回显完整网络响应或整页文本。
-- 没有可靠价格时也要为每个 expected_models 输出 unavailable 记录。
+{unavailable_rule}
 
 expected_models：
-{json.dumps(expected_models, ensure_ascii=False)}
+{models_line}
 
 网页证据：
 {evidence}"""
@@ -838,9 +1384,11 @@ expected_models：
         ai_model = self.config.pick_model()
         if not self.config.base_url or not ai_model:
             raise AIExtractionError("配置文件 ai.base_url 或 ai.models 未配置")
-        expected = list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
-        if not expected:
-            raise AIExtractionError("browser 价格监控必须配置目标模型 models")
+        # 全量采集（models: ["*"]）：expected 置空，证据筛选与记录映射都走"不筛选"路径
+        collect_all = spec.collect_all
+        expected = [] if collect_all else list(dict.fromkeys(expected_models or [target.name for target in spec.models]))
+        if not expected and not collect_all:
+            raise AIExtractionError(f"站点 {spec.id} 未配置目标模型 models；全量采集请配置 models: [\"*\"]")
         own = client is None
         client = client or httpx.Client(timeout=self.config.timeout)
         try:
@@ -1037,6 +1585,7 @@ expected_models：
                 item["notes"] = f"{metadata_note}{item.get('notes', '')}"
             if currency == "CNY" and "USD" in unit:
                 unit = unit.replace("USD", "CNY")
+            # browser_ai 只表示价格由 AI 从页面文本提取；"browser" 是历史命名，与采集是否走了浏览器无关
             metadata = {
                 "adapter": "browser_ai",
                 "ai_model": ai_model,

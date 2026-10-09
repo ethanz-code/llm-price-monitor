@@ -137,8 +137,8 @@ export interface CatalogEntry {
   limit?: { context?: number; input?: number; output?: number };
   /** models.dev 的发布日期（YYYY-MM-DD，可能为 null）：全量表展示，也参与旗舰档位判定 */
   release_date?: string | null;
-  /** AI 档位判定：flagship 顶级（整行高亮）/ mainstream 主流（名称旁 Tag）/ null 其他；AI 不可用时缺省 */
-  tier?: "flagship" | "mainstream" | null;
+  /** AI 档位判定：flagship 顶级（整行高亮）/ null 其他；AI 不可用时缺省 */
+  tier?: "flagship" | null;
   /** 官方价基准口径：cn=国内站官方价（厂商定价源或 -cn 渠道），global=国际站官方价 */
   region?: "cn" | "global";
   /** 同厂商国际站的列表价参考（国内基准确立后保留），口径同 list */
@@ -196,11 +196,9 @@ export interface SiteConfig {
     ratio_url?: string | { url: string; headers?: Record<string, string> } | null;
     params?: Record<string, string>;
     headers?: Record<string, string>;
-    /** 网页模式·无头浏览器：开启后强制用无头浏览器打开网页；关闭时普通抓取失败也会自动用无头重试一次 */
+    /** 网页模式·Headless：开启后用 Headless 浏览器打开网页渲染，Cookie/localStorage 登录态一并注入；关闭则纯接口请求 */
     headless?: {
       enabled?: boolean;
-      /** 无头浏览器打开页面时额外携带的请求头（Referer、X-Token 之类），普通抓取失败自动回退无头时同样带上 */
-      headers?: Record<string, string>;
       /** 注入的 Cookie；每项只需 name/value，domain/path 由后端按站点 URL 域名自动补 */
       cookies?: { name: string; value: string }[];
       /** 注入的 localStorage 键值 */
@@ -449,4 +447,40 @@ export interface AnalyticsSummary {
   /** 近 30 天按国家聚合的访问分布（中文名，匹配世界地图；"未知"为解析失败）。 */
   regions: { name: string; pv: number; uv: number }[];
   retained_days: number;
+}
+
+/** AI 调用按天聚合点（/api/ai-logs/summary 的 daily 项；fallback/param_retry 是同一请求里的失败尝试）。 */
+export interface AiLogDailyPoint {
+  day: string;
+  ok: number;
+  fallback: number;
+  param_retry: number;
+  /** 连接抖动（超时/SSL 断开等未收到响应）：不算成功也不算失败 */
+  transport: number;
+  error: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+/** AI 调用统计（/api/ai-logs/summary 输出；口径为当前保留的全部调用尝试）。 */
+export interface AiLogSummary {
+  total: number;
+  /** 成功率（%）：ok / (total - transport - ignored)，报错重试计入失败，连接抖动与已忽略报错组不计入；无记录时为 null */
+  success_rate: number | null;
+  ok: number;
+  fallback: number;
+  param_retry: number;
+  transport: number;
+  error: number;
+  /** 「报错判定」勾成不算失败的报错组涉及的尝试条数：不计失败、不进成功率分母 */
+  ignored: number;
+  /** 历史报错按形态自动归组：key 为分组键（存 settings.ai_ignored_errors），sample 为报错开头原文 */
+  error_kinds: { key: string; count: number; sample: string; ignored: boolean }[];
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  avg_duration_ms: number;
+  daily: AiLogDailyPoint[];
+  scenes: { name: string; calls: number }[];
+  models: { name: string; calls: number }[];
 }

@@ -3,8 +3,7 @@
 /** AI 请求日志：上方为调用统计（一行轻量数字 + 按天趋势/分布图表，口径为全部保留记录），
  *  下方为明细表（场景/模型/耗时/token 用量/错误），明细支持按场景与结果筛选。 */
 
-import { useEffect, useState } from "react";
-import {
+import { useEffect, useState, type ReactNode } from "react";import {
   Bar,
   BarChart,
   CartesianGrid,
@@ -15,11 +14,13 @@ import {
   YAxis,
 } from "recharts";
 import { apiSend } from "@/lib/api";
-import { formatTime } from "@/lib/format";
+import { formatTime, successRateTone, toneText } from "@/lib/format";
+import type { AiLogDailyPoint as DailyPoint, AiLogSummary } from "@/lib/types";
 import { ChartBubble, useChartTheme } from "./chartTheme";
 import { DataTable, type DColumn } from "./DataTable";
-import { Btn, Empty, Modal, Sel } from "./ui";
-import { IconAim } from "./icons";
+import { Btn, Empty, Modal, Sel, Switch, toast } from "./ui";
+import { IconChevronRight } from "./icons";
+import { DajuSit } from "./DajuArt";
 
 type AiLog = {
   id: number;
@@ -36,45 +37,22 @@ type AiLog = {
   response_excerpt: string | null;
 };
 
-type DailyPoint = {
-  day: string;
-  ok: number;
-  fallback: number;
-  param_retry: number;
-  error: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-};
-
-type AiLogSummary = {
-  total: number;
-  ok: number;
-  fallback: number;
-  param_retry: number;
-  error: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-  avg_duration_ms: number;
-  daily: DailyPoint[];
-  scenes: { name: string; calls: number }[];
-  models: { name: string; calls: number }[];
-};
-
 const SCENES = ["", "助手分类", "助手问答", "价格抽取", "公告提取", "token 分析"];
 const STATUSES = [
   { value: "", label: "全部结果" },
   { value: "ok", label: "成功" },
   { value: "fallback", label: "换模型重试" },
-  { value: "param_retry", label: "换参数重试" },
-  { value: "error", label: "失败" },
+  { value: "param_retry", label: "参数适配" },
+  { value: "transport", label: "连接抖动" },
+  { value: "error", label: "整次失败" },
 ];
 
 function StatusTag({ status }: { status: string }) {
-  if (status === "ok") return <span className="tag tone-green">成功</span>;
+  if (status === "ok") return <span className="tag tag-quiet">成功</span>;
   if (status === "fallback") return <span className="tag tone-blue">换模型重试</span>;
-  if (status === "param_retry") return <span className="tag tone-blue">换参数重试</span>;
-  return <span className="tag tone-red">失败</span>;
+  if (status === "param_retry") return <span className="tag tone-blue">参数适配</span>;
+  if (status === "transport") return <span className="tag tone-yellow">连接抖动</span>;
+  return <span className="tag tone-red">整次失败</span>;
 }
 
 /** 千分位整数：3006 → 3,006；没有用量时显示 —。 */
@@ -114,8 +92,9 @@ function CallsTooltip({ active, payload }: { active?: boolean; payload?: { paylo
       rows={[
         { color: lineColor, name: "成功", value: point.ok },
         { color: palette[1], name: "换模型重试", value: point.fallback },
-        { color: palette[2], name: "换参数重试", value: point.param_retry },
-        { color: palette[3], name: "失败", value: point.error },
+        { color: palette[2], name: "参数适配", value: point.param_retry },
+        { color: palette[4], name: "连接抖动", value: point.transport },
+        { color: palette[3], name: "整次失败", value: point.error },
       ]}
     />
   );
@@ -143,7 +122,7 @@ function CallsBarTooltip({ active, payload }: { active?: boolean; payload?: { pa
   return <ChartBubble label={point?.name} rows={[{ name: "调用次数", value: point?.calls ?? 0 }]} />;
 }
 
-/** 按天调用趋势：成功/换模型重试/换参数重试/失败堆叠柱状，配色与明细表状态标签一致。 */
+/** 按天调用趋势：成功/换模型重试/换参数重试/连接抖动/整次失败堆叠柱状，配色与明细表状态标签一致。 */
 function CallsTrendChart({ data }: { data: DailyPoint[] }) {
   const { lineColor, palette, axisColor, gridColor } = useChartTheme();
   return (
@@ -163,8 +142,9 @@ function CallsTrendChart({ data }: { data: DailyPoint[] }) {
           <ReTooltip content={<CallsTooltip />} cursor={{ fill: "rgba(127,127,127,0.12)" }} />
           <Bar dataKey="ok" name="成功" stackId="calls" fill={lineColor} maxBarSize={18} />
           <Bar dataKey="fallback" name="换模型重试" stackId="calls" fill={palette[1]} maxBarSize={18} />
-          <Bar dataKey="param_retry" name="换参数重试" stackId="calls" fill={palette[2]} maxBarSize={18} />
-          <Bar dataKey="error" name="失败" stackId="calls" fill={palette[3]} radius={[3, 3, 0, 0]} maxBarSize={18} />
+          <Bar dataKey="param_retry" name="参数适配" stackId="calls" fill={palette[2]} maxBarSize={18} />
+          <Bar dataKey="transport" name="连接抖动" stackId="calls" fill={palette[4]} maxBarSize={18} />
+          <Bar dataKey="error" name="整次失败" stackId="calls" fill={palette[3]} radius={[3, 3, 0, 0]} maxBarSize={18} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -322,18 +302,55 @@ export function AdminAiLogs() {
   }, [scene, status]);
 
   const hasCalls = (summary?.total ?? 0) > 0;
-  const successRate = summary && summary.total ? (summary.ok / summary.total) * 100 : null;
-  const kpis = summary
+  const successRate = summary ? summary.success_rate : null;
+  // 失败 = 供应商报错且未被「报错判定」豁免的尝试；连接抖动与已忽略报错组不算失败也不进成功率分母
+  const failure = summary ? summary.total - summary.ok - summary.transport - summary.ignored : 0;
+  const [ignoredSaving, setIgnoredSaving] = useState(false);
+  const [kindsOpen, setKindsOpen] = useState(false);
+  const errorKinds = summary?.error_kinds ?? [];
+  const ignoredCount = errorKinds.filter((kind) => kind.ignored).length;
+  const ignoredKeys = new Set(errorKinds.filter((kind) => kind.ignored).map((kind) => kind.key));
+
+  // 勾选报错组：存进 settings.ai_ignored_errors，成功后重取汇总刷新 KPI 与分组状态
+  async function toggleErrorKind(key: string, ignore: boolean) {
+    if (ignoredSaving) return;
+    const next = new Set(ignoredKeys);
+    if (ignore) next.add(key);
+    else next.delete(key);
+    setIgnoredSaving(true);
+    try {
+      await apiSend("/api/settings", "PUT", { settings: { ai_ignored_errors: [...next] } });
+      setSummary(await apiSend<AiLogSummary>("/api/ai-logs/summary", "GET"));
+    } catch {
+      toast("没保存成功，请再试一次");
+    } finally {
+      setIgnoredSaving(false);
+    }
+  }
+
+  const kpis: { label: string; value: string; hint: ReactNode; color?: string }[] = summary
     ? [
         {
           label: "调用总数",
           value: summary.total.toLocaleString("en-US"),
-          hint: `失败 ${summary.error} · 换模型重试 ${summary.fallback} · 换参数重试 ${summary.param_retry}`,
+          hint: (
+            <>
+              {failure > 0 ? (
+                <span style={{ color: toneText("red") }}>失败 {failure}</span>
+              ) : (
+                `失败 ${failure}`
+              )}
+              {` · 换模型重试 ${summary.fallback} · 参数适配 ${summary.param_retry}`}
+              {summary.transport > 0 ? ` · 连接抖动 ${summary.transport}` : ""}
+              {summary.ignored > 0 ? ` · 已忽略 ${summary.ignored}` : ""}
+            </>
+          ),
         },
         {
           label: "成功率",
           value: successRate != null ? `${successRate.toFixed(1)}%` : "—",
-          hint: `成功 ${summary.ok} 次`,
+          color: successRate != null ? toneText(successRateTone(successRate)) : undefined,
+          hint: `成功 ${summary.ok} 次 · 失败 ${failure} 次`,
         },
         {
           label: "token 总消耗",
@@ -373,7 +390,7 @@ export function AdminAiLogs() {
   ];
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
+    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(0, 1fr)" }}>
       {detail && <LogDetailModal log={detail} onClose={() => setDetail(null)} />}
       {hasCalls && summary && (
         <section style={{ display: "grid", gap: 14, marginBottom: 8 }}>
@@ -381,7 +398,7 @@ export function AdminAiLogs() {
             {kpis.map((card) => (
               <div key={card.label} className="dash-stat">
                 <div className="dash-stat-label">{card.label}</div>
-                <div className="dash-stat-value">
+                <div className="dash-stat-value" style={card.color ? { color: card.color } : undefined}>
                   {card.value}
                   <span className="dash-stat-hint">{card.hint}</span>
                 </div>
@@ -389,7 +406,7 @@ export function AdminAiLogs() {
             ))}
           </div>
           <p style={{ color: "var(--text-3)", fontSize: 12, margin: 0 }}>
-            统计口径：当前保留的全部调用（日志自动保留 7 天）；「换模型重试」「换参数重试」是同一请求里失败的尝试，不计入成功率。
+            统计口径：保留期内每次请求尝试各记一条，成功率 = 成功尝试 ÷ 有效尝试。报错后自动换模型、换参数的尝试计入失败，误判的报错组可在「报错判定」里关掉；连接抖动（超时、SSL 断开）不算失败也不进分母；模型池全部报错记一条「整次失败」。
           </p>
           <div className="panel" style={{ padding: "16px 20px 18px", display: "grid", gap: 28, gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
             <div>
@@ -411,6 +428,57 @@ export function AdminAiLogs() {
           </div>
         </section>
       )}
+      {hasCalls && summary && errorKinds.length > 0 && (
+        <section className="panel" style={{ padding: "16px 20px 18px", display: "grid", gap: 12, gridTemplateColumns: "minmax(0, 1fr)" }}>
+          <button type="button" className="disclosure-row" aria-expanded={kindsOpen} onClick={() => setKindsOpen(!kindsOpen)}>
+            <span className="caret" aria-hidden>
+              <IconChevronRight size={13} />
+            </span>
+            <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>报错判定</span>
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-3)" }}>
+              {errorKinds.length} 组报错{ignoredCount > 0 ? `，${ignoredCount} 组已忽略` : ""}
+            </span>
+          </button>
+          {kindsOpen && (
+            <>
+              <p style={{ fontSize: 12, color: "var(--text-3)", margin: 0 }}>
+                历史报错按形态自动归为一组：打开开关的组不算失败，也不计入成功率。
+              </p>
+              {errorKinds.map((kind) => (
+                <div key={kind.key} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <Switch
+                    checked={kind.ignored}
+                    disabled={ignoredSaving}
+                    title="打开后这一组报错不算失败、不进成功率"
+                    onChange={(next) => toggleErrorKind(kind.key, next)}
+                  />
+                  <span className="mono" style={{ fontSize: 12.5, color: "var(--text-2)", whiteSpace: "nowrap" }}>
+                    {kind.count} 次
+                  </span>
+                  <span
+                    title={kind.sample}
+                    style={{
+                      flex: 1,
+                      fontSize: 12.5,
+                      color: kind.ignored ? "var(--text-3)" : "var(--text-2)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {kind.sample}
+                  </span>
+                  {kind.ignored ? (
+                    <span className="tag tone-gray">已忽略</span>
+                  ) : (
+                    <span className="tag tone-red">算失败</span>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+        </section>
+      )}
       <div style={{ display: "flex", gap: 8 }}>
         <Sel
           value={scene}
@@ -429,7 +497,7 @@ export function AdminAiLogs() {
           mobileScrollX={850}
           empty={
             <Empty
-              icon={<IconAim size={18} />}
+              icon={<DajuSit width={30} />}
               title="还没有 AI 调用记录"
               description="助手问答、价格抽取等用到 AI 的操作发生后会显示在这里。"
             />

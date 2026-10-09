@@ -7,7 +7,7 @@ import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { getSiteInfo } from "@/lib/sites";
 import type { EventRow } from "@/lib/types";
-import { eventMeta, formatTime, isNoticeEvent, noticeExcerpt } from "@/lib/format";
+import { dayKey, dayLabel, eventMeta, formatTime, isNoticeEvent, noticeExcerpt } from "@/lib/format";
 import type { FeedEvent, HistoryListData } from "@/lib/types";
 import { describeChange, EventDetailModal } from "./EventDetailModal";
 
@@ -70,10 +70,29 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
       else next.add(key);
       return next;
     });
+  // 分组卡片再按天分节：日期标题制造扫读节奏，几百张卡不再一路平铺
+  const sections: { day: string; groups: FeedEvent[][] }[] = [];
+  for (const group of foldEvents(events)) {
+    const day = dayKey(group[0].detected_at);
+    const last = sections[sections.length - 1];
+    if (last && last.day === day) last.groups.push(group);
+    else sections.push({ day, groups: [group] });
+  }
   return (
-    <div style={{ display: "grid", gap: 10 }}>
+    <div style={{ display: "grid", gap: 26 }}>
       {/* feed 已按 detected_at 倒序，直接分组渲染 = 最新在前，与首页「最新事件」一致 */}
-      {foldEvents(events).map((group) => {
+      {sections.map((section) => (
+      <section key={section.day} style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 550, color: "var(--text-3)" }}>
+            {dayLabel(section.groups[0][0].detected_at)}
+          </span>
+          <span aria-hidden style={{ flex: 1, height: 1, background: "var(--border)" }} />
+          <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
+            {section.groups.reduce((n, g) => n + g.length, 0)} 条
+          </span>
+        </div>
+        {section.groups.map((group) => {
         const event = group[0];
         if (isNoticeEvent(event)) {
           const meta = eventMeta(event.kind);
@@ -84,7 +103,6 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
               style={{ cursor: "pointer" }}
               onClick={() => setDetail(event)}
             >
-              <span aria-hidden className={`side-dot dot-${meta.tone}`} style={{ marginTop: 7 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <KindTag kind={event.kind} />
@@ -104,12 +122,10 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
             </div>
           );
         }
-        const tone = eventMeta(event.kind).tone;
         const key = `${event.site_id}:${event.model}:${event.kind}:${event.detected_at}`;
         const open = openKeys.has(key);
         return (
           <div key={key} className="event-card" style={{ cursor: "pointer" }} onClick={() => setDetail(event)}>
-            <span aria-hidden className={`side-dot dot-${tone}`} style={{ marginTop: 7 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <KindTag kind={event.kind} />
@@ -168,7 +184,9 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
             </div>
           </div>
         );
-      })}
+        })}
+      </section>
+      ))}
       <EventDetailModal event={detail} rate={rate} onClose={() => setDetail(null)} />
     </div>
   );

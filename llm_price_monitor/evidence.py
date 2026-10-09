@@ -450,7 +450,7 @@ def target_page_text(page_text: str, expected_models: list[str]) -> str:
         line
         for line in lines
         if re.search(r"(?:input|output|cache|price|pricing|输入|输出|缓存|价格)", line, re.IGNORECASE)
-        and not re.search(r"(?:[$¥€]|\\d)", line)
+        and not re.search(r"(?:[$¥€]|\d)", line)
     ]
     legend = " ".join(dict.fromkeys(price_legend))[:1200]
     cards = []

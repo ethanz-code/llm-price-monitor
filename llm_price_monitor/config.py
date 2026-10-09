@@ -39,9 +39,12 @@ class ModelTarget:
     name: str
 
 
+COLLECT_ALL_MODEL = "*"  # models 配置成 ["*"] 表示全量采集，目标模型由接口/页面证据现场展开
+
+
 DEPRECATED_SITE_FIELDS = frozenset({"note", "preferred_response_url_patterns", "ratio_base_price", "model_list_url", "currency"})  # 已废弃的站点字段：加载/保存时静默丢弃
 
-# 凭证注入的三个目标：价格采集（含附加地址、倍率接口、无头浏览器）、渠道状态、站点公告
+# 凭证注入的三个目标：价格采集（含附加地址、倍率接口、Headless）、渠道状态、站点公告
 AUTH_INJECT_TARGETS = ("price", "status", "notice")
 # 注入值里可引用的凭证变量：续签换新后自动展开成新值
 ACCESS_TOKEN_VAR = "${access_token}"
@@ -187,6 +190,11 @@ class SiteSpec:
     token_refresh: dict[str, Any] = field(default_factory=dict)
     auth_inject: dict[str, Any] = field(default_factory=dict)  # 凭证注入规则：{价格/状态/公告目标: {header, value}}  # 认证续签请求配置：url/method/params/headers/body/refresh_token  # 公告地址：默认从 network.url 推导 /api/notice  # 可选渠道状态数据地址，GET 拉取后存自由结构 JSON
 
+    @property
+    def collect_all(self) -> bool:
+        """models 为 ["*"] 时全量采集；目标模型不预置，由每次采集的证据现场展开。"""
+        return any(target.name == COLLECT_ALL_MODEL for target in self.models)
+
 
 class AIResultCache(Protocol):
     """AI 抽取结果缓存后端：由存储层实现（document 表），文件缓存已退役。"""
@@ -210,11 +218,17 @@ class MonitorSettings:
     retention_price_days: int = 90
     retention_visit_days: int = 90
     retention_status_days: int = 90
+    # AI 调用日志保留天数：写入日志时顺带清理（成功率和按天趋势基于它）
+    retention_ai_log_days: int = 7
+    # 「报错判定」勾成不算失败的 AI 报错组（分组键见 store.ai_error_kind）：不计失败、不进成功率分母
+    ai_ignored_errors: tuple[str, ...] = ()
     # 任务记录保留条数（清理界限，超出淘汰最旧）与单任务日志滚动行数上限
     max_task_runs: int = 100
     max_task_log_lines: int = 500
     # AI 助手每 IP 每天提问次数上限；0 表示不限制
     assistant_daily_limit: int = 10
+    # AI 助手每 IP 每小时提问次数上限（防单访客高频刷问题）；0 表示不限制
+    assistant_hourly_limit: int = 10
 
 
 @dataclass(frozen=True)
@@ -245,22 +259,21 @@ class MonitorConfig:
 def settings_from_raw(raw: dict[str, Any], *, resolve_env: bool) -> MonitorSettings:
     raw = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {key: raw[key] for key in MonitorSettings.__dataclass_fields__ if key in raw}
-    for key in ("user_agent_platforms", "user_agent_chrome_versions"):
+    for key in ("user_agent_platforms", "user_agent_chrome_versions", "ai_ignored_errors"):
         if key in values:
             value = values[key]
-            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                raise ValueError(f"settings.{key} 必须是字符串数组")
-            values[key] = tuple(value)
-    for key in ("retention_price_days", "retention_visit_days", "retention_status_days"):
+            if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+                raise ValueError(f"settings.{key} 必须是非空字符串数组")
+            values[key] = tuple(dict.fromkeys(item.strip() for item in value))
+    for key in ("retention_price_days", "retention_visit_days", "retention_status_days", "retention_ai_log_days"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
             raise ValueError(f"settings.{key} 必须是不小于 1 的整数（天）")
     for key in ("max_task_runs", "max_task_log_lines"):
         if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 1):
             raise ValueError(f"settings.{key} 必须是不小于 1 的整数")
-    if "assistant_daily_limit" in values and (
-        not isinstance(values["assistant_daily_limit"], int) or isinstance(values["assistant_daily_limit"], bool) or values["assistant_daily_limit"] < 0
-    ):
-        raise ValueError("settings.assistant_daily_limit 必须是不小于 0 的整数（0 表示不限制）")
+    for key in ("assistant_daily_limit", "assistant_hourly_limit"):
+        if key in values and (not isinstance(values[key], int) or isinstance(values[key], bool) or values[key] < 0):
+            raise ValueError(f"settings.{key} 必须是不小于 0 的整数（0 表示不限制）")
     return MonitorSettings(**values)
 
 
@@ -512,6 +525,8 @@ def sites_from_raw(values: list[Any]) -> tuple[SiteSpec, ...]:
         if not isinstance(raw_models, list) or any(not isinstance(item, str) for item in raw_models):
             raise ValueError(f"站点 {site_id} 的 models 必须是字符串数组；模型分组/别名字段已下线，别名由 AI 自动解析")
         models = tuple(ModelTarget(item.strip()) for item in raw_models if item.strip())
+        if COLLECT_ALL_MODEL in {item.name for item in models} and len(models) > 1:
+            raise ValueError(f"站点 {site_id} 的 models 配置通配符 \"*\" 时不能再列出其他模型")
         raw_auth_inject = value.get("auth_inject", {})
         _validate_auth_inject(raw_auth_inject, site_id)
         site_values = {

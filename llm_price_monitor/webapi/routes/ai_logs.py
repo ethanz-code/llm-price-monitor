@@ -18,7 +18,7 @@ def build_router(store: Store) -> APIRouter:
         scene: str | None = None,
         status: str | None = None,
     ) -> dict[str, Any]:
-        rows, total = store.read_ai_logs(limit=min(limit, 500), offset=offset, scene=scene, status=status)
+        rows, total = store.read_ai_logs(limit=max(1, min(limit, 500)), offset=max(0, offset), scene=scene, status=status)
         return {"logs": rows, "total": total}
 
     @router.get("/api/ai-logs/summary")

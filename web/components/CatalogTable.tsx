@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { DataTable, type DColumn } from "./DataTable";
-import { Empty, Input, Pick } from "./ui";
+import { Empty } from "./ui";
 import { IconSearch } from "./icons";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
-import { ToneTag } from "./ToneTag";
+import { ToneTag, ToneNum } from "./ToneTag";
 import { VENDOR_LOGOS } from "@/lib/vendor-logos";
 import { useNarrow } from "@/lib/useNarrow";
 import { formatPrice, formatTokens, isFreePrice, looseIncludes } from "@/lib/format";
@@ -128,16 +128,18 @@ export function VendorBadge({ vendor, logo }: { vendor: string; logo?: string | 
   );
 }
 
-export function CatalogTable({ data }: { data: CatalogData }) {
-  const [keyword, setKeyword] = useState("");
-  const [vendor, setVendor] = useState("all");
+/** keyword/vendor 筛选状态放在 CatalogView 的工具栏行里，这里只消费值做过滤 */
+export function CatalogTable({
+  data,
+  keyword,
+  vendor,
+}: {
+  data: CatalogData;
+  keyword: string;
+  vendor: string;
+}) {
   // 手机（≤560px，藏列断点之下屏幕仍放不下三列）：厂商并入模型列，价格一列，避免横滑藏住最后一列
   const phone = useNarrow(560);
-
-  const vendors = useMemo(
-    () => Array.from(new Set(Object.values(data.models).map((entry) => entry.vendor))),
-    [data],
-  );
 
   const rows: Row[] = useMemo(() => {
     const lower = keyword.trim().toLowerCase();
@@ -175,7 +177,6 @@ export function CatalogTable({ data }: { data: CatalogData }) {
           >
             {v}
           </span>
-          {row.tier === "mainstream" && <ToneTag tone="gray">主流</ToneTag>}
         </span>
       ),
     },
@@ -195,7 +196,7 @@ export function CatalogTable({ data }: { data: CatalogData }) {
         // 国内口径只展示定价源抓来的人民币原价；models.dev 换算出的分档/音频/国际价一概不出
         if (row.region === "cn") {
           return isFreePrice(row.list_cny) ? (
-            <ToneTag tone="green">免费</ToneTag>
+            <ToneNum tone="green">免费</ToneNum>
           ) : (
             <span className="mono num" style={{ fontWeight: 550 }}>
               ¥{formatPrice(row.list_cny?.input)} / ¥{formatPrice(row.list_cny?.output)}
@@ -203,7 +204,7 @@ export function CatalogTable({ data }: { data: CatalogData }) {
           );
         }
         return isFreePrice(row.list) ? (
-          <ToneTag tone="green">免费</ToneTag>
+          <ToneNum tone="green">免费</ToneNum>
         ) : (
           <span style={{ display: "inline-grid", gap: 1, justifyItems: "end" }}>
             <span className="mono num" style={{ fontWeight: 550 }}>
@@ -326,7 +327,6 @@ export function CatalogTable({ data }: { data: CatalogData }) {
                 <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {row.model}
                 </span>
-                {row.tier === "mainstream" && <ToneTag tone="gray">主流</ToneTag>}
               </span>
             </span>
           ),
@@ -337,21 +337,6 @@ export function CatalogTable({ data }: { data: CatalogData }) {
 
   return (
     <div className="rise-in" style={{ display: "grid", gap: 16 }}>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <Input
-          placeholder="搜索模型或厂商"
-          style={{ flex: "1 1 260px", maxWidth: "min(420px, 100%)" }}
-          value={keyword}
-          onChange={setKeyword}
-          prefix={<IconSearch size={14} />}
-        />
-        <Pick
-          value={vendor}
-          onChange={setVendor}
-          style={{ width: 160, maxWidth: "100%" }}
-          options={[{ value: "all", label: "全部厂商" }, ...vendors.map((v) => ({ value: v, label: v }))]}
-        />
-      </div>
       <div className="panel" style={{ overflow: "hidden" }}>
         <div
           style={{

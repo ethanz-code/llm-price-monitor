@@ -359,7 +359,7 @@ def _recorder(verdict_pages: list[list[dict]]):
 
 def test_attach_ai_tiers_classifies_new_models():
     transport, calls = _recorder([
-        [{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": "mainstream"}],
+        [{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": None}],
     ])
     output = _tier_output()
     with httpx.Client(transport=transport) as client:
@@ -367,12 +367,12 @@ def test_attach_ai_tiers_classifies_new_models():
     assert calls["n"] == 1  # 同厂商一批
     models = output["models"]
     assert models["gpt6"]["tier"] == "flagship" and models["gpt6"]["tier_fp"]
-    assert models["gpt56mini"]["tier"] == "mainstream"
+    assert models["gpt56mini"]["tier"] is None and models["gpt56mini"]["tier_fp"]
 
 
 def test_attach_ai_tiers_reuses_fingerprints_without_calls():
     output = _tier_output()
-    transport, _ = _recorder([[{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": "mainstream"}]])
+    transport, _ = _recorder([[{"model": "gpt-6", "tier": "flagship"}, {"model": "gpt-5.6-mini", "tier": None}]])
     with httpx.Client(transport=transport) as client:
         attach_ai_tiers(output, None, _ai_config(), client)
     previous = {"models": {key: dict(entry) for key, entry in output["models"].items()}}
@@ -384,7 +384,7 @@ def test_attach_ai_tiers_reuses_fingerprints_without_calls():
         assert attach_ai_tiers(frozen, previous, _ai_config(), client) == 0
     assert calls["n"] == 0
     assert frozen["models"]["gpt6"]["tier"] == "flagship"
-    assert frozen["models"]["gpt56mini"]["tier"] == "mainstream"
+    assert frozen["models"]["gpt56mini"]["tier"] is None
 
 
 def test_attach_ai_tiers_drops_invalid_verdicts():
@@ -422,7 +422,7 @@ def test_attach_ai_tiers_batches_large_vendors():
         }
         for i in range(BATCH_SIZE + 5)
     }
-    verdicts = [{"model": f"m-{i}", "tier": "mainstream"} for i in range(BATCH_SIZE + 5)]
+    verdicts = [{"model": f"m-{i}", "tier": "flagship"} for i in range(BATCH_SIZE + 5)]
     transport, calls = _recorder([verdicts, verdicts])
     output = {"models": models}
     with httpx.Client(transport=transport) as client:
@@ -447,7 +447,7 @@ def test_attach_ai_tiers_demotes_stale_models_when_newer_generation_exists():
             "family": "f", "release_date": recent_date, "modalities": {"output": ["text"]},
         },
     }
-    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}, {"model": "m-new", "tier": "flagship"}]])
+    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}, {"model": "m-new", "tier": "flagship"}]])
     output = {"models": models}
     with httpx.Client(transport=transport) as client:
         assert attach_ai_tiers(output, None, _ai_config(), client) == 2
@@ -455,7 +455,7 @@ def test_attach_ai_tiers_demotes_stale_models_when_newer_generation_exists():
     assert output["models"]["recent"]["tier"] == "flagship"
 
 
-def test_attach_ai_tiers_keeps_old_mainstream_without_newer_generation():
+def test_attach_ai_tiers_keeps_old_flagship_without_newer_generation():
     from datetime import date, timedelta
 
     old_date = (date.today() - timedelta(days=800)).isoformat()
@@ -466,11 +466,33 @@ def test_attach_ai_tiers_keeps_old_mainstream_without_newer_generation():
             "family": "f", "release_date": old_date, "modalities": {"output": ["text"]},
         },
     }
-    transport, _ = _recorder([[{"model": "m-old", "tier": "mainstream"}]])
+    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}]])
     output = {"models": models}
     with httpx.Client(transport=transport) as client:
         assert attach_ai_tiers(output, None, _ai_config(), client) == 1
-    assert output["models"]["old"]["tier"] == "mainstream"  # 厂商无新一代在售，保留 AI 判定
+    assert output["models"]["old"]["tier"] == "flagship"  # 厂商无新一代在售，保留 AI 判定
+
+
+def test_attach_ai_tiers_demotes_monthly_granularity_release_date():
+    """月粒度发布日期（如 2024-09）按当月 1 号参与旧代校验，不再绕过硬降级。"""
+    models = {
+        "old": {
+            "found": True, "model": "m-old", "name": "M Old", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": "2024-09", "modalities": {"output": ["text"]},
+        },
+        "recent": {
+            "found": True, "model": "m-new", "name": "M New", "vendor": "V",
+            "description": "x", "list": {"input": 1.0, "output": 2.0},
+            "family": "f", "release_date": "2026-09", "modalities": {"output": ["text"]},
+        },
+    }
+    transport, _ = _recorder([[{"model": "m-old", "tier": "flagship"}, {"model": "m-new", "tier": "flagship"}]])
+    output = {"models": models}
+    with httpx.Client(transport=transport) as client:
+        assert attach_ai_tiers(output, None, _ai_config(), client) == 2
+    assert output["models"]["old"]["tier"] is None
+    assert output["models"]["recent"]["tier"] == "flagship"
 
 
 # ---------- catalog.translate（简介中译）----------

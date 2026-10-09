@@ -99,6 +99,7 @@ export function HeroArea({
         // 两排都恒滚动；半条轨道不足一屏宽（按 8 个胶囊估算）时复制节点补满，位移 -50% 才无缝
         const copies = Math.max(1, Math.ceil(8 / Math.max(row.items.length, 1)));
         const half = Array.from({ length: copies }, () => row.items).flat();
+        // 速度取慢档：常驻滚动太快会持续拉扯视线，慢速滚动只作氛围
         return (
           <div
             key={rowIndex}
@@ -108,7 +109,7 @@ export function HeroArea({
               className="marquee-track"
               style={
                 {
-                  "--marquee-dur": `${Math.max(24, half.length * 3.2)}s`,
+                  "--marquee-dur": `${Math.max(48, half.length * 6)}s`,
                 } as React.CSSProperties
               }
             >

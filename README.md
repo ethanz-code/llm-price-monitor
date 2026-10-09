@@ -1,10 +1,10 @@
-# llm-price-monitor
+# 大橘 Daju
 
 <p align="left">
-  <img src="web/app/icon.svg" width="72" alt="LLM 价格监控 Logo" />
+  <img src="web/app/icon.svg" width="72" alt="大橘 Logo" />
 </p>
 
-**LLM（AI 大模型）价格监控器**：盯住各中转站（API 中转服务）的模型价格，记录每一次变化，并用厂商官方价校准它贵不贵。
+**大橘（Daju）— LLM（AI 大模型）价格监控器**：盯住各中转站（API 中转服务）的模型价格，记录每一次变化，并用厂商官方价校准它贵不贵。
 
 价格事实只来自直接请求得到的 HTTP 响应（JSON、页面内嵌价格表及其引用的 JS），不启动浏览器、不从页面文字猜价格；AI 只做兜底解析，无法确认时返回 `candidate` / `unavailable`，绝不编造。
 
@@ -51,7 +51,9 @@ uv run price-web --with-frontend
 }
 ```
 
-请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）都支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。可选字段：
+请求头（含 `ratio_url.headers`）与 headless 登录态（cookies/localStorage 的值）都支持 `${ENV_VAR}` 注入，敏感值不落盘；环境变量需在进程环境中提供（如 `docker compose` 的 `environment` 或 shell `export`），缺失时采集会直接报错指明变量名，不会静默发空值。站点 `models` 也可以配置成 `["*"]` 表示全量采集：接口直采从定价响应现场展开全部模型，网页/AI 提取模式则让 AI 抽取页面上出现的每一个模型（大站模型多时输出可能被 max_tokens 截断，建议优先在能直采的站点使用）。
+
+可选字段：
 
 > **安全说明**：站点凭据（cookie、access_token、refresh_token、请求头）与 AI 密钥以明文保存在 SQLite（`var/monitor.db`），本设计面向单管理员自部署场景，换取配置即改即生效的简单性。请确保数据库文件本身不对外暴露：不要把 `var/` 目录放进公开存储或镜像，服务器上做好文件权限即可。
 

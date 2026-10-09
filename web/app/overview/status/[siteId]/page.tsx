@@ -36,7 +36,38 @@ const RATE_TAG_TONE: Record<RateLevel, Tone> = {
   down: "red",
 };
 
-/** 站点公告区：始终展示最新一次采集的内容（该内容已包含站点当前的公告列表） */
+/** 从标题文字里抠出日期（兼容全角/半角括号），顺便把日期从展示标题里去掉 */
+function extractDate(heading: string): { clean: string; date: string | null } {
+  const match = /(20\d{2}-\d{2}-\d{2})/.exec(heading);
+  const clean = heading
+    .replace(/[（(]\s*20\d{2}-\d{2}-\d{2}\s*[)）]/g, "")
+    .replace(/20\d{2}-\d{2}-\d{2}/, "")
+    .replace(/[\s·、\-–]+$/, "")
+    .trim();
+  return { clean, date: match?.[1] ?? null };
+}
+
+/** 按 markdown 标题行把整块公告内容拆成一条条（站方习惯每条公告一个标题 + 日期）；
+ *  拆不出第二条（没有标题结构）就返回单条，UI 退回整块渲染。 */
+function splitNoticeEntries(content: string): { clean: string; date: string | null; body: string }[] {
+  const entries: { clean: string; date: string | null; body: string }[] = [];
+  let current: { clean: string; date: string | null; body: string } | null = null;
+  for (const line of content.split("\n")) {
+    const heading = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      if (current) entries.push(current);
+      const { clean, date } = extractDate(heading[2]);
+      current = { clean, date, body: "" };
+    } else if (current) {
+      current.body += `${line}\n`;
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+/** 站点公告区：展示最新一次采集的内容（该内容已包含站点当前的公告列表）。
+ *  默认展开最新一条，更早的折叠进 details，避免历史公告把页面拖到数屏长。 */
 function NoticeSection({ notices }: { notices: NoticeSnapshot[] }) {
   if (notices.length === 0) return null;
   const notice = notices[0];
@@ -49,37 +80,96 @@ function NoticeSection({ notices }: { notices: NoticeSnapshot[] }) {
   } catch {
     sourceHost = "";
   }
+
+  const entries = splitNoticeEntries(notice.content);
+  // 拆不出结构（不足两条）就整块渲染，交给 NoticeBody
+  if (entries.length < 2) {
+    return (
+      <section className="panel notice-section">
+        <NoticeMeta capturedAt={formatTime(notice.captured_at)} sourceHost={sourceHost} sourceUrl={notice.source_url} />
+        <NoticeBody content={notice.content} />
+      </section>
+    );
+  }
+
+  const [latest, ...older] = entries;
+  const oldestDate = older[older.length - 1]?.date;
+  const rangeText =
+    oldestDate && older[0]?.date ? `（${older[0].date} ~ ${oldestDate}）` : "";
+
   return (
-    <section className="panel" style={{ display: "grid", gap: 10, padding: 16 }}>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "baseline",
-          gap: "2px 12px",
-        }}
-      >
-        <h3 className="section-title">站点公告</h3>
-        <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
-          {formatTime(notice.captured_at)} 采集
-          {sourceHost && (
-            <>
-              {" · 来源 "}
-              <a
-                className="notice-src"
-                href={notice.source_url}
-                target="_blank"
-                rel="noreferrer"
-                title={notice.source_url}
-              >
-                {sourceHost}
-              </a>
-            </>
-          )}
-        </span>
-      </div>
-      <NoticeBody content={notice.content} />
+    <section className="panel notice-section">
+      <NoticeMeta capturedAt={formatTime(notice.captured_at)} sourceHost={sourceHost} sourceUrl={notice.source_url} />
+
+      <article className="notice-item">
+        <div className="notice-item-head">
+          <h4 className="notice-item-title">{latest.clean}</h4>
+          {latest.date && <span className="mono notice-item-date">{latest.date}</span>}
+        </div>
+        <NoticeBody content={latest.body} />
+      </article>
+
+      {older.length > 0 && (
+        <details className="notice-history">
+          <summary>
+            更早的公告 · {older.length} 条
+            {rangeText && <span className="notice-history-range">{rangeText}</span>}
+          </summary>
+          <div>
+            {older.map((entry, index) => (
+              <article className="notice-item" key={`${entry.date ?? "entry"}-${index}`}>
+                <div className="notice-item-head">
+                  <h4 className="notice-item-title">{entry.clean}</h4>
+                  {entry.date && <span className="mono notice-item-date">{entry.date}</span>}
+                </div>
+                <NoticeBody content={entry.body} />
+              </article>
+            ))}
+          </div>
+        </details>
+      )}
     </section>
+  );
+}
+
+/** 公告区头部：标题 + 采集时间 + 来源域名 */
+function NoticeMeta({
+  capturedAt,
+  sourceHost,
+  sourceUrl,
+}: {
+  capturedAt: string;
+  sourceHost: string;
+  sourceUrl: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "baseline",
+        gap: "2px 12px",
+      }}
+    >
+      <h3 className="section-title">站点公告</h3>
+      <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
+        {capturedAt} 采集
+        {sourceHost && (
+          <>
+            {" · 来源 "}
+            <a
+              className="notice-src"
+              href={sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={sourceUrl}
+            >
+              {sourceHost}
+            </a>
+          </>
+        )}
+      </span>
+    </div>
   );
 }
 

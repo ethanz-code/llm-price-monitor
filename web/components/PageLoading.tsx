@@ -1,15 +1,27 @@
 "use client";
 
 import { Skel } from "./ui";
+import { DajuSit } from "./DajuArt";
 
-/** 数据页通用加载骨架：页头 + 统计条（可选） + 面板，形状与真实布局一致。 */
+/** 数据页通用加载骨架：页头 + 统计条（可选） + 面板，形状与真实布局一致；页头右侧蹲着摇尾巴的大橘。 */
 export function PageLoading({ stats = true }: { stats?: boolean }) {
   return (
     <div className="page">
-      <div style={{ display: "grid", gap: 10, padding: "8px 0 32px" }}>
-        <Skel w={120} h={12} />
-        <Skel w={280} h={30} />
-        <Skel w="55%" h={13} />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "8px 0 32px",
+        }}
+      >
+        <div style={{ display: "grid", gap: 10, flex: 1 }}>
+          <Skel w={120} h={12} />
+          <Skel w={280} h={30} />
+          <Skel w="55%" h={13} />
+        </div>
+        <DajuSit width={30} />
       </div>
       {stats && (
         <div className="stat-grid" style={{ marginBottom: 20 }}>

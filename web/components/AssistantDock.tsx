@@ -1,23 +1,102 @@
 "use client";
 
-/** 智能分析助手：右下角悬浮球 + 右侧抽屉对话；AI 未配置时整个入口不出现。 */
+/** 智能分析助手（大橘）：右下角猫脸悬浮球 + 右侧全高抽屉对话；AI 未配置时整个入口不出现。 */
 
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useAuthPage } from "@/lib/useAuthPage";
+import { IconClose, IconHistory, IconPlus } from "./icons";
+import { DajuPeek } from "./DajuArt";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; error?: boolean };
+
+/** 本地会话档案：会话只存在访客自己的浏览器里（localStorage），服务端不留副本 */
+type ChatSession = { id: string; title: string; updatedAt: number; messages: ChatMessage[] };
 
 /** 悬浮球与视口边缘的最小留白 */
 const FAB_EDGE = 12;
 /** 气泡尚未渲染时的兜底尺寸（首次夹取用），实际以量到的渲染尺寸为准 */
 const FAB_FALLBACK_SIZE = { width: 42, height: 42 };
 
+/** 空态建议问题：大橘按能力准备的三类示范，每批展示 3 条，可换一批 */
 const SUGGESTED_QUESTIONS = [
-  "最近采集情况怎么样？",
+  "最近一周哪些模型降价了？",
   "哪些站点或渠道现在有异常？",
-  "现在输入价格最便宜的是哪个站点？",
+  "现在输入价最便宜的是哪个站点？",
+  "gpt-5.6-sol 全站比价，谁最便宜？",
+  "AIHub365 哪个渠道可用率最低？",
+  "sudocode 最近有什么活动？",
+  "最近有哪些新模型上线？",
+  "哪个站的 Claude 最便宜？",
+  "我刚才问了什么？",
 ];
+/** 空态每批展示的建议问题数 */
+const SUGGEST_BATCH_SIZE = 3;
+
+/** 本地会话历史的 localStorage key 与容量上限：超出后最旧的会话被挤掉 */
+const SESSIONS_KEY = "ai-chat-sessions";
+const MAX_SESSIONS = 30;
+
+/** 从 localStorage 读本地会话：只收结构完整的记录，空会话与发送中的占位气泡直接丢弃 */
+function loadSessions(): ChatSession[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const sessions: ChatSession[] = [];
+    for (const item of parsed) {
+      if (typeof item !== "object" || item === null) continue;
+      const record = item as Record<string, unknown>;
+      if (typeof record.id !== "string" || !Array.isArray(record.messages)) continue;
+      const messages = (record.messages as unknown[]).filter(
+        (message): message is ChatMessage =>
+          typeof message === "object" &&
+          message !== null &&
+          ((message as ChatMessage).role === "user" || (message as ChatMessage).role === "assistant") &&
+          typeof (message as ChatMessage).content === "string" &&
+          (message as ChatMessage).content.trim().length > 0,
+      );
+      if (messages.length === 0) continue;
+      sessions.push({
+        id: record.id,
+        title: typeof record.title === "string" && record.title ? record.title : messages[0].content.slice(0, 20),
+        updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+        messages: messages.map((message) => ({ ...message })),
+      });
+    }
+    return sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
+  } catch {
+    return [];
+  }
+}
+
+function persistSessions(sessions: ChatSession[]) {
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  } catch {
+    // 隐私模式或超额时存不进去就算了，不影响当前对话
+  }
+}
+
+function newSessionId(): string {
+  return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `s-${Date.now()}-${Math.random()}`;
+}
+
+/** 会话列表的时间标签：今天给时分，昨天标"昨天"，更早给月日 */
+function sessionTimeLabel(ts: number): string {
+  const date = new Date(ts);
+  const now = new Date();
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (sameDay(date, now)) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(date, yesterday)) return "昨天";
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
 
 function errorText(data: Record<string, unknown>): string {
   const detail = data.detail;
@@ -27,12 +106,26 @@ function errorText(data: Record<string, unknown>): string {
 }
 
 export function AssistantDock() {
+  const isAuthPage = useAuthPage();
   const [available, setAvailable] = useState(false);
   const [model, setModel] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
+  /** 查数提示：后端调工具查库期间显示"正在查询 xx…"，首个回答字出来即清掉 */
+  const [statusText, setStatusText] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /** 本地会话历史：只存这台设备的浏览器，抽屉里可切换/删除 */
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  /** 当前对话所属会话的 id：新对话先占一个空 id，聊出内容后才进历史列表 */
+  const [activeId, setActiveId] = useState(newSessionId);
+  /** 抽屉主体当前显示对话区还是历史列表 */
+  const [view, setView] = useState<"chat" | "history">("chat");
+  /** 打开抽屉时悬浮球上指针的位置：抽屉缩放动画从这个点长出来 */
+  const [originPoint, setOriginPoint] = useState<{ x: number; y: number } | null>(null);
+  /** 建议问题翻页：换一批循环展示 */
+  const [suggestPage, setSuggestPage] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,6 +141,33 @@ export function AssistantDock() {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, pending]);
+
+  // 启动时续上最近一次对话：刷新或重开浏览器后从上次聊到的地方继续
+  useEffect(() => {
+    const saved = loadSessions();
+    if (saved.length === 0) return;
+    setSessions(saved);
+    setActiveId(saved[0].id);
+    setMessages(saved[0].messages);
+  }, []);
+
+  // 回合结束后把当前对话落进本地会话历史；流式回答中不落，等回答收尾再写
+  useEffect(() => {
+    if (pending) return;
+    const meaningful = messages.filter((message) => message.content.trim());
+    if (meaningful.length === 0) return;
+    setSessions((prev) => {
+      const updated: ChatSession = {
+        id: activeId,
+        title: meaningful[0].content.slice(0, 20),
+        updatedAt: Date.now(),
+        messages: meaningful,
+      };
+      const next = [updated, ...prev.filter((session) => session.id !== activeId)].slice(0, MAX_SESSIONS);
+      persistSessions(next);
+      return next;
+    });
+  }, [messages, pending, activeId]);
 
   // 悬浮球可拖拽：位置存 localStorage，拖动超过阈值算拖拽、否则算点击
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -118,8 +238,58 @@ export function AssistantDock() {
         return current;
       });
     } else {
+      // 记下指针在悬浮球上的位置：抽屉的缩放动画从这个点长出来
+      setOriginPoint({ x: drag.startX, y: drag.startY });
       setOpen(true);
     }
+  }
+
+  /** 新建会话：旧对话已自动进本地历史，这里换一个 id 清出白纸；回答进行中不允许，避免半截回答挂到空会话上 */
+  function newChat() {
+    if (pending) return;
+    setActiveId(newSessionId());
+    setMessages([]);
+    setStatusText(null);
+    setInput("");
+    setSuggestPage(0);
+    setView("chat");
+    listRef.current?.scrollTo({ top: 0 });
+  }
+
+  /** 打开一条历史会话：内容回到对话区，接着问也行 */
+  function openSession(id: string) {
+    if (pending) return;
+    const session = sessions.find((item) => item.id === id);
+    if (!session) return;
+    setActiveId(id);
+    setMessages(session.messages);
+    setStatusText(null);
+    setInput("");
+    setSuggestPage(0);
+    setView("chat");
+    listRef.current?.scrollTo({ top: 0 });
+  }
+
+  /** 删掉一条本地会话；删的是正在看的这段对话就回到新会话 */
+  function removeSession(id: string) {
+    if (pending) return;
+    const next = sessions.filter((session) => session.id !== id);
+    setSessions(next);
+    persistSessions(next);
+    if (id === activeId) {
+      setActiveId(newSessionId());
+      setMessages([]);
+    }
+  }
+
+  /** 清空本地会话历史 */
+  function clearSessions() {
+    if (pending) return;
+    setSessions([]);
+    persistSessions([]);
+    setActiveId(newSessionId());
+    setMessages([]);
+    setView("chat");
   }
 
   if (!available) return null;
@@ -132,6 +302,7 @@ export function AssistantDock() {
     const history = messages.filter((message) => message.content.trim() && !message.error).slice(-6);
     setMessages((prev) => [...prev, { role: "user", content: text }, { role: "assistant", content: "" }]);
     setPending(true);
+    setStatusText(null);
     const appendReply = (chunk: string, isError = false) =>
       setMessages((prev) => {
         const next = [...prev];
@@ -165,14 +336,16 @@ export function AssistantDock() {
           for (const frame of frames) {
             const line = frame.trim();
             if (!line.startsWith("data:")) continue;
-            let payload: { delta?: string; error?: string };
+            let payload: { delta?: string; error?: string; status?: string };
             try {
-              payload = JSON.parse(line.slice(5).trim()) as { delta?: string; error?: string };
+              payload = JSON.parse(line.slice(5).trim()) as { delta?: string; error?: string; status?: string };
             } catch {
               continue; // 单帧损坏直接跳过，不影响其余内容
             }
+            if (payload.status) setStatusText(payload.status);
             if (payload.delta) {
               received = true;
+              setStatusText(null);
               appendReply(payload.delta);
             }
             if (payload.error) appendReply(`没答上来：${payload.error}`, true);
@@ -188,8 +361,30 @@ export function AssistantDock() {
       appendReply("网络不太顺畅，稍后再试试。", true);
     } finally {
       setPending(false);
+      setStatusText(null);
     }
   }
+
+  // 登录/首次设置页不出现智能助手悬浮球
+  if (isAuthPage) return null;
+
+  const suggestStart = (suggestPage * SUGGEST_BATCH_SIZE) % SUGGESTED_QUESTIONS.length;
+  const visibleSuggestions = Array.from(
+    { length: Math.min(SUGGEST_BATCH_SIZE, SUGGESTED_QUESTIONS.length) },
+    (_, index) => SUGGESTED_QUESTIONS[(suggestStart + index) % SUGGESTED_QUESTIONS.length],
+  );
+
+  // 抽屉缩放动画的原点：把悬浮球上指针的位置换算成抽屉内的百分比坐标，
+  // 让面板看起来是从猫球的位置长出来的；拖到左半屏时抽屉左停靠，换算跟着变
+  const leftDocked = Boolean(pos && pos.x < window.innerWidth / 2);
+  const drawerWidth = Math.min(380, window.innerWidth);
+  const drawerLeft = leftDocked ? 0 : window.innerWidth - drawerWidth;
+  const clampPercent = (value: number) => `${Math.min(100, Math.max(0, value))}%`;
+  const transformOrigin = originPoint
+    ? `${clampPercent(((originPoint.x - drawerLeft) / drawerWidth) * 100)} ${clampPercent((originPoint.y / window.innerHeight) * 100)}`
+    : leftDocked
+      ? "0% 100%"
+      : "100% 100%";
 
   return (
     <>
@@ -199,51 +394,108 @@ export function AssistantDock() {
         className={`ai-fab${pos ? " ai-fab-moved" : ""}`}
         style={pos ? { left: pos.x, top: pos.y } : undefined}
         aria-label="智能分析助手"
-        title="问一问"
+        title="问大橘"
         onPointerDown={onFabPointerDown}
         onPointerMove={onFabPointerMove}
         onPointerUp={onFabPointerUp}
       >
-        <svg
-          className="ai-fab-icon"
-          width="19"
-          height="19"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+        <svg width={42} height={42} viewBox="0 0 64 64" aria-hidden>
+          <DajuPeek shape="circle" />
         </svg>
       </button>
       {open && (
         <div
-          className={`ai-drawer${pending || messages.length > 0 ? " ai-drawer-tall" : ""}${pos && pos.x < window.innerWidth / 2 ? " ai-drawer-left" : ""}`}
+          className={`ai-drawer${leftDocked ? " ai-drawer-left" : ""}`}
+          style={{ transformOrigin }}
           role="dialog"
           aria-label="智能分析助手"
         >
           <div className="ai-drawer-head">
-            <span className="ai-orb" aria-hidden />
+            <span className="ai-drawer-avatar" aria-hidden>
+              <svg width={28} height={28} viewBox="0 0 64 64">
+                <DajuPeek shape="circle" />
+              </svg>
+            </span>
             <div className="ai-drawer-title">
-              <strong>智能分析助手</strong>
-              <span>{model ?? "基于站点、价格与访问数据回答"}</span>
+              <strong>大橘 · 智能分析助手</strong>
+              <span>{model ?? "盯价格、查渠道，随时问"}</span>
             </div>
-            <button type="button" className="ai-drawer-close" aria-label="收起" onClick={() => setOpen(false)}>
-              ✕
+            <button
+              type="button"
+              className="ai-drawer-btn"
+              aria-label={view === "history" ? "返回对话" : "历史会话"}
+              title={view === "history" ? "返回对话" : "历史会话"}
+              onClick={() => setView((current) => (current === "history" ? "chat" : "history"))}
+            >
+              <IconHistory size={15} />
+            </button>
+            <button
+              type="button"
+              className="ai-drawer-btn"
+              aria-label="新建会话"
+              title={pending ? "回答中，稍等一下" : "新建会话"}
+              disabled={pending}
+              onClick={newChat}
+            >
+              <IconPlus size={15} />
+            </button>
+            <button type="button" className="ai-drawer-btn" aria-label="收起" title="收起" onClick={() => setOpen(false)}>
+              <IconClose size={14} />
             </button>
           </div>
-          <div className="ai-drawer-list" ref={listRef}>
+          {view === "history" ? (
+            <div className="ai-drawer-list ai-history">
+              {sessions.length === 0 ? (
+                <div className="ai-history-empty">还没有历史会话，问大橘一句就有了。</div>
+              ) : (
+                <>
+                  <p className="ai-history-tip">会话只保存在这台设备上，清除浏览器数据会一并清掉。</p>
+                  {sessions.map((session) => (
+                    <div
+                      key={session.id}
+                      className={`ai-history-item${session.id === activeId ? " ai-history-active" : ""}`}
+                    >
+                      <button type="button" className="ai-history-open" onClick={() => openSession(session.id)}>
+                        <span className="ai-history-title">{session.title}</span>
+                        <span className="ai-history-time">{sessionTimeLabel(session.updatedAt)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="ai-history-del"
+                        aria-label="删除这条会话"
+                        title="删除这条会话"
+                        disabled={pending && session.id === activeId}
+                        onClick={() => removeSession(session.id)}
+                      >
+                        <IconClose size={12} />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="ai-history-clear" onClick={clearSessions}>
+                    清空全部历史
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="ai-drawer-list" ref={listRef}>
             {messages.length === 0 && (
               <div className="ai-suggest">
-                <p>可以从这些问题开始：</p>
-                {SUGGESTED_QUESTIONS.map((question) => (
+                <div className="ai-greet">
+                  <svg width={44} height={44} viewBox="0 0 64 64" aria-hidden>
+                    <DajuPeek shape="circle" />
+                  </svg>
+                  <p>喵，我是大橘，帮你盯价格。</p>
+                  <span>比价、看走势、查渠道状态，从这些问题开始：</span>
+                </div>
+                {visibleSuggestions.map((question) => (
                   <button key={question} type="button" onClick={() => void ask(question)}>
                     {question}
                   </button>
                 ))}
+                <button type="button" className="ai-suggest-more" onClick={() => setSuggestPage((page) => page + 1)}>
+                  🐾 换一批
+                </button>
               </div>
             )}
             {messages.map((message, index) => (
@@ -254,14 +506,23 @@ export function AssistantDock() {
                       <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
                     </div>
                   ) : pending && index === messages.length - 1 ? (
-                    <span className="ai-typing" aria-label="正在思考" />
+                    <span className="ai-typing-line">
+                      <span className="ai-paws" aria-hidden>
+                        <i>🐾</i>
+                        <i>🐾</i>
+                        <i>🐾</i>
+                      </span>
+                      {statusText ?? "大橘在想…"}
+                    </span>
                   ) : null
                 ) : (
                   message.content
                 )}
               </div>
             ))}
-          </div>
+            </div>
+          )}
+          {view === "chat" && (
           <form
             className="ai-drawer-input"
             onSubmit={(event) => {
@@ -271,7 +532,7 @@ export function AssistantDock() {
           >
             <input
               value={input}
-              placeholder="输入你的问题…"
+              placeholder="问问大橘：比价、走势、渠道状态…"
               onChange={(event) => setInput(event.target.value)}
               disabled={pending}
             />
@@ -279,6 +540,7 @@ export function AssistantDock() {
               发送
             </button>
           </form>
+          )}
         </div>
       )}
     </>
