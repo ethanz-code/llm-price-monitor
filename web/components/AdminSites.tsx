@@ -3,13 +3,14 @@
 /** 站点管理：列表、启停、编辑与删除；数据在浏览器侧拉取管理员接口。 */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { toast, Btn, Check, Empty, Switch, Skel, LoadingRows } from "./ui";
+import { toast, Btn, Check, Empty, Modal, Switch, Skel, LoadingRows } from "./ui";
 import { DajuSit } from "./DajuArt";
 import { DataTable, type DColumn } from "./DataTable";
 import { apiSend } from "@/lib/api";
 import { getSiteInfo } from "@/lib/sites";
 import { RiskLink } from "./RiskLink";
 import { SiteTestButton } from "./SiteTestButton";
+import { DiscoverModal } from "./DiscoverModal";
 import { ModelMultiSelect } from "./sites/MultiSelect";
 import { errorText } from "@/lib/api";
 import { SiteModal } from "./sites/SiteModal";
@@ -56,6 +57,8 @@ export function AdminSites() {
   const [multiSelect, setMultiSelect] = useState(false);
   // 配置速查默认收起：不打扰熟手，新手需要时一眼能找到
   const [guideOpen, setGuideOpen] = useState(false);
+  const [importChoice, setImportChoice] = useState<boolean | null>(null);
+  const [discoverOpen, setDiscoverOpen] = useState(false);
   // 通用监控模型（settings.monitor_models）：全部站点共用一份，null 表示还没加载完
   const [monitorModels, setMonitorModels] = useState<string[] | null>(null);
   // 模型自动更新的超期时限（settings.monitor_model_max_age_months，月）：null 表示还没加载完
@@ -348,7 +351,7 @@ export function AdminSites() {
                   width: 56,
                   padding: "3px 6px",
                   border: "1px solid var(--border-strong)",
-                  borderRadius: 6,
+                  borderRadius: 9999,
                   fontSize: 12,
                   textAlign: "center",
                   background: "var(--field-bg)",
@@ -361,6 +364,29 @@ export function AdminSites() {
           </div>
         </div>
       </div>
+      {/* 导入来源选择：文件 或 新站发现（发现清单收在弹窗里，不常驻页面） */}
+      <Modal open={importChoice !== null} onClose={() => setImportChoice(null)} title="导入站点" width={480}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <Btn variant="ghost" onClick={() => { setImportChoice(null); importInput.current?.click(); }}>
+            从文件导入（上传站点配置 JSON）
+          </Btn>
+          <Btn variant="ghost" onClick={() => { setImportChoice(null); setDiscoverOpen(true); }}>
+            从新站发现导入（探测公开导航源后勾选）
+          </Btn>
+        </div>
+      </Modal>
+
+      <DiscoverModal
+        open={discoverOpen}
+        onClose={() => setDiscoverOpen(false)}
+        onChanged={reloadSites}
+        onEditSite={(siteId) => {
+          setDiscoverOpen(false);
+          const site = (sites ?? []).find((row) => row.id === siteId);
+          if (site) setEditing({ config: site, isNew: false });
+          else void reloadSites();
+        }}
+      />
       <div
         className="panel"
         style={{ overflow: "hidden", borderBottom: "none", borderRadius: "8px 8px 0 0" }}
@@ -413,7 +439,7 @@ export function AdminSites() {
           )}
         </span>
         <span style={{ display: "inline-flex", gap: 10 }}>
-          <Btn size="sm" variant="ghost" onClick={() => importInput.current?.click()}>
+          <Btn size="sm" variant="ghost" onClick={() => setImportChoice(true)}>
             导入站点
           </Btn>
           <Btn

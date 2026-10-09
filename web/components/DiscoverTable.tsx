@@ -65,16 +65,21 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
         ),
     },
     {
-      title: "公开模型",
-      dataIndex: "models",
-      align: "right",
-      width: 96,
-      sorter: (a, b) => a.models - b.models,
-      render: (v: number) => (
-        <span className="mono num" style={{ fontWeight: 550 }}>
-          {v}
-        </span>
+      title: (
+        <>
+          价格接口
+          <span className="thead-unit thead-unit-block">探明情况</span>
+        </>
       ),
+      dataIndex: "pricing_state",
+      width: 96,
+      mobileHide: true,
+      render: (v: DiscoveryStation["pricing_state"], row) =>
+        v === "public" ? (
+          <span className="mono num">{row.models}</span>
+        ) : (
+          <span style={{ color: "var(--text-3)" }}>{v === "auth" ? "需登录" : "没有"}</span>
+        ),
     },
     {
       title: "简介",

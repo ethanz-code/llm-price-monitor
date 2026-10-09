@@ -1888,6 +1888,7 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .nav-inner {
+  position: relative;
   max-width: var(--page-max);
   margin-inline: auto;
   padding: 0 32px;
@@ -1923,19 +1924,19 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .nav-pill {
-  position: relative;
+  /* 相对 header 真居中：margin auto 只能在剩余空间居中，会被左 logo/右按钮的宽度差挤偏 */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 2px;
-  margin: 0 auto;
   padding: 4px;
-  border-radius: 8px;
+  border-radius: 9999px;
   background: color-mix(in srgb, var(--panel-2) 72%, transparent);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  transition:
-    background-color var(--dur-slow),
-    box-shadow var(--dur-slow);
 }
 
 /* 滑动选中指示器：独立白底 pill，路由切换时丝滑滑到新位置（Linear/AA 手法） */
@@ -1944,9 +1945,8 @@ html:not([data-theme="dark"]) .panel {
   top: 4px;
   bottom: 4px;
   left: 0;
-  border-radius: 4px;
+  border-radius: 9999px;
   background: var(--panel);
-  box-shadow: var(--shadow-pop);
   animation: nav-indicator-in 0.25s var(--ease);
   transition:
     transform 0.28s var(--ease),
@@ -1963,14 +1963,13 @@ html:not([data-theme="dark"]) .panel {
   position: relative;
   z-index: 1;
   padding: 6px 14px;
-  border-radius: 4px;
+  border-radius: 9999px;
   font-size: 13.5px;
   color: var(--text-2);
   text-decoration: none;
   white-space: nowrap;
   transition:
-    color var(--dur),
-    background-color var(--dur);
+    color var(--dur);
 }
 
 .nav-pill-item:hover {
@@ -1982,146 +1981,14 @@ html:not([data-theme="dark"]) .panel {
   font-weight: 550;
 }
 
-/* 全宽 mega 面板：铺满视口（两侧留边）、与 tabs 之间留间隙；hover 在 tabs 间移动时
-   面板保持展开、内容按方向左右滑切，不反复弹出收起（Stripe/Linear 手法）。
-   面板 portal 到 body，位置由 NavTabs 按 tabs 底缘实测注入 */
-.nav-mega {
-  position: fixed;
-  left: 20px;
-  right: 20px;
-  z-index: var(--z-pop);
-}
-
-/* 桥接 tabs 与面板之间的间隙：鼠标穿过不丢 hover */
-.nav-mega::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -14px;
-  height: 14px;
-}
-
-.nav-mega-card {
-  background: var(--panel);
-  border: var(--card-border);
-  border-radius: 14px;
-  padding: 20px 24px;
-  min-height: 216px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.16);
-  animation: nav-mega-in 0.22s var(--ease);
-}
-
-[data-theme="dark"] .nav-mega-card {
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-}
-
-.nav-mega.leaving .nav-mega-card {
-  animation: nav-mega-out 0.15s var(--ease) forwards;
-}
-
-@keyframes nav-mega-in {
-  from {
-    opacity: 0;
-    transform: translateY(-8px) scale(0.995);
-  }
-}
-
-@keyframes nav-mega-out {
-  to {
-    opacity: 0;
-    transform: translateY(-5px);
-  }
-}
-
-/* 内容随 hover 的 tab 左右滑切：方向由 tab 位置决定，面板本体不动 */
-.nav-mega-body {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 32px;
-  align-content: center;
-  min-height: 176px;
-  animation: nav-swap-right 0.24s var(--ease);
-}
-
-.nav-mega-body.dir-left {
-  animation-name: nav-swap-left;
-}
-
-@keyframes nav-swap-right {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-}
-
-@keyframes nav-swap-left {
-  from {
-    opacity: 0;
-    transform: translateX(-18px);
-  }
-}
-
-.nav-mega-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 15px 18px;
-  border-radius: 10px;
-  color: inherit;
-  text-decoration: none;
-  transition: background var(--dur) linear;
-}
-
-.nav-mega-entry:hover {
-  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
-}
-
-.nav-mega-entry-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  transition: color var(--dur);
-}
-
-.nav-mega-entry:hover .nav-mega-entry-title {
-  color: var(--accent-text);
-}
-
-.nav-mega-entry-desc {
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: var(--text-2);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .site-card::before,
-  .site-card::after {
-    transition: none;
-  }
-
-  .nav-pill-indicator,
-  .nav-pop,
-  .nav-mega-card,
-  .nav-mega-body {
-    animation: none;
-  }
-
-  .nav-pill-indicator {
-    transition: none;
-  }
-
-  .nav-mega.leaving .nav-mega-card {
-    opacity: 0;
-  }
-}
-
 /* 汉堡菜单仅移动端：提升特异性，避免被 AntD .ant-btn 的 display 覆盖 */
 .site-header .nav-inner .nav-mobile-menu {
   display: none;
 }
 
 .nav-actions {
+  /* tabs 绝对居中后不在文档流内，行动区靠 auto 边距推回右侧 */
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3132,13 +2999,13 @@ html:not([data-theme="dark"]) .panel {
   font-size: 14px;
 }
 
-/* mini 价格表：真实数据缩影，panel-2 底像一块小屏 */
+/* mini 价格表：真实数据缩影。嵌在描边大卡里，只做浅灰底不做自己的描边，
+   避免卡中卡双层框；底色 panel-2 掺 panel 减灰，行分隔交给内部发丝线 */
 .bento-visual {
   display: grid;
   gap: 0;
   padding: 14px 16px 12px;
-  background: var(--panel-2);
-  border: var(--card-border);
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
   border-radius: 10px;
   font-size: 12.5px;
 }
@@ -6273,18 +6140,12 @@ a.event-card {
   }
 
   .nav-pill-indicator,
-  .nav-pop,
-  .nav-mega-card,
-  .nav-mega-body {
+  .nav-pop {
     animation: none;
   }
 
   .nav-pill-indicator {
     transition: none;
-  }
-
-  .nav-mega.leaving .nav-mega-card {
-    opacity: 0;
   }
 }
 

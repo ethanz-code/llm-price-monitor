@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
 import type { DiscoveryData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
@@ -50,10 +51,10 @@ export default async function DiscoverPage() {
       {data && (
         <PageDigest
           items={[
-            { label: "可用中转站", value: formatCount(data.summary.available) },
+            { label: "在线候选站", value: formatCount(data.summary.online) },
+            { label: "价格接口公开", value: formatCount(data.summary.pricing_public) },
             { label: "已在监控", value: formatCount(data.summary.imported) },
-            { label: "待监控", value: formatCount(data.summary.available - data.summary.imported) },
-            { label: "需登录/失联", value: formatCount(data.summary.auth + data.summary.dead) },
+            { label: "失联", value: formatCount(data.summary.dead) },
           ]}
         />
       )}
@@ -62,6 +63,29 @@ export default async function DiscoverPage() {
         <SiteAlert title={alerts.discovery.title} detail="" fix={alerts.discovery.fix} />
       )}
       {data && data.stations.length > 0 && <DiscoverTable data={data} />}
+
+      {/* 发现的下一步：事件追踪入口。这些站接入监控后，价格与公告的变化都汇总在事件流里 */}
+      <div
+        style={{
+          marginTop: 28,
+          padding: "24px 28px",
+          background: "var(--panel)",
+          border: "var(--card-border)",
+          borderRadius: 12,
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "baseline",
+          gap: "6px 20px",
+        }}
+      >
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>事件追踪</h2>
+        <p style={{ margin: 0, fontSize: 13.5, color: "var(--text-2)", flex: 1, minWidth: 240 }}>
+          站点接入监控后，降价、涨价、新增与公告变化都汇总在事件流里，全部留档可回查。
+        </p>
+        <Link href="/history" style={{ fontSize: 13.5, color: "var(--accent-text)", textDecoration: "none", whiteSpace: "nowrap" }}>
+          进入事件追踪 →
+        </Link>
+      </div>
     </div>
   );
 }

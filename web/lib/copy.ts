@@ -13,175 +13,15 @@ export const site = {
     "哪个中转站价格更低、服务更稳？每条数据都附来源链接，点开就能核对。",
 };
 
-/** hover 大弹窗条目：真实页面/锚点直达（标题 + 一句话） */
-export interface NavPopoverEntry {
-  title: string;
-  desc: string;
-  href: string;
-}
-
-/** hover 大弹窗内容：一组直达条目 */
-export interface NavPopover {
-  entries: NavPopoverEntry[];
-}
-
 /** 顶部导航 */
 export const nav = {
   items: [
     { key: "/", label: "首页" },
-    { key: "/overview", label: "中转站定价" },
-    { key: "/calculator", label: "花费计算" },
-    { key: "/catalog", label: "厂商定价" },
-    { key: "/history", label: "事件追踪" },
-    { key: "/discover", label: "新站发现" },
+    { key: "/overview", label: "中转 Sites 数据" },
+    { key: "/catalog", label: "厂商数据" },
+    { key: "/discover", label: "发现" },
   ],
   adminLabel: "工作台",
-  /** 桌面主导航 hover 大弹窗：一句话说明 + 核心看点（全部为真实功能）；没配置的 tab 不出弹窗 */
-  popovers: {
-    "/": {
-      entries: [
-        {
-          title: "最新价格",
-          desc: "每个模型只留检测站点里的最低价一行",
-          href: "/#sec-latest",
-        },
-        {
-          title: "价格走势",
-          desc: "低价曲线按小时记录，可切换模型",
-          href: "/#sec-trend",
-        },
-        {
-          title: "检测中的站点",
-          desc: "可用率与延迟持续探测，异常置顶",
-          href: "/#sec-sites",
-        },
-        {
-          title: "常见问题",
-          desc: "标价与实付的差异、更新频率说明",
-          href: "/#sec-faq",
-        },
-      ],
-    },
-    "/overview": {
-      entries: [
-        {
-          title: "价目总览表",
-          desc: "全部站点的模型价格与折扣逐列对照",
-          href: "/overview",
-        },
-        {
-          title: "站点检测档案",
-          desc: "任一站点行进入，看可用率与延迟明细",
-          href: "/overview",
-        },
-        {
-          title: "模型榜单",
-          desc: "Artificial Analysis 智能指数速览",
-          href: "/rankings",
-        },
-      ],
-    },
-    "/calculator": {
-      entries: [
-        {
-          title: "花费计算器",
-          desc: "输入/输出/缓存命中三档分开估算",
-          href: "/calculator",
-        },
-        {
-          title: "厂商定价目录",
-          desc: "查官方单价做对照基准",
-          href: "/catalog",
-        },
-        {
-          title: "标价与实付的差异",
-          desc: "缓存命中率与计费口径的影响说明",
-          href: "/#sec-faq",
-        },
-      ],
-    },
-    "/catalog": {
-      entries: [
-        {
-          title: "官方定价目录",
-          desc: "国际价来自 models.dev 开源目录",
-          href: "/catalog",
-        },
-        {
-          title: "国内定价源",
-          desc: "国内厂商定价页逐家抓取",
-          href: "/catalog",
-        },
-        {
-          title: "模型榜单",
-          desc: "智能指数判断能力档位",
-          href: "/rankings",
-        },
-      ],
-    },
-    "/history": {
-      entries: [
-        {
-          title: "事件流",
-          desc: "降价/涨价/新增/公告分类徽章",
-          href: "/history",
-        },
-        {
-          title: "按站点与模型筛选",
-          desc: "定位某家站的全部变化",
-          href: "/history",
-        },
-        {
-          title: "公告留档回查",
-          desc: "历史公告版本随时翻看",
-          href: "/history",
-        },
-      ],
-    },
-    "/discover": {
-      entries: [
-        {
-          title: "新站发现",
-          desc: "四路来源聚合找站，去重合并",
-          href: "/discover",
-        },
-        {
-          title: "可导入清单",
-          desc: "探测可用性后生成，直接入库",
-          href: "/discover",
-        },
-        {
-          title: "提交站点接入",
-          desc: "填站点地址，核验通过后开始检测",
-          href: "/discover",
-        },
-      ],
-    },
-    "/admin": {
-      entries: [
-        {
-          title: "站点管理",
-          desc: "接入与采集配置",
-          href: "/admin/sites",
-        },
-        {
-          title: "采集任务",
-          desc: "手动触发与运行状态",
-          href: "/admin/tasks",
-        },
-        {
-          title: "厂商定价源",
-          desc: "国内折扣基准来源管理",
-          href: "/admin/pricing-sources",
-        },
-        {
-          title: "AI 抽取日志",
-          desc: "抽取轮次与数据质量",
-          href: "/admin/ai-logs",
-        },
-      ],
-    },
-  } as Record<string, NavPopover>,
   theme: {
     light: { label: "浅色", title: "浅色模式" },
     dark: { label: "深色", title: "深色模式" },
@@ -355,7 +195,10 @@ export const footer = {
   brandLine:
     "我们检测各家 API 中转站的价格、渠道状态和公告，数据都抓自各站点公开页面，仅供使用参考，不构成任何使用推荐。\n最后祝大家 Vibe Coding 之路畅通无阻，永远用到低价不降智模型，天天 Happy.",
   links: {
-    catalog: "厂商定价",
+    overview: "中转 Sites 数据",
+    calculator: "花费计算",
+    history: "事件追踪",
+    catalog: "厂商数据",
     feedback: "提建议",
     admin: "管理",
   },

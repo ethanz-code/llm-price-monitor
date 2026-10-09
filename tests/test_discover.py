@@ -113,8 +113,8 @@ def _cand(host: str) -> "object":
 
 def test_build_importable_excludes_existing_library_hosts():
     probed = [
-        {"name": "a", "url": "https://aihub365.cn", "sources": ["t"], "note": "", "new_api": True, "pricing_ok": True, "models": 5, "auth_required": False, "error": ""},
-        {"name": "b", "url": "https://fresh.example.com", "sources": ["t"], "note": "", "new_api": True, "pricing_ok": True, "models": 3, "auth_required": False, "error": ""},
+        {"name": "a", "url": "https://aihub365.cn", "sources": ["t"], "note": "", "new_api": True, "online": True, "pricing_ok": True, "models": 5, "auth_required": False, "error": ""},
+        {"name": "b", "url": "https://fresh.example.com", "sources": ["t"], "note": "", "new_api": True, "online": True, "pricing_ok": True, "models": 3, "auth_required": False, "error": ""},
     ]
     cands = {_cand("aihub365.cn").host: _cand("aihub365.cn"), _cand("fresh.example.com").host: _cand("fresh.example.com")}
     configs = build_importable(cands, probed, exclude_hosts={"aihub365.cn"})
@@ -157,7 +157,7 @@ def _write_candidates(out_dir: Path, *cands: Candidate) -> None:
 def _probed_row(url: str, *, ok: bool = True, models: int = 10) -> dict:
     return {
         "name": url, "url": url, "sources": [], "note": "",
-        "new_api": ok, "pricing_ok": ok, "models": models if ok else 0,
+        "new_api": ok, "online": ok, "pricing_ok": ok, "models": models if ok else 0,
         "auth_required": False, "error": "",
     }
 

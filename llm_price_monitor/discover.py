@@ -492,12 +492,16 @@ def classify_pricing(payload: object) -> tuple[int, bool]:
 
 
 async def probe_one(client: httpx.AsyncClient, cand: Candidate) -> dict:
+    """探测一个候选站。判「可用」的口径是站在线（公开接口响应正常）即可，
+    价格接口只是顺带探明：有没有、公开还是需登录、多少模型——供展示与导入参考，
+    不作为筛站门槛（价格接口不可用可以走网页模式或 AI 提取采集）。"""
     result: dict = {
         "name": cand.name,
         "url": cand.url,
         "sources": cand.sources,
         "note": cand.meta.get("status", ""),
         "new_api": False,
+        "online": False,
         "pricing_ok": False,
         "models": 0,
         "auth_required": False,
@@ -506,13 +510,16 @@ async def probe_one(client: httpx.AsyncClient, cand: Candidate) -> dict:
     try:
         status_resp = await client.get(f"{cand.url}/api/status")
         if status_resp.status_code == 200:
+            result["online"] = True
             payload = status_resp.json()
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, dict) and ("system_name" in data or "version" in data):
                 result["new_api"] = True
                 result["system_name"] = str(data.get("system_name") or "")
-    except Exception:
-        pass
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"[:120]
+    if not result["online"]:
+        return result
     try:
         pricing_resp = await client.get(f"{cand.url}/api/pricing")
         if pricing_resp.status_code in (401, 403):
@@ -521,7 +528,7 @@ async def probe_one(client: httpx.AsyncClient, cand: Candidate) -> dict:
             models, ok = classify_pricing(pricing_resp.json())
             result["models"], result["pricing_ok"] = models, ok
     except Exception as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"[:120]
+        result["error"] = result["error"] or f"{type(exc).__name__}: {exc}"[:120]
     return result
 
 
@@ -547,15 +554,17 @@ async def probe(candidates: list[Candidate], concurrency: int, timeout: float, p
 def build_importable(cands_by_host: dict[str, Candidate], probed: list[dict], exclude_hosts: set[str] | None = None) -> list[dict]:
     """探测通过的站点生成配置（默认停用，导入后在面板按批启用）。
 
-    exclude_hosts 是库内已有站点的归一化域名：候选池可能收录了你手动加过的站，
-    且池子按域名生成的 id 与手填 id 可能只差大小写，导入前必须排除防重复。
+    「通过」的口径是站在线即可——价格接口不可用的站照样能导（网页模式/AI 提取兜底），
+    排序时价格接口公开可用的排前面。exclude_hosts 是库内已有站点的归一化域名：
+    候选池可能收录了你手动加过的站，且池子按域名生成的 id 与手填 id 可能只差大小写，
+    导入前必须排除防重复。
     """
     excluded = {normalize_host(host) for host in (exclude_hosts or set())}
     taken: set[str] = set()
     configs: list[dict] = []
-    ranked = sorted(probed, key=lambda r: (not r["new_api"], -r["models"], r["url"]))
+    ranked = sorted(probed, key=lambda r: (not r["pricing_ok"], not r.get("online", False), -r["models"], r["url"]))
     for row in ranked:
-        if not row["pricing_ok"]:
+        if not row.get("online"):
             continue
         cand = cands_by_host[urlsplit(row["url"]).hostname or ""]
         if normalize_host(cand.host) in excluded:
@@ -637,6 +646,43 @@ def run_sweep(engine: str, panel: str, query: str | None, size: int) -> None:
     print(f"引擎返回 {len(candidates)} 条有效站点，合并去重后池子 {total}（新增 {added}）→ {OUT_DIR / 'candidates.json'}；跑 probe 检测价格接口。")
 
 
+async def refresh_online(concurrency: int = 16, timeout: float = 8.0, proxy: str | None = None) -> dict:
+    """管理台「刷新发现」任务体：拉默认源（zuiquanapi）更新候选池，只探测没测过在线的候选，
+    与上轮在线结果合并落盘三件套。返回统计给任务日志与前端提示。"""
+    fresh = await harvest(proxy, only=set(DEFAULT_SOURCES))
+    pool_total, pool_added = _merge_into_pool(fresh)
+
+    raw = json.loads((OUT_DIR / "candidates.json").read_text(encoding="utf-8"))
+    all_candidates = {cand.url: cand for cand in (Candidate(**item) for item in raw["candidates"])}
+    previous: list[dict] = []
+    probed_file = OUT_DIR / "probed.json"
+    if probed_file.exists():
+        try:
+            previous = json.loads(probed_file.read_text(encoding="utf-8"))["results"]
+        except Exception:
+            previous = []
+    known_online = {row["url"] for row in previous if row.get("online")}
+    todo = [cand for url, cand in all_candidates.items() if url not in known_online]
+    probed = await probe(todo, concurrency, timeout, proxy) if todo else []
+    merged = [row for row in previous if row.get("online")] + probed
+
+    importable = build_importable({cand.host: cand for cand in all_candidates.values()}, merged, exclude_hosts=set(existing_site_hosts()))
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    (OUT_DIR / "probed.json").write_text(
+        json.dumps({"generated_at": stamp, "results": merged}, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    (OUT_DIR / "importable.json").write_text(json.dumps(importable, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {
+        "pool": pool_total,
+        "pool_added": pool_added,
+        "probed_now": len(probed),
+        "online_now": len([r for r in probed if r.get("online")]),
+        "online_total": len(merged),
+        "importable": len(importable),
+    }
+
+
 PROBE_CANDIDATE_PROXIES = (
     # 本机常见代理端口（clash/mihomo 7890、clash verge 7897、surge 6152/6153、通用 1087/8118）
     "http://127.0.0.1:7890",
@@ -670,10 +716,10 @@ async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | No
         if not probed_file.exists():
             raise SystemExit("没有 probed.json，先跑一轮不带 --retry-failed 的 probe")
         previous = json.loads(probed_file.read_text(encoding="utf-8"))["results"]
-        failed_urls = {row["url"] for row in previous if not row["pricing_ok"]}
+        failed_urls = {row["url"] for row in previous if not row.get("online")}
         candidates = [cand for url, cand in all_candidates.items() if url in failed_urls]
-        stale_by_url = {row["url"]: row for row in previous if row["pricing_ok"]}
-        print(f"重测模式：上轮可用 {len(stale_by_url)} 个保留，重测失败/需登录 {len(candidates)} 个…")
+        stale_by_url = {row["url"]: row for row in previous if row.get("online")}
+        print(f"重测模式：上轮在线 {len(stale_by_url)} 个保留，重测失联 {len(candidates)} 个…")
     else:
         candidates = list(all_candidates.values())
         stale_by_url = {}
@@ -685,24 +731,23 @@ async def run_probe(take: int, concurrency: int, timeout: float, proxy: str | No
     print(f"开始探测 {len(candidates)} 个候选（并发 {concurrency}，超时 {timeout}s）…")
     started = time.monotonic()
     probed = await probe(candidates, concurrency, timeout, proxy)
-    ok = [r for r in probed if r["pricing_ok"]]
+    online = [r for r in probed if r["online"]]
     auth = [r for r in probed if r["auth_required"]]
-    new_api = [r for r in probed if r["new_api"]]
     print(
-        f"本轮完成（{time.monotonic() - started:.0f}s）：价格接口可用 {len(ok)}"
-        f"（其中 new-api 系 {len([r for r in ok if r['new_api']])}）"
-        f"、需登录 {len(auth)}、不可达/失败 {len(probed) - len(ok) - len(auth)}"
+        f"本轮完成（{time.monotonic() - started:.0f}s）：在线 {len(online)}"
+        f"（其中价格接口公开可用 {len([r for r in online if r['pricing_ok']])}、需登录 {len(auth)}）"
+        f"、失联/不可达 {len(probed) - len(online)}"
     )
     # 重测模式下与上轮已通过的合并落盘，importable 始终基于全量结果生成
     merged = list(stale_by_url.values()) + probed
-    recovered = len([r for r in probed if r["pricing_ok"]]) if retry_failed else 0
+    recovered = len([r for r in probed if r["online"]]) if retry_failed else 0
     if retry_failed:
-        print(f"重测捞回 {recovered} 个（累计可用 {len(stale_by_url) + recovered}）")
+        print(f"重测捞回 {recovered} 个（累计在线 {len(stale_by_url) + recovered}）")
 
     # --take 部分探测只预览：别拿 20 个站的结果覆盖全量 probed.json/importable.json
     if take > 0 and not retry_failed:
         print(f"部分探测只预览，不落盘；全量结果文件原样保留（{OUT_DIR / 'probed.json'}）")
-        for row in sorted(ok, key=lambda r: -r["models"])[:10]:
+        for row in sorted(online, key=lambda r: -r["models"])[:10]:
             print(f"  {urlsplit(row['url']).hostname:32} new-api={row['new_api']} 模型数={row['models']}")
         return
 
