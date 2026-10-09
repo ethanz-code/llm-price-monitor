@@ -1,4 +1,4 @@
-"""管理员命令行工具：重置管理员账号、整理存量站点配置、清理假变更事件。
+"""管理员命令行工具：重置管理员账号、整理存量站点配置、清理假变更事件、批量导入发现的站点。
 
 在仓库根目录运行（数据库路径 var/monitor.db 相对当前目录解析）：
 
@@ -7,11 +7,13 @@
     uv run price-admin tidy-sites             # 把库内站点配置整理成当前结构（瘦身＋认证收口）
     uv run price-admin prune-noop-events      # 预览：按当前指纹口径复判出"价格没变的变更"事件
     uv run price-admin prune-noop-events --apply  # 确认预览无误后真正删除这些假事件
+    uv run price-admin import-sites var/discovery/importable.json --take 30 --apply  # 批量导入（默认预览）
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import sys
 import time
@@ -96,6 +98,39 @@ def prune_noop_events(store: Store, apply: bool) -> None:
     print(f"已删除 {deleted} 条假变更事件。")
 
 
+def import_sites(file: str, apply: bool, take: int, enabled: bool, force: bool) -> None:
+    """批量导入 price-discover probe 产出的站点配置。
+
+    默认预览不写库；--apply 才真正 upsert。同 id 已存在的默认跳过（--force 覆盖），
+    默认导入为停用状态（--enabled 才启用），启用的节奏交给面板逐批把关。
+    """
+    configs = json.loads(Path(file).read_text(encoding="utf-8"))
+    if not isinstance(configs, list) or not all(isinstance(c, dict) and c.get("id") for c in configs):
+        sys.exit(f"{file} 不是站点配置数组（应由 price-discover probe 生成 importable.json）")
+    if take > 0:
+        configs = configs[:take]
+    store = Store(DB_PATH)
+    skipped, added = [], 0
+    for config in configs:
+        site_id = str(config["id"])
+        if store.get_site_config(site_id) is not None and not force:
+            skipped.append(site_id)
+            continue
+        if not apply:
+            continue
+        payload = dict(config)
+        payload["enabled"] = bool(enabled)
+        store.upsert_site(site_id, payload)
+        added += 1
+    mode = "已导入" if apply else "预览（未写库，加 --apply 执行）"
+    print(f"{mode}：待导入 {len(configs)} 条，跳过库内已存在 {len(skipped)} 条" + (f"：{'、'.join(skipped[:10])}{'…' if len(skipped) > 10 else ''}" if skipped else ""))
+    if apply:
+        print(f"新增 {added} 条，启用状态：{'开' if enabled else '关（在面板里逐批核对后启用）'}。")
+    else:
+        for config in configs[:5]:
+            print(f"  {config['id']}  {config.get('network', {}).get('url', '')}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="llm-price-monitor 管理员工具（在仓库根目录运行）")
     sub = parser.add_subparsers(dest="command")
@@ -105,12 +140,20 @@ def main() -> None:
     sub.add_parser("tidy-sites", help="把库内站点配置整理成当前结构（瘦身＋认证收口），改动直接写库")
     prune = sub.add_parser("prune-noop-events", help="按当前指纹口径复判并清理'价格没变的变更'事件（默认预览）")
     prune.add_argument("--apply", action="store_true", help="真正执行删除；省略时只预览")
+    imp = sub.add_parser("import-sites", help="批量导入 price-discover 产出的站点配置（默认预览）")
+    imp.add_argument("file", help="importable.json 路径（price-discover probe 生成）")
+    imp.add_argument("--take", type=int, default=0, help="只导入前 N 条（0=全部），默认停用状态导入")
+    imp.add_argument("--enabled", action="store_true", help="导入为启用状态（默认停用）")
+    imp.add_argument("--force", action="store_true", help="覆盖库内同 id 站点（默认跳过已存在）")
+    imp.add_argument("--apply", action="store_true", help="真正写库；省略时只预览")
     args = parser.parse_args()
 
     if args.command == "tidy-sites":
         tidy_sites()
     elif args.command == "prune-noop-events":
         prune_noop_events(Store(DB_PATH), apply=args.apply)
+    elif args.command == "import-sites":
+        import_sites(args.file, apply=args.apply, take=args.take, enabled=args.enabled, force=args.force)
     else:
         reset_admin(args)  # 不带子命令时保持原行为：重置管理员
 
