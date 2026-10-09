@@ -460,3 +460,16 @@ def test_prune_noop_events_preview_then_apply(tmp_path: Path, capsys):
 
     prune_noop_events(store, apply=True)
     assert "没有需要清理的事件" in capsys.readouterr().out
+
+
+def test_thinking_models_document_roundtrip(tmp_path: Path):
+    """思考受限模型名单（ai_thinking_models 文档）：增量去重写入，读回保持顺序供启动预载。"""
+    store = Store(tmp_path / "monitor.db")
+
+    assert store.get_thinking_models() == []
+
+    store.remember_thinking_model("glm-5.3")
+    store.remember_thinking_model("MiniMax-M2.5")
+    store.remember_thinking_model("glm-5.3")  # 重复学习不重复记录
+
+    assert store.get_thinking_models() == ["glm-5.3", "MiniMax-M2.5"]

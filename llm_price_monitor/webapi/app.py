@@ -237,6 +237,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ai.model_limits_loader = store.get_model_limits  # 已学 max_tokens 上限的存取：重启后不再白发降额 400
     ai.model_limits_saver = store.save_model_limit
     ai.load_model_limits()
+    ai.thinking_models_loader = store.get_thinking_models  # 思考受限模型的存取：重启后不再白发翻参 400
+    ai.thinking_models_saver = store.remember_thinking_model
+    ai.load_thinking_models()
     ensure_browser_ready(store)
     scheduler.start_scheduler(store)
 

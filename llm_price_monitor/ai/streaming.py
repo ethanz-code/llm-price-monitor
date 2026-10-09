@@ -19,7 +19,7 @@ from .pool import (
     _stream_thinking_attempts,
     _stream_transport_failure,
 )
-from .state import log_ai_request
+from .state import learn_thinking_required, log_ai_request
 
 def ai_stream_fallback(config: AIConfig, system: str, user: str, *, max_tokens: int | None = None, scene: str = "AI 请求", timeout: float | None = None) -> Iterator[str]:
     """流式对话的换模型版本：首个分片产出前模型报错则换下一个，已开始输出后出错原样抛出。
@@ -345,6 +345,7 @@ def ai_stream_messages_fallback(
                     notify_failure(model, "流式输出中断｜" + error_text)
                     raise AIExtractionError(f"流式输出中断：{error_text}") from exc
                 if "enable_thinking" in error_text and config.enable_thinking is False and enable_thinking is None:
+                    learn_thinking_required(model)
                     log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
                     continue
                 log_ai_request(scene=scene, model=model, status="fallback", duration_ms=duration_ms, error=error_text, prompt_excerpt=prompt_excerpt)

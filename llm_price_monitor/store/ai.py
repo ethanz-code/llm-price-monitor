@@ -103,6 +103,19 @@ class AIStoreMixin:
         doc[model] = limit
         self.set_document("ai_model_limits", doc)
 
+    def get_thinking_models(self) -> list[str]:
+        """已学到思考不可关的模型名（ai_thinking_models 文档）：AI 层启动预载，重启不重学。"""
+        doc = self.get_document("ai_thinking_models")
+        return [str(name) for name in doc if name] if isinstance(doc, list) else []
+
+    def remember_thinking_model(self, model: str) -> None:
+        """增量记录一个拒收 enable_thinking=false 的模型：学习事件极低频（每模型至多一次 400），不缓存。"""
+        doc = self.get_document("ai_thinking_models")
+        items = [str(name) for name in doc if name] if isinstance(doc, list) else []
+        if model not in items:
+            items.append(model)
+            self.set_document("ai_thinking_models", items)
+
     def _ai_log_retention_days(self, conn: sqlite3.Connection) -> int:
         """AI 日志保留天数：settings.retention_ai_log_days（保存期已校验不小于 1），未配置回默认 7。"""
         row = conn.execute("SELECT content FROM documents WHERE name = 'settings'").fetchone()

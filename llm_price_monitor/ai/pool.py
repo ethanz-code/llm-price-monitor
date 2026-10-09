@@ -12,10 +12,10 @@ import httpx
 
 import llm_price_monitor.ai as _ai
 
-from .api_format import _finish_reason, _usage_tokens, _with_token_budget, ai_content, ai_request
+from .api_format import _body_token_budget, _finish_reason, _usage_tokens, _with_token_budget, ai_content, ai_request
 from .client import ai_http_client
 from .errors import AIExtractionError, AIBudgetExhaustedError, _prompt_too_long, provider_error_detail
-from .state import MIN_USABLE_MAX_TOKENS, learn_model_limit, log_ai_request
+from .state import MIN_USABLE_MAX_TOKENS, learn_model_limit, learn_thinking_required, log_ai_request
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def _stream_status_failure(
     """
     error_text = provider_error_detail(exc.response)
     if thinking_flip_possible and enable_thinking is None and _thinking_restricted(exc.response):
+        learn_thinking_required(model)
         log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=prompt_excerpt)
         return "retry", error_text
     status = "fallback" if exc.response.status_code in _MODEL_FALLBACK_STATUSES else "error"
@@ -215,18 +216,28 @@ def request_with_model_fallback(
                                 # 响应根本不是 JSON（网关返回 HTML/空体等）与模型输出空正文是两类问题，
                                 # 原始解析异常必须进日志，否则换模型救不了也查不出方向
                                 detail = f"响应解析失败（{parse_error}）｜{detail}"
-                            truncated = completion_tokens is not None and completion_tokens >= request_limit
+                            body_budget = _body_token_budget(config.api_format, body, request_limit)
+                            truncated = completion_tokens is not None and completion_tokens >= body_budget
                             nonempty = bool(answer and answer.strip())
                             raw_tail = (answer or "")[-_RESPONSE_TAIL_CHARS:] or None
-                            if nonempty and truncated and not budget_tried:
+                            # 放大目标要钳到已学上限：qwen-turbo 类上限 16384 的模型放大到 64000 只会
+                            # 白付一次 400 再降回来；上限给截断留不出 1.5 倍余量时连放大都跳过——
+                            # JSON 截断差的是成千上万个 token，加几百个救不回来
+                            ceiling = _ai._MODEL_MAX_TOKENS_LIMIT.get(model)
+                            amplify_target = request_limit * 4 if ceiling is None else min(request_limit * 4, ceiling)
+                            if amplify_target < body_budget * 3 // 2:
+                                if ceiling is not None:
+                                    detail += f"｜已达该模型 max_tokens 上限 {ceiling}，放大无余量"
+                                amplify_target = 0
+                            if nonempty and truncated and amplify_target > 0 and not budget_tried:
                                 budget_tried = True
                                 log_ai_request(
                                     scene=scene, model=model, status="param_retry", duration_ms=duration_ms,
                                     prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens,
-                                    error=f"回复在 {request_limit} tokens 预算内被截断，已放大到 {request_limit * 4} 同模型重试｜" + detail,
+                                    error=f"回复在 {body_budget} tokens 预算内被截断，已放大到 {amplify_target} 同模型重试｜" + detail,
                                     prompt_excerpt=user, response_excerpt=raw_tail,
                                 )
-                                attempts.insert(0, _with_token_budget(config.api_format, body, request_limit * 4))
+                                attempts.insert(0, _with_token_budget(config.api_format, body, amplify_target))
                                 continue
                             if not (nonempty and truncated):
                                 # 空正文（思考烧光预算没产出）与没顶格的坏输出是模型自己的质量问题，短期不再选它；
@@ -252,13 +263,14 @@ def request_with_model_fallback(
                     duration_ms = int((time.monotonic() - started) * 1000)
                     error_text = provider_error_detail(exc.response)
                     if _thinking_restricted(exc.response) and body.get("enable_thinking") is False:
+                        learn_thinking_required(model)
                         log_ai_request(scene=scene, model=model, status="param_retry", duration_ms=duration_ms, error="模型要求开启思考，已自动开启并用同一模型重试｜" + error_text, prompt_excerpt=user)
                         continue
                     if exc.response.status_code == 401:
                         log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
                         raise
                     clamped = _max_tokens_range_error(exc.response)
-                    current_budget = body.get("max_tokens") or body.get("max_output_tokens") or (body.get("generationConfig") or {}).get("maxOutputTokens") or request_limit
+                    current_budget = _body_token_budget(config.api_format, body, request_limit)
                     if clamped is not None and current_budget > clamped and not token_clamped:
                         # max_tokens 超出模型上限（含截断放大后撞上限）：解析上限同模型降额重试一次并
                         # 持久化缓存；池里其他路径经 ai_request 直接按上限构造。token_clamped 防同类错死循环
@@ -270,6 +282,10 @@ def request_with_model_fallback(
                     if exc.response.status_code not in _MODEL_FALLBACK_STATUSES:
                         log_ai_request(scene=scene, model=model, status="error", duration_ms=duration_ms, error=error_text, prompt_excerpt=user)
                         raise
+                    if exc.response.status_code in (402, 403):
+                        # 配额/付费类失败（如 403 免费额度耗尽）：模型整体不可用而非单次抖动，
+                        # 短期冷却不再每轮白付一次 403；429 是分钟级限流，不冷却
+                        _ai._MODEL_COOLDOWN[model] = time.time() + _MODEL_COOLDOWN_TTL
                     # prompt 超出该模型上下文（如 7b 蒸馏模型只有 32k）按模型级故障换下一个，不冷却：
                     # 超长是请求属性不是模型质量问题；其余 400 类照旧换模型
                     detail = ("prompt 超出该模型上下文上限，换下一个模型｜" + error_text) if _prompt_too_long(exc) else error_text

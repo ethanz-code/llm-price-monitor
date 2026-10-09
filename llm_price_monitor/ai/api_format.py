@@ -52,6 +52,12 @@ def _with_token_budget(api_format: str, body: dict[str, Any], limit: int) -> dic
         return {**body, "generationConfig": {**body.get("generationConfig", {}), "maxOutputTokens": limit}}
     return body
 
+def _body_token_budget(api_format: str, body: dict[str, Any], fallback: int) -> int:
+    """请求体里实际发送的输出 token 预算：截断判定要与它比，而不是与 config.max_tokens 比
+    （预算可能已被学到的模型上限钳小，钳小后顶格输出依旧算截断）。"""
+    value = body.get("max_tokens") or body.get("max_output_tokens") or (body.get("generationConfig") or {}).get("maxOutputTokens")
+    return value if isinstance(value, int) and value > 0 else fallback
+
 def ai_endpoint(base_url: str) -> str:
     base = base_url.rstrip("/")
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
@@ -367,6 +373,9 @@ def ai_request(
         # DashScope 的 qwen3 系列默认开思考，思考会耗尽 max_tokens 导致正文为空，必须显式声明
         "enable_thinking": config.enable_thinking,
     }
+    if body["enable_thinking"] is False and model in _ai._MODEL_THINKING_REQUIRED:
+        # 该模型拒收 enable_thinking=false（从 400 报错里学过）：直接按 true 构造，省一次白发请求
+        body["enable_thinking"] = True
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     if tools:

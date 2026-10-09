@@ -12,6 +12,7 @@ from .api_format import ai_content, ai_request, json_content
 from .client import ai_http_client
 from .errors import AIExtractionError
 from .pool import _thinking_restricted
+from .state import learn_thinking_required
 
 def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = None, timeout: float | None = None) -> str:
     """发送一次最小对话请求验证 AI 配置连通性，返回模型回复文本；HTTP/网络错误原样抛出。
@@ -25,6 +26,7 @@ def ping_model(config: AIConfig, model: str, *, client: httpx.Client | None = No
     try:
         response = own_client.post(url, headers=headers, json=base_body, timeout=request_timeout)
         if _thinking_restricted(response) and base_body.get("enable_thinking") is False:
+            learn_thinking_required(model)
             response = own_client.post(url, headers=headers, json={**base_body, "enable_thinking": True}, timeout=request_timeout)
         response.raise_for_status()
     finally:

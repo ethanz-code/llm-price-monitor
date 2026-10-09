@@ -1318,6 +1318,38 @@ def test_ai_learned_limit_persists_and_preloads(monkeypatch):
     assert bodies == [16000, 8192]
 
 
+def test_ai_thinking_required_persists_and_preloads(monkeypatch):
+    """拒收 enable_thinking=false 的模型经 saver 落库、load_thinking_models 预载：重启后不再白发翻参 400。"""
+    import llm_price_monitor.ai as ai_mod
+
+    saved: list[str] = []
+    monkeypatch.setattr(ai_mod, "_MODEL_THINKING_REQUIRED", set())
+    monkeypatch.setattr(ai_mod, "thinking_models_saver", lambda model: saved.append(model))
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    flags: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        flags.append(body["enable_thinking"])
+        if body["enable_thinking"] is False:
+            return httpx.Response(400, json={"error": {"message": "The value of the enable_thinking parameter is restricted to True."}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    config = AIConfig(base_url="https://ai.test/v1", models=("think-only",), api_key="k", enable_thinking=False)
+    request_with_model_fallback(config, "", "hi", scene="测试", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert saved == ["think-only"]
+    assert flags == [False, True]  # 先白发一次 400，翻参后成功
+
+    # 重启等价：清内存后从库里预载，请求直接按 enable_thinking=true 构造，不再出现那次 400
+    monkeypatch.setattr(ai_mod, "_MODEL_THINKING_REQUIRED", set())
+    monkeypatch.setattr(ai_mod, "thinking_models_loader", lambda: saved)
+    ai_mod.load_thinking_models()
+    _, _, body = ai_mod.ai_request(config, "think-only", "", "hi")
+    assert body["enable_thinking"] is True
+    assert flags == [False, True]
+
+
 def test_ai_fallback_skips_models_with_too_small_limit(monkeypatch):
     """已学上限低于最低单批预算的模型按规格过小剔除；请求预算本身更小时不误剔。"""
     import llm_price_monitor.ai as ai_mod
@@ -2725,8 +2757,11 @@ def test_ai_ping_model_maps_http_errors_for_caller():
         ping_model(AIConfig(base_url="https://ai.test/v1"), "m-a", client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
-def test_ai_ping_model_retries_with_thinking_enabled_when_restricted():
+def test_ai_ping_model_retries_with_thinking_enabled_when_restricted(monkeypatch):
     """思考不可关的模型拒收 enable_thinking=false：连接测试翻参重试一次，返回模型回复。"""
+    import llm_price_monitor.ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "_MODEL_THINKING_REQUIRED", set())  # 学习态隔离，不受其他测试污染
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3948,6 +3983,105 @@ def test_budget_truncation_does_not_cool_model(monkeypatch):
         validate=json_content,
     )
     assert ai_mod._MODEL_COOLDOWN == {}
+
+
+def test_request_fallback_amplify_skips_when_learned_ceiling_too_close(monkeypatch):
+    """已学上限与当前预算几乎持平（如 qwen-turbo 上限 16384 对预算 16000）：放大救不了截断，
+    直接换模型，不再白发 64000 的 400 和注定再截断的降额重试。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {"qwen-turbo": 16384})
+    rows: list[dict] = []
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: rows.append(fields))
+    config = AIConfig(base_url="https://ai.test/v1", models=("qwen-turbo", "next-model"), api_key="k", max_tokens=16000)
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        sent.append(body)
+        content = '{"models": [{"model": "写一半' if body["model"] == "qwen-turbo" else json.dumps({"models": []})
+        usage = {"prompt_tokens": 1000, "completion_tokens": 16000, "total_tokens": 17000} if body["model"] == "qwen-turbo" else {"prompt_tokens": 10, "completion_tokens": 500, "total_tokens": 510}
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": "length"}], "usage": usage})
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "next-model"
+    assert [item["max_tokens"] for item in sent] == [16000, 16000]  # 没有第二次对 qwen-turbo 的请求
+    assert [(row["model"], row["status"]) for row in rows] == [("qwen-turbo", "fallback"), ("next-model", "ok")]
+    assert "放大无余量" in rows[0]["error"]
+    # 预算问题不是模型的错：不进冷却
+    assert "qwen-turbo" not in ai_mod._MODEL_COOLDOWN
+
+
+def test_request_fallback_detects_truncation_at_learned_ceiling(monkeypatch):
+    """预算已被学到的上限钳小后顶格输出依旧算截断：不再误判成质量失败进冷却。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    monkeypatch.setattr(ai_mod, "_MODEL_MAX_TOKENS_LIMIT", {"capped": 8192})
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("capped", "good-model"), api_key="k", max_tokens=16000)
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        sent.append(body)
+        content = '{"models": [{"model": "写一半' if body["model"] == "capped" else json.dumps({"models": []})
+        usage = {"prompt_tokens": 1000, "completion_tokens": 8192, "total_tokens": 9192} if body["model"] == "capped" else {"prompt_tokens": 10, "completion_tokens": 500, "total_tokens": 510}
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": "length"}], "usage": usage})
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert sent[0]["max_tokens"] == 8192  # 首次请求就被 ai_request 按学到的上限钳小
+    assert [item["model"] for item in sent] == ["capped", "good-model"]  # 顶格截断没触发放大重试
+    assert "capped" not in ai_mod._MODEL_COOLDOWN
+
+
+def test_request_fallback_quota_error_cools_model(monkeypatch):
+    """403 免费额度耗尽这类配额失败是模型整体不可用：短期冷却，后续调用不再每轮白付一次 403。"""
+    import llm_price_monitor.ai as ai_mod
+    from llm_price_monitor.ai import json_content
+
+    monkeypatch.setattr(ai_mod.random, "shuffle", lambda value: None)
+    monkeypatch.setattr(ai_mod, "_MODEL_COOLDOWN", {})
+    monkeypatch.setattr(ai_mod, "ai_log_hook", lambda **fields: None)
+    config = AIConfig(base_url="https://ai.test/v1", models=("quota-model", "good-model"), api_key="k")
+    called: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        called.append(body["model"])
+        if body["model"] == "quota-model":
+            return httpx.Response(403, json={"error": {"message": "Free quota exhausted. To continue accessing the model on a paid basis, please add funds."}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"models": []})}}]})
+
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert called == ["quota-model", "good-model"]
+    assert ai_mod._MODEL_COOLDOWN["quota-model"] > time.time()
+
+    # 冷却生效：下一轮直接从 good-model 开始，不再向 quota-model 白付 403
+    model, _ = request_with_model_fallback(
+        config, "", "",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        validate=json_content,
+    )
+    assert model == "good-model"
+    assert called == ["quota-model", "good-model", "good-model"]
 
 
 def test_fallback_log_saves_raw_response_tail(monkeypatch):

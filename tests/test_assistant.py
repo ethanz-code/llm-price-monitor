@@ -598,6 +598,7 @@ def test_ask_retries_same_model_when_thinking_restricted(workspace: Path, monkey
 
     real_client = httpx.Client
     monkeypatch.setattr(ai_module.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr(ai_module, "_MODEL_THINKING_REQUIRED", set())  # 学习态隔离：本测试自证翻参与学习
     client = TestClient(create_app(_config(workspace)))
     _enable_ai(client)
     store = client.app.state.store
@@ -608,12 +609,14 @@ def test_ask_retries_same_model_when_thinking_restricted(workspace: Path, monkey
     res = client.post("/api/assistant/ask", json={"question": "demo 站现在什么价？"})
     assert res.status_code == 200
     assert "demo-model" in res.json()["answer"]
-    # 分类门控与回答各触发一次"同模型翻参重试"：第一次 false 被 400 拒，翻 true 重发成功
-    assert [call["model"] for call in calls] == ["glm-5.3"] * 4
-    assert [call["enable_thinking"] for call in calls] == [False, True, False, True]
+    # 分类门控第一次 false 被 400 拒、翻 true 重发成功，并学会该模型思考不可关；
+    # 回答腿经 ai_request 直接按 true 构造，不再白发那次 400
+    assert [call["model"] for call in calls] == ["glm-5.3"] * 3
+    assert [call["enable_thinking"] for call in calls] == [False, True, True]
     # 翻参重试在日志里记为独立的 param_retry 状态，不与换模型重试（fallback）混淆
-    assert store.read_ai_logs(status="param_retry")[1] == 2
+    assert store.read_ai_logs(status="param_retry")[1] == 1
     assert store.read_ai_logs(status="fallback")[1] == 0
+    assert "glm-5.3" in ai_module._MODEL_THINKING_REQUIRED
 
 
 def test_ask_general_empty_answer_fails_without_consuming_quota(workspace: Path, monkeypatch):

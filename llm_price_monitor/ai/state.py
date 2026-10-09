@@ -13,6 +13,10 @@ import llm_price_monitor.ai as _ai
 # 进程内缓存各模型学到的 max_tokens 上限：ai_request 构造请求时直接按上限降额，不再白发一次 400
 _MODEL_MAX_TOKENS_LIMIT: dict[str, int] = {}
 
+# 进程内缓存思考不可关的模型名（拒收 enable_thinking=false 报 400 的）：ai_request 构造请求时
+# 直接翻成 true，不再每次调用白发一次 400 学习
+_MODEL_THINKING_REQUIRED: set[str] = set()
+
 # AI 请求日志钩子：由应用启动时注入 store.add_ai_log，ai.py 不反向依赖存储层
 AiLogHook = Any
 ai_log_hook: AiLogHook | None = None
@@ -21,6 +25,11 @@ ai_log_hook: AiLogHook | None = None
 # 落库后重启不丢，每个模型一生最多白发一次降额请求。loader 返回 {model: limit}，saver 增量写一条。
 model_limits_loader: Callable[[], dict[str, int]] | None = None
 model_limits_saver: Callable[[str, int], None] | None = None
+
+# 思考受限模型名单的持久化钩子：同样只能从 400 报错里学出来，落库后重启不丢，每个模型
+# 一生最多白发一次翻参请求。loader 返回模型名列表，saver 增量记一个。
+thinking_models_loader: Callable[[], list[str]] | None = None
+thinking_models_saver: Callable[[str], None] | None = None
 
 # 单批价格抽取 JSON 的最低输出预算（同 config.ai_from_raw 的最低校验值）：已学上限低于它的
 # 模型连一批都装不下，发起必然截断成坏 JSON，按"规格过小"从候选序里剔除。
@@ -61,3 +70,30 @@ def load_model_limits() -> None:
         return
     if isinstance(learned, dict):
         _ai._MODEL_MAX_TOKENS_LIMIT.update({str(k): int(v) for k, v in learned.items() if isinstance(v, int) and v > 0})
+
+
+def learn_thinking_required(model: str) -> None:
+    """记录拒收 enable_thinking=false 的模型：进内存缓存，落库钩子存在时同步持久化。"""
+    if model in _ai._MODEL_THINKING_REQUIRED:
+        return
+    _ai._MODEL_THINKING_REQUIRED.add(model)
+    saver = _ai.thinking_models_saver
+    if saver is None:
+        return
+    try:
+        saver(model)
+    except Exception:
+        pass  # 落库失败只损失重启后的预载，不影响本轮
+
+
+def load_thinking_models() -> None:
+    """启动预载：把库里学过的思考受限模型并入内存缓存，重启后不再白发翻参 400。"""
+    loader = _ai.thinking_models_loader
+    if loader is None:
+        return
+    try:
+        learned = loader()
+    except Exception:
+        return
+    if isinstance(learned, (list, set, tuple)):
+        _ai._MODEL_THINKING_REQUIRED.update(str(name) for name in learned if name)

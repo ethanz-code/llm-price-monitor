@@ -34,12 +34,17 @@ from .state import (
     MIN_USABLE_MAX_TOKENS,
     AiLogHook,
     _MODEL_MAX_TOKENS_LIMIT,
+    _MODEL_THINKING_REQUIRED,
     ai_log_hook,
     learn_model_limit,
+    learn_thinking_required,
     load_model_limits,
+    load_thinking_models,
     log_ai_request,
     model_limits_loader,
     model_limits_saver,
+    thinking_models_loader,
+    thinking_models_saver,
 )
 from .client import ai_http_client
 from .api_format import (
@@ -102,7 +107,9 @@ __all__ = [
     "fit_text",
     "infer_token_fields",
     "learn_model_limit",
+    "learn_thinking_required",
     "load_model_limits",
+    "load_thinking_models",
     "log_ai_request",
     "model_limits_loader",
     "model_limits_saver",
@@ -110,4 +117,6 @@ __all__ = [
     "ping_model",
     "provider_error_detail",
     "request_with_model_fallback",
+    "thinking_models_loader",
+    "thinking_models_saver",
 ]
