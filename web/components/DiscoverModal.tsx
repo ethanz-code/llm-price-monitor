@@ -49,6 +49,9 @@ export function DiscoverModal({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState("");
   const [importing, setImporting] = useState(false);
+  const [confirmIgnore, setConfirmIgnore] = useState<DiscoveryStation | null>(null);
+  const [ignoreReason, setIgnoreReason] = useState("");
+  const [ignoring, setIgnoring] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -64,6 +67,7 @@ export function DiscoverModal({
 
   const rows = useMemo<DiscoveryStation[]>(() => {
     let all = data?.stations ?? [];
+    // 标记「忽略」的行原地保留：灰显禁用不消失，「全部」页签里沉底便于统一恢复
     if (tab === "pending") all = all.filter((row) => !row.imported_id);
     if (tab === "imported") all = all.filter((row) => row.imported_id);
     if (!keyword.trim()) return all;
@@ -71,6 +75,21 @@ export function DiscoverModal({
       (row) => looseIncludes(row.host, keyword) || looseIncludes(row.name, keyword) || looseIncludes(briefOf(row), keyword),
     );
   }, [data, tab, keyword]);
+
+  /** 标记/取消「忽略」（可附一句原因）；已监控的站标记时连带从站点管理删除（含历史数据），需显式确认。 */
+  async function setIgnored(row: DiscoveryStation, ignored: boolean, alsoDelete: boolean, reason: string) {
+    try {
+      if (alsoDelete && row.imported_id) {
+        await apiSend(`/api/sites/${encodeURIComponent(row.imported_id)}?purge=true`, "DELETE");
+        onChanged();
+      }
+      await apiSend("/api/discovery/ignore", "POST", { hosts: [row.host], ignored, reason });
+      toast(ignored ? (alsoDelete ? "已忽略，站点连同历史数据一并删除" : "已忽略，可在「全部」页签恢复") : "已取消标记");
+      await load();
+    } catch (error) {
+      toast(`操作失败: ${errorText(error)}`);
+    }
+  }
 
   /** 后台探测任务快照：/api/tasks/{id} 的状态与日志，用来在弹窗里摆进度。 */
   type DiscoveryTask = { status: string; error?: string | null; logs?: { time: number; message: string; level: string }[] };
@@ -150,7 +169,11 @@ export function DiscoverModal({
       title: "",
       width: 44,
       render: (_v, row) =>
-        row.imported_id ? null : (
+        row.imported_id ? null : row.ignored ? (
+          <Check disabled checked={false} onChange={() => {}}>
+            {null}
+          </Check>
+        ) : (
           <Check
             checked={selected.has(row.host)}
             onChange={(next) =>
@@ -170,10 +193,17 @@ export function DiscoverModal({
       key: "host",
       title: "站点",
       // 大多数域名 ≤23 字符（mono 13px 约 180px）；更长的靠 ellipsis + title 兜底，宽度让给简介
-      width: 216,
+      width: 208,
       ellipsis: true,
       render: (_v, row) => (
-        <a href={row.url} target="_blank" rel="noreferrer" className="mono" title={row.url} style={{ color: "inherit", textDecorationColor: "var(--border-strong)" }}>
+        <a
+          href={row.url}
+          target="_blank"
+          rel="noreferrer"
+          className="mono"
+          title={row.ignored ? `${row.url}（已忽略）` : row.url}
+          style={{ color: row.ignored ? "var(--text-3)" : "inherit", textDecorationColor: "var(--border-strong)" }}
+        >
           {row.host}
         </a>
       ),
@@ -181,42 +211,63 @@ export function DiscoverModal({
     {
       key: "brief",
       title: "简介",
-      width: 300,
+      width: 280,
       ellipsis: true,
       mobileHide: true,
       render: (_v, row) => {
         const brief = briefOf(row);
-        return brief ? (
-          <span title={brief} style={{ color: "var(--text-2)", fontSize: 12.5 }}>
-            {brief}
-          </span>
-        ) : (
-          <span style={{ color: "var(--text-3)" }}>—</span>
+        const reason = row.ignored ? (row.ignore_reason || "").trim() : "";
+        if (!brief && !reason) return <span style={{ color: "var(--text-3)" }}>—</span>;
+        return (
+          <div style={{ display: "grid", gap: 2 }}>
+            {brief && (
+              <span title={brief} style={{ color: row.ignored ? "var(--text-3)" : "var(--text-2)", fontSize: 12.5 }}>
+                {brief}
+              </span>
+            )}
+            {reason && (
+              <span title={`忽略原因：${reason}`} style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+                忽略原因：{reason}
+              </span>
+            )}
+          </div>
         );
       },
     },
     {
       key: "uptime",
       title: <span title="监测源自家探测的近 7 天在线比例">可用率 7 天</span>,
-      width: 92,
+      width: 96,
       align: "right",
       render: (_v, row) =>
-        row.uptime_7d != null ? <span className="mono num">{row.uptime_7d}%</span> : <span style={{ color: "var(--text-3)" }}>—</span>,
+        row.uptime_7d != null ? (
+          <span className="mono num" style={row.ignored ? { color: "var(--text-3)" } : undefined}>{row.uptime_7d}%</span>
+        ) : (
+          <span style={{ color: "var(--text-3)" }}>—</span>
+        ),
     },
     {
       key: "avg",
       title: <span title="监测源自家探测的平均响应耗时">平均响应</span>,
-      width: 88,
+      width: 84,
       align: "right",
-      render: (_v, row) => <span className="mono num">{msLabel(row.avg_ms)}</span>,
+      mobileHide: true,
+      render: (_v, row) => (
+        <span className="mono num" style={row.ignored ? { color: "var(--text-3)" } : undefined}>{msLabel(row.avg_ms)}</span>
+      ),
     },
     {
       key: "last",
       title: <span title="监测源最近一次探测的响应耗时">最新响应</span>,
-      width: 88,
+      width: 84,
       align: "right",
+      mobileHide: true,
       render: (_v, row) => (
-        <span className="mono num" title={row.checked_at ? `检查于 ${row.checked_at}` : undefined}>
+        <span
+          className="mono num"
+          title={row.checked_at ? `检查于 ${row.checked_at}` : undefined}
+          style={row.ignored ? { color: "var(--text-3)" } : undefined}
+        >
           {msLabel(row.last_ms)}
         </span>
       ),
@@ -224,19 +275,49 @@ export function DiscoverModal({
     {
       key: "state",
       title: "操作",
-      width: 120,
-      render: (_v, row) =>
-        row.imported_id ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: "var(--accent-text)" }}>已监控</span>
-            <Btn variant="text" size="sm" onClick={() => onEditSite(row.imported_id!)}>
-              编辑
+      width: 170,
+      render: (_v, row) => {
+        if (row.ignored) {
+          return (
+            <Btn variant="text" size="sm" onClick={() => void setIgnored(row, false, false, "")}>
+              取消标记
             </Btn>
-          </span>
-        ) : (
-          // 未监控行不再复述状态（tab 筛选已表达），留空让勾选列当主角
-          <span style={{ color: "var(--text-3)" }}>—</span>
-        ),
+          );
+        }
+        if (row.imported_id) {
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "var(--accent-text)" }}>已监控</span>
+              <Btn variant="text" size="sm" onClick={() => onEditSite(row.imported_id!)}>
+                编辑
+              </Btn>
+              <Btn
+                variant="text"
+                size="sm"
+                onClick={() => {
+                  setIgnoreReason(row.ignore_reason || "");
+                  setConfirmIgnore(row);
+                }}
+                title="忽略该站，并从站点管理删除"
+              >
+                忽略
+              </Btn>
+            </span>
+          );
+        }
+        return (
+          <Btn
+            variant="text"
+            size="sm"
+            onClick={() => {
+              setIgnoreReason(row.ignore_reason || "");
+              setConfirmIgnore(row);
+            }}
+          >
+            忽略
+          </Btn>
+        );
+      },
     },
   ];
 
@@ -248,7 +329,7 @@ export function DiscoverModal({
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
           <div style={{ minWidth: 0, flex: "1 1 240px", fontSize: 12, color: "var(--text-3)" }}>
             {data
-              ? `已收录 ${data.summary.total} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（清单默认每日自动更新）`
+              ? `已收录 ${data.summary.total} · 已监控 ${data.summary.imported}${data.summary.ignored ? ` · 已忽略 ${data.summary.ignored}` : ""} · 数据时间 ${data.generated_at || "—"}（清单默认每日自动更新）`
               : "自动收录的中转站清单（站点与简介），勾选即可导入（默认停用）；清单默认每日自动更新"}
           </div>
           <Btn size="sm" loading={refreshing} onClick={refresh}>
@@ -315,9 +396,9 @@ export function DiscoverModal({
               rowKey="host"
               columns={columns}
               rows={rows}
-              scrollX={1000}
-              // 窄屏只剩 勾选44 + 站点216 + 操作120 ≈ 380
-              mobileScrollX={390}
+              scrollX={966}
+              // 窄屏只剩 勾选44 + 站点208 + 可用率96 + 操作170 ≈ 518
+              mobileScrollX={530}
               dense
               paginated
               defaultPageSize={20}
@@ -348,6 +429,55 @@ export function DiscoverModal({
           </div>
         </>
       )}
+
+      {/* 已监控站忽略 = 连带删除站点（含历史数据），破坏性操作单独确认 */}
+      <Modal
+        open={confirmIgnore !== null}
+        onClose={() => setConfirmIgnore(null)}
+        title={confirmIgnore?.imported_id ? "忽略并删除站点" : "忽略站点"}
+        width={460}
+      >
+        {confirmIgnore && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: "var(--text-2)" }}>
+              将把 <span className="mono">{confirmIgnore.host}</span> 标记为「忽略」——以后不再出现在待导入清单里。
+              {confirmIgnore.imported_id && (
+                <>
+                  同时从站点管理删除站点 <span className="mono">{confirmIgnore.imported_id}</span>，
+                  <span style={{ color: "var(--text-2)" }}>含历史价格与事件数据，不可恢复。</span>
+                </>
+              )}
+            </p>
+            <label style={{ display: "grid", gap: 6, fontSize: 12.5, color: "var(--text-2)" }}>
+              忽略原因（选填，会显示在灰显行上）
+              <Input
+                value={ignoreReason}
+                onChange={setIgnoreReason}
+                placeholder="例如：注册关闭 / 站方无数据 / 倍率拿不到（最长 200 字）"
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Btn size="sm" variant="text" onClick={() => setConfirmIgnore(null)}>
+                取消
+              </Btn>
+              <Btn
+                size="sm"
+                variant="primary"
+                loading={ignoring}
+                onClick={async () => {
+                  if (!confirmIgnore) return;
+                  setIgnoring(true);
+                  await setIgnored(confirmIgnore, true, Boolean(confirmIgnore.imported_id), ignoreReason);
+                  setIgnoring(false);
+                  setConfirmIgnore(null);
+                }}
+              >
+                {confirmIgnore.imported_id ? "忽略并删除" : "忽略"}
+              </Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
       </div>
     </Modal>
   );

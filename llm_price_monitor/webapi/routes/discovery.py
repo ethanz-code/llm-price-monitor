@@ -28,6 +28,26 @@ class DiscoveryImportBody(BaseModel):
     enabled: bool = False
 
 
+class DiscoveryIgnoreBody(BaseModel):
+    hosts: list[str] = Field(min_length=1, max_length=500, description="候选站域名列表（/api/discovery 的 host 字段）")
+    ignored: bool = Field(default=True, description="true=标记忽略，false=取消标记")
+    reason: str = Field(default="", max_length=200, description="忽略原因（可选；取消标记时忽略此字段）")
+
+
+def _ignored_doc(store: Store) -> tuple[set[str], dict[str, str]]:
+    """标记「忽略」的候选站（归一化域名集合 + 域名→原因），存 documents.discovery_ignored。"""
+    doc = store.get_document("discovery_ignored") or {}
+    hosts = doc.get("hosts") if isinstance(doc, dict) else None
+    reasons = doc.get("reasons") if isinstance(doc, dict) else None
+    host_set = {discover.normalize_host(str(host)) for host in hosts} if isinstance(hosts, list) else set()
+    reason_map = {str(k): str(v) for k, v in reasons.items()} if isinstance(reasons, dict) else {}
+    return host_set, reason_map
+
+
+def _save_ignored_doc(store: Store, hosts: set[str], reasons: dict[str, str]) -> None:
+    store.set_document("discovery_ignored", {"hosts": sorted(hosts), "reasons": reasons})
+
+
 def _load_discovery() -> tuple[list[dict[str, Any]], str]:
     """读候选池，返回（候选列表, 池子更新时间）。"""
     pool_file = discover.OUT_DIR / "candidates.json"
@@ -58,6 +78,7 @@ def build_router(store: Store) -> APIRouter:
     def discovery() -> dict[str, Any]:
         pool, generated_at = _load_discovery()
         in_library = library_hosts()
+        ignored_hosts, ignore_reasons = _ignored_doc(store)
 
         stations: list[dict[str, Any]] = []
         offline = 0
@@ -82,6 +103,8 @@ def build_router(store: Store) -> APIRouter:
                     "last_ms": meta.get("last_ms"),
                     "checked_at": meta.get("checked_at"),
                     "imported_id": in_library.get(discover.normalize_host(host)),
+                    "ignored": discover.normalize_host(host) in ignored_hosts,
+                    "ignore_reason": ignore_reasons.get(discover.normalize_host(host)) or None,
                 }
             )
         return {
@@ -90,17 +113,44 @@ def build_router(store: Store) -> APIRouter:
                 "total": len(stations) + offline,
                 "offline": offline,
                 "imported": len([s for s in stations if s["imported_id"]]),
+                "ignored": len([s for s in stations if s["ignored"]]),
             },
-            # 未监控的排前面（运营最关心），同组里可用率高的在前，没监控数据的垫底
+            # 未监控的排前面（运营最关心），同组里可用率高的在前，没监控数据的垫底；
+            # 标记「忽略」的沉到最底，不再进运营视线
             "stations": sorted(
                 stations,
                 key=lambda s: (
+                    bool(s["ignored"]),
                     bool(s["imported_id"]),
                     -(s["uptime_7d"] if isinstance(s["uptime_7d"], (int, float)) else -1),
                     s["host"],
                 ),
             ),
         }
+
+    @router.post("/api/discovery/ignore")
+    def discovery_ignore(body: DiscoveryIgnoreBody) -> dict[str, Any]:
+        """标记/取消「忽略」：标记后的候选站灰显沉底，不再出现在待导入清单；可附一句忽略原因。"""
+        ignored_hosts, ignore_reasons = _ignored_doc(store)
+        unknown: list[str] = []
+        pool_hosts = {discover.normalize_host(urlsplit(str(cand["url"])).hostname or "") for cand in _load_discovery()[0]}
+        reason = body.reason.strip()
+        for raw_host in body.hosts:
+            target = discover.normalize_host(raw_host)
+            if target not in pool_hosts:
+                unknown.append(raw_host)
+                continue
+            if body.ignored:
+                ignored_hosts.add(target)
+                if reason:
+                    ignore_reasons[target] = reason
+                else:
+                    ignore_reasons.pop(target, None)
+            else:
+                ignored_hosts.discard(target)
+                ignore_reasons.pop(target, None)
+        _save_ignored_doc(store, ignored_hosts, ignore_reasons)
+        return {"ignored": sorted(ignored_hosts), "unknown": unknown}
 
     @router.post("/api/discovery/refresh")
     def discovery_refresh() -> dict[str, str]:

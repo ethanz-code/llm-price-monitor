@@ -21,7 +21,12 @@ export default async function DiscoverPage() {
   let data: DiscoveryData | null = null;
   let notReady = false;
   try {
-    data = await apiGetOptional<DiscoveryData>("/api/discovery", PUBLIC_REVALIDATE);
+    const fetched = await apiGetOptional<DiscoveryData>("/api/discovery", PUBLIC_REVALIDATE);
+    if (fetched) {
+      // 「不看」是运营者的私人标记，不向访客展示；summary 照带原始计数
+      const stations = fetched.stations.filter((row) => !row.ignored);
+      data = stations.length === fetched.stations.length ? fetched : { ...fetched, stations };
+    }
   } catch {
     notReady = true;
   }

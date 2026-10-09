@@ -51,7 +51,7 @@ def test_discovery_lists_pool_with_monitor_stats(workspace: Path, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["generated_at"] == "2026-10-06 10:00:00"
-    assert body["summary"] == {"total": 3, "offline": 1, "imported": 1}
+    assert body["summary"] == {"total": 3, "offline": 1, "imported": 1, "ignored": 0}
     by_host = {row["host"]: row for row in body["stations"]}
     assert set(by_host) == {"demo.test", "plain.example.com"}
     demo = by_host["demo.test"]
@@ -93,6 +93,47 @@ def test_discovery_import_writes_minimal_disabled_sites(workspace: Path, monkeyp
     # 最小导入：只写站点入口地址与停用态，不预配公告（采集时自动推导 /api/status、/api/notice）
     assert "notice" not in config
     assert config["enabled"] is False
+
+
+def test_discovery_ignore_marks_sink_and_unmarks(workspace: Path, monkeypatch):
+    """标记「不看」：列表带 ignored 标记并沉底、不占 imported 计数；取消标记恢复原样。"""
+    monkeypatch.setattr(discover, "OUT_DIR", workspace / "discovery")
+    _write_pool(
+        workspace,
+        [
+            {"host": "plain.example.com", "url": "https://plain.example.com", "name": "裸收录", "sources": ["zuiquanapi"], "note": "", "meta": {}},
+            {"host": "meh.example.net", "url": "https://meh.example.net", "name": "不想要的站", "sources": ["zuiquanapi"], "note": "", "meta": {}},
+        ],
+    )
+    client = _admin_client(workspace, monkeypatch)
+    resp = client.post("/api/discovery/ignore", json={"hosts": ["meh.example.net"], "ignored": True, "reason": "注册关闭"})
+    assert resp.status_code == 200
+    assert resp.json()["ignored"] == ["meh.example.net"]
+
+    body = client.get("/api/discovery").json()
+    assert body["summary"]["ignored"] == 1
+    assert [row["ignored"] for row in body["stations"]] == [False, True]  # 标记的沉底
+    assert body["stations"][-1]["host"] == "meh.example.net"
+    assert body["stations"][-1]["ignore_reason"] == "注册关闭"
+
+    # 取消标记后恢复原排序与计数，原因一并清掉
+    assert client.post("/api/discovery/ignore", json={"hosts": ["meh.example.net"], "ignored": False}).status_code == 200
+    body = client.get("/api/discovery").json()
+    assert body["summary"]["ignored"] == 0
+    assert all(not row["ignored"] for row in body["stations"])
+    assert all(row["ignore_reason"] is None for row in body["stations"])
+
+    # 再标记不带原因：原因留空
+    client.post("/api/discovery/ignore", json={"hosts": ["meh.example.net"], "ignored": True})
+    body = client.get("/api/discovery").json()
+    assert body["stations"][-1]["ignored"] is True
+    assert body["stations"][-1]["ignore_reason"] is None
+
+    # 候选池里不存在的域名进 unknown，不误入标记清单
+    resp = client.post("/api/discovery/ignore", json={"hosts": ["ghost.example.io"], "ignored": True})
+    assert resp.json()["unknown"] == ["ghost.example.io"]
+    # ghost 不在候选池进 unknown；meh 的忽略不受影响
+    assert client.get("/api/discovery").json()["summary"]["ignored"] == 1
 
 
 def test_discovery_refresh_submits_task(workspace: Path, monkeypatch):

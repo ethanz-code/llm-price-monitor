@@ -209,11 +209,15 @@ export interface DiscoveryStation {
   last_ms: number | null;
   checked_at: string | null;
   imported_id: string | null;
+  /** 标记「忽略」：灰显沉底，不再进待导入清单 */
+  ignored: boolean;
+  /** 忽略原因（可选，标记时填写） */
+  ignore_reason: string | null;
 }
 
 export interface DiscoveryData {
   generated_at: string;
-  summary: { total: number; offline: number; imported: number };
+  summary: { total: number; offline: number; imported: number; ignored: number };
   stations: DiscoveryStation[];
 }
 
