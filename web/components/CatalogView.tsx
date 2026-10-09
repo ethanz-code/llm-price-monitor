@@ -97,7 +97,7 @@ export function CatalogView({
         ) : (
           view === "all" && (
             <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-              覆盖 models.dev 收录的全部渠道，比价参考用；折扣仍以官方定价为准。
+              覆盖各厂商收录的全部渠道条目，比价参考用；折扣仍以官方定价为准。
             </span>
           )
         )}
@@ -111,7 +111,7 @@ export function CatalogView({
           variant="ghost"
           loading={refreshing}
           onClick={refreshCatalog}
-          title="需管理员登录：重新抓取 models.dev 和全部厂商的定价，更新官方价与全量渠道价目录"
+          title="需管理员登录：重新抓取官方目录与全部厂商定价，更新官方价与全量渠道价目录"
         >
           立即同步
         </Btn>

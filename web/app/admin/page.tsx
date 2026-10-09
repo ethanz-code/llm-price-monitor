@@ -214,7 +214,7 @@ export default async function AdminOverviewPage() {
               <span className="guide-icon"><IconKey size={15} /></span>
               <div>
                 <div className="guide-title">2 · 配好 AI 提取与厂商定价</div>
-                <p>标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；厂商价来自 models.dev 目录，总览里的折扣列依赖它。</p>
+                <p>标准格式的站点在本地直接算价，AI 负责识别模型别名和特殊格式；厂商价来自官方价目录，总览里的折扣列依赖它。</p>
               </div>
               <Link href="/admin/settings" className="guide-link">去设置 →</Link>
             </li>

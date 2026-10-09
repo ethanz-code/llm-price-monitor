@@ -9,9 +9,9 @@ const PAGES = [
   { path: "/", name: "首页", note: "最新价格速览、检测站点健康度、模型榜单与常见问题" },
   { path: "/overview", name: "中转站定价", note: "全部检测站点与模型的价格对照总表，每条价格附来源链接" },
   { path: "/catalog", name: "厂商定价", note: "AI 厂商官方目录价与全量渠道比价，可切换视图" },
-  { path: "/rankings", name: "模型榜单", note: "第三方评测机构 Artificial Analysis 的智能指数排名" },
+  { path: "/rankings", name: "模型榜单", note: "第三方评测的智能指数排名" },
   { path: "/history", name: "事件追踪", note: "价格变动与站点公告的时间线事件流" },
-  { path: "/discover", name: "新站发现", note: "自动探测发现的中转站清单：公开价格接口可用性、模型数量与是否已纳入监控" },
+  { path: "/discover", name: "新站发现", note: "自动收录的中转站清单：站点简介、价格接口探测状态与是否已纳入监控" },
   { path: "/calculator", name: "花费计算", note: "按单价与用量估算花费，支持缓存命中率与厂商官方价对比" },
 ] as const;
 

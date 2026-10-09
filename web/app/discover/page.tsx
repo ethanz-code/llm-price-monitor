@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata = pageMetadata(
   "新站发现",
-  "自动发现的中转站清单：公开价格接口可用性、模型数量与监控状态，找新中转站先看这里。",
+  "自动收录的公开中转站清单：站点简介与价格接口探测状态，找新中转站先看这里。",
   "/discover",
 );
 
@@ -52,10 +52,11 @@ export default async function DiscoverPage() {
       {data && (
         <PageDigest
           items={[
-            { label: "在线候选站", value: formatCount(data.summary.online), title: "探测时站点接口可连通的中转站数量" },
-            { label: "价格接口公开", value: formatCount(data.summary.pricing_public), title: "价格页无需登录、能解析出模型数的中转站数量" },
+            { label: "已收录站点", value: formatCount(data.summary.total), title: "自动收录的中转站总数（含未探测）" },
+            { label: "已探测在线", value: formatCount(data.summary.online), title: "探测档案里站点接口可连通的数量" },
+            { label: "未探测", value: formatCount(data.summary.unprobed), title: "还没跑过探测的收录站，想探明价格接口用 CLI probe" },
             { label: "已在监控", value: formatCount(data.summary.imported), title: "已导入本站监控的站点数量" },
-            { label: "失联", value: formatCount(data.summary.dead), title: "历史累积的不可达站，只留计数，不占下方列表" },
+            { label: "失联", value: formatCount(data.summary.dead), title: "探测档案里不可达的站，只留计数，不占下方列表" },
           ]}
         />
       )}

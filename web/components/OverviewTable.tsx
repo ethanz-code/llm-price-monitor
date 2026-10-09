@@ -357,7 +357,7 @@ export function OverviewTable({
               return (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <span className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
-                    Artificial Analysis #{hit.rank}
+                    评测排名 #{hit.rank}
                     {hit.intelligence_index != null && ` · 智能指数 ${hit.intelligence_index}/100`}
                   </span>
                   <TermTip term="aa_rank" />

@@ -371,7 +371,7 @@ export function AdminSites() {
             从文件导入（上传站点配置 JSON）
           </Btn>
           <Btn variant="ghost" onClick={() => { setImportChoice(null); setDiscoverOpen(true); }}>
-            从新站发现导入（探测公开导航源后勾选）
+            从新站发现导入（自动收录清单勾选）
           </Btn>
         </div>
       </Modal>

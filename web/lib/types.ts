@@ -194,8 +194,9 @@ export interface RankingsData {
   models: RankingEntry[];
 }
 
-/** 新站发现：price-discover 探测「在线」的候选中转站（失联站只留计数）。
- *  pricing_state 是价格接口探明情况：public 公开可用 / auth 需登录 / none 没有——不作为筛站门槛。 */
+/** 新站发现：导航源收录的候选中转站清单（刷新只拉站点与简介）。
+ *  pricing_state 是价格接口探明情况（来自探测档案）：public 公开可用 / auth 需登录 / none 没有 /
+ *  unknown 还没探测过——只是展示字段，不作为筛站门槛。 */
 export interface DiscoveryStation {
   host: string;
   name: string;
@@ -203,7 +204,7 @@ export interface DiscoveryStation {
   sources: string[];
   new_api: boolean;
   models: number;
-  pricing_state: "public" | "auth" | "none";
+  pricing_state: "public" | "auth" | "none" | "unknown";
   system_name: string;
   description: string;
   imported_id: string | null;
@@ -211,7 +212,7 @@ export interface DiscoveryStation {
 
 export interface DiscoveryData {
   generated_at: string;
-  summary: { total: number; online: number; pricing_public: number; pricing_auth: number; dead: number; imported: number };
+  summary: { total: number; online: number; unprobed: number; pricing_public: number; pricing_auth: number; dead: number; imported: number };
   stations: DiscoveryStation[];
 }
 

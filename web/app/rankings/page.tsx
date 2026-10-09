@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata = pageMetadata(
   "模型榜单",
-  "Artificial Analysis 智能指数模型榜单，先看模型能力档位，再对照各站价格挑性价比。",
+  "模型智能指数榜单，先看模型能力档位，再对照各站价格挑性价比。",
   "/rankings",
 );
 

@@ -35,7 +35,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
     if (filter === "pending") all = all.filter((row) => !row.imported_id);
     if (!keyword.trim()) return all;
     return all.filter(
-      (row) => looseIncludes(row.host, keyword) || looseIncludes(row.name, keyword) || looseIncludes(row.sources.join(" "), keyword),
+      (row) => looseIncludes(row.host, keyword) || looseIncludes(row.name, keyword) || looseIncludes(row.description, keyword),
     );
   }, [data.stations, filter, keyword]);
 
@@ -79,7 +79,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
         v === "public" ? (
           <span className="mono num">{row.models}</span>
         ) : (
-          <span style={{ color: "var(--text-3)" }}>{v === "auth" ? "需登录" : "没有"}</span>
+          <span style={{ color: "var(--text-3)" }}>{v === "auth" ? "需登录" : v === "unknown" ? "未探测" : "没有"}</span>
         ),
     },
     {
@@ -106,23 +106,13 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
       mobileHide: true,
       render: (v: boolean) => (v ? "new-api" : <span style={{ color: "var(--text-3)" }}>其他</span>),
     },
-    {
-      title: "收录来源",
-      dataIndex: "sources",
-      width: 180,
-      ellipsis: true,
-      mobileHide: true,
-      render: (v: string[]) => (
-        <span style={{ color: "var(--text-2)", fontSize: 13 }}>{v.join("、")}</span>
-      ),
-    },
   ];
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
         <Input
-          placeholder="搜索站点域名、名称或来源"
+          placeholder="搜索站点域名、名称或简介"
           style={{ flex: "1 1 260px", maxWidth: "min(420px, 100%)" }}
           value={keyword}
           onChange={setKeyword}
@@ -154,7 +144,7 @@ export function DiscoverTable({ data }: { data: DiscoveryData }) {
           })}
         </div>
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 自动探测公开导航源；「公开」= 价格页无需登录，失联站只留计数不占列表
+          数据时间 <span className="mono">{data.generated_at || "—"}</span> · 「公开」= 价格页无需登录，未探测与失联站不占列表
         </span>
       </div>
       <div className="panel rise-in" style={{ overflow: "hidden" }}>

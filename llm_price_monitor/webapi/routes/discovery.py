@@ -1,10 +1,13 @@
 """站点发现端点：把 price-discover 的产出展示成「新站发现」，并提供管理操作。
 
-- GET /api/discovery（公开访客接口）：读 var/discovery/probed.json，列出「在线」的候选站
-  （价格接口只是展示字段：公开可用/需登录/没有，不作为筛选门槛），按归一化域名标注
-  「已监控/未监控」，失联站只留计数。旧数据没有 online 字段时回退按 pricing_ok 判在线。
-- POST /api/discovery/refresh（管理员）：后台任务拉 zuiquanapi 源 + 探测没测过的候选。
-- POST /api/discovery/import（管理员）：把勾选的候选站写入站点库（默认停用）。
+- GET /api/discovery（公开访客接口）：以候选池（var/discovery/candidates.json，导航源收录的
+  站点与简介）为主表，探测档案（probed.json，只来自 CLI probe）按 URL 联表补充价格接口
+  状态——没探过的标 unknown，探过但失联的不进列表只留计数。价格接口只是展示字段，
+  不作为筛选门槛。
+- POST /api/discovery/refresh（管理员）：后台任务拉 zuiquanapi 源合并候选池，只拿站点与
+  简介不探测，秒级完成。
+- POST /api/discovery/import（管理员）：把勾选的候选站写入站点库（默认停用，只写站点
+  入口地址；公告等采集细节启用前在编辑里配，公告地址缺省时采集会自动推导）。
 """
 from __future__ import annotations
 
@@ -30,77 +33,91 @@ def _row_online(row: dict[str, Any]) -> bool:
     return bool(row.get("online", row.get("pricing_ok")))
 
 
-def _load_discovery() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """读探测明细与候选池，返回（probed 载荷, 池子按 host 索引）。"""
-    probed_file = discover.OUT_DIR / "probed.json"
+def _load_discovery() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], str]:
+    """读候选池与探测档案，返回（候选列表, 档案按 URL 索引, 池子更新时间）；档案缺失按从未探测处理。"""
     pool_file = discover.OUT_DIR / "candidates.json"
-    if not probed_file.exists():
-        raise HTTPException(status_code=404, detail="还没跑过站点发现，点「刷新发现」生成数据")
+    if not pool_file.exists():
+        raise HTTPException(status_code=404, detail="还没跑过站点发现，点「刷新发现」拉取站点清单")
     try:
-        payload = json.loads(probed_file.read_text(encoding="utf-8"))
-        pool = json.loads(pool_file.read_text(encoding="utf-8"))["candidates"] if pool_file.exists() else []
+        payload = json.loads(pool_file.read_text(encoding="utf-8"))
+        pool = [cand for cand in payload.get("candidates") or [] if isinstance(cand, dict) and cand.get("url")]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"发现数据文件损坏，重新刷新即可：{exc}") from exc
-    by_host = {cand.get("host"): cand for cand in pool if cand.get("host")}
-    return payload, by_host
+    generated_at = str(payload.get("generated_at") or "")
+    archive: dict[str, dict[str, Any]] = {}
+    probed_file = discover.OUT_DIR / "probed.json"
+    if probed_file.exists():
+        try:
+            rows = json.loads(probed_file.read_text(encoding="utf-8")).get("results") or []
+            archive = {str(row.get("url") or ""): row for row in rows if isinstance(row, dict) and row.get("url")}
+        except Exception:
+            archive = {}  # 档案损坏不拦展示：按全部未探测处理，重跑 CLI probe 可重建
+    return pool, archive, generated_at
 
 
 def build_router(store: Store) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/discovery")
-    def discovery() -> dict[str, Any]:
-        payload, pool_by_host = _load_discovery()
-        # 入库比对直接用本服务的 store（测试隔离友好），口径与 discover.normalize_host 一致；
-        # 站点配置兼容新结构 network.url 与存量 model_list_url 两种字段
-        in_library: dict[str, str] = {}
+    def library_hosts() -> dict[str, str]:
+        """库内站点：归一化域名 → 站点 id。配置兼容新结构 network.url 与存量 model_list_url。"""
+        hosts: dict[str, str] = {}
         for config in store.list_site_configs():
             raw_url = config.get("network", {}).get("url") if isinstance(config.get("network"), dict) else None
             host = urlsplit(str(raw_url or config.get("model_list_url") or "")).hostname or ""
             if host:
-                in_library[discover.normalize_host(host)] = str(config.get("id") or "")
+                hosts[discover.normalize_host(host)] = str(config.get("id") or "")
+        return hosts
 
-        # 站点简介来自候选池（导航站收录的描述），按 URL 联表
-        descriptions: dict[str, str] = {}
-        for cand in pool_by_host.values():
-            desc = str((cand.get("meta") or {}).get("description") or "").strip()
-            if desc and cand.get("url"):
-                descriptions[str(cand["url"])] = desc
+    @router.get("/api/discovery")
+    def discovery() -> dict[str, Any]:
+        pool, archive, generated_at = _load_discovery()
+        in_library = library_hosts()
 
         stations: list[dict[str, Any]] = []
-        dead = 0
-        for row in payload["results"]:
-            if not _row_online(row):
-                dead += 1
-                continue
-            url = str(row.get("url") or "")
+        online = dead = 0
+        for cand in pool:
+            url = str(cand["url"])
             host = urlsplit(url).hostname or ""
+            if not host:
+                continue
+            archive_row = archive.get(url)
+            if archive_row is None:
+                probe = {}  # 没探过：探测字段全部留空，pricing_state 标 unknown
+            elif _row_online(archive_row):
+                online += 1  # 探过且在线：展示探测结果
+                probe = archive_row
+            else:
+                dead += 1  # 探过但失联：不进列表只留计数
+                continue
+            meta = cand.get("meta") or {}
             stations.append(
                 {
                     "host": host,
-                    "name": row.get("name") or "",
+                    "name": str(cand.get("name") or ""),
                     "url": url,
-                    "sources": row.get("sources") or [],
-                    "new_api": bool(row.get("new_api")),
-                    "models": int(row.get("models") or 0),
-                    "pricing_state": "auth" if row.get("auth_required") else ("public" if row.get("pricing_ok") else "none"),
-                    "system_name": str(row.get("system_name") or ""),
-                    "description": descriptions.get(url, ""),
+                    "sources": cand.get("sources") or [],
+                    "new_api": bool(probe.get("new_api")),
+                    "models": int(probe.get("models") or 0),
+                    "pricing_state": "unknown"
+                    if archive_row is None
+                    else ("auth" if archive_row.get("auth_required") else ("public" if archive_row.get("pricing_ok") else "none")),
+                    "system_name": str(probe.get("system_name") or ""),
+                    "description": str(meta.get("description") or "").strip(),
                     "imported_id": in_library.get(discover.normalize_host(host)),
                 }
             )
-        online = len(stations)
         return {
-            "generated_at": payload.get("generated_at", ""),
+            "generated_at": generated_at,
             "summary": {
-                "total": dead + online,
+                "total": len(stations) + dead,
                 "online": online,
+                "unprobed": len([s for s in stations if s["pricing_state"] == "unknown"]),
                 "pricing_public": len([s for s in stations if s["pricing_state"] == "public"]),
                 "pricing_auth": len([s for s in stations if s["pricing_state"] == "auth"]),
                 "dead": dead,
                 "imported": len([s for s in stations if s["imported_id"]]),
             },
-            # 未监控的排前面（运营最关心），同组里模型多的在前
+            # 未监控的排前面（运营最关心），同组里探明模型多的在前
             "stations": sorted(stations, key=lambda s: (bool(s["imported_id"]), -s["models"], s["host"])),
         }
 
@@ -114,20 +131,9 @@ def build_router(store: Store) -> APIRouter:
 
     @router.post("/api/discovery/import")
     def discovery_import(body: DiscoveryImportBody) -> dict[str, Any]:
-        payload, pool_by_host = _load_discovery()
-        # 探测明细按 host 索引：导入时把已知的接口情报一并写进配置（new-api 系公告接口用 parse=status）
-        probed_by_host: dict[str, dict[str, Any]] = {}
-        for row in payload["results"]:
-            if _row_online(row):
-                probed_by_host[urlsplit(str(row.get("url") or "")).hostname or ""] = row
-        # 与 GET 同口径：从本服务 store 建归一化域名 → 站点 id 映射（CLI 版 existing_site_hosts
-        # 读固定路径，服务/测试环境库不在那）
-        in_library: dict[str, str] = {}
-        for config in store.list_site_configs():
-            raw_url = config.get("network", {}).get("url") if isinstance(config.get("network"), dict) else None
-            host = urlsplit(str(raw_url or config.get("model_list_url") or "")).hostname or ""
-            if host:
-                in_library[discover.normalize_host(host)] = str(config.get("id") or "")
+        pool, _, _ = _load_discovery()
+        pool_by_host: dict[str, dict[str, Any]] = {urlsplit(str(cand["url"])).hostname or "": cand for cand in pool}
+        in_library = library_hosts()
         taken: set[str] = set()
         imported: list[str] = []
         skipped: list[str] = []
@@ -143,19 +149,15 @@ def build_router(store: Store) -> APIRouter:
             if cand is None:
                 missing.append(raw_host)
                 continue
-            origin = str(cand.get("url") or f"https://{raw_host}").rstrip("/")
+            origin = str(cand["url"]).rstrip("/")
             site_id = discover.host_to_id(urlsplit(origin).hostname or raw_host, taken)
-            probed = probed_by_host.get(urlsplit(origin).hostname or "")
-            notice: dict[str, Any] = {"url": f"{origin}/api/status"}
-            if probed and probed.get("new_api"):
-                # new-api 的 /api/status 自带 announcements（parse=status），导入即配好公告采集
-                notice["parse"] = "status"
+            # 最小导入：只登记站点入口地址（standard 采集的必填项）与停用态；
+            # 公告地址不写，采集时自动按 站点/api/status、/api/notice 推导
             store.upsert_site(
                 site_id,
                 {
                     "id": site_id,
                     "network": {"url": f"{origin}/api/pricing"},
-                    "notice": notice,
                     "enabled": bool(body.enabled),
                 },
             )

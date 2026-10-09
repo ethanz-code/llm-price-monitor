@@ -202,7 +202,9 @@ export function DiscoverModal({
             公开 · <span className="mono num">{row.models}</span> 模型
           </span>
         ) : (
-          <span style={{ color: "var(--text-3)" }}>{row.pricing_state === "auth" ? "需登录" : "没有"}</span>
+          <span style={{ color: "var(--text-3)" }}>
+            {row.pricing_state === "auth" ? "需登录" : row.pricing_state === "unknown" ? "未探测" : "没有"}
+          </span>
         ),
     },
     {
@@ -232,8 +234,8 @@ export function DiscoverModal({
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
           <div style={{ minWidth: 0, flex: "1 1 240px", fontSize: 12, color: "var(--text-3)" }}>
             {data
-              ? `在线候选 ${data.summary.online} · 价格接口公开 ${data.summary.pricing_public} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（默认每日自动刷新，也可点右侧手动探）`
-              : "从公开导航源发现中转站，探测在线后可直接勾选导入（默认停用）；数据默认每日自动刷新"}
+              ? `已收录 ${data.summary.total} · 已探测在线 ${data.summary.online} · 已监控 ${data.summary.imported} · 数据时间 ${data.generated_at || "—"}（清单默认每日自动更新）`
+              : "自动收录的中转站清单（站点与简介），勾选即可导入（默认停用）；清单默认每日自动更新"}
           </div>
           <Btn size="sm" loading={refreshing} onClick={refresh}>
             刷新发现
@@ -309,7 +311,7 @@ export function DiscoverModal({
                 <Empty
                   icon={<DajuSit width={30} />}
                   title={tab === "pending" ? "没有待导入的新站" : "没有匹配的站点"}
-                  description={tab === "pending" ? "点右上角「刷新发现」探测一批新的候选站点。" : "换个筛选或关键词试试。"}
+                  description={tab === "pending" ? "点右上角「刷新发现」拉取最新站点清单。" : "换个筛选或关键词试试。"}
                 />
               }
             />

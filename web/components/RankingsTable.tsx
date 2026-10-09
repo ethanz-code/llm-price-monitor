@@ -160,16 +160,7 @@ export function RankingsTable({ data }: { data: RankingsData | null }) {
       <div className="panel" style={{ padding: "32px 28px", textAlign: "center" }}>
         <div style={{ fontSize: 15, fontWeight: 550, marginBottom: 8 }}>模型榜单还没生成</div>
         <p style={{ color: "var(--text-2)", fontSize: 13.5, lineHeight: 1.8, margin: "0 auto", maxWidth: 520 }}>
-          榜单来自第三方评测机构{" "}
-          <a
-            href="https://artificialanalysis.ai/leaderboards/models"
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: "var(--accent-text)" }}
-          >
-            Artificial Analysis
-          </a>
-          ，每天自动更新一次；着急的话，登录后点下面的按钮立刻抓一次。
+          榜单收录第三方评测的智能指数排名，每天自动更新一次；着急的话，登录后点下面的按钮立刻抓一次。
         </p>
         <div style={{ marginTop: 16 }}>
           <Btn variant="primary" loading={refreshing} onClick={refreshRankings}>
@@ -191,10 +182,7 @@ export function RankingsTable({ data }: { data: RankingsData | null }) {
           prefix={<IconSearch size={14} />}
         />
         <span style={{ color: "var(--text-2)", fontSize: 13 }}>
-          数据时间 <span className="mono" title={data.generated_at_iso}>{formatIsoMinute(data.generated_at_iso)}</span> · 来自{" "}
-          <a href={data.source_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
-            artificialanalysis.ai
-          </a>
+          数据时间 <span className="mono" title={data.generated_at_iso}>{formatIsoMinute(data.generated_at_iso)}</span> · 第三方评测口径，非本站评测
         </span>
       </div>
       <div className="panel rise-in" style={{ overflow: "hidden" }}>

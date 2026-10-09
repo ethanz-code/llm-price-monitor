@@ -23,7 +23,6 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -647,60 +646,16 @@ def run_sweep(engine: str, panel: str, query: str | None, size: int) -> None:
     print(f"引擎返回 {len(candidates)} 条有效站点，合并去重后池子 {total}（新增 {added}）→ {OUT_DIR / 'candidates.json'}；跑 probe 检测价格接口。")
 
 
-async def refresh_online(
-    concurrency: int = 16, timeout: float = 8.0, proxy: str | None = None, progress: Callable[[str], None] | None = None
-) -> dict:
-    """管理台「刷新发现」任务体：拉默认源（zuiquanapi）更新候选池，只探测从没测过的新候选，
-    与上轮全部探测结果（在线与失联都算）合并落盘三件套。返回统计给任务日志与前端提示。
+async def refresh_pool(proxy: str | None = None) -> dict:
+    """管理台「刷新发现」任务体：拉默认源（zuiquanapi）合并进候选池，只拿站点与简介，不探测。
 
-    刷新的定位是「拿站点与简介」：拉源秒级完成，探测只对新增候选做一次——上轮失联的站
-    不反复重探（几千个全量重探会把定时刷新拖成十几分钟的哑巴活）；要给失联站翻案用
-    CLI probe --retry-failed。progress 是可选进度回调（tasklog/CLI 各自接），
-    首轮全量建档或单源新增较多时让界面有东西可看。
+    刷新的定位是「拿站点清单与简介」：秒级完成，定时跑零负担。探测（在线/价格接口可用性/
+    模型数）是可选的富化，只走 CLI probe（--retry-failed 给失联站翻案），结果落 probed.json
+    档案，展示接口自动联表显示——默认路径里不藏对几千个候选逐一发请求的重活。
     """
-    def report(message: str) -> None:
-        if progress is not None:
-            progress(message)
-
     fresh = await harvest(proxy, only=set(DEFAULT_SOURCES))
     pool_total, pool_added = _merge_into_pool(fresh)
-
-    raw = json.loads((OUT_DIR / "candidates.json").read_text(encoding="utf-8"))
-    all_candidates = {cand.url: cand for cand in (Candidate(**item) for item in raw["candidates"])}
-    previous: list[dict] = []
-    probed_file = OUT_DIR / "probed.json"
-    if probed_file.exists():
-        try:
-            previous = json.loads(probed_file.read_text(encoding="utf-8"))["results"]
-        except Exception:
-            previous = []
-    probed_urls = {row["url"] for row in previous}
-    todo = [cand for url, cand in all_candidates.items() if url not in probed_urls]
-    report(f"候选池 {pool_total}（新增 {pool_added}），探测新收录 {len(todo)} 个（已测 {len(probed_urls)} 个沿用上轮结果）…")
-    # 分批探测逐批上报：单批太小会拖慢整体（批间重建连接），200 约一批十几秒、粒度够看
-    probed: list[dict] = []
-    batch_size = 200
-    for start in range(0, len(todo), batch_size):
-        probed.extend(await probe(todo[start : start + batch_size], concurrency, timeout, proxy))
-        if len(todo) > batch_size:
-            report(f"探测进度 {min(start + batch_size, len(todo))}/{len(todo)}")
-    merged = previous + probed
-
-    importable = build_importable({cand.host: cand for cand in all_candidates.values()}, merged, exclude_hosts=set(existing_site_hosts()))
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    (OUT_DIR / "probed.json").write_text(
-        json.dumps({"generated_at": stamp, "results": merged}, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
-    (OUT_DIR / "importable.json").write_text(json.dumps(importable, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {
-        "pool": pool_total,
-        "pool_added": pool_added,
-        "probed_now": len(probed),
-        "online_now": len([r for r in probed if r.get("online")]),
-        "online_total": len([r for r in merged if r.get("online")]),
-        "importable": len(importable),
-    }
+    return {"pool": pool_total, "pool_added": pool_added}
 
 
 PROBE_CANDIDATE_PROXIES = (

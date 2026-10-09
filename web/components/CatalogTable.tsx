@@ -201,10 +201,10 @@ export function CatalogTable({
             {hit && (
               <span
                 className="mono"
-                title="Artificial Analysis 榜单排名与智能指数（0–100，第三方自测口径，非本站评测）"
+                title="第三方评测的榜单排名与智能指数（0–100，非本站评测）"
                 style={{ fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
               >
-                Artificial Analysis #{hit.rank}
+                评测排名 #{hit.rank}
                 {hit.intelligence_index != null && ` · 智能指数 ${hit.intelligence_index}/100`}
               </span>
             )}

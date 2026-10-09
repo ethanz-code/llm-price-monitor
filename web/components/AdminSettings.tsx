@@ -17,8 +17,8 @@ const SCHEDULE_ITEMS: { key: string; label: string; hint: string }[] = [
   { key: "status", label: "渠道状态", hint: "定时检查开了状态监测的站点，渠道有变化就记事件" },
   { key: "notice", label: "站点公告", hint: "定时看站点公告，内容有变化就记下来" },
   { key: "catalog", label: "厂商定价", hint: "定时更新厂商原价目录，并重新抓取所有已启用的厂商定价源（默认 24 小时一次）" },
-  { key: "rankings", label: "模型榜单", hint: "定时更新 Artificial Analysis 模型榜单（默认 24 小时一次）" },
-  { key: "discovery", label: "新站发现", hint: "定时拉公开导航源拿站点与简介，只探测新收录的站（很快）；结果进「从新站发现导入」弹窗（默认 24 小时一次）" },
+  { key: "rankings", label: "模型榜单", hint: "定时更新第三方评测的模型智能指数榜单（默认 24 小时一次）" },
+  { key: "discovery", label: "新站发现", hint: "定时更新站点清单与简介（秒级，不探测）；结果进「从新站发现导入」弹窗（默认 24 小时一次）" },
 ];
 
 /** 数据保留天数配置项：与后端 settings 的 retention_*_days 字段一一对应；价格/状态事件与公告永不清理。 */
