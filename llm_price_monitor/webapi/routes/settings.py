@@ -75,32 +75,6 @@ class ModelsProbeBody(BaseModel):
     reset: bool = False
 
 
-def mask_api_key(key: str) -> str:
-    """密钥掩码：只保留末 4 位，用于设置接口的响应体（完整密钥不出后端）。"""
-    return f"••••{key[-4:]}" if len(key) > 4 else "••••••"
-
-
-def masked_ai(doc: dict[str, Any] | None) -> dict[str, Any]:
-    """ai 配置文档的响应视图：api_key 替换为掩码。"""
-    ai = dict(doc or {})
-    key = str(ai.get("api_key") or "")
-    if key:
-        ai["api_key"] = mask_api_key(key)
-    return ai
-
-
-def masked_settings(doc: dict[str, Any] | None) -> dict[str, Any]:
-    """settings 文档的响应视图：*_secret 字段（mihomo 控制接口密钥等）替换为掩码。
-
-    持有控制接口密钥可切换整台机器的代理出口，与 AI 密钥同口径：完整值不出后端。
-    """
-    masked = dict(doc or {})
-    for key, value in list(masked.items()):
-        if str(key).endswith("_secret") and isinstance(value, str) and value:
-            masked[key] = mask_api_key(value)
-    return masked
-
-
 def track_monitor_model_removals(store: Store, incoming: dict[str, Any]) -> None:
     """保存监控清单时记录被移除的模型（monitor_models_dismissed）：
     目录刷新自动补模型时跳过它们，否则手动删掉的模型下轮又会被加回来。"""
@@ -115,36 +89,15 @@ def track_monitor_model_removals(store: Store, incoming: dict[str, Any]) -> None
     incoming["monitor_models_dismissed"] = sorted(dismissed)
 
 
-def merge_ai_preserving_mask(stored: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
-    """合并 ai 配置：入参 api_key 等于当前掩码时视为“未修改”，换回库中的完整密钥；传 null/空串表示清除。"""
-    incoming = dict(incoming)
-    stored_key = str((stored or {}).get("api_key") or "")
-    if stored_key and incoming.get("api_key") == mask_api_key(stored_key):
-        incoming["api_key"] = stored_key
-    return {**(stored or {}), **incoming}
-
-
-def merge_settings_preserving_mask(stored: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
-    """合并 settings：*_secret 入参等于当前掩码时视为「未修改」换回库中完整值；null/空串表示清除。"""
-    incoming = dict(incoming)
-    for key in list(incoming):
-        if not str(key).endswith("_secret"):
-            continue
-        stored_value = str((stored or {}).get(key) or "")
-        if stored_value and incoming.get(key) == mask_api_key(stored_value):
-            incoming[key] = stored_value
-    return {**(stored or {}), **incoming}
-
-
 def build_router(store: Store) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/settings")
     def get_settings() -> dict[str, Any]:
-        """管理员读取系统设置（AI / 通知等）；api_key 与 *_secret 只回掩码，完整密钥不出后端。"""
+        """管理员读取系统设置（AI / 通知等），含密钥明文（管理台已有会话认证，密钥需回显供眼睛切换）。"""
         return {
-            "settings": masked_settings(store.get_document("settings")),
-            "ai": masked_ai(store.get_document("ai")),
+            "settings": store.get_document("settings") or {},
+            "ai": store.get_document("ai") or {},
         }
 
     @router.get("/api/settings/proxy-status")
@@ -166,18 +119,18 @@ def build_router(store: Store) -> APIRouter:
             if body.settings is not None:
                 if "monitor_models" in body.settings:
                     track_monitor_model_removals(store, body.settings)
-                merged = merge_settings_preserving_mask(store.get_document("settings"), body.settings)
+                merged = {**(store.get_document("settings") or {}), **body.settings}
                 settings_from_raw(merged, resolve_env=False)
                 if "schedule" in merged:
                     schedule_from_raw(merged["schedule"])  # 调度间隔校验：非法输入 400
                 store.set_document("settings", merged)
             if body.ai is not None:
-                merged_ai = merge_ai_preserving_mask(store.get_document("ai"), body.ai)
+                merged_ai = {**(store.get_document("ai") or {}), **body.ai}
                 ai_from_raw(merged_ai, cache=None)
                 store.set_document("ai", merged_ai)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"settings": store.get_document("settings") or {}, "ai": masked_ai(store.get_document("ai"))}
+        return {"settings": store.get_document("settings") or {}, "ai": store.get_document("ai") or {}}
 
     @router.post("/api/seed")
     def reseed(request: Request, body: SeedBody) -> dict[str, Any]:
@@ -200,7 +153,7 @@ def build_router(store: Store) -> APIRouter:
     def test_settings(body: SettingsTestBody) -> dict[str, Any]:
         """用表单当前值合并覆盖已存配置，实测一条外部链路（先测后存）；失败返回 400 与原因。"""
         merged_settings = {**(store.get_document("settings") or {}), **(body.settings or {})}
-        merged_ai = merge_ai_preserving_mask(store.get_document("ai"), body.ai or {})
+        merged_ai = {**(store.get_document("ai") or {}), **(body.ai or {})}
 
         started = time.monotonic()
 

@@ -1,7 +1,8 @@
 """进程内后台任务注册表：采集与官方价抓取耗时较长，提交到线程执行并轮询状态。
 
 任务记录连同过程日志经 attach_store 持久化到 SQLite 文档表，服务重启后历史仍可查看；
-重启加载时把中断的 running 任务统一标记为失败。
+重启加载时把中断的 running 任务统一标记为失败。概览页“采集异常”卡片另有一份
+warn/error 抄送流水（task_errors 文档），独立于任务日志的滚动窗口，持久保存供排查。
 """
 from __future__ import annotations
 
@@ -31,6 +32,14 @@ _lock = threading.Lock()
 _tasks: dict[str, dict[str, Any]] = {}
 _RUNNING_KINDS: dict[str, str] = {}
 _store: Any = None
+
+# 异常卡片的持久化流水：warn/error 日志写入任务日志时同步抄送一份（上限条数滚动淘汰）。
+# 任务日志只给最近 KEEP_LOGGED_RUNS 个任务保留、更早的归档省略，异常历史靠这份流水留存；
+# 单条消息截断到固定长度，异常原文任务日志里仍完整，流水文档体积有硬上界不撑大数据库
+_JOURNAL_DOC = "task_errors"
+_JOURNAL_KEEP = 1000
+_JOURNAL_MSG_MAX = 500
+_journal: list[dict[str, Any]] = []
 
 
 def _limits() -> tuple[int, int]:
@@ -68,6 +77,7 @@ def attach_store(store: Any) -> None:
     global _store
     _store = store
     runs = (store.get_document("tasks") or {}).get("runs", [])
+    journal = (store.get_document(_JOURNAL_DOC) or {}).get("entries", [])
     marked_failed = False
     with _lock:
         for entry in runs:
@@ -76,6 +86,7 @@ def attach_store(store: Any) -> None:
                 marked_failed = True
             entry.setdefault("logs", [])
             _tasks[entry["id"]] = entry
+        _journal[:] = [item for item in journal if isinstance(item, dict)][-_JOURNAL_KEEP:]
     if marked_failed:
         _persist()
 
@@ -126,6 +137,7 @@ def _persist() -> None:
 
 
 def _append_log(task_id: str, message: str, level: str) -> None:
+    journaled = False
     with _lock:
         entry = _tasks.get(task_id)
         if entry is None:
@@ -136,10 +148,41 @@ def _append_log(task_id: str, message: str, level: str) -> None:
             # 滚动窗口前先插一条提示，避免长任务后半段日志静默丢失却无迹可查
             logs.append({"time": time.time(), "message": f"日志超过 {max_lines} 条，最早的记录将被滚动覆盖", "level": "warn"})
             entry["rolled"] = True
-        logs.append({"time": time.time(), "message": message, "level": level})
+        log = {"time": time.time(), "message": message, "level": level}
+        logs.append(log)
         while len(logs) > max_lines:
             logs.pop(0)
+        # 异常卡片抄送：warn/error 在写任务日志时同步记入持久化流水；
+        # 传输层抖动的 warn 是重试后已自愈的环境噪声，与健康档案同口径不收
+        if level in ("warn", "error") and not (level == "warn" and is_transport_error(message)):
+            _journal.append(
+                {
+                    "key": _error_key(task_id, log),
+                    "task_id": task_id,
+                    "kind": entry["kind"],
+                    "time": log["time"],
+                    "level": level,
+                    "message": message if len(message) <= _JOURNAL_MSG_MAX else message[:_JOURNAL_MSG_MAX] + "…",
+                }
+            )
+            del _journal[:-_JOURNAL_KEEP]
+            journaled = True
+    if journaled:
+        _persist_journal()
     _persist()
+
+
+def _persist_journal() -> None:
+    """把异常流水写入存储；未接入存储时跳过。"""
+    store = _store
+    if store is None:
+        return
+    with _lock:
+        entries = list(_journal)
+    try:
+        store.set_document(_JOURNAL_DOC, {"entries": entries})
+    except Exception as exc:  # 流水落盘失败不阻断采集：卡片属辅助信息，任务日志仍照常记录
+        _log.warning("异常流水落盘失败：%s", exc)
 
 
 def submit(kind: str, fn: Callable[[], Any]) -> str:
@@ -221,6 +264,7 @@ def reset() -> None:
     with _lock:
         _tasks.clear()
         _RUNNING_KINDS.clear()
+        _journal.clear()
     _store = None
 
 
@@ -239,7 +283,7 @@ def recent(limit: int = 100) -> list[dict[str, Any]]:
 
 
 # 概览页“采集异常”卡片的清除标记：被移除的单条日志键与“清空”时间点，
-# 只影响该卡片的展示，不改动任务本体日志
+# 只影响该卡片的展示，不改动流水与任务本体日志
 _DISMISS_DOC = "task_error_stream"
 _DISMISS_KEEP = 1000
 
@@ -263,38 +307,23 @@ def _error_key(task_id: str, log: dict[str, Any]) -> str:
 def error_stream(limit: int = 200) -> list[dict[str, Any]]:
     """跨任务汇总 warn/error 日志（新在前），滤掉已移除/清空时间点之前的条目，供概览页异常卡片展示。
 
-    传输层抖动的 warn 是重试后已自愈的环境噪声，与健康档案同口径不进卡片；
-    重试耗尽会升级成 error 级的站点失败日志，仍然可见。
+    条目来自写日志时同步抄送的持久化流水，不随任务日志的滚动窗口归档、也不因重启丢失；
+    传输层抖动的 warn 在抄送时已按健康档案口径拦下，重试耗尽升级成 error 的站点失败仍可见。
     """
     state = _dismiss_state()
     cleared_at = state.get("cleared_at")
     dismissed = set(state.get("dismissed", []))
     with _lock:
-        items = sorted(_tasks.values(), key=lambda item: str(item["started_at"]), reverse=True)
-        entries = []
-        for item in items:
-            for log in item.get("logs", []):
-                if log.get("level") not in ("warn", "error"):
-                    continue
-                if log.get("level") == "warn" and is_transport_error(str(log.get("message") or "")):
-                    continue
-                if cleared_at is not None and float(log.get("time") or 0) <= float(cleared_at):
-                    continue
-                key = _error_key(item["id"], log)
-                if key in dismissed:
-                    continue
-                entries.append(
-                    {
-                        "key": key,
-                        "task_id": item["id"],
-                        "kind": item["kind"],
-                        "time": log.get("time"),
-                        "level": log.get("level"),
-                        "message": log.get("message"),
-                    }
-                )
-        entries.sort(key=lambda entry: float(entry["time"] or 0), reverse=True)
-        return entries[:limit]
+        entries = [dict(entry) for entry in _journal]
+    entries.sort(key=lambda entry: float(entry.get("time") or 0), reverse=True)
+    visible = []
+    for entry in entries:
+        if dismissed and entry["key"] in dismissed:
+            continue
+        if cleared_at is not None and float(entry.get("time") or 0) <= float(cleared_at):
+            continue
+        visible.append(entry)
+    return visible[:limit]
 
 
 def dismiss_error(key: str) -> bool:

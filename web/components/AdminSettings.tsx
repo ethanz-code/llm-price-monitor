@@ -2,7 +2,7 @@
 
 /** 系统设置：按「采集调度 / 数据保留 / AI 提取 / 微信通知 WxPusher / 种子导入」分组，AI 与通知可独立测试有效性。 */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast, Btn, Input, Sel, Modal, SettingRow, LoadingRows } from "./ui";
 import { errorText } from "@/lib/api";
 import { IconEye, IconEyeOff } from "./icons";
@@ -57,7 +57,8 @@ function parsePoolText(text: string): string[] {
   return [...new Set(text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
 }
 
-/** 密钥输入：password 型 + 显隐切换，避免旁人瞥屏或截图泄露。 */
+/** 密钥输入：password 型 + 显隐切换，避免旁人瞥屏或截图泄露；值是真实密钥，眼睛只做本地显隐。
+ *  切换后焦点回到输入框，方便接着改密钥。 */
 function SecretInput({
   value,
   onChange,
@@ -68,6 +69,7 @@ function SecretInput({
   placeholder?: string;
 }) {
   const [show, setShow] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   return (
     <Input
       value={value}
@@ -76,11 +78,15 @@ function SecretInput({
       type={show ? "text" : "password"}
       autoComplete="off"
       style={{ width: "min(360px, 100%)" }}
+      inputRef={inputRef}
       suffix={
         <button
           type="button"
           className="input-suffix"
-          onClick={() => setShow((current) => !current)}
+          onClick={() => {
+            setShow((current) => !current);
+            inputRef.current?.focus();
+          }}
           aria-label={show ? "隐藏密钥" : "显示密钥"}
           title={show ? "隐藏" : "显示"}
         >
@@ -553,12 +559,7 @@ export function AdminSettings() {
               />
             </SettingRow>
             <SettingRow label="控制接口密钥" hint="mihomo 配置里的 secret，没设就留空">
-              <Input
-                value={proxyControllerSecret}
-                onChange={setProxyControllerSecret}
-                placeholder="未设置密钥就留空"
-                style={{ width: 260, maxWidth: "100%" }}
-              />
+              <SecretInput value={proxyControllerSecret} onChange={setProxyControllerSecret} placeholder="未设置密钥就留空" />
             </SettingRow>
             <SettingRow label="节点组名" hint="要切换的代理组名称，和代理面板里显示的组名一致（如「🚀 节点选择」）；自动切换时只在这个组内挑节点">
               <Input

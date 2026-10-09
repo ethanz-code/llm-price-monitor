@@ -465,14 +465,14 @@ def test_settings_roundtrip_and_validation(workspace: Path):
         "ai": {"base_url": "https://ai.test/v1", "models": ["m-a", "m-b"], "api_key": "sk-test-1234"},
     })
     assert saved.status_code == 200
-    # 响应里只回掩码，完整密钥只存在库里
-    assert saved.json()["ai"]["api_key"] == "••••1234"
-    assert client.get("/api/settings").json()["ai"]["api_key"] == "••••1234"
+    # 密钥明文回传（管理台会话认证，眼睛直接本地显隐；掩码方案已废弃）
+    assert saved.json()["ai"]["api_key"] == "sk-test-1234"
+    assert client.get("/api/settings").json()["ai"]["api_key"] == "sk-test-1234"
     store = client.app.state.store
     assert store.get_document("ai")["api_key"] == "sk-test-1234"
 
-    # 原样回传掩码 = 保持不变；显式传 null = 清除
-    assert client.put("/api/settings", json={"ai": {"api_key": "••••1234"}}).status_code == 200
+    # 原样回传 = 保持不变；显式传 null = 清除
+    assert client.put("/api/settings", json={"ai": {"api_key": "sk-test-1234"}}).status_code == 200
     assert store.get_document("ai")["api_key"] == "sk-test-1234"
     assert client.put("/api/settings", json={"ai": {"api_key": None}}).status_code == 200
     assert not store.get_document("ai").get("api_key")
@@ -483,13 +483,25 @@ def test_settings_roundtrip_and_validation(workspace: Path):
     bad = client.put("/api/settings", json={"ai": {"timeout": "abc"}})
     assert bad.status_code == 400
 
-    # settings 里的 *_secret 字段（mihomo 控制接口密钥）同口径：读回掩码、掩码回传视为未修改
-    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": "real-mihomo-secret"}}).status_code == 200
-    assert client.get("/api/settings").json()["settings"]["proxy_controller_secret"] == "••••cret"
-    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": "••••cret"}}).status_code == 200
-    assert store.get_document("settings")["proxy_controller_secret"] == "real-mihomo-secret"
-    assert client.put("/api/settings", json={"settings": {"proxy_controller_secret": None}}).status_code == 200
-    assert not store.get_document("settings").get("proxy_controller_secret")
+    # mihomo 控制接口密钥、WxPusher 推送凭证：读回与保存响应都是明文，传 null 清除
+    put = client.put(
+        "/api/settings",
+        json={"settings": {"proxy_controller_secret": "real-mihomo-secret", "wxpusher_app_token": "AT_xx9876"}},
+    )
+    assert put.status_code == 200
+    assert put.json()["settings"]["proxy_controller_secret"] == "real-mihomo-secret"
+    assert put.json()["settings"]["wxpusher_app_token"] == "AT_xx9876"
+    got = client.get("/api/settings").json()["settings"]
+    assert got["proxy_controller_secret"] == "real-mihomo-secret"
+    assert got["wxpusher_app_token"] == "AT_xx9876"
+    assert client.put(
+        "/api/settings", json={"settings": {"proxy_controller_secret": None, "wxpusher_app_token": None}}
+    ).status_code == 200
+    cleared = store.get_document("settings")
+    assert not cleared.get("proxy_controller_secret")
+    assert not cleared.get("wxpusher_app_token")
+    # 设置接口是管理员接口：匿名一律 401
+    assert TestClient(create_app(_config(workspace))).get("/api/settings").status_code == 401
 
 
 def test_sites_crud_requires_admin_and_validates(workspace: Path):
@@ -1481,6 +1493,53 @@ def test_task_error_stream_dismiss_and_clear(workspace: Path, monkeypatch):
     run_collect()  # 清空后旧日志被时间点挡住，新产生的仍然可见
     entries_after = client.get("/api/tasks/errors").json()["entries"]
     assert [entry["level"] for entry in entries_after] == ["error", "warn"]
+
+
+def test_task_error_stream_persisted_across_restart_and_archive(tmp_path: Path):
+    """异常卡片流水持久化：warn/error 抄送独立于任务日志窗口，重启加载后仍在；
+    采集任务被后续任务挤出“保留完整日志”的窗口触发归档，也不影响卡片条目。"""
+    from llm_price_monitor.store import Store
+    from llm_price_monitor import tasklog
+    from llm_price_monitor.webapi import tasks
+
+    tasks.reset()
+    db = tmp_path / "monitor.db"
+    tasks.attach_store(Store(db))
+
+    def flaky() -> dict:
+        tasklog.emit(
+            "传输层抖动（[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1032)），1s 后重试（1/2）",
+            "warn",
+        )
+        tasklog.emit("[demo] 渠道状态被跳过：站点未开放", "warn")
+        tasklog.emit("[demo] 价格采集失败：连接超时" + "响应体细节" * 300, "error")
+        return {}
+
+    def run_to_done(kind: str, fn) -> str:
+        task_id = tasks.submit(kind, fn)
+        for _ in range(100):
+            task = tasks.get(task_id)
+            if task is not None and task["status"] != "running":
+                return task_id
+            time.sleep(0.02)
+        raise AssertionError(f"任务 {kind} 超时未结束")
+
+    collect_id = run_to_done("collect", flaky)
+    for index in range(12):  # 堆后续任务把采集任务挤出 KEEP_LOGGED_RUNS 窗口，下次落盘即归档
+        run_to_done(f"pad-{index}", lambda: {})
+
+    tasks.reset()  # 模拟重启：内存清空，持久化文档保留
+    tasks.attach_store(Store(db))
+    entries = tasks.error_stream()
+    # 传输层抖动的 warn 抄送时已拦下；业务 warn 与 error 重启后仍可见
+    assert [entry["level"] for entry in entries] == ["error", "warn"]
+    assert all("价格采集失败" in entry["message"] or "渠道状态被跳过" in entry["message"] for entry in entries)
+    # 超长消息截断存流水（500 字 + 省略号），文档体积有硬上界不撑大数据库
+    assert all(len(entry["message"]) <= 501 for entry in entries)
+    assert entries[0]["message"].endswith("…")
+    archived = tasks.get(collect_id)
+    assert archived is not None
+    assert any("已归档省略" in log["message"] for log in archived["logs"])  # 归档确实发生，卡片不受影响
 
 
 def test_site_geo_endpoint_mocked(workspace: Path, monkeypatch):

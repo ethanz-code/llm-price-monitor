@@ -414,7 +414,7 @@ export interface TaskDetail extends TaskInfo {
   logs: TaskLog[];
 }
 
-/** 概览页「采集异常」卡片条目：跨任务汇总的警告/错误日志行。 */
+/** 概览页「采集异常」卡片条目：跨任务汇总的警告/错误日志行（独立流水持久化，重启后仍在）。 */
 export interface TaskErrorEntry {
   key: string;
   task_id: string;

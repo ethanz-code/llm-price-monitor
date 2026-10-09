@@ -5,7 +5,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { IconAlertCircle, IconCheck, IconChevronDown, IconClose } from "./icons";
 
 /* ---------- 按钮 ---------- */
@@ -423,6 +423,8 @@ export function Input({
   defaultValue,
   placeholder,
   onChange,
+  onFocus,
+  inputRef,
   disabled,
   style,
   prefix,
@@ -436,6 +438,8 @@ export function Input({
   defaultValue?: string;
   placeholder?: string;
   onChange?: (value: string) => void;
+  onFocus?: (event: React.FocusEvent<HTMLInputElement>) => void;
+  inputRef?: Ref<HTMLInputElement>;
   disabled?: boolean;
   style?: React.CSSProperties;
   prefix?: ReactNode;
@@ -449,6 +453,7 @@ export function Input({
     <span className="input-wrap" style={style}>
       {prefix}
       <input
+        ref={inputRef}
         className="input"
         value={value}
         defaultValue={defaultValue}
@@ -458,6 +463,7 @@ export function Input({
         autoComplete={autoComplete}
         aria-label={ariaLabel}
         title={title}
+        onFocus={onFocus}
         onChange={(event) => onChange?.(event.target.value)}
       />
       {suffix}
