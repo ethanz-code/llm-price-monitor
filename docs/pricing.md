@@ -322,7 +322,7 @@ uv run price-page <url> --out prices.json        # 写文件；省略 --out 打�
 
 ### 无头浏览器与出口代理
 
-- `network.headless`：页面要在浏览器里执行 JS 才能看到价格（如单页应用，直接抓是空壳）时，启用无头浏览器（Playwright Chromium）渲染后再解析；打开网页前注入 cookies 和 localStorage 登录态（归属域自动取 `network.url`，不用填），普通请求抓不到数据时也会自动回退。`wait_seconds` 是页面渲染等待秒数（0~60，默认 3）。部署环境需安装：`pip install playwright && playwright install chromium`。
+- `network.headless`：页面要在浏览器里执行 JS 才能看到价格（如单页应用，直接抓是空壳）时，启用无头浏览器（Playwright Chromium）渲染后再解析；打开网页前注入 cookies 和 localStorage 登录态（归属域自动取 `network.url`，不用填）。接口直采**不做** headless 自动回退：抓到空壳/风控页就按采集失败上报，需要浏览器渲染的站点由管理员显式启用（见 `adapters.NetworkAdapter._collect_once`）。`wait_seconds` 是页面渲染等待秒数（0~60，默认 3）。部署环境需安装：`pip install playwright && playwright install chromium`。
 - `settings.fallback_proxy`：部署在境内服务器、部分站点直连不了时，在管理面板「系统设置 → 采集出口」填一个 http(s) 备用代理地址（如 `http://172.17.0.1:7890`，要认证写成 `http://user:pass@host:port`；填完点「测试连通」可验证代理通不通并显示出口 IP）。采集始终先走直连，直连失败（超时/重置/被目标站拒收）的站点自动改走代理继续采，恢复后自动切回；国内能直连的站点永远不走代理。Docker 部署时代理客户端跑在宿主机的话，地址写 `http://172.17.0.1:7890`（容器里的 127.0.0.1 不是宿主机）。无头浏览器渲染同一站点时跟随同一出口选择。
 
 ## 工作原理

@@ -2820,7 +2820,8 @@ def _sanity_catalog() -> dict:
 
 
 def test_price_sanity_voids_absurd_extraction(tmp_path: Path, monkeypatch):
-    """站点价对厂商价离谱时作废本次观测：错误数值不得进快照与历史，正常价不受影响。"""
+    """站点价对厂商价离谱时两轮确认：首轮只挂待复核标记照常入库，复现才作废，
+    错误数值不得长期留在快照与历史；正常价不受影响。"""
     def collect(*_args):
         return [
             PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"}),
@@ -2834,16 +2835,18 @@ def test_price_sanity_voids_absurd_extraction(tmp_path: Path, monkeypatch):
     store.set_document("catalog", _sanity_catalog())
     monkeypatch.setattr(NetworkAdapter, "collect", collect)
     run_once(config, store=store, client=httpx.Client())
+    run_once(config, store=store, client=httpx.Client())
 
-    # 百万级错价被作废：首轮无上次价可沿用，整条不落快照
+    # 首轮异常挂标记入库、第二轮复现后被作废：无价行被落库层清理，整行摘除
     assert "demo:demo-model:default" not in store.latest_all()
     # 正常价（0.2 折）原样入库
     sane = store.latest_all()["demo:sane-model:default"]
     assert sane["input_price"] == 1 and sane["price_status"] == "confirmed"
 
 
-def test_price_sanity_carries_last_price_with_reason(tmp_path: Path, monkeypatch):
-    """上次有价、本次提取翻车：沿用上次已知价并带上作废原因，不把好数据打成无价。"""
+def test_price_sanity_first_violation_kept_with_flag(tmp_path: Path, monkeypatch):
+    """首轮异常不作废：这次采集到的价照常展示，只挂 sanity_suspect 待复核标记，
+    官方价目录自身带错（如厂商页提取列错位）时不误杀真数据。"""
     rounds = [
         [PriceRecord("demo-model", 1, 2, "USD/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})],
         [PriceRecord("demo-model", 2_000_000, 6_000_000, "CNY/1M tokens", "https://demo.test/pricing", 0, {"group": "default"})],
@@ -2861,10 +2864,10 @@ def test_price_sanity_carries_last_price_with_reason(tmp_path: Path, monkeypatch
     run_once(config, store=store, client=httpx.Client())
     run_once(config, store=store, client=httpx.Client())
 
-    carried = store.latest_all()["demo:demo-model:default"]
-    assert carried["input_price"] == 1  # 上次的真实价还在展示
-    assert carried["price_status"] == "unavailable"
-    assert "可信区间" in (carried.get("metadata") or {}).get("error", "")
+    suspect = store.latest_all()["demo:demo-model:default"]
+    assert suspect["input_price"] == 2_000_000  # 本轮采集到的价原样展示
+    assert suspect["price_status"] == "confirmed"
+    assert "可信区间" in (suspect.get("metadata") or {}).get("sanity_suspect", "")
 
 
 def test_price_sanity_rereads_catalog_each_site(tmp_path: Path, monkeypatch):
@@ -2901,10 +2904,14 @@ def test_price_sanity_rereads_catalog_each_site(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(NetworkAdapter, "collect", collect)
     run_once(load_config(config_path), store=store, client=httpx.Client())
 
-    # 首站 0.6 对坏判据 0.02 = 30 倍被作废（首轮无上次价，不落快照）
-    assert "first:demo-model:default" not in store.latest_all()
-    # 目录修正后二站同价放行
-    assert store.latest_all()["second:demo-model:default"]["input_price"] == 0.6
+    # 首站 0.6 对坏判据 0.02 = 30 倍：首轮只挂待复核标记不作废，价照常入库
+    first = store.latest_all()["first:demo-model:default"]
+    assert first["input_price"] == 0.6
+    assert "可信区间" in (first.get("metadata") or {}).get("sanity_suspect", "")
+    # 目录修正后二站同价放行，不带标记
+    second = store.latest_all()["second:demo-model:default"]
+    assert second["input_price"] == 0.6
+    assert not (second.get("metadata") or {}).get("sanity_suspect")
 
 
 def test_group_removed_requires_consecutive_misses(tmp_path: Path, monkeypatch):

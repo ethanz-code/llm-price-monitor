@@ -1,5 +1,6 @@
 /** llms.txt 出口：给大模型看的站点说明书（llmstxt.org v2 口径：H1 + blockquote + H2 链接清单）。
  *  llms.txt 保持小索引，llms-full.txt 是完整版；文案统一取自 lib/copy，避免与页面措辞漂移。 */
+import { getArticles } from "@/lib/articles";
 import { home, site } from "@/lib/copy";
 import { getSiteInfo } from "@/lib/sites";
 import type { SiteMeta } from "@/lib/types";
@@ -15,6 +16,12 @@ const PAGES = [
   { path: "/calculator", name: "花费计算", note: "按单价与用量估算花费，支持缓存命中率与厂商官方价对比" },
   { path: "/articles", name: "文章资讯", note: "中转站避坑长文：低价从哪来、模型降智、计费倍率、隐私与跑路风险" },
 ] as const;
+
+/** 单篇文章清单行：文章页链接 + 副标题，按发布日期新到旧，两个版本共用 */
+function articleLines(origin: string): string[] {
+  return getArticles() // 已按日期新到旧
+    .map((item) => `- [${item.title}](${origin}/articles/${item.slug})（${item.date}）: ${item.subtitle}`);
+}
 
 /** 监控站点清单行：检测档案页链接 + 站点自身地址（对大模型是关键实体信息） */
 function siteLines(origin: string, sites: SiteMeta[]): string[] {
@@ -43,6 +50,10 @@ export function buildLlmsTxt(origin: string, sites: SiteMeta[]): string {
     "## 页面",
     "",
     ...PAGES.map((page) => `- [${page.name}](${origin}${page.path}): ${page.note}`),
+    "",
+    "## 文章",
+    "",
+    ...articleLines(origin),
     "",
     "## 检测站点",
     "",
@@ -74,6 +85,10 @@ export function buildLlmsFullTxt(origin: string, sites: SiteMeta[]): string {
     "## 页面",
     "",
     ...PAGES.map((page) => `- [${page.name}](${origin}${page.path}): ${page.note}`),
+    "",
+    "## 文章",
+    "",
+    ...articleLines(origin),
     "",
     "## 检测站点",
     "",

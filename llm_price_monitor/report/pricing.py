@@ -76,12 +76,18 @@ def _sanity_context(store: Store | None) -> tuple[dict[str, Any] | None, float |
 
 
 def _apply_price_sanity(
-    current: dict[str, Any], official_models: dict[str, Any] | None, rate: float | None
+    current: dict[str, Any],
+    official_models: dict[str, Any] | None,
+    rate: float | None,
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """站点价对厂商价离谱时作废本次观测：价格清空、状态转 unavailable、原因写入 metadata.error。
+    """站点价对厂商价离谱时的两轮确认：首轮异常只挂 sanity_suspect 标记、价格照常入库，
+    上一轮已挂同标记（异常复现）才作废——价格清空、状态转 unavailable、原因写 metadata.error。
 
-    作废后走既有的"本次没拿到价"路径（上次有价则沿用并带出原因），保证错误数值
-    永远进不了快照与历史；校验判据缺失（无目录/无汇率）时不拦，不构成兜底。
+    官方价目录自身也可能带错（如 AI 提取厂商定价页列错位），单轮偏差就把价作废会
+    误杀真数据；连续两轮都越界才认定是站点侧问题。作废后走既有的"本次没拿到价"
+    路径（上次有价则沿用并带出原因），保证错误数值永远进不了快照与历史；
+    校验判据缺失（无目录/无汇率）时不拦，不构成兜底。
     """
     if official_models is None or rate is None or not _has_price(current):
         return current
@@ -90,7 +96,15 @@ def _apply_price_sanity(
     )
     if reason is None:
         return current
-    tasklog.emit(f"[{current.get('site_id')}] 价格异常作废：{current.get('model')} {reason}", "error")
+    site_id, model = current.get("site_id"), current.get("model")
+    prior_suspect = str(((previous or {}).get("metadata") or {}).get("sanity_suspect") or "")
+    if not prior_suspect:
+        tasklog.emit(f"[{site_id}] 价格异常待复核（下轮复现才作废）：{model} {reason}", "warn")
+        return {
+            **current,
+            "metadata": {**(current.get("metadata") or {}), "sanity_suspect": reason},
+        }
+    tasklog.emit(f"[{site_id}] 价格异常作废：{model} {reason}", "error")
     return {
         **current,
         "input_price": None,

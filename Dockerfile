@@ -49,5 +49,7 @@ COPY --from=web-builder /app/web/node_modules ./node_modules
 COPY --from=web-builder /app/web/package.json ./
 COPY --from=web-builder /app/web/next.config.ts ./
 COPY --from=web-builder /app/web/public ./public
+# 文章正文：lib/articles.ts 运行时从 content/articles/*.md 读取
+COPY --from=web-builder /app/web/content ./content
 EXPOSE 3000
 CMD ["npm", "run", "start"]

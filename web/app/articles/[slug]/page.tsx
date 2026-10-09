@@ -1,16 +1,20 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { JsonLd } from "@/components/JsonLd";
 import { PageHeader } from "@/components/PageHeader";
-import { articleExcerpt, articles, getArticle, type ArticleBlock } from "@/lib/articles";
-import { pageMetadata } from "@/lib/seo";
+import { articleExcerpt, getArticle, getArticles } from "@/lib/articles";
+import { site } from "@/lib/copy";
+import { pageMetadata, siteOrigin } from "@/lib/seo";
 
-/** 文章详情页：正文内容在 lib/articles.ts，这里只负责排版渲染。纯静态，无取数。
- *  标题与正文同处一栏（.article-wrap，720px 左对齐），不做宽页头 + 窄正文的错位布局。 */
+/** 文章详情页：正文是 content/articles/<slug>.md，这里用 react-markdown 渲染（GFM 语法），
+ *  标题与正文同处一栏（.article-wrap），MD 元素样式在 globals.css 的 article-body 作用域。
+ *  附 Article 结构化数据（搜索与 AI 摘要），发布日期即文章的 date 字段。 */
 
 export function generateStaticParams() {
-  return articles.map((item) => ({ slug: item.slug }));
+  return getArticles().map((item) => ({ slug: item.slug }));
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -20,57 +24,78 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   return pageMetadata(article.title, articleExcerpt(article, 80), `/articles/${article.slug}`);
 }
 
-/** 行内标记：**加粗** 转 <strong>，[文字](链接) 转新窗口外链，一次扫描处理两种 */
-function renderInline(text: string): ReactNode[] {
-  const tokens = text.split(/(\*\*.+?\*\*|\[[^\]]+\]\([^)]+\))/g);
-  return tokens.map((token, i) => {
-    const bold = /^\*\*(.+)\*\*$/.exec(token);
-    if (bold) return <strong key={i}>{bold[1]}</strong>;
-    const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
-    if (link) {
-      return (
-        <a key={i} href={link[2]} target="_blank" rel="noreferrer">
-          {link[1]}
-        </a>
-      );
-    }
-    return token;
-  });
+/** 外链新窗口打开，站内链接（/articles/...）原窗跳转 */
+function markdownLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  if (href?.startsWith("http")) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  }
+  return <a href={href}>{children}</a>;
 }
 
-function Block({ block }: { block: ArticleBlock }) {
-  switch (block.type) {
-    case "h2":
-      return <h2>{block.text}</h2>;
-    case "p":
-      return <p>{renderInline(block.text)}</p>;
-    case "quote":
-      return <blockquote>{renderInline(block.text)}</blockquote>;
-    case "ul":
-      return (
-        <ul>
-          {block.items.map((item, i) => (
-            <li key={i}>{renderInline(item)}</li>
-          ))}
-        </ul>
-      );
-  }
+/** 标题文本 → 锚点 id：空格与 Markdown 行内标记归一，中文原样保留 */
+function headingId(children: React.ReactNode): string {
+  const text = Array.isArray(children) ? children.join("") : String(children ?? "");
+  return text.replace(/[\s`*_[\]()]/g, "");
+}
+
+/** h2 带锚点 id，供页首小节导航与浏览器 # 直接定位 */
+function markdownHeading({ children }: { children?: React.ReactNode }) {
+  return <h2 id={headingId(children)}>{children}</h2>;
+}
+
+/** 从 Markdown 正文提取 ## 小节标题，页首生成锚点导航 */
+function articleSections(content: string): string[] {
+  return content
+    .split("\n")
+    .filter((line) => line.startsWith("## "))
+    .map((line) => line.slice(3).trim());
 }
 
 export default async function ArticlePage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const article = getArticle(slug);
   if (!article) notFound();
+  const origin = await siteOrigin();
+  const sections = articleSections(article.content);
 
   return (
     <div className="page">
+      <JsonLd
+        data={{
+          "@context": "https://schema.org",
+          "@type": "Article",
+          headline: article.title,
+          description: articleExcerpt(article, 80),
+          datePublished: article.date,
+          inLanguage: "zh-CN",
+          mainEntityOfPage: `${origin}/articles/${article.slug}`,
+          image: `${origin}/og-image.png`,
+          publisher: { "@type": "Organization", name: site.name },
+        }}
+      />
       <div className="article-wrap">
         <PageHeader title={article.title} subtitle={article.subtitle} />
         <article className="article-body">
           <p className="article-meta mono num">{article.date}</p>
-          {article.blocks.map((block, i) => (
-            <Block key={i} block={block} />
-          ))}
+          {sections.length > 0 && (
+            <nav className="article-toc" aria-label="本篇小节">
+              {sections.map((section) => (
+                <a key={section} href={`#${encodeURIComponent(headingId(section))}`}>
+                  {section}
+                </a>
+              ))}
+            </nav>
+          )}
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{ a: markdownLink, h2: markdownHeading }}
+          >
+            {article.content}
+          </ReactMarkdown>
         </article>
         <div className="article-back">
           <Link href="/articles" className="landing-more">

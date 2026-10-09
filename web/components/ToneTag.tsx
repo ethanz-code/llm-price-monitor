@@ -16,15 +16,3 @@ export function ToneNum({ tone, children }: { tone: Tone; children: ReactNode })
     </span>
   );
 }
-
-/** 规则价低调标注：小号灰字，不与确认价抢视线；悬停解释可信度。 */
-export function RulePriceMark({ tip }: { tip?: string }) {
-  return (
-    <span
-      title={tip ?? "价格由 AI 从站点数据推算，未经页面交叉验证，仅供参考"}
-      style={{ fontSize: 11.5, color: "var(--text-3)", flexShrink: 0 }}
-    >
-      规则价
-    </span>
-  );
-}

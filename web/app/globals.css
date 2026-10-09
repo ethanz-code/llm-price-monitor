@@ -2297,6 +2297,115 @@ html:not([data-theme="dark"]) .panel {
   color: var(--text-3);
 }
 
+/* Markdown 渲染补齐：正文除 p/h2/ul/blockquote 外还有 h3/ol/code/pre/table/img/hr */
+.article-body h2,
+.article-body h3 {
+  scroll-margin-top: 24px;
+}
+
+/* 页首小节锚点导航：小字灰链，点号分隔，窄屏自动换行 */
+.article-toc {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 4px;
+  row-gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: -6px 0 22px;
+  color: var(--text-3);
+}
+
+.article-toc a {
+  color: var(--text-3);
+}
+
+.article-toc a + a::before {
+  content: "·";
+  margin-right: 4px;
+  color: var(--border);
+}
+
+.article-toc a:hover {
+  color: var(--accent-text);
+}
+
+.article-body h3 {
+  font-size: 15.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 28px 0 10px;
+  text-wrap: balance;
+}
+
+.article-body ol {
+  margin: 0 0 14px;
+  padding-left: 22px;
+  display: grid;
+  gap: 8px;
+}
+
+.article-body code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.article-body pre {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 13px 15px;
+  margin: 0 0 14px;
+  overflow-x: auto;
+  line-height: 1.7;
+}
+
+.article-body pre code {
+  font-size: 12.5px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.article-body table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin: 0 0 14px;
+}
+
+.article-body th,
+.article-body td {
+  border: 1px solid var(--border);
+  padding: 7px 11px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.article-body th {
+  background: var(--panel-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.article-body img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 4px 0 14px;
+}
+
+.article-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 26px 0;
+}
+
 .article-back {
   margin-top: 44px;
   padding-top: 20px;

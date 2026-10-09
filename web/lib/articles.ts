@@ -1,281 +1,77 @@
 /**
- * 文章内容集中地：站内文章的正文都放在这里，页面只负责渲染。
- * blocks 支持 p / h2 / quote / ul 四种块；行内标记支持 **加粗** 与 [文字](链接)。
- * 写作口径：新闻特稿腔，事实带出处（引用 2026 年公开报道与一手文档），
- * 不喊口号不排比，段落长短错落；摘要不单独维护，见 articleExcerpt。
+ * 文章内容集中地：正文是 web/content/articles/<slug>.md 的 Markdown 文件，
+ * 这里只负责加载与解析（frontmatter + 正文），页面用 react-markdown 渲染。
+ * frontmatter 字段：title / subtitle / date；slug 取文件名。新增文章零配置。
+ * 写作口径：新闻特稿腔，事实带出处，不喊口号不排比，段落长短错落；
+ * 摘要不单独维护，见 articleExcerpt。
+ *
+ * 读取走 getArticles()（react cache 单请求去重）而不是模块级常量：
+ * md 文件不在模块依赖图里，模块级求值会让 dev 模式下改 md 不生效（HMR 感知不到），
+ * 每请求重读则 dev 即时生效、生产 build/运行时都拿到最新内容。
  */
 
-export type ArticleBlock =
-  | { type: "p"; text: string }
-  | { type: "h2"; text: string }
-  | { type: "quote"; text: string }
-  | { type: "ul"; items: string[] };
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { cache } from "react";
+
+const ARTICLES_DIR = join(process.cwd(), "content", "articles");
 
 export interface Article {
-  /** URL 路径段 /articles/<slug>，英文小写连字符 */
+  /** URL 路径段 /articles/<slug>，即文件名（不含 .md），英文小写连字符 */
   slug: string;
   title: string;
   subtitle: string;
   /** 发布日期 YYYY-MM-DD，展示用，也作为 sitemap 的 lastModified */
   date: string;
-  blocks: ArticleBlock[];
+  /** Markdown 正文（不含 frontmatter），由详情页 react-markdown 渲染 */
+  content: string;
 }
 
-/** 摘要不单独维护：取正文首段，剥掉行内标记后按字数截断 */
-export function articleExcerpt(article: Article, max = 76): string {
-  const first = article.blocks.find((block): block is Extract<ArticleBlock, { type: "p" }> => block.type === "p");
-  const plain = (first?.text ?? "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
-  return plain.length > max ? `${plain.slice(0, max)}……` : plain;
+/** 解析单篇：--- 包住的 frontmatter（key: value 逐行）+ Markdown 正文 */
+function parseArticle(raw: string, slug: string): Article {
+  const lines = raw.split("\n");
+  const meta: Record<string, string> = {};
+  let start = 0;
+  if (lines[0]?.trim() === "---") {
+    const end = lines.indexOf("---", 1);
+    if (end > 0) {
+      for (const line of lines.slice(1, end)) {
+        const sep = line.indexOf(":");
+        if (sep > 0) meta[line.slice(0, sep).trim()] = line.slice(sep + 1).trim();
+      }
+      start = end + 1;
+    }
+  }
+  const title = meta.title ?? "";
+  const subtitle = meta.subtitle ?? "";
+  const date = meta.date ?? "";
+  if (!title || !subtitle || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`文章 ${slug}.md 的 frontmatter 缺 title/subtitle/date 或 date 不是 YYYY-MM-DD`);
+  }
+  return { slug, title, subtitle, date, content: lines.slice(start).join("\n").trim() };
 }
 
-export const articles: Article[] = [
-  {
-    slug: "how-we-collect-prices",
-    title: "这些价格是怎么抓下来的",
-    subtitle: "llmprices.cn 采集管线怎么运转，反爬和凭证续签踩过什么坑。",
-    date: "2026-10-06",
-    blocks: [
-      {
-        type: "p",
-        text: "llmprices.cn 的价格不是人工抄的，也不是 AI 看一眼页面记下来的。每一轮采集，确定性代码先去站点接口取数、套公式算价；AI 只在格式认不出来时兜底，结果还要过校验。这篇讲讲这条管线怎么运转，以及反爬和短效凭证上踩过的坑。",
-      },
-      { type: "h2", text: "倍率站直接套公式" },
-      {
-        type: "p",
-        text: "市面中转站大多用 [new-api](https://github.com/QuantumNous/new-api) 或它的前身 one-api 这类开源面板，价格接口返回的不是单价，是倍率。输入价 = 模型倍率 × 2 × 分组倍率，输出价同理；新版计价格式（billing_denomination_version 为 2）直接读站点标注的官方价。阶梯计费也完整解析：上下文分档、缓存读写价都保留成档位表，不压成一个均价。",
-      },
-      {
-        type: "p",
-        text: "这条链路里 AI 只干一件事：把俗称解析成正式模型名，比如把「GPT-5.6 Sol」对上 gpt-5.6-sol，解析完仍用公式重算；AI 失败就直接输出公式结果。为什么不让 AI 算？倍率本来就躺在站长后台随手可改（[上一篇](/articles/relay-station-traps)讲过这个坑），数字再经 AI 转述一遍，今天读成 3.0 明天读成 8.0，你分不清是站点调价还是抽取出错。",
-      },
-      { type: "h2", text: "AI 只做兜底" },
-      {
-        type: "p",
-        text: "非倍率格式的接口和页面才交给 AI。调用本身就有约束：每站每轮最多一次，证据先按目标模型预筛、截断长度，不把整个响应原样丢过去；同样的证据走缓存，不重复调用。",
-      },
-      {
-        type: "p",
-        text: "缓存上踩过一个不报错的坑。new-api 系接口每次请求会把模型数组重新洗牌，还往随机模型上挂随机哈希字段——两次响应字节数相同、顺序不同，直接算哈希，缓存每轮全部失效，等于每轮全额重跑。现在的缓存键先做顺序规范化：按内容排序、整数值浮点归一、剔掉已知的噪声字段，再进哈希。",
-      },
-      {
-        type: "p",
-        text: "抽出来的结果要过三重校验：模型名必须字面出现在证据里，防止把证据里没有的价格安到这个模型头上；「已确认」要求网络证据和价格数值同时闭环；只有计费规则的必须带真实规则。过不了就降级，如实标拿不到，不猜。",
-      },
-      {
-        type: "p",
-        text: "分批按预算走。一条完整价格记录约 300 到 700 token，按每条 1200 token 留余量折算批大小，输出预算 16000 token 时 12 条一批。批太大，输出会在中途截断成非法 JSON；批太小，重复的系统提示和调用次数翻倍。批与批并行跑，总时长预算随批次数等比放大，40 个模型的全量提取正常要 10 分钟起步，固定上限必然贴线爆炸。",
-      },
-      { type: "h2", text: "反爬：先读响应体" },
-      {
-        type: "p",
-        text: "挂着 Cloudflare 盾的站点，WAF 拦的是缺 Referer 的请求，不是程序指纹——httpx 和 curl 的 TLS 指纹一样能过；请求头补上同站 Referer、Origin 和 Accept，匿名请求也能拿到 200。有一回 403 的报错文案提示「可能需要认证」，翻响应体里的 new-api message 才发现根本不是登录的事。",
-      },
-      {
-        type: "p",
-        text: "new-api 系的认证接口还有个特殊要求：光带 Cookie 不够，必须再带 New-Api-User 头，值是登录用户 ID，缺了直接 401。这些细节文档里不一定写，但响应体里的 message 会说实话。排障时别看状态码猜，读站点返回的原文。",
-      },
-      { type: "h2", text: "短效凭证自动续签" },
-      {
-        type: "p",
-        text: "采集的站点不少要登录，而 new-api 的会话设计得很紧（源码 service/auth_token.go）：Access Token 只有 15 分钟有效；每个登录会话自创建起最长 30 天，续签不延长；refresh token 一次一换，旧值在 30 秒宽限窗口外再被使用，防盗机制直接注销整个会话。",
-      },
-      {
-        type: "p",
-        text: "所以续签是自动的：请求被 401 拒了，先拿 refresh token 换新的，新值从响应的 Set-Cookie 里接力，再用新 token 重试一次。凭证注入统一收口，价格、渠道状态、公告三类请求共用一套规则，认证头不在各接口里手写——写死会盖掉注入的凭证，token 换新追不上。",
-      },
-      { type: "h2", text: "单页应用：直接抓是空壳" },
-      {
-        type: "p",
-        text: "有一类站，价格在浏览器里看得见，直接抓 HTML 却只有空壳，数据要跑 JS 才出来。先翻打包 JS：页面引用的 chunk 最多追 15 个，价格常常整包躺在里面；chunk 文件名带内容哈希，每次采集重新发现引用，站点改版也能跟上。有个站实测下来，登录墙后的页面价格全在前端打包 JS 里，根本不用登录——先确认数据在哪，再谈登录态。翻不到才轮到 [Playwright](https://playwright.dev) 无头浏览器真渲染，打开前注入 cookies 和 localStorage 登录态。",
-      },
-      { type: "h2", text: "官方价从哪来" },
-      {
-        type: "p",
-        text: "折扣率要有个分母：官方列表价。目录数据来自 [models.dev](https://models.dev)，一个开源模型价格目录，走 Cloudflare CDN 分发，不要密钥，同步秒级完成。但它的国内价格一律不收——时段分档缺失，还是他方汇率换算价，实测与官方人民币标价偏差不小。国内厂商的基准价只来自厂商自己的定价页：确定性解析优先，Markdown 表格、HTML 表格、内嵌 JSON 挨个试，AI 兜底防幻觉。",
-      },
-      {
-        type: "p",
-        text: "官方目录还有一道品牌闸门：按模型名判归属，定价页上托管、转售他家的模型——云厂商挂出的 DeepSeek、聚合平台代销的开源模型——不进官方目录。OpenAI 的折扣，不能拿别家的转售价当基准。",
-      },
-      {
-        type: "p",
-        text: "汇率多源容灾：ExchangeRate-API 的免费端点、CDN 分发的 currency-api、欧央行数据的 Frankfurter 挨个探测，全挂了回退本地缓存。全表锁定同步时点的快照汇率，页面展示和折扣计算用同一个数。",
-      },
-      { type: "h2", text: "别把没变的价报成变了" },
-      {
-        type: "p",
-        text: "价格变化事件的判定指纹只含价格口径字段：单价、缓存价、计费规则数值、币种、状态、认证。AI 抽取每轮会漂移的上下文边界、备注文本一律不参与，不然价格没动，「降价了」的事件先响了。其余的工程兜底：每站硬超时，卡死不拖垮整轮；单站采完立即落库；境内采不到境外站时直连优先、失败走代理、恢复切回。",
-      },
-      {
-        type: "p",
-        text: "这些纪律落到页面上，是你能看见的东西：",
-      },
-      {
-        type: "ul",
-        items: [
-          "每条价格的证据都有存档：来源地址、状态码、内容哈希，认证头自动脱敏。",
-          "「正常 / 规则价 / 待确认 / 需认证」的状态如实标注，拿不到可靠价格就显示拿不到。",
-          "价格变化事件不是 AI 说了算，指纹只看价格口径字段。",
-          "折扣率用快照汇率统一折算，展示与计算一个口径。",
-        ],
-      },
-      {
-        type: "p",
-        text: "这些机制都在后台跑，你在页面上看到的只是价格和折扣率。差别在于：出问题时能查到是哪一环出了错，价格变了能确认是站点真变了。",
-      },
-    ],
-  },
-  {
-    slug: "relay-station-traps",
-    title: "中转站的水，到底有多深",
-    subtitle: "省出来的差价，总得有人付账。这篇讲讲这笔账都记在了谁头上。",
-    date: "2026-10-06",
-    blocks: [
-      {
-        type: "p",
-        text: "44.9 元包月，号称不限额度随便用主流大模型——每日经济新闻笔下的「小王」就是这么入的坑：用了不到一个月，售后群解散，商家失联。这不是孤例。2026 年 5 月前后，每经、中国新闻周刊、36氪几家媒体接连起底这个行当，国家安全部也专门发文提醒过「AI中转站」的风险。",
-      },
-      {
-        type: "p",
-        text: "先把话说全。中转站干的活儿不复杂：你连不上 OpenAI、Anthropic 这些官方 API——没外币卡、网络不通，或者公司不让——站长替你连上，再转手卖给你。开站就是装一套开源面板，有站长给媒体算过账，两三千块钱就能开张。所以这行从不缺新面孔，也不缺消失的旧面孔。",
-      },
-      {
-        type: "p",
-        text: "低价是全行业唯一的招牌。有多低？[每经那篇《1元钱285万Token的陷阱》](https://finance.sina.com.cn/roll/2026-05-12/doc-inhxrfsp8402044.shtml)的标题就是行情：1 块钱换 285 万 token，同样的量走官方渠道，按模型不同值几十到四百多元。生意能成立，靠的当然不是老板做慈善。",
-      },
-      { type: "h2", text: "钱从哪来" },
-      {
-        type: "p",
-        text: "官方定价摆在那，上游不做亏本买卖。一个站常年卖三折、一折还稳定供货，钱一定是从别处省的。路子翻来覆去就几种。",
-      },
-      {
-        type: "p",
-        text: "一种是薅官方的羊毛：不走 API，拿自己的付费账号访问网页版，把结果转手卖给你，圈内叫「逆向」。每经报道里，200 美元一个月的 Claude 订阅被拆给几十个人分用，还有商家靠批量注册免费账号薅官方额度。这种货便宜，也脆——官方一封号，你上一秒还在对话，下一秒就断供。官方也在收口：Anthropic 7 月起给 Claude 加了强制身份验证，结账要过政府证件加人脸，买号拆分的买卖越来越难做。",
-      },
-      {
-        type: "p",
-        text: "一种是共享号池，本质是上一条的稳定版：一个账号几十上百人轮着用，如今主力是 Team 套餐号——限额比个人号高一截，二手论坛里明码标价按调用次数卖。代价是封号连坐，整池人一起失联，你聊过的内容也一并留在别人手里。",
-      },
-      {
-        type: "p",
-        text: "还有更黑的货源。[反欺诈机构拆解过这条供应链](https://trustdecision.com/articles/the-token-arbitrage-economy-why-ai-platforms-are-facing-a-sophisticated-business-fraud)：盗刷信用卡买订阅、批量注册薅试用额度、再系统性滥用退款政策反复白嫖。三件事凑起来，转售价最低能压到官方价的百分之几——这已经不是折扣，是销赃。",
-      },
-      {
-        type: "p",
-        text: "还有当二道贩子的：从上游拿额度，加价五成转手。21 世纪经济报道挖出来的链条里，额度最多倒过 8 手，单站一天的充值流水能做到上万元——[每一手都要赚一点](https://wap.eastmoney.com/a/202605193741837072.html)，传到你手上就只剩风险了。",
-      },
-      {
-        type: "p",
-        text: "更根本的是，这些货从源头就是灰的。[OpenAI 从 2024 年 7 月起封禁不支持地区的 API 流量](https://help.openai.com/zh-hans-cn/articles/9131992-chatgpt-and-api-services-in-unsupported-countries-and-territories)，[Anthropic 2025 年 9 月的公告](https://www.anthropic.com/news/updating-restrictions-of-sales-to-unsupported-regions)连「中资控股超过 50% 的实体」都列入禁用范围。中转站卖给你的，是一条从根上违反上游条款的供应链。",
-      },
-      {
-        type: "p",
-        text: "能长期低价的也有，靠批发价渠道赚个薄利，但比广告里说的少得多。所以看见「低至一折」，先想一个问题：省出来的钱，谁替你付的？",
-      },
-      { type: "h2", text: "你买到的货，可能被动过手脚" },
-      {
-        type: "p",
-        text: "「满血版」这个词，最早就是云厂商卖 DeepSeek-R1 时的营销话术——[阿里云的方案页标题至今叫「即刻拥有 DeepSeek-R1 满血版」](https://www.aliyun.com/solution/tech-solution/deepseek-r1-for-platforms)。一个需要靠「满血」来自证的市场，反过来理解就是：残血才是常态。",
-      },
-      {
-        type: "p",
-        text: "最直接的是换货。你调的是 A 模型，后端给你路由到便宜的 B。[一项学术审计](https://arxiv.org/abs/2603.01919)抽测的结果是，灰市中转近半数调用存在静默换模。你体感不对劲，站长的标准回复是「你 prompt 写得不好」。",
-      },
-      {
-        type: "p",
-        text: "含蓄点的是减配。标 200K 上下文实给 32K，超出的部分悄悄丢掉，平时聊天看不出来，长文档一进去，前半段等于没喂。推理模型更惨：思考预算就是个省钱开关，给你限到几百 token，回答快得飞起，质量稀烂，你还当是模型今天状态不好。",
-      },
-      {
-        type: "p",
-        text: "再含蓄点的是塞私货。你不知情的时候，系统里多了一段「回答要简短、要积极」的预设。同一道题，别家答八百字，它家答两百字，账面上它还省了输出的钱，你还得夸它快。",
-      },
-      {
-        type: "p",
-        text: "这几种手脚，都能验出来。最快的不用装任何工具：对着接口发一条请求，看响应有没有原样回显你指定的模型名、有没有 token 用量字段——缺了或对不上，基本就是实锤。反过来，回显正常也证明不了清白：model 字段是整条链路里最容易伪造的字符串，真要验，还得往下测。问只有最新版本才知道的事；扔一份超长文档，看它记不记得开头说了什么；直接让它把你收到的系统指令原样复述一遍。注意光问「你是谁」没用，高级站会注入一段「你是 Claude」的假系统提示，前几问照样答得上来——要测能力，别测自报家门。测之前关掉对话历史，有的站会用缓存好的标准答案应付你。懒得自己设计的，GitHub 上有现成工具，比如 [llm-verify](https://github.com/mintesnot-teshome/llm-verify)：32 条取证 prompt 做行为指纹，专抓「挂着 Claude 的名、跑着便宜模型」的转售接口。今年 7 月的论文《One Token Is Enough》把门槛压得更低：只比对下一个 token 的概率分布，就能验出接口背后跑的是不是它自称的那个模型，[配套工具](https://github.com/ToseaAI/llm-fingerprint-detector)开源在 GitHub 上。",
-      },
-      {
-        type: "p",
-        text: "也有另一种声音。硅基流动写过一篇文章，认为市面上基本不存在「非满血版」，很多「降智」体感来自参数设置和上下文截断；[Anthropic 官方也为降智质疑发过长文](https://m.aitntnews.com/newDetail.html?newId=18454)，承认在 AWS、英伟达、谷歌 TPU 多种硬件上混部会带来质量波动，被开发者追问「承认不达标为何不退钱」。两派谁对，先不站队——但连官方都在混用不同后端、说不清你这次调用跑在哪块芯片上，黑盒中转的水，只能更深。",
-      },
-      { type: "h2", text: "账单是另一门学问" },
-      {
-        type: "p",
-        text: "价目表和实扣金额，在中转站是两个世界。拿最流行的 new-api 面板来说，[官方文档](https://docs.newapi.ai/zh/docs/guide/console/settings/rate-settings)给的计费公式是「（输入 token 数 + 输出 token 数 × 补全倍率）× 模型倍率 × 分组倍率」——你在价目页看到的单价只是第一个乘数，后面两层倍率都躺在站长后台里，随手可改。账单跟标价对得上，反而是稀罕事。",
-      },
-      {
-        type: "p",
-        text: "token 也会膨胀。同一句话，别家计三千，它家计五千。[36氪报道过的一项研究](https://m.36kr.com/p/3822775952707719)里，收费最狠的网关比按标价算的预期多收 62.8%，用量报表却和其他平台看不出差别。分词的账没法逐个验，但同一段话在几个站各跑一遍，差额离谱的直接拉黑。",
-      },
-      {
-        type: "p",
-        text: "还有一条差价藏在缓存里。主流厂商对反复出现的内容——比如每次请求都要带的系统提示词——提供缓存优惠价，中转站照样按原价向你收，价差默默进了自己口袋。36氪那篇报道管这叫「合法套利」。",
-      },
-      {
-        type: "p",
-        text: "汇率也有讲究。标价按美元，充值按站长自己定的汇率折人民币，标 7.2、结 8 的事不稀奇。",
-      },
-      {
-        type: "p",
-        text: "充值优惠要单独说。充一百送一百不是让利，是把你未来的充值提前收走，你的余额就是站长账上的无息贷款。站想长久做，这是正常现金流；站要奔着跑路去，大额赠送就是收割的哨声。",
-      },
-      { type: "h2", text: "你的聊天记录，是别人的库存" },
-      {
-        type: "p",
-        text: "走中转站，你打的每个字都要在别人服务器上过一道。前小米 OS AI 产品专家张和在接受每经采访时说得更直白：「数据在 AI 中转站手里基本是裸奔状态」，中间环节是一个谁也打不开的黑盒。",
-      },
-      {
-        type: "p",
-        text: "这不是吓唬人。今年 5 月，安全研究员 Hanzhi Liu 和 Chaofan Shou 的团队从淘宝、闲鱼买了 28 款付费中转站，又收集了 400 款免费的，逐一实测：9 款主动注入恶意代码，17 款试图窃取研究者放进蜜罐的云服务凭证，还有 1 款直接转走了测试钱包里的以太坊资产。两位研究员的原话是：「已经有多个攻击者在系统地利用 AI 中转站的漏洞，而受攻击的用户对此完全不知情。」",
-      },
-      {
-        type: "p",
-        text: "而且不止是被看。[安全研究公司 SOCRadar 今年 7 月的报告](https://socradar.io/blog/dark-token-llm-api-proxies-harvest-fraud/)发现，Hugging Face 上已经出现了多个疑似从中转站日志里扒出来的 Claude 推理数据集，被人拿去微调开源模型——你深夜调 API 攒下的思考过程，可能正躺在别人的训练集里。",
-      },
-      {
-        type: "p",
-        text: "拿它写周报，无伤大雅。拿它过公司代码、贴客户资料，等于把公司硬盘插进陌生人的电脑。",
-      },
-      { type: "h2", text: "跑路不是意外，是退出方式" },
-      {
-        type: "p",
-        text: "充值制的生意，跑路算不上事故，算退出渠道。[36氪 7 月的报道](https://m.36kr.com/p/3939123750272132)给过估算：监管信号释放后的三个月里，搜得到的灰色中转站消失了六七成，剩下的多半也因为上游号池被封无声死掉，用户余额跟着站一起蒸发。",
-      },
-      {
-        type: "p",
-        text: "上海那位被刑拘的站长（圈内叫「瓜皮」）就是个活例：[因涉嫌非法经营罪被刑事拘留，37 天后取保候审](https://view.inews.qq.com/a/20260520A08U5M00)，自述靠逆向爬取倒卖低价接口牟利，退了赃、缴了罚金，唯独用户充值的钱无力退还。你看，余额永远排在所有要债人的最后。",
-      },
-      {
-        type: "p",
-        text: "信号有先后：突然的大额充值促销；公告更新变慢；用户群禁言、解散；品牌域名「升级焕新」。见到第三个，别等第四个。",
-      },
-      { type: "h2", text: "这门生意本身就在悬崖边" },
-      {
-        type: "p",
-        text: "前面讲的都是「站会怎么坑你」，其实站自己也悬。有刑事律师分析：逆向绕过境外平台鉴权，可能构成侵入计算机信息系统；用户数据违规出境，往重了说涉侵犯公民个人信息罪。2026 年 6 月，国家安全部专门发文提醒「AI 中转站」风险；7 月，网信办「清朗」专项行动通报第一阶段已处置违规 AI 产品 1.4 万余款；9 月初的第二阶段通报，又处置了 2400 余个。行业里流传的估算是，月流水五十万、用户过万的规模就够得上三到七年刑期——这只是预期，不是判决，但方向已经很清楚了。",
-      },
-      { type: "h2", text: "几句实在话" },
-      {
-        type: "ul",
-        items: [
-          "用多少充多少，余额别过夜。控制在今天花得完的量级，跑路伤害自动清零。",
-          "长期低于官方价一半还自称「官转」的，别碰。三折往下，经济学上就只剩号池和黑号一种解释。",
-          "[国产模型先比官方价](https://xinwen.bjd.com.cn/content/s6a11ca80e4b03fa51a7eb712.html)：DeepSeek 5 月起永久降到原价四分之一，输出 6 元/百万 token，正规渠道常常比中转站还便宜。",
-          "[境外模型先看低价区](https://pmvitamin.com/articles/cheap-ai-subscription-without-credit-card.html)：ChatGPT Plus 土耳其区约 78 元/月，Claude Pro 尼日利亚区更低，比中转贵不了多少，但通道、额度、数据都在官方手里。",
-          "新站先小额试跑几天，账单对得上、输出质量过关，再谈充值。",
-          "公司代码、客户数据、密钥，别过中转。为省这点钱跨这条红线，不值得。",
-          "别信跑分截图。站龄、调价记录、渠道可用率做不了假，截图一秒钟能 P 一张。",
-        ],
-      },
-      {
-        type: "p",
-        text: "不是劝你别用中转站。很多人就是靠它才用上主流模型，里面确实有又便宜又稳的，关键是知道自己在买什么、可能赔上什么。价格透明是第一步，这也是 llmprices.cn 在做的事：每个站什么价、涨没涨、渠道活没活，全部摆出来，每条都附来源链接。自己看，自己判断。",
-      },
-    ],
-  },
-];
+/** 文章清单：读 content/articles/*.md，按日期新到旧；单请求内缓存（react cache） */
+export const getArticles = cache((): Article[] =>
+  readdirSync(ARTICLES_DIR)
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => parseArticle(readFileSync(join(ARTICLES_DIR, name), "utf8"), name.slice(0, -3)))
+    .sort((a, b) => b.date.localeCompare(a.date)),
+);
 
 export function getArticle(slug: string): Article | undefined {
-  return articles.find((item) => item.slug === slug);
+  return getArticles().find((item) => item.slug === slug);
+}
+
+/** 摘要不单独维护：取正文首个段落，剥掉行内标记后按字数截断 */
+export function articleExcerpt(article: Article, max = 76): string {
+  const first = article.content
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .find((block) => block && !block.startsWith("#") && !block.startsWith("-") && !block.startsWith(">"));
+  const plain = (first ?? "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+  return plain.length > max ? `${plain.slice(0, max)}……` : plain;
 }

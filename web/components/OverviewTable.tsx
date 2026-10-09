@@ -7,7 +7,7 @@ import { DataTable, type DColumn } from "./DataTable";
 import { Empty, Input } from "./ui";
 import { IconChevronDown, IconSearch } from "./icons";
 import { DajuSit } from "./DajuArt";
-import { ToneTag, RulePriceMark } from "./ToneTag";
+import { ToneTag } from "./ToneTag";
 import { RiskLink } from "./RiskLink";
 import { TermTip } from "./TermTip";
 import { getSiteInfo } from "@/lib/sites";
@@ -155,15 +155,11 @@ export function OverviewTable({
       // 避免公告在宽屏独吞剩余宽度、也避免窄屏挤压价格列；手机端由 mobileScrollX 兜底
       render: (v: string, row) => {
         const site = getSiteInfo(v, row.source_url);
-        // 状态列已去掉：确认/候选价是常态不挂标签；需认证/无数据挂标签，规则价用小字低调标注
+        // 状态列已去掉：确认/候选/规则价是常态不挂标签；需认证/无数据挂标签
         const statusKey = recordStatusKey(row);
-        const isRule = statusKey === "rule_only";
         const showTag = statusKey === "auth_required" || statusKey === "unavailable";
         const meta = statusMeta(statusKey);
-        const reason =
-          isRule
-            ? "价格由 AI 从站点数据推算，未经页面交叉验证，仅供参考"
-            : rowReason(row);
+        const reason = rowReason(row);
         const tip = [reason, row.last_price_at != null ? `上次拿到数据：${formatTime(row.last_price_at)}` : null]
           .filter(Boolean)
           .join("\n") || undefined;
@@ -172,7 +168,6 @@ export function OverviewTable({
             <RiskLink href={site.homepage || row.source_url} variant="site">
               <span className="mono">{site.name}</span>
             </RiskLink>
-            {isRule && <RulePriceMark tip={tip} />}
             {showTag && (
               <span title={tip}>
                 <ToneTag tone={meta.tone}>{meta.label}</ToneTag>

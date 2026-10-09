@@ -11,6 +11,7 @@
 | AI 输出截断 / max_tokens / 助手 token 爆炸 | 本页 §2 |
 | 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 | 本页 §3 |
 | 骨架屏 / 暗色 / 表格 / 窄屏 / 响应式 | 本页 §4 |
+| panic / char boundary / code-frame / dev 半死 / 改文件不生效 | 本页 §4 |
 | Docker / 构建 / 回滚 / APP_TAG / 端口 | 本页 §5 |
 | 网站打不开 / 域名被拦 / webblock / 302 跳备案页 | 本页 §5 |
 
@@ -59,11 +60,14 @@
 | 国内定价页条目没有发布日期和 modalities，监控清单自动追加没法按日期/形态过滤 | 双线追加：白名单厂商按 release_date 最新一批，国内厂商按定价页插入序前 N 滚动；准入统一走 catalog/general.py `is_general_llm`——特殊领域名字黑名单 + 日期后缀快照变体（gpt-4o-2024-05-13、deepseek-v4-pro-0813、qwen3.8-max-0902）在官方目录构建、厂商定价源存储、两个合并与自动追加四处共用；YYMM 版本号（step-3.5-flash-2603）不是日期不拦 | catalog/general.py |
 | 厂商定价页解析出的缓存读价比输出价还高（如 MiniMax M2.x 的 0.042/0.021/0.018） | 判"价目列错位"整条跳过不进目录——该模型自动追加也随之缺失，修复要回到页面解析层 | vendor_sources.py `_price_order_violation` |
 | AI 抽取轮次间表示法漂移：tier 里 `cache_create_price: null` 下一轮直接省略键，指纹当成两种价格，有效价一分没变也刷"变更"事件（DaiTuAI 一轮四连假事件，用户点名） | fingerprint 归一"空"的两种写法：dict 里 None 值键剔除与键缺失等价；有值↔缺失仍算真变更。凡跨轮比较的结构都要做同类归一 | report.py `fingerprint`；存量清理 `uv run price-admin prune-noop-events`（默认预览，--apply 才删） |
+| 厂商页「输入（命中缓存）/未命中/输出」三列表被 AI 抽错位：缓存命中价当成输入价（小米 mimo 官方价错 100 倍，站点折扣全被算成 40–60 倍，用户点名）；证据校验又被"0.036 包含 0.03"子串误匹配放行 | prompt 明确列对号规则（命中缓存进 cache_read、输入必取未命中列）+ 拆行规则；合并目录时加与既有基准的 0.01–20 倍偏差闸门（candidate 基准不受保护，留纠错通道） | ai_fallback.py `_AI_SYSTEM_PROMPT`；vendor_sources.py `_source_deviation_violation` |
+| 站点价合理性校验一轮就作废：官方价目录自身带错时真数据被误标"无数据"（AIHub365 案，用户点名） | 改两轮确认：首轮异常只挂 `metadata.sanity_suspect` 标记、价格照常展示，下轮复现才作废；作废不沿用可疑旧价 | pricing.py `_apply_price_sanity`；scans.py 作废分支 |
 
 ## 4. 前端
 
 | 踩过的坑 | 已落地的方案 | 指针 |
 | --- | --- | --- |
+| Next 16.3.3 dev 错误浮层渲染 code-frame 时 Rust panic（`next-code-frame highlight.rs: not a char boundary`，切进中文字符中间），线程 abort 后 dev server 半死：HTTP 还答旧内容、改任何文件都不生效，且对终端宽度敏感 | 已知上游 bug（[vercel/next.js#92641](https://github.com/vercel/next.js/issues/92641)，Open）。panic 只是"报错的展示方式"崩了：`npm run build` 绿就说明代码本身没错，触发错误多为 HMR 增量状态损坏；重启 dev 即愈，重启时再遇同款 panic 可忽略一次。另：文章 md 文件不在模块依赖图，读取必须走每请求执行的 `getArticles()`，模块级求值会 dev 改 md 不生效 | issue 链接；web/lib/articles.ts 头注释 |
 | 进页先闪别的页骨架或假空态（"还没有记录"） | 每页 loading.tsx 对齐真实布局；admin 布局登录守卫先画外壳骨架 | 提交 54c1412 / 4e349ec / c6e84f0 |
 | 行高/列宽全站一刀切，窄屏挤爆 | 行高分档（默认/dense/紧凑），窄屏减列保关键列 | 提交 b1e7354 / 21038a1 / debee38 |
 | AdminSites 3038 行改不动 | 拆 sites/ 七个子模块，零逻辑改动 | 提交 58f3f47 |

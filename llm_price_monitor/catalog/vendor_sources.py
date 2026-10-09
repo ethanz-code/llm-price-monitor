@@ -362,6 +362,40 @@ def _price_order_violation(
     return None
 
 
+# 定价源与目录现有基准的偏差边界：AI 提取列错位（把缓存命中价当输入价）会让页面价
+# 偏离既有基准成百上千倍，超出可信区间的页面价不落目录，保留原基准并记 skip 原因。
+# 边界与站点价合理性校验（catalog/discount.py）同口径。
+_SOURCE_DEVIATION_MIN_RATIO = 0.01
+_SOURCE_DEVIATION_MAX_RATIO = 20.0
+
+
+def _source_deviation_violation(
+    entry: dict[str, Any] | None, input_price: float | None, output_price: float | None, currency: str
+) -> str | None:
+    """页面价与目录现有基准的交叉校验：偏差超可信区间视为提取事故，返回 skip 原因。
+
+    对比基准取目录条目现值（USD 口径 list 或人民币口径 list_cny），页面价按标价
+    货币对上对应视图；条目不存在或基准缺价时不构成判据，返回 None 放行。
+    candidate 基准不受保护：它本身可能就是上一轮提取事故的产物，得给正确价格
+    留纠错通道，否则错值会借这道闸永久锁死。
+    """
+    if not isinstance(entry, dict) or entry.get("price_status") == "candidate":
+        return None
+    base = entry.get("list") if currency == "USD" else entry.get("list_cny")
+    if not isinstance(base, dict):
+        return None
+    for label, page_price, base_price in (
+        ("输入", input_price, base.get("input")),
+        ("输出", output_price, base.get("output")),
+    ):
+        if page_price is None or base_price is None or base_price <= 0:
+            continue
+        ratio = page_price / base_price
+        if ratio < _SOURCE_DEVIATION_MIN_RATIO or ratio > _SOURCE_DEVIATION_MAX_RATIO:
+            return f"（页面{label}价 {page_price} 是目录基准 {base_price} 的 {ratio:.0f} 倍，判定为提取错位）"
+    return None
+
+
 def merge_sources_into_catalog(
     catalog: dict[str, Any],
     sources: dict[str, dict[str, Any]],
@@ -420,6 +454,10 @@ def merge_sources_into_catalog(
             currency = str(item.get("currency") or "").upper()
             # 页面没标注货币时按源区域兜底：国内定价页默认人民币、海外页默认美元
             currency = currency if currency in {"CNY", "USD"} else ("USD" if source_region == "global" else "CNY")
+            deviation = _source_deviation_violation(models.get(key), input_price, output_price, currency)
+            if deviation is not None:
+                skipped.append(f"{vendor}/{name}{deviation}")
+                continue
             usd, cny, usd_cache, cny_cache = _converted_price_views(input_price, output_price, cache_read, currency, rate)
             if source_region == "global":
                 # 海外源只作国际参考：给国内基准条目补 list_global，基准与 region 不动

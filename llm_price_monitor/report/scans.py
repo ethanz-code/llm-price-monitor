@@ -177,18 +177,26 @@ def _scan_prices(
         # 目录中途修正后要用新判据，启动时的坏目录不得贯穿整轮
         sanity_models, sanity_rate = _sanity_context(store)
         for record in collected:
-            current = _apply_price_sanity(_backfill_rule_price(record_dict(spec.id, record)), sanity_models, sanity_rate)
             # 分组归一：metadata 缺失时兜底 default，保证事件键跨扫描稳定
             group = (record.metadata or {}).get("group") or "default"
             key = latest_key(spec.id, record.model, group)
             site_keys.add(key)
             previous = latest.get(key)
+            # sanity 两轮确认要读上一轮的待复核标记，须在查出 previous 之后判
+            current = _apply_price_sanity(
+                _backfill_rule_price(record_dict(spec.id, record)), sanity_models, sanity_rate, previous
+            )
             if not _has_price(current):
                 if previous is None or not _has_price(previous):
                     # 本次没拿到数据、上次也没有可用价：不新增占位记录，避免快照与历史重复膨胀
                     continue
-                # 上次有价、本次没拿到：沿用上次价格并标"需认证"，但不写历史（价格没有新观测）
-                current = _carry_last_price(current, previous)
+                if (previous.get("metadata") or {}).get("sanity_suspect"):
+                    # 上次价挂着待复核标记（异常首轮），本次作废说明异常复现：
+                    # 可疑旧价不沿用（落库层会清掉无价行，等于该行下架待下一轮好数据）
+                    pass
+                else:
+                    # 上次有价、本次没拿到：沿用上次价格并标"需认证"，但不写历史（价格没有新观测）
+                    current = _carry_last_price(current, previous)
                 latest[key] = current
                 touched_keys.add(key)
                 records.append(current)
