@@ -8,6 +8,7 @@ from llm_price_monitor.catalog import vendor_sources as vs
 from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.catalog.vendor_sources import (
     detect_vendor_coverage,
+    load_sources,
     merge_sources_into_catalog,
     merge_sources_into_channel_catalog,
     refresh_and_merge,
@@ -468,6 +469,46 @@ def test_refresh_and_merge_updates_record_and_catalog(tmp_path: Path, monkeypatc
     assert record["last_status"] == "ok" and record["last_method"] == "static-md"
     merged = store.get_document("catalog")
     assert merged["models"]["glm5.3flash"]["list_cny"] == {"input": 0.8, "output": 2.8}
+
+
+def test_refresh_source_filters_specials_and_snapshots_at_storage(tmp_path: Path, monkeypatch):
+    """根源过滤：抓取结果里的特殊领域模型与日期后缀快照变体不落库，通用模型照常保存。"""
+    store = Store(tmp_path / "monitor.db")
+    upsert_source(store, "Alibaba Cloud", "https://help.aliyun.com/zh/model-studio/models")
+
+    def fake_fetch(url: str, **kwargs):
+        return {"url": url, "final_url": url, "method": "static-md", "warnings": [], "models": [
+            {"model": "qwen3.8-max", "input_price": 2.4, "output_price": 9.6, "currency": "CNY"},
+            # 日期后缀快照变体：不落库
+            {"model": "qwen3.8-max-0902", "input_price": 2.4, "output_price": 9.6, "currency": "CNY"},
+            {"model": "qwen-plus-2025-07-28", "input_price": 0.8, "output_price": 2.0, "currency": "CNY"},
+            # 特殊领域：语音合成与角色扮演
+            {"model": "qwen3-tts-flash", "input_price": None, "output_price": 2.0, "currency": "CNY"},
+            {"model": "qwen-flash-character", "input_price": 0.5, "output_price": 1.5, "currency": "CNY"},
+        ]}
+
+    monkeypatch.setattr(vs, "fetch_page_prices", fake_fetch)
+    summary = refresh_source(store, "Alibaba Cloud", timeout=5, ai_config=None)
+    assert summary["status"] == "ok" and summary["model_count"] == 1
+    stored = vs.load_sources(store)["Alibaba Cloud"]["models"]
+    assert [item["model"] for item in stored] == ["qwen3.8-max"]
+
+
+def test_merge_skips_specials_and_snapshots_from_stale_cache(tmp_path: Path):
+    """合并防御：源缓存里若还存着旧的特殊领域/快照条目（未重抓），合并不收进官方目录。"""
+    store = Store(tmp_path / "monitor.db")
+    upsert_source(store, "Zhipu AI", "https://docs.bigmodel.cn/cn/guide/start/pricing.md")
+    vs._record_fetch(store, "Zhipu AI", last_fetched_at=1.0, last_status="ok", last_error=None,
+                     last_method="static-md", model_count=3, models=[
+                         {"model": "GLM-5.3", "input_price": 8.0, "output_price": 32.0, "currency": "CNY"},
+                         {"model": "glm-4-air-250414", "input_price": 0.5, "output_price": 2.0, "currency": "CNY"},
+                         {"model": "GLM-OCR", "input_price": 1.0, "output_price": 4.0, "currency": "CNY"},
+                     ])
+    sources = load_sources(store)
+    catalog = {"usd_cny_rate": 7.0, "models": {}}
+    merged, summary = merge_sources_into_catalog(catalog, sources, 7.0)
+    assert set(merged["models"]) == {"glm5.3"}
+    assert any("glm-4-air-250414" in line for line in summary["skipped"])
 
 
 def test_refresh_source_failure_records_error_without_raising(tmp_path: Path, monkeypatch):

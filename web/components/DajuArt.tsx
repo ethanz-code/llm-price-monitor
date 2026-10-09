@@ -49,19 +49,6 @@ export function DajuPeek({ shape }: { shape: "square" | "circle" }) {
   );
 }
 
-/** 爪印：填充 currentColor，调用处用 CSS 控制颜色（标题、列表符号等）。 */
-export function PawPrint({ size = 16, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
-      <ellipse cx="12" cy="15.6" rx="5.6" ry="4.6" />
-      <ellipse cx="5.4" cy="10.2" rx="2" ry="2.7" transform="rotate(-18 5.4 10.2)" />
-      <ellipse cx="9.6" cy="7.4" rx="2" ry="2.8" />
-      <ellipse cx="14.4" cy="7.4" rx="2" ry="2.8" />
-      <ellipse cx="18.6" cy="10.2" rx="2" ry="2.7" transform="rotate(18 18.6 10.2)" />
-    </svg>
-  );
-}
-
 /** 尾部 CTA：橘猫趴在价格曲线的高原上打盹，曲线在它身下继续走向最新一个点。 */
 export function DajuChartNap({ width = 300 }: { width?: number }) {
   return (

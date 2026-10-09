@@ -4,7 +4,7 @@
  * 渠道自带的时间线（timeline/history 等）会并成该渠道的检测点序列。
  */
 
-export interface ChannelStatus {
+interface ChannelStatus {
   name: string;
   status: string;
   ok: boolean;
@@ -297,13 +297,6 @@ function collectChannels(node: unknown, fallback: string | null, depth: number, 
   }
 }
 
-/** 从自由结构状态 JSON 提取渠道列表（不含时间线明细）。 */
-export function extractChannels(data: unknown): ChannelStatus[] {
-  const out: RawChannel[] = [];
-  collectChannels(data, null, 3, out);
-  return out.map(({ name, status, ok }) => ({ name, status, ok }));
-}
-
 /** 同一时间点只保留最早出现的一条，避免多轮采集重复并入同一段内嵌时间线。 */
 function dedupeDots(dots: ChannelDot[]): ChannelDot[] {
   const seenAt = new Set<number>();
@@ -451,15 +444,6 @@ export function latencyLevel(ms: number): RateLevel {
   return "ok";
 }
 
-/**
- * 按站点把渠道检测点合并成可用率时间序列：每个检测时刻取各渠道当时的最新状态，
- * 站点自带逐分钟时间线时密度就是分钟级。全量快照用双指针合并（点序列已升序），
- * 再分桶保峰抽到 ~1440 点：异常桶保留最低点，短暂故障不会被抽丢。
- */
-export function availabilityBySite(records: { site_id: string; captured_at: number; data: unknown }[]): Record<string, AvailabilityPoint[]> {
-  return availabilityFromDots(channelDotsBySite(records));
-}
-
 /** 全量可用率序列（不抽稀）：数字类展示（时段桶均值）从这里算，避免保峰抽稀把均值压悲观。 */
 function fullAvailabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
   const result: Record<string, AvailabilityPoint[]> = {};
@@ -501,21 +485,10 @@ function downsampleAvailability(full: Record<string, AvailabilityPoint[]>): Reco
   return result;
 }
 
-/** 按站点把渠道检测点合并成可用率时间序列（供图表画线）：保峰抽稀到 ~1440 点。 */
-function availabilityFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, AvailabilityPoint[]> {
-  return downsampleAvailability(fullAvailabilityFromDots(bySite));
-}
-
 /** 延迟趋势上的一个点：时刻 at（秒）时各渠道的自报延迟（ms，缺席的渠道不在 values 里）。 */
 export interface LatencyPoint {
   at: number;
   values: Record<string, number>;
-}
-
-/** 按站点把带延迟的检测点合并成「时刻 → 各渠道延迟」序列，供延迟趋势图使用。
- *  同样双指针 + 分桶保峰：异常桶保留延迟最高的点，毛刺不会被抽平。 */
-export function latencyBySite(records: { site_id: string; captured_at: number; data: unknown }[]): Record<string, LatencyPoint[]> {
-  return latencyFromDots(channelDotsBySite(records));
 }
 
 function latencyFromDots(bySite: Record<string, ChannelDotRow[]>): Record<string, LatencyPoint[]> {

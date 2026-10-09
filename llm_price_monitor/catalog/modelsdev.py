@@ -22,6 +22,7 @@ import httpx
 
 from . import fx, normalize
 from .brands import is_hosted_model
+from .general import is_general_llm
 from ..http_retry import build_client
 
 MODELSDEV_API_URL = "https://models.dev/api.json"
@@ -211,6 +212,10 @@ def fetch_catalogs(
                 # 平台渠道下的托管/转售条目（如 alibaba 渠道下的 deepseek/kimi）不进
                 # 官方目录，官方基准只收各 lab 自研模型；识别不出视为本店自研保留
                 if is_hosted_model(str(model_id), vendor):
+                    continue
+                # 官方目录只收通用对话大模型：特殊领域模型与日期后缀快照变体
+                # （gpt-4o-2024-05-13、claude-sonnet-4-5-20250929 这类）不作为基准价
+                if not is_general_llm({"model": str(model_id), "modalities": model.get("modalities")}):
                     continue
                 input_price, output_price = cost.get("input"), cost.get("output")
                 key = normalize.model_key(str(model_id))

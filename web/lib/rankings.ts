@@ -2,7 +2,7 @@ import type { RankingsData } from "./types";
 
 /** 模型名 → 榜单匹配键：与后端 rankings_key 同口径（小写，去空格/横线/下划线/点号）。
  *  AA slug 用连字符表达版本点号（gpt-6-5-sol），目录 id 常带点号（gpt-6.5-sol），归一后互认。 */
-export function rankingsKey(model: string): string {
+function rankingsKey(model: string): string {
   return model.toLowerCase().replace(/[\s_.-]+/g, "");
 }
 

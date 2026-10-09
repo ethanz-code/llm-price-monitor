@@ -15,7 +15,7 @@ from llm_price_monitor import wxpusher
 from llm_price_monitor.ai import ping_model, provider_error_detail
 from llm_price_monitor.config import ai_from_raw, schedule_from_raw, settings_from_raw
 from llm_price_monitor.store import Store
-from llm_price_monitor.webapi.seed import MODES, apply_seed
+from llm_price_monitor.webapi.seed import apply_seed
 
 # 模型池体检：单模型 15 秒内没答完按失败计；单次请求上限 40 个，前端分批调
 PROBE_TIMEOUT_SECONDS = 15.0

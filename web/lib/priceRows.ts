@@ -1,6 +1,7 @@
 /** 价格行的合并规则：OverviewTable 与首页最新快照共用，保证"同站点同模型合并为一行"的口径一致。 */
 
 import { effectiveCnyPrice, effectivePrice } from "./format";
+import { compareByReleaseDesc } from "./modelOrder";
 import type { OverviewRecord } from "./types";
 
 /** 模型名归一：小写并去掉空格/连字符/下划线（与后端 model_key 同规则，点号保留——
@@ -15,15 +16,22 @@ export function hasUsablePrice(row: OverviewRecord): boolean {
   return effectivePrice(row, "input_price") != null || effectivePrice(row, "output_price") != null;
 }
 
-/** 首页精选行序：综合价低的在前（同价按采集更新的在前），让"各模型全站最低价"直接按价读。
- *  入参约定来自 lowestPriceRowPerModel（每行都有可用价），缺综合价的 +∞ 沉底是兜底分支。 */
-export function orderByCheapestPrice(rows: OverviewRecord[], rate: number | null): OverviewRecord[] {
-  const blendOf = (row: OverviewRecord) => blendedCnyPrice(row, rate) ?? Number.POSITIVE_INFINITY;
-  return [...rows].sort((a, b) => blendOf(a) - blendOf(b) || b.captured_at - a.captured_at);
+/** 首页精选行序：目录口径排序（发布日期倒序，新模型在前），与总览页模型下拉同一套，
+ *  目录没收录的模型垫底按名称；行内容仍是每模型全站综合价最低的代表行。 */
+export function orderByReleaseDesc(
+  rows: OverviewRecord[],
+  releaseByModel: Record<string, string>,
+): OverviewRecord[] {
+  return [...rows].sort((a, b) =>
+    compareByReleaseDesc(
+      { name: a.model, release: releaseByModel[canonicalModel(a.model)] },
+      { name: b.model, release: releaseByModel[canonicalModel(b.model)] },
+    ),
+  );
 }
 
 /** 综合价（排序用）：输入 3 : 输出 1 加权，统一折算 RMB；缺一项用另一项，都缺返回 null。 */
-export function blendedCnyPrice(row: OverviewRecord, rate: number | null): number | null {
+function blendedCnyPrice(row: OverviewRecord, rate: number | null): number | null {
   const input = effectiveCnyPrice(row, "input_price", rate);
   const output = effectiveCnyPrice(row, "output_price", rate);
   if (input != null && output != null) return (input * 3 + output) / 4;
@@ -56,7 +64,7 @@ export function lowestPriceRowPerModel(records: OverviewRecord[], rate: number |
 }
 
 /** 可靠性扣分对综合价的最大影响：满档扣分让排序价虚增 20%，可靠性与价格信号的权衡上限。 */
-export const RELIABILITY_CAP = 0.2;
+const RELIABILITY_CAP = 0.2;
 
 /** 可靠性加权综合价（智能排序主键）：综合价 × (1 + 20% × 归一化扣分)；缺综合价按 +∞ 沉底。 */
 function reliabilityWeightedPrice(

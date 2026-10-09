@@ -28,13 +28,14 @@ interface ChangeLike {
   previous?: { input_price: number | null; output_price: number | null; unit?: string; metadata?: PriceRecord["metadata"] } | null;
 }
 
-/** 参与变化比对的价格字段：输入/输出价 + 缓存读/写价。 */
-type PricedField = "input_price" | "output_price" | CachePriceField;
+/** 参与变化比对的价格字段：输入/输出价 + 缓存读/写价 + 计价单位/分组（后两者参与价格口径指纹）。 */
+type PricedField = "input_price" | "output_price" | CachePriceField | "unit" | "group";
 
-const PRICED_FIELDS = ["input_price", "output_price", "cache_read_price", "cache_create_price", "cache_create_1h_price"] as const satisfies readonly PricedField[];
+const PRICED_FIELDS = ["input_price", "output_price", "cache_read_price", "cache_create_price", "cache_create_1h_price", "unit", "group"] as const satisfies readonly PricedField[];
 
-function pricedValue(record: PriceRecord, field: PricedField): number | null {
+function pricedValue(record: PriceRecord, field: PricedField): string | number | null {
   if (field === "input_price" || field === "output_price") return record[field];
+  if (field === "unit") return record.unit ?? null;
   return record.metadata?.[field] ?? null;
 }
 
@@ -151,11 +152,11 @@ function RecordBlock({
           {cachePriceText(record, "cache_create_1h_price", rate) ?? "—"}
         </Row>
       )}
-      {unit && <Row label="计价单位">{unit}</Row>}
+      {unit && <Row label="计价单位" highlight={changes.has("unit")}>{unit}</Row>}
       <Row label="价格状态">
         <ToneTag tone={status.tone}>{status.label}</ToneTag>
       </Row>
-      {group && <Row label="分组">{group}</Row>}
+      {group && <Row label="分组" highlight={changes.has("group")}>{group}</Row>}
       {typeof confidence === "number" && <Row label="置信度">{Math.round(confidence * 100)}%</Row>}
       {notes && <Row label="备注">{String(notes)}</Row>}
       <Row label="采集时间">{formatTime(record.captured_at)}</Row>

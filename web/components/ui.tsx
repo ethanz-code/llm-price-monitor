@@ -669,41 +669,6 @@ export function LoadingRows({ rows = 5, style }: { rows?: number; style?: React.
   );
 }
 
-/* ---------- 占位弹窗（功能未上线） ---------- */
-
-export function ComingSoon({
-  label,
-  title,
-  description,
-  variant = "text",
-}: {
-  label: ReactNode;
-  title: string;
-  description: ReactNode;
-  variant?: "primary" | "ghost" | "text";
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Btn variant={variant} onClick={() => setOpen(true)}>
-        {label}
-      </Btn>
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={title}
-        footer={
-          <Btn variant="primary" onClick={() => setOpen(false)}>
-            知道了
-          </Btn>
-        }
-      >
-        <p style={{ color: "var(--text-2)", margin: 0, fontSize: 13.5, lineHeight: 1.7 }}>{description}</p>
-      </Modal>
-    </>
-  );
-}
-
 /** 表单行：label 包裹控件（读屏软件能把字段名和输入框关联起来），hint 是下方辅助说明。 */
 export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children?: ReactNode }) {
   return (

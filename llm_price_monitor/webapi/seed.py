@@ -10,8 +10,6 @@ from typing import Any
 from llm_price_monitor.config import config_from_raw, schedule_from_raw
 from llm_price_monitor.store import Store
 
-MODES = ("skip_existing", "overwrite")
-
 
 def apply_seed(store: Store, raw: dict[str, Any], mode: str) -> dict[str, Any]:
     """按模式把种子内容合并进库，返回写入摘要；先整体校验后落库，非法种子抛 ValueError。"""

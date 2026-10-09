@@ -35,6 +35,7 @@ from llm_price_monitor.config import AIConfig
 
 from llm_price_monitor.catalog import fx
 from llm_price_monitor.catalog.brands import is_hosted_model, is_unbranded, skip_reason
+from llm_price_monitor.catalog.general import is_general_llm
 from llm_price_monitor.catalog.normalize import model_key, round2
 from llm_price_monitor.catalog.translate import description_fingerprint_text
 from llm_price_monitor.page_price import fetch_page_prices, parse_context_limit
@@ -280,6 +281,9 @@ def refresh_source(store: Any, vendor: str, *, timeout: float, ai_config: AIConf
         _record_fetch(store, vendor, last_fetched_at=time.time(), last_status="failed", last_error=f"抓取失败：{exc}", last_method=None, model_count=0, models=None)
         return {"vendor": vendor, "status": "failed", "error": f"抓取失败：{exc}", "model_count": 0}
     models = result.get("models") or []
+    # 根源过滤：特殊领域模型与日期后缀快照变体（gpt-4o-2024-05-13、qwen3.8-max-0902
+    # 这类）不落库，详情展示、覆盖检测与后续合并都只见通用对话大模型
+    models = [item for item in models if is_general_llm({"model": str(item.get("model") or "")})]
     # 同一告警会因分块/AI 返回重复模型而重复（如小米 asr 列两次），去重后再存
     error = "；".join(dict.fromkeys(result.get("warnings") or [])) or None
     record = _record_fetch(
@@ -436,6 +440,11 @@ def merge_sources_into_catalog(
             if is_unbranded(name) or is_hosted_model(name, vendor):
                 skipped.append(skip_reason(name, vendor))
                 continue
+            # 只收通用对话大模型：特殊领域与日期后缀快照变体不进官方目录
+            # （存储层已过滤，这里是旧缓存数据未重抓时的防御）
+            if not is_general_llm({"model": name}):
+                skipped.append(f"{vendor}/{name}（特殊领域/快照变体，不进官方目录）")
+                continue
             if key in claimed:
                 skipped.append(f"{vendor}/{name}（与其他定价源撞模型键，先到先得）")
                 continue
@@ -521,6 +530,9 @@ def merge_sources_into_channel_catalog(
             if not isinstance(item, dict):
                 continue
             name = str(item.get("model") or "").strip()
+            # 特殊领域/快照变体不进全量渠道目录（存储层已过滤，这里防旧缓存）
+            if not is_general_llm({"model": name}):
+                continue
             key = model_key(name)
             if not key:
                 continue

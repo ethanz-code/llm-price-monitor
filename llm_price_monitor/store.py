@@ -456,6 +456,27 @@ class Store:
             cursor = conn.execute("DELETE FROM price_trend WHERE captured_at < ?", (before_ts,))
             return int(cursor.rowcount)
 
+    def purge_price_models(self, keep_models: set[str]) -> int:
+        """清掉不在监控清单里的模型的价格数据：latest 快照、趋势点与价格事件。
+
+        目录刷新的清单维护后对账调用——模型被移出清单（手动删、超期、滚出前 N）后
+        不再采集，残留的快照会让数据列表出现"早已不存在"的幽灵模型。返回清除的
+        latest 行数。keep_models 为空时不删（清单还没初始化，不误伤）。
+        """
+        if not keep_models:
+            return 0
+        placeholders = ",".join("?" * len(keep_models))
+        args = tuple(keep_models)
+        with self._conn() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM latest WHERE json_extract(record, '$.model') NOT IN ({placeholders})",
+                args,
+            )
+            removed = int(cursor.rowcount)
+            conn.execute(f"DELETE FROM price_trend WHERE model NOT IN ({placeholders})", args)
+            conn.execute(f"DELETE FROM price_events WHERE model NOT IN ({placeholders})", args)
+            return removed
+
     def purge_status(self, before_ts: float) -> int:
         with self._conn() as conn:
             cursor = conn.execute("DELETE FROM status_records WHERE captured_at < ?", (before_ts,))
@@ -499,6 +520,20 @@ class Store:
             since=since,
             since_column="detected_at",
         )
+
+    def read_price_event_rows(self) -> list[dict[str, Any]]:
+        """管理端全量读取价格事件（行 id + payload 合并）：维护类命令复判/清理用，不走公开接口的行数钳制。"""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id, payload FROM price_events ORDER BY id").fetchall()
+        return [{"id": row["id"], **json.loads(row["payload"])} for row in rows]
+
+    def delete_price_events(self, ids: list[int]) -> int:
+        """按行 id 删除价格事件，返回实际删除条数；仅供维护命令调用，公开端点不得触达。"""
+        if not ids:
+            return 0
+        with self._conn() as conn:
+            cursor = conn.executemany("DELETE FROM price_events WHERE id = ?", [(int(i),) for i in ids])
+            return int(cursor.rowcount)
 
     # ---------- 站点提交 ----------
 
@@ -683,11 +718,6 @@ class Store:
                 [*params, limit, offset],
             ).fetchall()
         return [dict(row) for row in rows], total
-
-    def purge_ai_logs(self, before_ts: float) -> int:
-        with self._conn() as conn:
-            cursor = conn.execute("DELETE FROM ai_logs WHERE ts < ?", (before_ts,))
-            return int(cursor.rowcount)
 
     def ai_logs_summary(self, *, trend_days: int = 7) -> dict[str, Any]:
         """AI 调用统计聚合：全部保留记录的 KPI、按天趋势与场景/模型分布。

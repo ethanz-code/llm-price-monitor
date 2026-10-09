@@ -694,37 +694,7 @@ body > main {
   color: var(--text-3);
 }
 
-/* 折扣迷你条：数值 + 相对厂商价的比例条，颜色沿用语义 tone */
-/* 折扣紧凑芯片（首页快照表）：色点 + 标签 + 数值，单行排布压行高 */
-.disc-chips {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  white-space: nowrap;
-}
-
-.disc-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12.5px;
-}
-
-.disc-chip-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.disc-chip-label {
-  color: var(--text-3);
-}
-
-.disc-chip-val {
-  color: var(--text-2);
-}
-
+/* 折扣迷你条：数值 + 相对厂商价的比例条，颜色沿用语义 tone；首页快照表的紧凑版数值直接着色，无独立样式 */
 .disc-cell {
   display: grid;
   gap: 4px;

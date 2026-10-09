@@ -302,6 +302,55 @@ def test_fetch_catalog_propagates_http_errors(monkeypatch):
         fetch_catalog(transport=transport)
 
 
+def test_fetch_catalogs_official_excludes_snapshots_and_specials(monkeypatch):
+    """官方目录只收通用对话大模型：日期后缀快照变体与特殊领域模型不进，全量渠道目录不受限。"""
+    monkeypatch.setattr(modelsdev.fx, "get_usd_cny_rate", lambda client, fallback=None: (6.74, "test"))
+    snapshot = {"openai": _provider("openai", "OpenAI", "https://platform.openai.com/docs/models", {
+        "gpt-5.6-sol": {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "release_date": "2026-08-01",
+                        "cost": {"input": 5.0, "output": 30.0}},
+        # 日期后缀快照变体：官方基准只认主线名
+        "gpt-4o-2024-05-13": {"id": "gpt-4o-2024-05-13", "name": "GPT-4o", "release_date": "2024-05-13",
+                              "cost": {"input": 2.5, "output": 10.0}},
+        "gpt-4o-1120": {"id": "gpt-4o-1120", "name": "GPT-4o 1120", "cost": {"input": 2.5, "output": 10.0}},
+        # 特殊领域：生图与向量（modalities 标注与对话模型无异，靠名字识别）
+        "gpt-image-2": {"id": "gpt-image-2", "name": "GPT Image 2",
+                        "modalities": {"input": ["text", "image"], "output": ["image"]},
+                        "cost": {"input": 3.0, "output": 12.0}},
+        "text-embedding-3-small": {"id": "text-embedding-3-small", "name": "Embedding",
+                                   "modalities": {"input": ["text"], "output": ["text"]},
+                                   "cost": {"input": 0.02, "output": None}},
+    })}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=snapshot))
+    official, full = modelsdev.fetch_catalogs(transport=transport)
+    assert set(official["models"]) == {"gpt5.6sol"}
+    # 全量渠道目录原样保留上游条目（仅供展示的比价数据不裁剪）
+    assert set(full["models"]) >= {"openai:gpt4o20240513", "openai:gptimage2", "openai:textembedding3small"}
+
+
+def test_is_general_llm_and_snapshot_variant():
+    from llm_price_monitor.catalog.general import is_general_llm, is_snapshot_variant
+
+    # 日期后缀快照变体：全日期 / 8 位全数字 / YYMMDD / MMDD 都算；YYMM 版本号不算
+    assert is_snapshot_variant("gpt-4o-2024-05-13")
+    assert is_snapshot_variant("claude-sonnet-4-5-20250929")
+    assert is_snapshot_variant("doubao-seed-1-6-250615")
+    assert is_snapshot_variant("deepseek-v4-pro-0813")
+    assert is_snapshot_variant("qwen3.8-max-0902")
+    assert not is_snapshot_variant("step-3.5-flash-2603")  # YYMM 版本号，不是日期
+    assert not is_snapshot_variant("glm-5.3")
+    # 特殊领域：音频/图像输出、纯音频输入、向量、角色扮演、全模态生成系列
+    assert not is_general_llm({"model": "m-lyric", "modalities": {"input": ["text"], "output": ["text", "audio"]}})
+    assert not is_general_llm({"model": "gpt-image-2", "modalities": {"input": ["text"], "output": ["image"]}})
+    assert not is_general_llm({"model": "qwen3-asr-flash", "modalities": {"input": ["audio"], "output": ["text"]}})
+    assert not is_general_llm({"model": "text-embedding-3-small"})
+    assert not is_general_llm({"model": "doubao-seed-character"})
+    assert not is_general_llm({"model": "MiniMax-H3"})
+    # 通用对话模型（含未标 modalities 的国内条目）照常通过
+    assert is_general_llm({"model": "glm-5.3-flash", "modalities": {"input": ["text", "image"], "output": ["text"]}})
+    assert is_general_llm({"model": "doubao-seed-2.1-pro"})
+    assert is_general_llm({"model": "qwen3.8-omni-flash"})  # 输出纯文本的全模态理解模型
+
+
 # ---------- report.attach_catalog_discounts ----------
 
 

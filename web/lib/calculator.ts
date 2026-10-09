@@ -7,7 +7,7 @@ export type PriceKey = "input" | "output" | "cacheRead";
 
 export type CalcPrices = Record<PriceKey, number | null>;
 
-export interface CostLine {
+interface CostLine {
   key: PriceKey;
   /** 单价（每 100 万 token，与 CalcPrices 同币种）；该档没填价时为 null，整档不计入总价 */
   unitPrice: number | null;
@@ -30,14 +30,14 @@ export const PRICE_KEYS: PriceKey[] = ["input", "output", "cacheRead"];
 const TOKENS_PER_UNIT = 1_000_000;
 
 /** 缓存命中率默认 98%：反复带同前缀的调用（agent、多轮对话）普遍在这个量级。 */
-export const DEFAULT_HIT_RATE = 98;
+const DEFAULT_HIT_RATE = 98;
 
 /** 总用量快捷档位（与 copy.ts 的 tokenPresets 标签按序对应），默认 1 亿。 */
 export const TOKEN_PRESET_VALUES = [10_000_000, 100_000_000, 1_000_000_000] as const;
 export const DEFAULT_TOTAL_TOKENS: number = TOKEN_PRESET_VALUES[1];
 
 /** 输入占 99.2%：agent 类实际用量口径，成本几乎由输入决定。 */
-export const INPUT_SHARE = 0.992;
+const INPUT_SHARE = 0.992;
 
 /** 用量口径：一个总量（快捷档位）+ 缓存命中率，不按计费档分别填。 */
 export interface CalcUsage {

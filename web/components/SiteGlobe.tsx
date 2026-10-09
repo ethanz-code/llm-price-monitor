@@ -169,15 +169,16 @@ export function SiteGlobe({
       phi,
       theta,
       dark: dark ? 1 : 0,
-      // 形态对齐 cobe 官方 demo（V2）：diffuse 1.2 / mapBrightness 6 / theta 0.2，
-      // 颜色沿用项目主题：暗色光晕取品牌橙 #ff8534 压暗一档，标记点用渠道状态色
+      // 形态对齐 cobe 官方 demo（V2）：diffuse 1.2 / mapBrightness 6 / theta 0.2，标记点用渠道状态色。
+      // glowColor 会同时画球面菲涅尔包边和外圈大气晕，暗色下必须走中性冷灰：
+      // 带色相的值（如品牌橙压暗）在近黑底上会糊成一圈脏色，且违反 design-guide 的"发光球体渐变"禁令
       diffuse: 1.2,
       mapSamples: 16000,
       mapBrightness: 6,
       baseColor: dark ? [0.3, 0.3, 0.32] : [1, 1, 1],
       // 默认标记色仅兜底：实际颜色由 buildMarkers 里每个节点的状态色覆盖
       markerColor: dark ? [0.78, 1, 0] : [0.525, 0.76, 0],
-      glowColor: dark ? [0.22, 0.11, 0.04] : [1, 1, 1],
+      glowColor: dark ? [0.12, 0.13, 0.15] : [1, 1, 1],
       markers: [],
     });
     globeRef.current = globe;

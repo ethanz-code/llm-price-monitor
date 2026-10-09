@@ -13,7 +13,8 @@ interface MultiOption {
 }
 
 /** 一次最多渲染的匹配项：候选数百条时全部渲染没必要。 */
-const MODEL_MATCH_LIMIT = 60;
+// 搜索态的命中上限：过滤后一般就几条，兜住极端关键词；无关键词的浏览态不截断（见 matches）
+const MODEL_MATCH_LIMIT = 200;
 
 const MODEL_HINT_STYLE: React.CSSProperties = { fontSize: 12.5, color: "var(--text-3)", padding: "6px 8px" };
 
@@ -61,7 +62,9 @@ function TagMultiSelect({
   const keyword = query.trim().toLowerCase();
   const matches = useMemo(() => {
     const source = options ?? [];
-    if (!keyword) return source.slice(0, MODEL_MATCH_LIMIT);
+    // 无关键词全量渲染：候选按厂商分组就是给人从头浏览的，截断会让后面的厂商“消失”
+    // （下拉本身是滚动容器，目录全量几百条没有渲染压力）
+    if (!keyword) return source;
     const hit = source.filter((item) => looseIncludes(item.id, keyword) || looseIncludes(item.note ?? "", keyword));
     // 手动添加的名字不在候选里：把命中的已选项补进来，保证始终可见可移除
     for (const id of value) {
@@ -96,6 +99,9 @@ function TagMultiSelect({
           alignItems: "center",
           width: "100%",
           minHeight: 34,
+          // 已选标签多时框体不无限长高：约四行封顶，内部滚动
+          maxHeight: 138,
+          overflowY: "auto",
           padding: "5px 10px",
           borderRadius: 6,
           border: "1px solid var(--border-strong)",

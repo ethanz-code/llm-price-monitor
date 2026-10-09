@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Btn, Input, Modal, toast } from "./ui";
 import { apiSend } from "@/lib/api";
 
-export function SiteSubmitModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function SiteSubmitModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [models, setModels] = useState("");

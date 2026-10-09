@@ -8,36 +8,13 @@ import { RiskLink } from "./RiskLink";
 import { getSiteInfo } from "@/lib/sites";
 import type { EventRow } from "@/lib/types";
 import { dayKey, dayLabel, eventMeta, formatTime, isNoticeEvent, noticeExcerpt, noticePlainText } from "@/lib/format";
+import { foldEvents } from "@/lib/events";
 import type { FeedEvent, HistoryListData } from "@/lib/types";
 import { describeChange, EventDetailModal } from "./EventDetailModal";
 
 function KindTag({ kind }: { kind: string }) {
   const meta = eventMeta(kind);
   return <ToneTag tone={meta.tone}>{meta.label}</ToneTag>;
-}
-
-// 同一轮扫描（检测时间相邻 120 秒内）同站点+模型+同类事件折成一组，多分组只显示一张卡；公告事件不折叠
-function foldEvents(events: FeedEvent[]): FeedEvent[][] {
-  const groups: FeedEvent[][] = [];
-  for (const event of events) {
-    const last = groups[groups.length - 1];
-    const lastEvent = last?.[last.length - 1];
-    if (
-      last &&
-      lastEvent &&
-      !isNoticeEvent(event) &&
-      !isNoticeEvent(lastEvent) &&
-      lastEvent.site_id === event.site_id &&
-      lastEvent.model === event.model &&
-      lastEvent.kind === event.kind &&
-      Math.abs(event.detected_at - lastEvent.detected_at) <= 120
-    ) {
-      last.push(event);
-    } else {
-      groups.push([event]);
-    }
-  }
-  return groups;
 }
 
 /** 卡片上的小圆角按钮："详情""N 个分组"共用。 */
@@ -108,7 +85,7 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
                   <KindTag kind={event.kind} />
                   <span onClick={(e) => e.stopPropagation()}>
                     <RiskLink href={getSiteInfo(event.site_id).homepage} variant="site">
-                      <span className="mono">{event.site_id}</span>
+                      <span>{getSiteInfo(event.site_id).name}</span>
                     </RiskLink>
                   </span>
                   <span className="mono" style={{ color: "var(--text-3)", fontSize: 12, marginLeft: "auto" }}>
@@ -134,7 +111,7 @@ function EventFeed({ events, rate }: { events: FeedEvent[]; rate?: number | null
                     href={getSiteInfo(event.site_id, event.current?.source_url ?? event.previous?.source_url).homepage}
                     variant="site"
                   >
-                    <span className="mono">{event.site_id}</span>
+                    <span>{getSiteInfo(event.site_id, event.current?.source_url ?? event.previous?.source_url).name}</span>
                   </RiskLink>
                 </span>
                 <span className="mono" style={{ color: "var(--text-2)" }}>{event.model}</span>

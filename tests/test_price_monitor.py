@@ -2330,6 +2330,54 @@ def test_fingerprint_ignores_ai_noise_and_detects_real_price_changes():
     assert classify(base, {**base, "price_status": "rule_only"}) == "status_changed"
 
 
+def test_fingerprint_treats_null_value_as_missing_key():
+    """tier 里显式写 null 的键与整键省略是同一价格口径：AI 抽取轮次间的表示漂移不得刷"变更"事件
+    （DaiTuAI 2026-10-03 实测：前后有效价完全一致，仅 cache_create_price 从 null 键变成省略键，被误判 changed）。"""
+    base = {
+        "model": "gpt-6-astra",
+        "input_price": 1.5,
+        "output_price": 7.5,
+        "unit": "CNY/1M tokens",
+        "price_status": "candidate",
+        "requires_auth": False,
+        "metadata": {
+            "group": "lite",
+            "cache_read_price": 0.15,
+            "cache_create_price": None,
+            "cache_create_1h_price": None,
+            "pricing_rules": {"groups": [{"name": "lite", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": 1.5, "output_price": 7.5,
+                 "cache_read_price": 0.15, "cache_create_price": None, "cache_create_1h_price": None,
+                 "unit": "CNY/1M tokens"},
+            ]}]},
+        },
+    }
+    # 下一轮抽取直接省略了值为 null 的两个键，其余价格字段一字未动
+    omitted = {
+        **base,
+        "metadata": {
+            **base["metadata"],
+            "cache_create_price": None,
+            "cache_create_1h_price": None,
+            "pricing_rules": {"groups": [{"name": "lite", "tiers": [
+                {"context_min": 0, "context_max": None, "input_price": 1.5, "output_price": 7.5,
+                 "cache_read_price": 0.15, "unit": "CNY/1M tokens"},
+            ]}]},
+        },
+    }
+    assert fingerprint(base) == fingerprint(omitted)
+    assert classify(base, omitted) == "unchanged"
+
+    # 归一只统一"空"的两种写法，不代表丢检测：缓存价从 null/缺失变成有值仍是真变更
+    gained = {
+        **omitted,
+        "metadata": {**omitted["metadata"], "cache_create_price": 1.5},
+    }
+    assert classify(base, gained) == "changed"
+    # 有值变缺失同理
+    assert classify(gained, omitted) == "changed"
+
+
 def test_parse_scalar_keeps_non_json_js_array_as_text():
     """压缩 JS 的数组常不是合法 JSON（.15 前导点、单引号）：原样保留文本，别崩掉整条解析链。"""
     from llm_price_monitor.adapters import _parse_scalar

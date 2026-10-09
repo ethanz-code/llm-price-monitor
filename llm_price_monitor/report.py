@@ -78,7 +78,9 @@ def fingerprint(value: dict[str, Any]) -> str:
 
     AI 抽取每次输出的上下文边界、备注文本、证据引文都会漂移，不参与指纹；
     pricing_rules 里的 context 边界同理剔除。数值统一整值浮点归一（14.0 → 14），
-    避免 int/float 表示差异被误判成变化。
+    避免 int/float 表示差异被误判成变化。值为 None 的键与键缺失视为等价——
+    同一价格有的抽取轮次显式写 null、有的直接省略键（cache_create_price 等），
+    不归一的话每轮表示法抖动都会刷出一条"价格没变的变更"事件。
     """
 
     def normalize(item: Any) -> Any:
@@ -89,7 +91,11 @@ def fingerprint(value: dict[str, Any]) -> str:
         if isinstance(item, list):
             return [normalize(entry) for entry in item]
         if isinstance(item, dict):
-            return {key: normalize(entry) for key, entry in item.items() if key not in ("context_min", "context_max")}
+            return {
+                key: normalize(entry)
+                for key, entry in item.items()
+                if key not in ("context_min", "context_max") and entry is not None
+            }
         return item
 
     comparable = {key: normalize(value.get(key)) for key in ("model", "input_price", "output_price", "unit", "price_status", "requires_auth")}
@@ -551,8 +557,10 @@ def _scan_prices(
             current["fingerprint"] = fingerprint(current)
             current["captured_at"] = record.captured_at
             records.append(current)
-            # 指纹去重：价格口径与上一轮一致就不写历史行，趋势表只保留真实变化点
-            if previous is None or previous.get("fingerprint") != current["fingerprint"]:
+            # 指纹去重：价格口径与上一轮一致就不写历史行，趋势表只保留真实变化点。
+            # previous 的指纹现场重算而非读存量哈希——历史行落库时的口径可能比当前代码旧，
+            # 直接比存量哈希会让口径升级后的第一轮全量多写一遍趋势行
+            if previous is None or fingerprint(previous) != current["fingerprint"]:
                 history_rows.append(current)
             if previous is None and record.model in known_models:
                 kind = "group_added"  # 老模型的新分组：与分组下线对称，区别于全新模型的"新增"

@@ -1,4 +1,4 @@
-import { discountTone, formatDiscount } from "@/lib/format";
+import { discountTone, formatDiscount, toneText } from "@/lib/format";
 
 /** 折扣条渐变色：0 全绿 → 0.5 纯黄 → 1 全红，在语义 tone 色之间按数值连续插值。
  *  低折扣段按平方根布色（1%→14% 黄混、5%→32%、25%→71%），把常见 1–5 折数据的颜色差异放大到肉眼可辨；
@@ -14,7 +14,7 @@ function discountFillColor(value: number): string {
 }
 
 /** 单条折扣的迷你条形：数值 + 相对厂商价的比例条，填充色随折扣值连续渐变（折扣越深越绿、越接近原价越红）。 */
-export function DiscountBar({ label, value }: { label: string; value: number | null | undefined }) {
+function DiscountBar({ label, value }: { label: string; value: number | null | undefined }) {
   if (value === null || value === undefined) return null;
   const pct = Math.round(Math.min(Math.max(value, 0), 1) * 100);
   return (
@@ -38,36 +38,46 @@ export function DiscountBar({ label, value }: { label: string; value: number | n
   );
 }
 
-/** 汇总区间条：各站点折扣的最低–最高范围画在 0–100% 刻度上，竖线标均值位置。
- *  颜色沿用均值折扣的语义 tone，与逐站点折扣条一致。 */
-export function DiscountRangeBar({ min, max, avg }: { min: number; max: number; avg: number }) {
-  const tone = discountTone(avg);
-  const scale = (value: number) => Math.min(Math.max(value, 0), 1) * 100;
+/** 紧凑折扣数值：语义色直读（≤50% 绿、≤80% 黄、其余红），不再画色点。 */
+function DiscountValue({ value }: { value: number }) {
   return (
-    <span className="disc-range" aria-hidden>
-      <span
-        className={`disc-range-fill tone-${tone}`}
-        style={{ left: `${scale(min)}%`, width: `${Math.max(scale(max) - scale(min), 2)}%` }}
-      />
-      <span className={`disc-range-avg tone-${tone}`} style={{ left: `${scale(avg)}%` }} />
+    <span className="mono" style={{ fontSize: 12.5, color: toneText(discountTone(value)) }}>
+      {formatDiscount(value)}
     </span>
   );
 }
 
-/** 紧凑折扣芯片：色点表达折扣深浅（与条形同一套渐变色），文字单行，给行高敏感的表用。 */
-function DiscountChip({ label, value }: { label: string; value: number | null | undefined }) {
-  if (value === null || value === undefined) return null;
+/** 首页快照表的紧凑折扣：输入/输出折扣相同时合并为一个数值（最常见的情形，一行只读一个数），
+ *  不同时写全「输入/输出」并列；数值直接用折扣语义色，深浅一眼可辨。 */
+function DiscountCompact({ discount }: { discount: { input: number | null; output: number | null } }) {
+  const { input, output } = discount;
+  if (input != null && output != null && input === output) {
+    return (
+      <span title={`输入与输出折扣相同，均为厂商原价的 ${formatDiscount(input)}`}>
+        <DiscountValue value={input} />
+      </span>
+    );
+  }
   return (
-    <span className="disc-chip">
-      <span aria-hidden className="disc-chip-dot" style={{ background: discountFillColor(value) }} />
-      <span className="disc-chip-label">{label}</span>
-      <span className="mono disc-chip-val">{formatDiscount(value)}</span>
+    <span style={{ display: "inline-flex", alignItems: "baseline", gap: 10, whiteSpace: "nowrap" }}>
+      {input != null && (
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 4 }}>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>输入</span>
+          <DiscountValue value={input} />
+        </span>
+      )}
+      {output != null && (
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 4 }}>
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>输出</span>
+          <DiscountValue value={output} />
+        </span>
+      )}
     </span>
   );
 }
 
 /** 输入/输出两条折扣条形；两者皆空时显示弱化的 —。
- *  compact = 单行芯片版（首页快照表），默认堆叠条形（总览表等宽松表格）。 */
+ *  compact = 首页快照表单行版（相同折扣合并、语义色直读），默认堆叠条形（总览表等宽松表格）。 */
 export function DiscountBars({
   discount,
   compact = false,
@@ -79,12 +89,7 @@ export function DiscountBars({
     return <span style={{ color: "var(--text-3)" }}>—</span>;
   }
   if (compact) {
-    return (
-      <span className="disc-chips">
-        <DiscountChip label="入" value={discount.input} />
-        <DiscountChip label="出" value={discount.output} />
-      </span>
-    );
+    return <DiscountCompact discount={discount} />;
   }
   return (
     <span className="disc-cell">

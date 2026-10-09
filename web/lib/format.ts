@@ -2,7 +2,7 @@
 
 export type Tone = "green" | "blue" | "yellow" | "red" | "gray";
 
-export const EVENT_META: Record<string, { label: string; tone: Tone }> = {
+const EVENT_META: Record<string, { label: string; tone: Tone }> = {
   new: { label: "新增", tone: "blue" },
   changed: { label: "价格变化", tone: "yellow" },
   recovered: { label: "恢复", tone: "green" },
@@ -187,7 +187,7 @@ interface CachePriced {
 }
 
 /** 缓存价原始值：站点未提供（字段缺省或 null）返回 null。 */
-export function cachePriceValue(row: CachePriced | null | undefined, field: CachePriceField): number | null {
+function cachePriceValue(row: CachePriced | null | undefined, field: CachePriceField): number | null {
   const value = row?.metadata?.[field];
   return typeof value === "number" ? value : null;
 }
@@ -298,7 +298,7 @@ export function toneText(tone: Tone): string {
 }
 
 /** 采集状态语义：key 与后端 price_status / collect_status 文档对齐。 */
-export const STATUS_META: Record<string, { label: string; tone: Tone }> = {
+const STATUS_META: Record<string, { label: string; tone: Tone }> = {
   ok: { label: "正常", tone: "green" },
   confirmed: { label: "正常", tone: "green" },
   rule_only: { label: "规则价", tone: "blue" },
@@ -330,7 +330,7 @@ export function rowReason(row: {
 }
 
 /** 归一化搜索文本：小写并去掉分隔符（- _ . 空格等），让 GLM5.3 能命中 GLM-5.3。 */
-export function looseSearchKey(text: string): string {
+function looseSearchKey(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "");
 }
 

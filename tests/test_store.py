@@ -230,6 +230,34 @@ def test_purge_history_and_events(tmp_path: Path):
     assert store.read_history(limit=10)[0][0]["captured_at"] == 2.0
 
 
+def test_purge_price_models_removes_unmonitored(tmp_path: Path):
+    """清单对账清理：不在监控清单里的模型，快照/趋势/事件全站一并清掉，
+    清单内的不动；清单为空时是保护性空操作（不误伤还没初始化的库）。"""
+    store = Store(tmp_path / "monitor.db")
+    store.replace_latest({
+        "demo:m1:default": {"site_id": "demo", "model": "m1", "input_price": 1.0},
+        "demo:ghost:default": {"site_id": "demo", "model": "ghost", "input_price": 2.0},
+        "other:ghost:default": {"site_id": "other", "model": "ghost", "input_price": 3.0},
+    })
+    store.append_history([
+        {"site_id": "demo", "model": "m1", "captured_at": 1.0},
+        {"site_id": "demo", "model": "ghost", "captured_at": 1.0},
+    ])
+    store.append_events([
+        {"site_id": "demo", "model": "m1", "kind": "new", "detected_at": 1.0},
+        {"site_id": "demo", "model": "ghost", "kind": "new", "detected_at": 1.0},
+    ])
+
+    assert store.purge_price_models({"m1"}) == 2
+    assert set(store.latest_all()) == {"demo:m1:default"}
+    assert store.count_history() == 1
+    events, _ = store.read_events(limit=10)
+    assert [event["model"] for event in events] == ["m1"]
+
+    assert store.purge_price_models(set()) == 0
+    assert set(store.latest_all()) == {"demo:m1:default"}
+
+
 def test_prune_price_groups_keeps_only_selected_groups(tmp_path: Path):
     """分组白名单保存时：快照/历史/事件里未选中分组的行被删（分组名忽略大小写），
     group_miss 计数同步清理；未选中分组的判定只影响目标站点，别站数据不动；留空是幂等空操作。"""
@@ -375,3 +403,60 @@ def test_rename_site_moves_collect_health(tmp_path: Path):
 
     assert store.get_document("collect_status") == {"new-id": {"price": "ok"}, "keep": {}}
     assert store.get_document("site_collect_health") == {"new-id": {"price": "请求失败"}, "keep": {}}
+
+
+def _noop_change_event() -> dict:
+    """构造"价格没变的变更"事件：前后有效价一致，仅 tier 里 null 值键 vs 键缺失（表示法漂移）。"""
+    def record(**overrides):
+        metadata = {
+            "group": "lite",
+            "cache_read_price": 0.15,
+            "confidence": 0.9,
+            "pricing_rules": {"groups": [{"name": "lite", "tiers": [overrides.pop("tier")]}]},
+            **overrides.pop("metadata", {}),
+        }
+        return {
+            "site_id": "DaiTuAI", "model": "gpt-6-astra",
+            "input_price": 1.5, "output_price": 7.5, "unit": "CNY/1M tokens",
+            "price_status": "candidate", "requires_auth": False,
+            "captured_at": 1790991230.0, **overrides, "metadata": metadata,
+        }
+
+    return {
+        "site_id": "DaiTuAI", "model": "gpt-6-astra", "kind": "changed", "detected_at": time.time(),
+        "previous": record(tier={"context_min": 0, "context_max": None, "input_price": 1.5, "output_price": 7.5,
+                                 "cache_read_price": 0.15, "cache_create_price": None, "cache_create_1h_price": None,
+                                 "unit": "CNY/1M tokens"}),
+        "current": record(tier={"context_min": 0, "context_max": None, "input_price": 1.5, "output_price": 7.5,
+                                "cache_read_price": 0.15, "unit": "CNY/1M tokens"},
+                          metadata={"confidence": 0.95}),
+    }
+
+
+def test_prune_noop_events_preview_then_apply(tmp_path: Path, capsys):
+    """假变更清理命令：默认预览不动库，--apply 只删前后口径等价的事件，真实变更保留。"""
+    from llm_price_monitor.admin_cli import prune_noop_events
+    from llm_price_monitor.report import classify
+
+    store = Store(tmp_path / "monitor.db")
+    noop = _noop_change_event()
+    real = {**noop, "model": "gpt-6-luna", "kind": "changed",
+            "current": {**noop["current"], "input_price": 3.0}}
+    # 防呆：构造的事件必须仍满足"假变更按当前口径 unchanged、真变更 changed"
+    assert classify(noop["previous"], noop["current"]) == "unchanged"
+    assert classify(real["previous"], real["current"]) == "changed"
+
+    store.append_events([noop, real])
+
+    prune_noop_events(store, apply=False)
+    assert "预览模式" in capsys.readouterr().out
+    assert store.count_events() == 2  # 预览不删
+
+    prune_noop_events(store, apply=True)
+    out = capsys.readouterr().out
+    assert "已删除 1 条" in out
+    remaining = store.read_events(limit=10)[0]
+    assert [event["model"] for event in remaining] == ["gpt-6-luna"]
+
+    prune_noop_events(store, apply=True)
+    assert "没有需要清理的事件" in capsys.readouterr().out

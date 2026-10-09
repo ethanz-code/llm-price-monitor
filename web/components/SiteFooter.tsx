@@ -22,7 +22,8 @@ export function SiteFooter() {
             <LogoMark size={20} />
             <span style={{ fontFamily: "var(--mono)", fontWeight: 600, lineHeight: 1, translate: "0 1px", color: "var(--text)" }}>{site.name}</span>
           </div>
-          <p>{footer.brandLine}</p>
+          {/* 文案里的 \n 是真实换行：免责声明一行，祝语另起一行 */}
+          <p style={{ whiteSpace: "pre-line" }}>{footer.brandLine}</p>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
               className="footer-icon"

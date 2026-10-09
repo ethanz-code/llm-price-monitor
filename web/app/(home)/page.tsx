@@ -9,7 +9,8 @@ import {
   noticeExcerpt,
 } from "@/lib/format";
 import { getSiteInfo } from "@/lib/sites";
-import { lowestPriceRowPerModel, orderByCheapestPrice } from "@/lib/priceRows";
+import { canonicalModel, lowestPriceRowPerModel, orderByReleaseDesc } from "@/lib/priceRows";
+import { foldEvents, groupNames } from "@/lib/events";
 import {
   buildSiteViews,
   latencyLevel,
@@ -17,8 +18,8 @@ import {
   type RateLevel,
 } from "@/lib/channelStatus";
 import type {
+  CatalogData,
   FeedData,
-  FeedEvent,
   HistoryListData,
   MetaData,
   OverviewData,
@@ -53,6 +54,8 @@ interface LandingData {
   geo: Record<string, SiteGeo>;
   /** AA 榜单：首页速览用，拉取失败只影响榜单小节 */
   rankings: RankingsData | null;
+  /** 厂商目录：只取发布日期建排序索引，拉取失败只影响最新价格的排序口径 */
+  catalog: CatalogData | null;
   error: string | null;
 }
 
@@ -74,7 +77,7 @@ const STRIP_DOT_TONE: Record<RateLevel, string> = {
 async function loadLanding(): Promise<LandingData> {
   try {
     // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
-    const [overview, meta, feed, status, geo, rankings] = await Promise.all([
+    const [overview, meta, feed, status, geo, rankings, catalog] = await Promise.all([
       apiGet<OverviewData>("/api/overview", undefined, PUBLIC_REVALIDATE),
       apiGet<MetaData>("/api/meta", undefined, PUBLIC_REVALIDATE),
       apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8", undefined, PUBLIC_REVALIDATE).catch(() => null),
@@ -89,6 +92,7 @@ async function loadLanding(): Promise<LandingData> {
       // 站点定位较慢（DNS + 归属地查询），失败只影响地球落点，不阻塞整页
       apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo", undefined, PUBLIC_REVALIDATE).catch(() => ({ geo: {} })),
       apiGet<RankingsData>("/api/rankings", undefined, PUBLIC_REVALIDATE).catch(() => null),
+      apiGet<CatalogData>("/api/catalog", undefined, PUBLIC_REVALIDATE).catch(() => null),
     ]);
     // hero 折线是装饰位：历史拉取失败只影响图表兜底回插画，不阻塞整页报错
     let history: HistoryListData | null;
@@ -97,7 +101,7 @@ async function loadLanding(): Promise<LandingData> {
     } catch {
       history = null;
     }
-    return { overview, meta, feed, history, status: status.records, geo: geo.geo, rankings, error: null };
+    return { overview, meta, feed, history, status: status.records, geo: geo.geo, rankings, catalog, error: null };
   } catch (cause) {
     return {
       overview: null,
@@ -107,6 +111,7 @@ async function loadLanding(): Promise<LandingData> {
       status: [],
       geo: {},
       rankings: null,
+      catalog: null,
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
@@ -151,7 +156,7 @@ function collectSites(overview: OverviewData | null, meta: MetaData | null) {
 }
 
 export default async function LandingPage() {
-  const { overview, meta, feed, history, status, geo, rankings, error } = await loadLanding();
+  const { overview, meta, feed, history, status, geo, rankings, catalog, error } = await loadLanding();
   // JSON-LD 里的站点地址要绝对 URL，与 metadataBase 同一推导口径
   const origin = await siteOrigin();
   const records = overview?.records ?? [];
@@ -161,8 +166,9 @@ export default async function LandingPage() {
   const maxRankIndex = Math.max(0, ...rankingsTop.map((entry) => entry.intelligence_index ?? 0));
   // 站点价统一按 RMB 展示：汇率取厂商价快照口径
   const rate = overview?.catalog?.usd_cny_rate ?? null;
-  // 最新事件侧栏直接用统一事件流；公告事件没有模型行，展示公告摘要
-  const latestEvents: FeedEvent[] = (feed?.events ?? []).slice(0, 4);
+  // 最新事件侧栏与事件追踪页同一套折叠口径（同站同模型同类 120s 内折一张卡），
+  // 原始事件按「站点+模型+分组」入库，不折叠会同模型并排出几条看起来一样的行；公告事件没有模型行，展示公告摘要
+  const latestEventGroups = foldEvents(feed?.events ?? []).slice(0, 4);
   const historyRecords = history?.records ?? [];
 
   // 站点检测档案：可用率序列供星球悬停与站点卡片色点共用，延迟序列供站点卡片延迟着色；
@@ -229,8 +235,13 @@ export default async function LandingPage() {
       ? Math.round(latestPcts.reduce((sum, pct) => sum + pct, 0) / latestPcts.length)
       : null;
 
-  // 首页精选：每个模型归一合并后只留综合价最低的一行，按综合价从低到高排
-  const parentRows = orderByCheapestPrice(lowestPriceRowPerModel(records, rate), rate);
+  // 首页精选：每个模型归一合并后只留综合价最低的一行，按目录发布日期倒序（新模型在前），
+  // 与总览页模型下拉同一套口径；目录没收录的模型垫底按名称
+  const releaseByModel: Record<string, string> = {};
+  for (const entry of Object.values(catalog?.models ?? {})) {
+    if (entry?.model) releaseByModel[canonicalModel(entry.model)] = entry.release_date ?? "";
+  }
+  const parentRows = orderByReleaseDesc(lowestPriceRowPerModel(records, rate), releaseByModel);
 
   return (
     <>
@@ -300,7 +311,7 @@ export default async function LandingPage() {
                 </Link>
               </div>
               <p className="landing-section-sub">{home.sectionSubs.latestPrice}</p>
-              <SnapshotPreview rows={parentRows.slice(0, 6)} rate={rate} />
+              <SnapshotPreview rows={parentRows.slice(0, 12)} rate={rate} />
             </section>
           </Reveal>
         )}
@@ -322,9 +333,10 @@ export default async function LandingPage() {
                   {home.viewAllEvents}
                 </Link>
               </div>
-              {latestEvents.length > 0 ? (
+              {latestEventGroups.length > 0 ? (
                 <div className="landing-events">
-                  {latestEvents.map((event, index) => {
+                  {latestEventGroups.map((group, index) => {
+                    const event = group[0];
                     const meta = eventMeta(event.kind);
                     const site = isNoticeEvent(event)
                       ? getSiteInfo(event.site_id)
@@ -333,11 +345,13 @@ export default async function LandingPage() {
                           event.current?.source_url ??
                             event.previous?.source_url,
                         );
+                    const groups = groupNames(group);
                     return (
                       <Link
                         key={`${event.site_id}:${event.kind}:${event.detected_at}:${index}`}
                         href="/history"
                         className="event-row"
+                        title={groups.length > 1 ? `包含分组：${groups.join(" / ")}` : undefined}
                       >
                         <span className={`event-badge tone-${meta.tone}`}>
                           {meta.label}
@@ -350,7 +364,12 @@ export default async function LandingPage() {
                                 {noticeExcerpt(event.content)}
                               </span>
                             ) : (
-                              <span className="mono">{event.model}</span>
+                              <>
+                                <span className="mono">{event.model}</span>
+                                {group.length > 1 && (
+                                  <span> · {group.length} 个分组</span>
+                                )}
+                              </>
                             )}
                           </span>
                         </span>

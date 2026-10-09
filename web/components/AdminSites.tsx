@@ -344,7 +344,16 @@ export function AdminSites() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") event.currentTarget.blur();
                 }}
-                style={{ width: 56, padding: "3px 6px", border: "1px solid var(--border, #ddd)", borderRadius: 6, fontSize: 12, textAlign: "center" }}
+                style={{
+                  width: 56,
+                  padding: "3px 6px",
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  textAlign: "center",
+                  background: "var(--field-bg)",
+                  color: "var(--text)",
+                }}
               />
             )}
             <span>个月的自动移出（填 0 表示不自动清理）</span>

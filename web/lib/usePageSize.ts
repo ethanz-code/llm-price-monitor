@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 /** 每页条数可选项与默认值：全站 DataTable 共用。 */
 export const PAGE_SIZE_OPTIONS = [20, 35, 50, 100];
-export const PAGE_SIZE_DEFAULT = 35;
+const PAGE_SIZE_DEFAULT = 35;
 
 const STORAGE_KEY = "table-page-size";
 

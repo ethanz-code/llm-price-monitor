@@ -52,15 +52,16 @@ export const home = {
     faq: "常见问题",
   },
   sectionSubs: {
-    latestPrice: "每个模型只展示监控站点里的最低价，每条都附来源链接，点开就能核对",
+    latestPrice:
+      "每个模型只展示监控站点里的最低价，每条都附来源链接，点开就能核对",
     sites: "每个站点的渠道检测与公告我们都自动存档，点站点名就能进检测档案",
-    rankings: "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位时拿它做参考",
+    rankings:
+      "第三方评测机构 Artificial Analysis 的智能指数前五名，判断模型能力档位时拿它做参考",
   },
   viewAll: "查看全部 →",
   viewAllEvents: "全部事件 →",
   submitSite: "提交监控站点",
-  submitSiteDesc:
-    "填写站点地址即可申请加入监控清单，我们会逐个核验后接入。",
+  submitSiteDesc: "填写站点地址即可申请加入监控清单，我们会逐个核验后接入。",
   dataPoints: [
     "我们定时去各站点公开的价目页抓数据，标价原样记录",
     "渠道能不能用，我们几分钟自动探一轮，正常和异常都有记录",
@@ -138,11 +139,13 @@ export const calculator = {
   /** 总用量快捷档位标签，与 lib/calculator.ts 的 TOKEN_PRESET_VALUES 按序对应 */
   tokenPresets: ["10M（一千万）", "100M（一亿）", "1B（十亿）"],
   hitRate: "缓存命中率",
-  usageHint: "输入按 99.2% · 输出按 0.8% 拆分：命中部分按缓存命中价，未命中按输入价。",
+  usageHint:
+    "输入按 99.2% · 输出按 0.8% 拆分：命中部分按缓存命中价，未命中按输入价。",
   resultTitle: "花费结果",
   totalLabel: "合计",
   emptyResult: "填好单价和用量，这里就会显示花费。",
-  missingCache: "没查到缓存命中单价，命中的 token 没计入总价；知道单价的话在上面补一格。",
+  missingCache:
+    "没查到缓存命中单价，命中的 token 没计入总价；知道单价的话在上面补一格。",
   detail: {
     bucket: "计费项",
     unitPrice: "单价",
@@ -178,7 +181,7 @@ export const alerts = {
 /** 页脚 */
 export const footer = {
   brandLine:
-    "我们盯着各家 API 中转站的价格、折扣、渠道状态和公告，数据抓取自各站点公开页面，仅供研究参考，不构成任何使用推荐。",
+    "本平台负责检测各家 API 中转站的价格、渠道状态和公告数据，其抓取自各站点公开页面，仅供使用参考，不构成任何使用推荐。\n最后祝大家 Vibe Coding 之路畅通无阻，永远用到低价不降智模型，天天 Happy.",
   links: {
     catalog: "厂商定价",
     feedback: "提建议",

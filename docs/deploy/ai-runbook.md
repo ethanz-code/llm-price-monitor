@@ -108,6 +108,7 @@ curl -sI https://域名 | head -1                                      # 200/2xx
 | 构建卡死 / 被 OOM 杀 | `free -h` | 加 swap 后重新 build |
 | 磁盘满 | `docker system df` | `docker image prune -f`；`journalctl --vacuum-size=100M` |
 | 时间 / 时区不对 | `docker compose exec api date` | 镜像默认 `TZ=Asia/Shanghai`；不符时改 Dockerfile / compose 的 TZ 后重建 |
+| 容器健康但域名打不开：80 被 302 到 `dnspod.qcloud.com/.../webblock.html`、443 TLS 握手后 RST，同机其他域名正常 | 用同 IP 上已备案域名对照访问；服务器本机/跨云内网路径可能仍 200 | 域名未备案被云厂商境内入口拦截，部署侧无解；办备案（1~3 周），或经用户确认后临时换已备案子域名过渡（2026-10-03 llmprices.cn 实锤） |
 
 ## 10. 更新与回滚
 

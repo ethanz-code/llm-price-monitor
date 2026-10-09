@@ -1,6 +1,6 @@
 /** 与后端 llm_price_monitor 输出结构对应的类型定义。 */
 
-export interface DiscountInfo {
+interface DiscountInfo {
   input: number | null;
   output: number | null;
   input_price_cny: number | null;
@@ -48,7 +48,7 @@ export interface OverviewRecord extends PriceRecord {
   discount: DiscountInfo | null;
 }
 
-export interface CatalogMeta {
+interface CatalogMeta {
   enabled: boolean;
   generated_at?: number;
   generated_at_iso?: string;
@@ -210,7 +210,7 @@ export interface MetaData {
 }
 
 /** 附加采集地址（networks 数组项），与 network 同构。 */
-export interface NetworkEndpoint {
+interface NetworkEndpoint {
   url?: string | null;
   params?: Record<string, string>;
   headers?: Record<string, string>;
@@ -377,7 +377,7 @@ export interface TaskInfo {
 }
 
 /** 任务过程日志行：level=error 在界面标红。 */
-export interface TaskLog {
+interface TaskLog {
   time: number;
   message: string;
   level: "info" | "error";
@@ -409,23 +409,6 @@ export interface StatusSnapshot {
   http_status: number;
   parse: string;
   data: unknown;
-}
-
-/** /api/status/latest：site_id → 最近一次快照 */
-export type StatusLatest = Record<string, StatusSnapshot>;
-
-export interface StatusChange {
-  op: "add" | "remove" | "change";
-  path: string;
-  old?: unknown;
-  new?: unknown;
-}
-
-export interface StatusEvent {
-  site_id: string;
-  kind: string;
-  detected_at: number;
-  changes: StatusChange[];
 }
 
 /** 站点公告版本（后端 fetch_site_notice 输出；content 为公告正文 Markdown/纯文本，仅内容变化时新增）。 */
