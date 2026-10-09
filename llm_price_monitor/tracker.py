@@ -141,7 +141,11 @@ def looks_like_newapi_pricing(payload: Any) -> bool:
     )
 
 def looks_like_platform_pricing(payload: Any) -> bool:
-    """平台分桶定价结构（totokens 等新版接口）：data[] 按 platforms 分桶，模型带 pricing.final_prices 分组单价。"""
+    """平台分桶定价结构：data[] 按 platforms 分桶，模型带分组单价。
+
+    两种同族形态都认：totokens 型 pricing.final_prices（按分组展开的每 token 单价）、
+    sub2api channels/available 型 pricing.input_price/output_price（平台直读单价）。
+    """
     if isinstance(payload, dict):
         payload = payload.get("data")
     if not isinstance(payload, list):
@@ -150,14 +154,21 @@ def looks_like_platform_pricing(payload: Any) -> bool:
         platforms = item.get("platforms") if isinstance(item, dict) else None
         for platform in platforms if isinstance(platforms, list) else ():
             models = platform.get("supported_models") if isinstance(platform, dict) else None
-            if isinstance(models, list) and any(
-                isinstance(model, dict)
-                and isinstance(model.get("pricing"), dict)
-                and isinstance(model["pricing"].get("final_prices"), list)
-                for model in models
-            ):
-                return True
+            if not isinstance(models, list):
+                continue
+            for model in models:
+                pricing = model.get("pricing") if isinstance(model, dict) else None
+                if not isinstance(pricing, dict):
+                    continue
+                if isinstance(pricing.get("final_prices"), list):
+                    return True
+                if _plain_number(pricing.get("input_price")) and _plain_number(pricing.get("output_price")):
+                    return True
     return False
+
+
+def _plain_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class GroupRatioUnavailableError(ValueError):

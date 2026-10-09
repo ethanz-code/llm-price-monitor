@@ -596,16 +596,19 @@ export function buildChannelModel(
   return { times, series };
 }
 
-/** 详情页视图集合：渠道行、可用率序列、延迟序列共享同一次 channelDotsBySite 全量走查，
- *  避免页面把同一批记录解析三遍。
- *  两个口径：availability 是保峰抽稀后的序列（画图用，毛刺不丢）；uptimeBuckets 用抽稀前的
- *  全量序列分桶（数字用）——保峰抽稀「每格只留最差点」会把均值压悲观，区块平均率必须看全量。 */
-export function buildSiteViews(records: { site_id: string; captured_at: number; data: unknown }[]): {
+/** 站点检测视图集合：渠道行、可用率/延迟序列与时段桶。渠道统计展示处的统一数据形态。 */
+export interface SiteViews {
   channels: Record<string, ChannelDotRow[]>;
   availability: Record<string, AvailabilityPoint[]>;
   latency: Record<string, LatencyPoint[]>;
   uptimeBuckets: Record<string, (UptimeBucket | null)[]>;
-} {
+}
+
+/** 详情页视图集合：渠道行、可用率序列、延迟序列共享同一次 channelDotsBySite 全量走查，
+ *  避免页面把同一批记录解析三遍。
+ *  两个口径：availability 是保峰抽稀后的序列（画图用，毛刺不丢）；uptimeBuckets 用抽稀前的
+ *  全量序列分桶（数字用）——保峰抽稀「每格只留最差点」会把均值压悲观，区块平均率必须看全量。 */
+export function buildSiteViews(records: { site_id: string; captured_at: number; data: unknown }[]): SiteViews {
   const bySite = channelDotsBySite(records);
   const fullAvailability = fullAvailabilityFromDots(bySite);
   const uptimeBuckets: Record<string, (UptimeBucket | null)[]> = {};

@@ -13,6 +13,8 @@
 | 价格 / 基准价 / 官方目录 / 排序 / 变更事件 / 假变更 / ¥0 / 假免费 / 最低价 / 旧价不更新 | 本页 §3 |
 | 骨架屏 / 暗色 / 表格 / 窄屏 / 响应式 | 本页 §4 |
 | panic / char boundary / code-frame / dev 半死 / 改文件不生效 | 本页 §4 |
+| 强制刷新 / 数据不更新 / 页面旧数据 / revalidate / no-store / 缓存 | 本页 §4 |
+| 渠道 / 可用率 / 检测点 / 站点卡数字 / 页面间统计对不上 / max_records | 本页 §4 |
 | Docker / 构建 / 回滚 / APP_TAG / 端口 | 本页 §5 |
 | 网站打不开 / 域名被拦 / webblock / 302 跳备案页 | 本页 §5 |
 | 密钥 / 掩码 / 打码 / api_key / secret / app_token | 本页 §6 |
@@ -74,6 +76,7 @@
 
 | 踩过的坑 | 已落地的方案 | 指针 |
 | --- | --- | --- |
+| 页面要强制刷新才见新数据（用户点名"好多页面都这样"），dev 下连硬刷新也未必有用：`PUBLIC_REVALIDATE`（fetch `next:{revalidate:60}`）的 Next 服务端数据缓存过期后首次请求仍回旧数据（官方 SWR 语义），dev 下后台刷新实际不发生，/history、/rankings 卡在 2 小时前直到改码/重启清缓存；硬刷新只清浏览器缓存清不掉它，`force-dynamic` 也压不住 fetch 上显式的 revalidate | 公开页取数一律 no-store（后端同机毫秒级，缓存无收益；/overview 此前已是范例），删常量与 revalidate 参数；判"页面旧"先 curl 后端接口看最新时间戳，再对比页面内嵌数据，分清后端没数据还是前端吐缓存（/rankings 后端 generated_at 本来就旧，页面是对的） | 2026-10-08 拆除提交；web/lib/api.ts 头注释；[vercel/next.js#51612](https://github.com/vercel/next.js/issues/51612) |
 | Next 16.3.3 dev 错误浮层渲染 code-frame 时 Rust panic（`next-code-frame highlight.rs: not a char boundary`，切进中文字符中间），线程 abort 后 dev server 半死：HTTP 还答旧内容、改任何文件都不生效，且对终端宽度敏感 | 已知上游 bug（[vercel/next.js#92641](https://github.com/vercel/next.js/issues/92641)，Open）。panic 只是"报错的展示方式"崩了：`npm run build` 绿就说明代码本身没错，触发错误多为 HMR 增量状态损坏；重启 dev 即愈，重启时再遇同款 panic 可忽略一次。另：文章 md 文件不在模块依赖图，读取必须走每请求执行的 `getArticles()`，模块级求值会 dev 改 md 不生效 | issue 链接；web/lib/articles.ts 头注释 |
 | 进页先闪别的页骨架或假空态（"还没有记录"） | 每页 loading.tsx 对齐真实布局；admin 布局登录守卫先画外壳骨架 | 提交 54c1412 / 4e349ec / c6e84f0 |
 | 行高/列宽全站一刀切，窄屏挤爆 | 行高分档（默认/dense/紧凑），窄屏减列保关键列 | 提交 b1e7354 / 21038a1 / debee38 |
@@ -90,6 +93,7 @@
 | 首页这类常驻动画页上 Browser Use 的 Playwright 定位点击卡 actionability 超时、导航/刷新后立即截图超时 | 元素确认可命中后改用坐标点击（cua.click）；截图前先等 2–3s 页面稳定，一次只拍一张 | 首页 2D 地球替换走查实测 |
 | 页面带自动轮播顶部横幅时坐标点击持续打偏（横幅展开/收起让全页元素 y 坐标漂移 ±70px，点 A 变点 B 还可能触发离开确认弹窗），且 Playwright 定位点击照卡 actionability | 最稳解是 playwright.evaluate 里按按钮文本精确匹配后直接调 DOM click()（React 组件也能触发）；受控组件赋值用原生 value setter + dispatch input/change 事件 | 腾讯云备案表单代填实测 |
 | 同一事件流多个页面各画各的：首页不折叠、追踪页折叠，站点名一边美化名一边原始 site_id，用户并排一看以为数据错乱 | 多页面共用数据源的展示口径（折叠/命名/排序）抽到 web/lib 单处共享，改口径只能改一处 | 提交 1e7ec68 |
+| 同一份数据多个页面各拉各的取数口径：渠道检测曾被三种取法（首页全局 max_records=600 抽样、总览全局最近 600 条、详情页单站 400 条），全局抽样按总 id 取模不保站内密度，实测 134-175-71 首页比详情页少一个渠道、可用率 86% vs 75%，用户并排一看数字打架 | 渠道检测统一走 web/lib/statusData.ts：逐站按详情页同参数拉（每站 400 条、近 7 天）再 buildSiteViews，数据同源数字不可能分叉；新增渠道统计展示一律复用该模块，别再手拼 /api/status 参数 | 2026-10-08 口径收拢提交 |
 | 常驻动画页走查深水区：IAB 截图通道跑一阵后整体卡死（surface preparation timed out / capture failed for guest），force click 也被拖超时；fullPage 整页截图对 Reveal 懒显页全空白（下方 opacity:0 不触发） | 读 DOM 的 evaluate 始终可用；截图降级 Chrome DevTools MCP（独立实例互不拖累）；懒显页逐段滚动触发后再截视口图；受控下拉（如主题菜单）点不开时按「环境准备」预置 localStorage 再 reload | 首页叙事三区走查实测 |
 | 用 python 按行号替换大 CSS 块，旧行号在多次编辑后失效，一刀把 globals.css 砍掉 3300 行（hero 平板列/导航汉堡/动画全套全没），390px 出现横向溢出才暴露 | 大文件删改必须用「锚定内容」定位（str.index 断言锚点存在），替换后立刻 `wc -l` 对账 + grep 被删类名确认零残留；走查见溢出先用 `git stash` 对照基线定位是否新引入 | 首页站点区 Statuspage 化实测 |
 | 参考站只抓文字结构不截页面，做出来的「同构」设计全是小灰字（被用户打回两次） | 参考站必须真开浏览器逐屏截图，量标题字号、卡片 padding、图标做法、分段节奏再动手；监控站点列表直接抄行业事实标准 Atlassian Statuspage（状态横幅 + 一行一组件 + 90 天可用率条），不要自创瓷贴 | 首页重设计返工实录 |

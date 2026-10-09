@@ -1,4 +1,4 @@
-import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGetOptional } from "@/lib/api";
 import type { CatalogData, RankingsData } from "@/lib/types";
 import { buildRankingIndex } from "@/lib/rankings";
 import { PageDigest } from "@/components/PageDigest";

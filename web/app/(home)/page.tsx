@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGet } from "@/lib/api";
 import { Btn } from "@/components/ui";
 import {
   eventMeta,
@@ -18,8 +18,10 @@ import {
   chartToneVar,
   rateLevel,
   type RateLevel,
+  type SiteViews,
   type UptimeBucket,
 } from "@/lib/channelStatus";
+import { loadStatusViews } from "@/lib/statusData";
 import type {
   CatalogData,
   DiscountInfo,
@@ -29,7 +31,6 @@ import type {
   MetaData,
   OverviewData,
   RankingsData,
-  StatusSnapshot,
 } from "@/lib/types";
 import { SiteSubmitButton } from "@/components/SiteSubmitModal";
 import { SectionRail } from "@/components/SectionRail";
@@ -62,7 +63,8 @@ interface LandingData {
   meta: MetaData | null;
   feed: FeedData | null;
   history: HistoryListData | null;
-  status: StatusSnapshot[];
+  /** 渠道检测视图（与站点详情页同口径，lib/statusData.ts 统一取数） */
+  statusViews: SiteViews;
   /** 站点 IP 归属地：服务端取好传给首屏地球，读接口封锁后浏览器不再直接调 */
   geo: Record<string, SiteGeo>;
   /** AA 榜单：首页速览用，拉取失败只影响榜单小节 */
@@ -81,34 +83,29 @@ const LATEST_EVENTS_SHOWN = 5;
 async function loadLanding(): Promise<LandingData> {
   try {
     // 统一事件流（价格+公告已合并）；渠道检测拉取失败只影响星球与站点卡片，不阻塞整页
-    const [overview, meta, feed, status, geo, rankings, catalog, history] = await Promise.all([
-      apiGet<OverviewData>("/api/overview", undefined, PUBLIC_REVALIDATE),
-      apiGet<MetaData>("/api/meta", undefined, PUBLIC_REVALIDATE),
-      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8", undefined, PUBLIC_REVALIDATE).catch(() => null),
-      // 与站点检测详情页同口径：最近 7 天、每站最近 400 条；再给全量行数上限——
-      // 站点多时 400×N 条状态快照体积失控（5 站 7 天实测约 9MB），按 id 均匀抽样到
-      // 600 条封顶（每站最新一条始终保留，时段桶均值仍是全量分布的近似）
-      // since 对齐到分钟：60s 缓存窗口内 URL 稳定，fetch 缓存才能命中
-      apiGet<{ records: StatusSnapshot[] }>(
-        `/api/status?per_site=400&since=${Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60}&max_records=600`,
-        undefined,
-        PUBLIC_REVALIDATE,
-      ).catch(() => ({ records: [] as StatusSnapshot[] })),
+    const [overview, meta, feed, statusViews, geo, rankings, catalog, history] = await Promise.all([
+      apiGet<OverviewData>("/api/overview"),
+      apiGet<MetaData>("/api/meta"),
+      apiGet<FeedData>("/api/feed?events_limit=8&notice_limit=8").catch(() => null),
+      // 与站点检测详情页同口径（每站最近 400 条、近 7 天）：逐站拉取后合并成视图。
+      // 曾经全局 max_records 抽样按总 id 取模，站内密度失衡会丢渠道、漂移最新可用率，
+      // 与详情页对不上；口径收拢在 lib/statusData.ts，数字与详情页同源。
+      loadStatusViews().catch(() => buildSiteViews([])),
       // 站点定位较慢（DNS + 归属地查询），失败只影响地球落点，不阻塞整页
-      apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo", undefined, PUBLIC_REVALIDATE).catch(() => ({ geo: {} })),
-      apiGet<RankingsData>("/api/rankings", undefined, PUBLIC_REVALIDATE).catch(() => null),
-      apiGet<CatalogData>("/api/catalog", undefined, PUBLIC_REVALIDATE).catch(() => null),
-      // hero 折线是装饰位：拉取失败只影响图表兜底回插画，不阻塞整页报错；与其余取数同走 60s 缓存
-      apiGet<HistoryListData>("/api/history?limit=1000", undefined, PUBLIC_REVALIDATE).catch(() => null),
+      apiGet<{ geo: Record<string, SiteGeo> }>("/api/geo").catch(() => ({ geo: {} })),
+      apiGet<RankingsData>("/api/rankings").catch(() => null),
+      apiGet<CatalogData>("/api/catalog").catch(() => null),
+      // hero 折线是装饰位：拉取失败只影响图表兜底回插画，不阻塞整页报错
+      apiGet<HistoryListData>("/api/history?limit=1000").catch(() => null),
     ]);
-    return { overview, meta, feed, history, status: status.records, geo: geo.geo, rankings, catalog, error: null };
+    return { overview, meta, feed, history, statusViews, geo: geo.geo, rankings, catalog, error: null };
   } catch (cause) {
     return {
       overview: null,
       meta: null,
       feed: null,
       history: null,
-      status: [],
+      statusViews: buildSiteViews([]),
       geo: {},
       rankings: null,
       catalog: null,
@@ -243,7 +240,7 @@ function BentoDemo({
 }
 
 export default async function LandingPage() {
-  const { overview, meta, feed, history, status, geo, rankings, catalog, error } = await loadLanding();
+  const { overview, meta, feed, history, statusViews, geo, rankings, catalog, error } = await loadLanding();
   // JSON-LD 里的站点地址要绝对 URL，与 metadataBase 同一推导口径
   const origin = await siteOrigin();
   const records = overview?.records ?? [];
@@ -260,7 +257,7 @@ export default async function LandingPage() {
 
   // 站点检测档案：可用率序列供星球悬停与行列表状态共用；
   // 阈值与详情页一致：可用率 80/60 三档，延迟 1000/3000ms 三档
-  const siteViews = buildSiteViews(status);
+  const siteViews = statusViews;
   const availBySite = siteViews.availability;
   const bucketsBySite = siteViews.uptimeBuckets;
   const globeSites: GlobeSite[] = sites.map((site) => {
@@ -282,7 +279,6 @@ export default async function LandingPage() {
     };
   });
   // 有检测档案但解析不出时间线的站点，文案与「未接入」区分开
-  const statusSiteIds = new Set(status.map((row) => row.site_id));
 
   // 行列表（Statuspage 模式）：down 站排最前、warn 次之、无数据其后、停用垫底，封顶取前 SITE_ROW_MAX 行；
   // 平均可用率只算启用且有检测数据的站点，停用站的旧数据不掺进来

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGet } from "@/lib/api";
+import { fetchSiteStatus } from "@/lib/statusData";
 import { PageHeader } from "@/components/PageHeader";
 import { NoticeBody } from "@/components/NoticeBody";
 import { ToneTag } from "@/components/ToneTag";
@@ -200,27 +201,18 @@ export default async function StatusDetailPage({
   let notices: NoticeSnapshot[] = [];
   let error: string | null = null;
   try {
-    // 固定看最近 7 天：时间条件下推给接口（since，数据库只取范围内的行）。
-    // 取该站最近 400 条（与首页 per_site=400 同口径，截断不抽样）——
-    // 抽样会在时间线上打洞，两个页面的时段分桶必须建立在同一段记录上数值才一致。
-    // since 对齐到分钟：60s 缓存窗口内 URL 稳定，fetch 缓存才能命中（与首页同口径）
-    const since = Math.floor((Date.now() / 1000 - 7 * 86_400) / 60) * 60;
+    // 渠道时序走 lib/statusData.ts：每站最近 400 条、近 7 天——首页与总览的渠道统计
+    // 也用这同一份口径（数据同源，各页数字才一致），这里是「详情页口径」的本体。
     const [timeline, noticeData] = await Promise.all([
-      apiGet<{ records: StatusSnapshot[]; total: number }>(
-        `/api/status?site_id=${encodeURIComponent(siteId)}&limit=400&since=${since}`,
-        undefined,
-        PUBLIC_REVALIDATE,
-      ),
+      fetchSiteStatus(siteId),
       // 公告拉取失败只影响公告区，不阻塞整页；只取最新一次采集的存档
       apiGet<{ records: NoticeSnapshot[] }>(
-        `/api/notice?site_id=${encodeURIComponent(siteId)}&limit=1`,
-        undefined,
-        PUBLIC_REVALIDATE,
+        `/api/notice?site_id=${encodeURIComponent(siteId)}&limit=1`
       ).catch(() => ({
         records: [] as NoticeSnapshot[],
       })),
     ]);
-    records = timeline.records ?? [];
+    records = timeline;
     notices = noticeData.records ?? [];
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);

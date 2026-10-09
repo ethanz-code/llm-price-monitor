@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGetOptional } from "@/lib/api";
 import type { DiscoveryData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -21,7 +21,7 @@ export default async function DiscoverPage() {
   let data: DiscoveryData | null = null;
   let notReady = false;
   try {
-    const fetched = await apiGetOptional<DiscoveryData>("/api/discovery", PUBLIC_REVALIDATE);
+    const fetched = await apiGetOptional<DiscoveryData>("/api/discovery");
     if (fetched) {
       // 「不看」是运营者的私人标记，不向访客展示；summary 照带原始计数
       const stations = fetched.stations.filter((row) => !row.ignored);

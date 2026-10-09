@@ -1,4 +1,4 @@
-import { apiGet, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGet } from "@/lib/api";
 import type { FeedData, HistoryListData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -22,8 +22,8 @@ export default async function HistoryPage() {
   try {
     // 事件流已由 /api/feed 统一合并（价格+公告），历史记录独立取
     [feed, history] = await Promise.all([
-      apiGet<FeedData>("/api/feed?events_limit=300&notice_limit=100", undefined, PUBLIC_REVALIDATE),
-      apiGet<HistoryListData>("/api/history?limit=500", undefined, PUBLIC_REVALIDATE),
+      apiGet<FeedData>("/api/feed?events_limit=300&notice_limit=100"),
+      apiGet<HistoryListData>("/api/history?limit=500"),
     ]);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);

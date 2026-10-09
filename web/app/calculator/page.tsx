@@ -1,4 +1,4 @@
-import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGetOptional } from "@/lib/api";
 import { decodeCalcState, EMPTY_STATE } from "@/lib/calculator";
 import { Calculator } from "@/components/Calculator";
 import { PageDigest } from "@/components/PageDigest";
@@ -27,8 +27,8 @@ export default async function CalculatorPage({
     if (typeof value === "string") search.set(key, value);
   }
   // 两个价格源各自独立取数：任一不可用只影响对应模式，页面仍可手填单价使用
-  const catalog = await apiGetOptional<CatalogData>("/api/catalog", PUBLIC_REVALIDATE);
-  const overview = await apiGetOptional<OverviewData>("/api/overview", PUBLIC_REVALIDATE);
+  const catalog = await apiGetOptional<CatalogData>("/api/catalog");
+  const overview = await apiGetOptional<OverviewData>("/api/overview");
   const initial = search.size > 0 ? decodeCalcState(search) : EMPTY_STATE;
 
   return (

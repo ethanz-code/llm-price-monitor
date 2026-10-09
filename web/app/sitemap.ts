@@ -1,7 +1,7 @@
 /** 全站 sitemap：静态页 + 每个监控站点的检测档案页。
  *  站点清单来自 /api/meta，拉取失败只少列检测档案页，不阻塞整份 sitemap。 */
 import type { MetadataRoute } from "next";
-import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGetOptional } from "@/lib/api";
 import { getArticles } from "@/lib/articles";
 import { siteOrigin } from "@/lib/seo";
 import type { MetaData } from "@/lib/types";
@@ -24,7 +24,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     changeFrequency: "monthly",
     priority: 0.4,
   }));
-  const meta = await apiGetOptional<MetaData>("/api/meta", PUBLIC_REVALIDATE).catch(() => null);
+  const meta = await apiGetOptional<MetaData>("/api/meta").catch(() => null);
   const statusRoutes: MetadataRoute.Sitemap = (meta?.sites ?? []).map((row) => ({
     url: `${origin}/overview/status/${encodeURIComponent(row.id)}`,
     lastModified: now,

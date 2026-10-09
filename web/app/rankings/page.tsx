@@ -1,4 +1,4 @@
-import { apiGetOptional, PUBLIC_REVALIDATE } from "@/lib/api";
+import { apiGetOptional } from "@/lib/api";
 import type { RankingsData } from "@/lib/types";
 import { PageDigest } from "@/components/PageDigest";
 import { SiteAlert } from "@/components/SiteAlert";
@@ -19,7 +19,7 @@ export default async function RankingsPage() {
   let data: RankingsData | null = null;
   let error: string | null = null;
   try {
-    data = await apiGetOptional<RankingsData>("/api/rankings", PUBLIC_REVALIDATE);
+    data = await apiGetOptional<RankingsData>("/api/rankings");
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }

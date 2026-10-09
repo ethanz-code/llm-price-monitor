@@ -3864,6 +3864,136 @@ def test_platform_pricing_records_parses_final_prices():
     assert record.metadata["group_ratio"] == 0.178
 
 
+def test_platform_pricing_records_parses_direct_prices():
+    """sub2api channels/available 型（pricing 直带每 token input/output）：直读换算，
+    组名取平台分组，组倍率是否已计入未标明，一律标 candidate 待复核。"""
+    from llm_price_monitor.adapters import platform_pricing_records
+
+    payload = {
+        "code": 0,
+        "data": [{
+            "name": "swe",
+            "platforms": [{
+                "platform": "openai",
+                "groups": [{"id": 81, "name": "DEVIN-SWE2", "rate_multiplier": 0.03}],
+                "supported_models": [{
+                    "name": "swe-2-high",
+                    "platform": "openai",
+                    "pricing": {"billing_mode": "token", "input_price": 3e-6, "output_price": 1.5e-5, "cache_read_price": None},
+                }],
+            }],
+        }],
+    }
+    spec = SiteSpec(id="demo", models=[ModelTarget("swe-2-high")], network={"url": "https://demo.test/api/v1/channels/available"})
+    records = platform_pricing_records(spec, [{"url": "https://demo.test/api/v1/channels/available", "status": 200, "resource_type": "fetch", "payload": payload}])
+    assert len(records) == 1
+    record = records[0]
+    assert record.metadata["group"] == "DEVIN-SWE2"
+    assert record.price_status == "candidate"
+    assert record.input_price == pytest.approx(3.0)
+    assert record.output_price == pytest.approx(15.0)
+    assert record.unit == "USD/1M tokens"
+    assert record.metadata["currency"] == "USD"
+
+
+def test_sub2api_model_prices_records_parse_groups():
+    """sub2api model-prices（data.groups[].models[].tiers[]）：分组实付价直读，
+    同模型多分组逐组出价，tiers 取 min_tokens=0 标准档，站方标非在售的不采。"""
+    from llm_price_monitor.adapters import sub2api_model_price_records
+
+    payload = {
+        "code": 0,
+        "data": {
+            "currency": "CNY",
+            "deduction_multiplier": 1,
+            "unit_tokens": 1000000,
+            "groups": [
+                {"id": 45, "name": "不降智", "effective_rate": 0.161, "default_rate": 0.161, "models": [
+                    {"name": "gpt-6-sol", "platform": "openai", "billing_mode": "token", "status": "available", "tiers": [
+                        {"min_tokens": 0, "max_tokens": None, "label": "", "input": 1.2, "output": 4.8, "cache_read": 0.3, "cache_write": None, "cache_write_1h": None},
+                        {"min_tokens": 200000, "max_tokens": None, "label": "长上下文", "input": 2.4, "output": 9.6, "cache_read": 0.6, "cache_write": None, "cache_write_1h": None},
+                    ]},
+                    {"name": "grok-4.7", "platform": "grok", "status": "paused", "tiers": [
+                        {"min_tokens": 0, "max_tokens": None, "label": "", "input": 1, "output": 2},
+                    ]},
+                ]},
+                {"id": 31, "name": "官方key", "effective_rate": 0.27, "models": [
+                    {"name": "gpt-6-sol", "platform": "openai", "status": "available", "tiers": [
+                        {"min_tokens": 0, "max_tokens": None, "label": "", "input": 2.0, "output": 8.0, "cache_read": 0.5},
+                    ]},
+                ]},
+            ],
+        },
+    }
+    spec = SiteSpec(id="lab", models=[ModelTarget("gpt-6-sol"), ModelTarget("grok-4.7")], network={"url": "https://lab.test/api/v1/model-prices"})
+    records = sub2api_model_price_records(spec, [{"url": "https://lab.test/api/v1/model-prices", "status": 200, "resource_type": "fetch", "payload": payload}])
+    by_group = {r.metadata["group"]: r for r in records}
+    assert set(by_group) == {"不降智", "官方key"}
+    assert by_group["不降智"].input_price == pytest.approx(1.2)
+    assert by_group["不降智"].output_price == pytest.approx(4.8)
+    assert by_group["不降智"].price_status == "confirmed"
+    assert by_group["不降智"].metadata["group_ratio"] == 0.161
+    assert by_group["官方key"].input_price == pytest.approx(2.0)
+    assert by_group["官方key"].output_price == pytest.approx(8.0)
+    assert all(r.unit == "CNY/1M tokens" for r in records)
+
+
+def test_sub2api_model_prices_scale_and_missing_output():
+    """unit_tokens 非 1e6 时按声明缩放到每百万 token；缺 output 标 candidate；币种随接口声明。"""
+    from llm_price_monitor.adapters import looks_like_sub2api_model_prices, sub2api_model_price_records
+
+    payload = {"code": 0, "data": {"currency": "USD", "unit_tokens": 1000, "groups": [
+        {"name": "pro", "effective_rate": 1, "models": [
+            {"name": "gpt-6-sol", "status": "available", "tiers": [{"min_tokens": 0, "input": 0.002, "output": None}]},
+        ]},
+    ]}}
+    assert looks_like_sub2api_model_prices(payload)
+    spec = SiteSpec(id="lab", models=[ModelTarget("gpt-6-sol")], network={"url": "https://lab.test/api/v1/model-prices"})
+    records = sub2api_model_price_records(spec, [{"url": "https://lab.test/api/v1/model-prices", "status": 200, "resource_type": "fetch", "payload": payload}])
+    assert len(records) == 1
+    assert records[0].input_price == pytest.approx(2.0)
+    assert records[0].output_price is None
+    assert records[0].price_status == "candidate"
+    assert records[0].unit == "USD/1M tokens"
+
+
+def test_network_adapter_dispatches_sub2api_shapes_without_ai():
+    """识别出的确定性形状不落 AI：model-prices 直接出记录，channels/available 未命中监控模型返回空也不报错。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer tk"
+        return httpx.Response(200, json={"code": 0, "data": {"currency": "CNY", "unit_tokens": 1000000, "groups": [
+            {"name": "pro", "effective_rate": 0.5, "models": [
+                {"name": "gpt-6-sol", "status": "available", "tiers": [{"min_tokens": 0, "input": 1, "output": 4}]},
+            ]},
+        ]}})
+
+    spec = SiteSpec(
+        id="lab",
+        models=(ModelTarget("gpt-6-sol"),),
+        network={"url": "https://lab.test/api/v1/model-prices"},
+        auth_token="tk",
+        auth_inject={"price": {"header": "Authorization", "value": "Bearer ${access_token}"}},
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    records = NetworkAdapter().collect(spec, client, 5, BROWSER_USER_AGENTS[0])
+    assert records[0].model == "gpt-6-sol"
+    assert records[0].price_status == "confirmed"
+
+    swe_payload = {"code": 0, "data": [{"name": "swe", "platforms": [{
+        "platform": "openai", "groups": [{"name": "DEVIN-SWE2", "rate_multiplier": 0.03}],
+        "supported_models": [{"name": "swe-2-high", "pricing": {"input_price": 3e-6, "output_price": 1.5e-5}}],
+    }]}]}
+    spec_swe = SiteSpec(
+        id="onefor",
+        models=(ModelTarget("gpt-6-sol"),),
+        network={"url": "https://onefor.test/api/v1/channels/available"},
+        auth_token="tk",
+        auth_inject={"price": {"header": "Authorization", "value": "Bearer ${access_token}"}},
+    )
+    client_swe = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=swe_payload)))
+    assert NetworkAdapter().collect(spec_swe, client_swe, 5, BROWSER_USER_AGENTS[0]) == []
+
+
 def test_carry_last_price_keeps_auth_label_only_for_auth_placeholders():
     """占位沿用上次价格时：接口 401/403 才标需认证，AI/解析没映射出的占位不再误标。"""
     from llm_price_monitor.report import _carry_last_price

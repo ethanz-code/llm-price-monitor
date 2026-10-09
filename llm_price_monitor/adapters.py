@@ -338,11 +338,17 @@ def network_pricing_records(
             )
     return list(records.values())
 
-def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> list[PriceRecord]:
-    """确定性解析 platforms/supported_models/final_prices 结构。
+def _plain_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
-    final_prices 里各字段是每 token 单价，×1,000,000 换算为 CNY/1M tokens；
-    接口不标币种，按系统约定回落人民币。input/output 齐全为 confirmed，缺一为 candidate。
+
+def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> list[PriceRecord]:
+    """确定性解析 platforms/supported_models 结构，两种同族形态：
+
+    - totokens 型：pricing.final_prices 按分组展开的每 token 单价，×1,000,000 换算 CNY/1M tokens，
+      接口不标币种按系统约定回落人民币；input/output 齐全为 confirmed，缺一为 candidate。
+    - sub2api channels/available 型：pricing 直接带每 token 的 input_price/output_price，
+      sub2api 系证据格式为美元，组倍率是否已计入未标明，一律标 candidate 待复核。
     """
     response_source_url = str(captured[0].get("url") or "") if captured else str(spec.network.get("url") or "")
     payload = captured[0].get("payload") if captured else None
@@ -350,14 +356,38 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
         payload = payload.get("data")
     buckets = payload if isinstance(payload, list) else []
     records: dict[tuple[str, str], PriceRecord] = {}
+
+    def evidence(notes: str, currency: str) -> dict[str, Any]:
+        return {
+            "adapter": "network",
+            "pricing_kind": "explicit_price",
+            "currency": currency,
+            "network_evidence": [{
+                "source": "model_list",
+                "url": redact_url(str(captured[0].get("url", ""))),
+                "resource_type": captured[0].get("resource_type"),
+                "status": captured[0].get("status"),
+                "payload_sha256": payload_hash(payload),
+            }],
+            "page_evidence": [],
+            "notes": notes,
+        }
+
     for item in buckets:
         platforms = item.get("platforms") if isinstance(item, dict) else None
         if not isinstance(platforms, list):
             continue
         for platform in platforms:
-            models = platform.get("supported_models") if isinstance(platform, dict) else None
+            if not isinstance(platform, dict):
+                continue
+            models = platform.get("supported_models")
             if not isinstance(models, list):
                 continue
+            platform_groups = [
+                str(group.get("name"))
+                for group in platform.get("groups", [])
+                if isinstance(group, dict) and isinstance(group.get("name"), str) and group.get("name")
+            ]
             for model in models:
                 if not isinstance(model, dict):
                     continue
@@ -369,47 +399,163 @@ def platform_pricing_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> 
                     continue
                 pricing = model.get("pricing") or {}
                 final_prices = pricing.get("final_prices")
-                if not isinstance(final_prices, list):
+                if isinstance(final_prices, list):
+                    for entry in final_prices:
+                        if not isinstance(entry, dict):
+                            continue
+                        group = str(entry.get("group_name") or "default")
+
+                        def scaled(field: str, entry: dict[str, Any] = entry) -> float | None:
+                            value = entry.get(field)
+                            return value * 1_000_000 if _plain_number(value) else None
+
+                        input_price = scaled("input_price")
+                        output_price = scaled("output_price")
+                        key = (target.name, group)
+                        if key in records:
+                            continue
+                        metadata = evidence(
+                            "platforms 定价接口直读：final_prices 每 token 单价 ×1,000,000 换算为 CNY/1M tokens；证据未标明币种，按人民币回退。",
+                            "CNY",
+                        )
+                        metadata["group"] = group
+                        metadata["group_ratio"] = entry.get("rate_multiplier")
+                        status = "confirmed" if input_price is not None and output_price is not None else "candidate"
+                        records[key] = PriceRecord(
+                            target.name,
+                            input_price,
+                            output_price,
+                            "CNY/1M tokens",
+                            response_source_url,
+                            time.time(),
+                            metadata,
+                            status,
+                        )
                     continue
-                for entry in final_prices:
-                    if not isinstance(entry, dict):
-                        continue
-                    group = str(entry.get("group_name") or "default")
-                    def scaled(field: str) -> float | None:
-                        value = entry.get(field)
-                        return value * 1_000_000 if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-                    input_price = scaled("input_price")
-                    output_price = scaled("output_price")
+                input_raw = pricing.get("input_price")
+                output_raw = pricing.get("output_price")
+                if not (_plain_number(input_raw) and _plain_number(output_raw)):
+                    continue
+                for group in platform_groups or ["default"]:
                     key = (target.name, group)
                     if key in records:
                         continue
-                    metadata = {
-                        "adapter": "network",
-                        "pricing_kind": "explicit_price",
-                        "group": group,
-                        "group_ratio": entry.get("rate_multiplier"),
-                        "currency": "CNY",
-                        "network_evidence": [{
-                            "source": "model_list",
-                            "url": redact_url(str(captured[0].get("url", ""))),
-                            "resource_type": captured[0].get("resource_type"),
-                            "status": captured[0].get("status"),
-                            "payload_sha256": payload_hash(payload),
-                        }],
-                        "page_evidence": [],
-                        "notes": "platforms 定价接口直读：final_prices 每 token 单价 ×1,000,000 换算为 CNY/1M tokens；证据未标明币种，按人民币回退。",
-                    }
-                    status = "confirmed" if input_price is not None and output_price is not None else "candidate"
+                    metadata = evidence(
+                        "channels/available 直读：每 token 单价 ×1,000,000 换算；sub2api 系证据格式为美元，组倍率是否已计入接口未标明，标待复核。",
+                        "USD",
+                    )
+                    metadata["group"] = group
                     records[key] = PriceRecord(
                         target.name,
-                        input_price,
-                        output_price,
-                        "CNY/1M tokens",
+                        input_raw * 1_000_000,
+                        output_raw * 1_000_000,
+                        "USD/1M tokens",
                         response_source_url,
                         time.time(),
                         metadata,
-                        status,
+                        "candidate",
                     )
+    return list(records.values())
+
+
+def looks_like_sub2api_model_prices(payload: Any) -> bool:
+    """sub2api /api/v1/model-prices 结构：data.groups[].models[].tiers[]，分组实付价直读。"""
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    groups = data.get("groups")
+    if not isinstance(groups, list):
+        return False
+    return any(
+        isinstance(group, dict)
+        and isinstance(group.get("models"), list)
+        and any(isinstance(model, dict) and isinstance(model.get("tiers"), list) for model in group["models"])
+        for group in groups
+    )
+
+
+def sub2api_model_price_records(spec: SiteSpec, captured: list[dict[str, Any]]) -> list[PriceRecord]:
+    """确定性解析 sub2api model-prices：分组实付价已含倍率，币种与单位随接口声明。
+
+    同一模型在多个分组售卖时逐分组出价；tiers 取 min_tokens=0 的标准档（缺失回落第一档），
+    非标准档不混入。input/output 齐全为 confirmed，缺一为 candidate。
+    """
+    response_source_url = str(captured[0].get("url") or "") if captured else str(spec.network.get("url") or "")
+    payload = captured[0].get("payload") if captured else None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    unit = data.get("unit_tokens")
+    scale = 1_000_000 / unit if _plain_number(unit) and unit > 0 else 1.0
+    currency = str(data.get("currency") or "CNY")
+    records: dict[tuple[str, str], PriceRecord] = {}
+    for group in data.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_name = str(group.get("name") or "default")
+        rate = group.get("effective_rate")
+        if not _plain_number(rate):
+            rate = group.get("default_rate") if _plain_number(group.get("default_rate")) else None
+        for model in group.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            if str(model.get("status") or "available") not in ("", "available"):
+                continue
+            target = next(
+                (t for t in spec.models if t.name.casefold() == str(model.get("name", "")).casefold()),
+                None,
+            )
+            if target is None:
+                continue
+            tiers = model.get("tiers") or []
+            tier = next((t for t in tiers if isinstance(t, dict) and t.get("min_tokens") == 0), None)
+            if tier is None:
+                tier = next((t for t in tiers if isinstance(t, dict)), None)
+            if tier is None:
+                continue
+
+            def scaled(field: str, tier: dict[str, Any] = tier) -> float | None:
+                value = tier.get(field)
+                return value * scale if _plain_number(value) else None
+
+            input_price = scaled("input")
+            output_price = scaled("output")
+            if input_price is None and output_price is None:
+                continue
+            key = (target.name, group_name)
+            if key in records:
+                continue
+            metadata = {
+                "adapter": "network",
+                "pricing_kind": "explicit_price",
+                "group": group_name,
+                "group_ratio": rate,
+                "currency": currency,
+                "network_evidence": [{
+                    "source": "model_list",
+                    "url": redact_url(str(captured[0].get("url", ""))),
+                    "resource_type": captured[0].get("resource_type"),
+                    "status": captured[0].get("status"),
+                    "payload_sha256": payload_hash(payload),
+                }],
+                "page_evidence": [],
+                "notes": "sub2api model-prices 直读：分组实付价已含倍率，按接口声明的币种与 unit_tokens 归一。",
+            }
+            if tier.get("min_tokens"):
+                metadata["notes"] += f"档位 label={tier.get('label') or '未标注'}（min_tokens={tier.get('min_tokens')}）。"
+            status = "confirmed" if input_price is not None and output_price is not None else "candidate"
+            records[key] = PriceRecord(
+                target.name,
+                input_price,
+                output_price,
+                f"{currency}/1M tokens",
+                response_source_url,
+                time.time(),
+                metadata,
+                status,
+            )
     return list(records.values())
 
 
@@ -553,11 +699,14 @@ class NetworkAdapter:
                     # 超时/模型池全坏时无日志就无从定位整轮为何拖长
                     tasklog.emit(f"[{spec.id}] AI 模型名解析失败，使用直采定价：{exc}", "warn")
             return direct_records
+        if looks_like_sub2api_model_prices(payload):
+            # sub2api model-prices 分组实付价：确定性直读，未命中监控模型就返回空，
+            # 不落 AI——形状已识别，空转提取只会烧钱且结果必然为空
+            return sub2api_model_price_records(spec, [captured])
         if looks_like_platform_pricing(payload):
-            # 新版平台分桶定价结构：直读 final_prices，不再依赖 AI 逐分组映射
-            platform_records = platform_pricing_records(spec, [captured])
-            if platform_records:
-                return platform_records
+            # 平台分桶定价结构（totokens final_prices / sub2api channels 直读价）：
+            # 同上，确定性形状不落 AI
+            return platform_pricing_records(spec, [captured])
         if ai is not None and ai.usable:
             return AIPriceExtractor(ai).extract(
                 spec,
