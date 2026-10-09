@@ -4,6 +4,8 @@
  * 内容换入时只剩「灰条 → 文字」的原位变化，不再跳版。
  * 所有条块带负相位错峰（Skel delay），整页 shimmer 呈波浪扫过而非同步闪。 */
 
+import type { CSSProperties } from "react";
+
 import { LoadingRows, Skel } from "./ui";
 
 /* ---------- 通用零件 ---------- */
@@ -565,10 +567,43 @@ export function AdminLoading() {
 
 /* ---------- 首页 landing 骨架 ---------- */
 
-/** hero 节点轮播一排：点 + 站名 + 百分比，对齐 pano-site 胶囊。 */
+/** hero 节点轮播一排：点 + 站名 + 百分比，对齐 pano-site 胶囊；渲染时复制一份凑满
+ *  marquee 的 -50% 位移，与真实页同一套无缝循环（真实页由 HeroArea 复制 ghost 节点）。 */
 const PANO_WIDTHS = [
   [76, 96, 64, 88, 72, 104],
   [84, 60, 92, 68, 100, 76],
+];
+
+/** 星野散点占位：几团「大陆」簇近似真实底图点阵的疏密（固定公式生成——骨架由服务端
+ *  渲染，不能用 Math.random，否则每次请求坐标都变）；只求星野氛围，不描真实海岸线。 */
+const MAP_CLUSTERS = [
+  { x: 21, y: 38, spread: 10, count: 14 },
+  { x: 33, y: 64, spread: 7, count: 8 },
+  { x: 48, y: 32, spread: 8, count: 12 },
+  { x: 57, y: 56, spread: 9, count: 10 },
+  { x: 74, y: 42, spread: 12, count: 16 },
+  { x: 86, y: 68, spread: 5, count: 6 },
+];
+
+const MAP_DOTS = MAP_CLUSTERS.flatMap((cluster, c) =>
+  Array.from({ length: cluster.count }, (_, i) => {
+    const seed = c * 57 + i * 23;
+    return {
+      left: cluster.x + ((seed * 7) % (cluster.spread * 2)) - cluster.spread,
+      top: cluster.y + ((seed * 13) % cluster.spread) - cluster.spread / 2,
+      delay: (seed * 97) % 1400,
+    };
+  }),
+);
+
+/** 亮星节点占位：对齐真实页按归属地落点的状态色亮星（骨架保持中性灰，换入不变位） */
+const MAP_NODES = [
+  { left: 24, top: 36 },
+  { left: 46, top: 28 },
+  { left: 55, top: 44 },
+  { left: 66, top: 34 },
+  { left: 77, top: 26 },
+  { left: 87, top: 52 },
 ];
 
 /** 榜单速览行骨架：#排名 / 模型 / 厂商 / 指数，对齐 .rank-row 四列模板。 */
@@ -619,68 +654,92 @@ function RankListSkeleton() {
   );
 }
 
-/** 首页骨架：hero（左球 + 右文案 + 两排节点轮播）+ Bento 介绍 + 最新价表
+/** 首页骨架：hero（星空点阵图 + 文案叠放 + 两排节点轮播）+ Bento 介绍 + 最新价表
  *  + 趋势/事件两栏 + 站点卡 + 榜单速览 + FAQ + CTA，节次与真实页一致，换入不跳版。 */
 export function LandingLoading() {
   return (
     <div className="page landing">
       <section className="hero">
-        <div className="hero-globe" aria-hidden>
-          <div className="pano-globe-layer">
-            <Skel
-              w="76%"
-              h={100}
-              style={{
-                height: "auto",
-                aspectRatio: "1",
-                borderRadius: "50%",
-                margin: "10% auto 0",
-                display: "block",
-              }}
-            />
+        {/* 星空层：借 .hero-sky / .pano-flatmap 拿到与真实页一致的 100vw 全出血布局盒
+            （cobe 3D 球已退役），散点占位底图星野、大点占位站点亮星，文案照旧压在图上 */}
+        <div className="hero-sky" aria-hidden>
+          <div className="pano-flatmap">
+            {MAP_DOTS.map((dot, index) => (
+              <Skel
+                key={index}
+                w={3}
+                h={3}
+                delay={dot.delay}
+                style={{
+                  position: "absolute",
+                  left: `${dot.left}%`,
+                  top: `${dot.top}%`,
+                  borderRadius: "50%",
+                }}
+              />
+            ))}
+            {MAP_NODES.map((node, index) => (
+              <Skel
+                key={index}
+                w={8}
+                h={8}
+                delay={index * 180}
+                style={{
+                  position: "absolute",
+                  left: `${node.left}%`,
+                  top: `${node.top}%`,
+                  borderRadius: "50%",
+                }}
+              />
+            ))}
           </div>
-        </div>
-        <div className="hero-main" aria-hidden>
-          <div style={{ display: "grid", gap: 8 }}>
-            <Skel w="82%" h={52} />
-            <Skel w="58%" h={52} delay={80} />
-          </div>
-          <div style={{ display: "grid", gap: 8, marginTop: 22 }}>
-            <Skel w="94%" h={13} delay={160} />
-            <Skel w="72%" h={13} delay={200} />
-          </div>
-          <div style={{ display: "flex", gap: 12, marginTop: 30 }}>
-            <Skel w={150} h={44} style={{ borderRadius: 10 }} delay={260} />
-            <Skel w={128} h={44} style={{ borderRadius: 10 }} delay={300} />
+          <div className="hero-main">
+            <div style={{ display: "grid", gap: 8 }}>
+              <Skel w="82%" h={52} />
+              <Skel w="58%" h={52} delay={80} />
+            </div>
+            <div style={{ display: "grid", gap: 8, marginTop: 22 }}>
+              <Skel w="94%" h={13} delay={160} />
+              <Skel w="72%" h={13} delay={200} />
+            </div>
+            <div style={{ display: "flex", gap: 12, marginTop: 30 }}>
+              <Skel w={150} h={44} style={{ borderRadius: 10 }} delay={260} />
+              <Skel w={128} h={44} style={{ borderRadius: 10 }} delay={300} />
+            </div>
           </div>
         </div>
         {PANO_WIDTHS.map((widths, row) => (
-          <div key={row} className="marquee-row" aria-hidden>
-            <div
+          <div
+            key={row}
+            className={`marquee-row is-scroll${row % 2 ? " is-reverse" : ""}`}
+            aria-hidden
+          >
+            <ul
               className="marquee-track"
-              style={{ width: "100%", justifyContent: "space-between", gap: 16 }}
+              style={{ "--marquee-dur": "72s" } as CSSProperties}
             >
-              {widths.map((width, index) => (
-                <div
-                  key={index}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "7px 8px",
-                  }}
-                >
-                  <Skel
-                    w={8}
-                    h={8}
-                    style={{ borderRadius: "50%", flexShrink: 0 }}
-                    delay={row * 200 + index * 45}
-                  />
-                  <Skel w={width} h={12} delay={row * 200 + index * 45 + 15} />
-                  <Skel w={34} h={12} delay={row * 200 + index * 45 + 30} />
-                </div>
+              {[...widths, ...widths].map((width, index) => (
+                <li key={index}>
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "7px 8px",
+                    }}
+                  >
+                    <Skel
+                      w={8}
+                      h={8}
+                      style={{ borderRadius: "50%", flexShrink: 0 }}
+                      delay={row * 200 + index * 45}
+                    />
+                    <Skel w={width} h={12} delay={row * 200 + index * 45 + 15} />
+                    <Skel w={34} h={12} delay={row * 200 + index * 45 + 30} />
+                  </span>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
         ))}
       </section>

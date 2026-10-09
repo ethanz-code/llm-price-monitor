@@ -13,10 +13,16 @@ export const site = {
     "哪个中转站价格更低、服务更稳？每条数据都附来源链接，点开就能核对。",
 };
 
-/** hover 大弹窗内容：一句话说明 + 核心看点 */
-export interface NavPopover {
+/** hover 大弹窗条目：真实页面/锚点直达（标题 + 一句话） */
+export interface NavPopoverEntry {
+  title: string;
   desc: string;
-  points: string[];
+  href: string;
+}
+
+/** hover 大弹窗内容：一组直达条目 */
+export interface NavPopover {
+  entries: NavPopoverEntry[];
 }
 
 /** 顶部导航 */
@@ -33,59 +39,146 @@ export const nav = {
   /** 桌面主导航 hover 大弹窗：一句话说明 + 核心看点（全部为真实功能）；没配置的 tab 不出弹窗 */
   popovers: {
     "/": {
-      desc: "价格、渠道状态、公告的实时对照，全部逐条可溯源。",
-      points: [
-        "最新价格：每个模型只留最低价一行",
-        "价格走势：低价曲线按小时记录",
-        "站点健康：可用率与延迟持续探测",
+      entries: [
+        {
+          title: "最新价格",
+          desc: "每个模型只留检测站点里的最低价一行",
+          href: "/#sec-latest",
+        },
+        {
+          title: "价格走势",
+          desc: "低价曲线按小时记录，可切换模型",
+          href: "/#sec-trend",
+        },
+        {
+          title: "检测中的站点",
+          desc: "可用率与延迟持续探测，异常置顶",
+          href: "/#sec-sites",
+        },
+        {
+          title: "常见问题",
+          desc: "标价与实付的差异、更新频率说明",
+          href: "/#sec-faq",
+        },
       ],
     },
     "/overview": {
-      desc: "每个模型只展示检测站点里的最低价，每条都附来源链接，点开就能核对。",
-      points: [
-        "站点检测档案：可用率、延迟逐轮留档",
-        "厂商官方价对照，折扣一眼看清",
-        "按厂商分组、发布日期排序",
+      entries: [
+        {
+          title: "价目总览表",
+          desc: "全部站点的模型价格与折扣逐列对照",
+          href: "/overview",
+        },
+        {
+          title: "站点检测档案",
+          desc: "任一站点行进入，看可用率与延迟明细",
+          href: "/overview",
+        },
+        {
+          title: "模型榜单",
+          desc: "Artificial Analysis 智能指数速览",
+          href: "/rankings",
+        },
       ],
     },
     "/calculator": {
-      desc: "填好单价和用量，按缓存命中率估算这笔花费。",
-      points: [
-        "输入/输出/缓存命中三档分开算",
-        "10M/100M/1B 总用量快捷档位",
-        "复制分享链接，打开就是你算的这笔账",
+      entries: [
+        {
+          title: "花费计算器",
+          desc: "输入/输出/缓存命中三档分开估算",
+          href: "/calculator",
+        },
+        {
+          title: "厂商定价目录",
+          desc: "查官方单价做对照基准",
+          href: "/catalog",
+        },
+        {
+          title: "标价与实付的差异",
+          desc: "缓存命中率与计费口径的影响说明",
+          href: "/#sec-faq",
+        },
       ],
     },
     "/catalog": {
-      desc: "厂商官方定价目录，站点折扣的对照基准。",
-      points: [
-        "国际价来自 models.dev 开源目录",
-        "国内厂商定价页逐家抓取",
-        "按发布日期看最新模型",
+      entries: [
+        {
+          title: "官方定价目录",
+          desc: "国际价来自 models.dev 开源目录",
+          href: "/catalog",
+        },
+        {
+          title: "国内定价源",
+          desc: "国内厂商定价页逐家抓取",
+          href: "/catalog",
+        },
+        {
+          title: "模型榜单",
+          desc: "智能指数判断能力档位",
+          href: "/rankings",
+        },
       ],
     },
     "/history": {
-      desc: "价格与公告的变化流，变化全部留档可回查。",
-      points: [
-        "降价/涨价/新增/公告分类徽章",
-        "按站点与模型筛选定位",
-        "同模型多分组折叠成一张卡",
+      entries: [
+        {
+          title: "事件流",
+          desc: "降价/涨价/新增/公告分类徽章",
+          href: "/history",
+        },
+        {
+          title: "按站点与模型筛选",
+          desc: "定位某家站的全部变化",
+          href: "/history",
+        },
+        {
+          title: "公告留档回查",
+          desc: "历史公告版本随时翻看",
+          href: "/history",
+        },
       ],
     },
     "/discover": {
-      desc: "从多个来源聚合发现新的中转站，补全检测清单。",
-      points: [
-        "四路来源聚合找站，去重合并",
-        "探测可用性后生成可导入清单",
-        "自动排除库内已有站点",
+      entries: [
+        {
+          title: "新站发现",
+          desc: "四路来源聚合找站，去重合并",
+          href: "/discover",
+        },
+        {
+          title: "可导入清单",
+          desc: "探测可用性后生成，直接入库",
+          href: "/discover",
+        },
+        {
+          title: "提交站点接入",
+          desc: "填站点地址，核验通过后开始检测",
+          href: "/discover",
+        },
       ],
     },
     "/admin": {
-      desc: "管理后台：站点、任务与数据运营入口。",
-      points: [
-        "站点管理：接入与采集配置",
-        "采集任务：手动触发与运行状态",
-        "定价源、AI 日志与数据分析",
+      entries: [
+        {
+          title: "站点管理",
+          desc: "接入与采集配置",
+          href: "/admin/sites",
+        },
+        {
+          title: "采集任务",
+          desc: "手动触发与运行状态",
+          href: "/admin/tasks",
+        },
+        {
+          title: "厂商定价源",
+          desc: "国内折扣基准来源管理",
+          href: "/admin/pricing-sources",
+        },
+        {
+          title: "AI 抽取日志",
+          desc: "抽取轮次与数据质量",
+          href: "/admin/ai-logs",
+        },
       ],
     },
   } as Record<string, NavPopover>,

@@ -107,6 +107,120 @@ def host_to_id(host: str, taken: set[str]) -> str:
     return site_id
 
 
+# ---------- 网络空间测绘（sweep）：不依赖收录名单，按面板指纹直接搜全网部署实例 ----------
+
+# 指纹取自各面板仓库的静态 index.html（一手来源），站长改站名也不影响静态页特征：
+# new-api（QuantumNous/new-api）、one-api（songquanpeng/one-api）、Veloera（Veloera/Veloera）
+PANEL_FINGERPRINTS = {
+    "new-api": 'body="Unified AI API gateway and admin dashboard."',
+    "one-api": 'body="OpenAI 接口聚合管理，支持多种渠道包括 Azure"',
+    "veloera": 'title="Veloera"',
+}
+
+ENGINE_KEYS = {"fofa": ("FOFA_EMAIL", "FOFA_KEY"), "quake": ("QUAKE_TOKEN",), "hunter": ("HUNTER_KEY",)}
+
+
+def _scheme_of(host: str, port: object) -> str:
+    return "https" if str(port) == "443" else "http"
+
+
+def parse_fofa(payload: dict) -> list[Candidate]:
+    """FOFA /api/v1/search/all 响应：fields=host,port,title 时 results 为列表的列表。"""
+    out: list[Candidate] = []
+    for row in payload.get("results") or []:
+        if isinstance(row, dict):  # 部分账号/字段组合返回对象
+            host, port, title = row.get("host"), row.get("port"), row.get("title")
+        else:
+            host, port, title = (list(row) + ["", "", ""])[:3]
+        if not host:
+            continue
+        if "://" in str(host):  # host 字段偶发带协议
+            origin = origin_of(str(host))
+        else:
+            origin = origin_of(f"{_scheme_of(host, port)}://{host}")
+        if origin is None:
+            continue
+        out.append(Candidate(urlsplit(origin).hostname or "", origin, str(title or ""), ["fofa"]))
+    return out
+
+
+def parse_quake(payload: dict) -> list[Candidate]:
+    """Quake 360 /api/v3/search/quake_service 响应：data[].service.http.host / hostname。
+
+    只收有域名/主机名的条目，纯 IP 命中多为噪音（裸 IP 上跑面板且无域名的极少）。
+    """
+    out: list[Candidate] = []
+    for item in payload.get("data") or []:
+        service = item.get("service") or {}
+        http = service.get("http") or {}
+        host = http.get("host") or (item.get("hostname") or [""])[0] or ""
+        if not host:
+            continue
+        origin = origin_of(str(host) if "://" in str(host) else f"{_scheme_of(host, item.get('port'))}://{host}")
+        if origin is None:
+            continue
+        out.append(Candidate(urlsplit(origin).hostname or "", origin, str(http.get("title") or item.get("http_title") or ""), ["quake"]))
+    return out
+
+
+def parse_hunter(payload: dict) -> list[Candidate]:
+    """鹰图 /openApi/search 响应：data.arr[].url 自带协议，最省事。"""
+    out: list[Candidate] = []
+    for item in (payload.get("data") or {}).get("arr") or []:
+        origin = origin_of(str(item.get("url") or ""))
+        if origin is None:
+            continue
+        out.append(Candidate(urlsplit(origin).hostname or "", origin, str(item.get("http_title") or item.get("domain") or ""), ["hunter"]))
+    return out
+
+
+def sweep(engine: str, panel: str, query: str | None, size: int) -> list[Candidate]:
+    """调测绘引擎 API 搜面板实例；引擎与账号 key 由环境变量提供。"""
+    import base64
+    import os
+
+    import httpx
+
+    keys = ENGINE_KEYS[engine]
+    missing = [name for name in keys if not os.getenv(name)]
+    if missing:
+        raise SystemExit(
+            f"缺少环境变量 {'、'.join(missing)}——{engine} 需要注册账号拿 API key"
+            f"（fofa.info / quake.360.net / hunter.qianxin.com 都有免费额度）。"
+        )
+    if query is None:
+        query = PANEL_FINGERPRINTS[panel]
+    source = f"{engine}:{panel}"
+    if engine == "fofa":
+        qbase64 = base64.b64encode(query.encode()).decode()
+        response = httpx.get(
+            "https://fofa.info/api/v1/search/all",
+            params={"email": os.environ["FOFA_EMAIL"], "key": os.environ["FOFA_KEY"], "qbase64": qbase64, "fields": "host,port,title", "size": size},
+            timeout=30,
+        )
+        candidates = parse_fofa(response.json())
+    elif engine == "quake":
+        response = httpx.post(
+            "https://quake.360.net/api/v3/search/quake_service",
+            headers={"X-QuakeToken": os.environ["QUAKE_TOKEN"]},
+            json={"query": query, "start": 0, "size": size},
+            timeout=30,
+        )
+        candidates = parse_quake(response.json())
+    else:
+        qbase64 = base64.urlsafe_b64encode(query.encode()).decode()
+        response = httpx.get(
+            "https://hunter.qianxin.com/openApi/search",
+            params={"api-key": os.environ["HUNTER_KEY"], "search": qbase64, "page": 1, "page_size": min(size, 100), "is_web": 3},
+            timeout=30,
+        )
+        candidates = parse_hunter(response.json())
+    # 引擎给的是 host:port，探测只认 origin；去重后合并来源标注
+    for cand in candidates:
+        cand.sources = [source]
+    return merge_candidates([candidates])
+
+
 # ---------- 聚合源 ----------
 
 # raw.githubusercontent.com 国内直连经常超时，全部 jsDelivr 镜像优先、raw 兜底
@@ -475,25 +589,14 @@ def existing_site_hosts() -> dict[str, str]:
     return hosts
 
 
-async def run_harvest(proxy: str | None, only: str | None) -> None:
-    if only is None:
-        only_set = set(DEFAULT_SOURCES)
-    elif only.strip().lower() == "all":
-        only_set = set(SOURCE_KEYS)
-    else:
-        only_set = {key.strip() for key in only.split(",")}
-    bad = only_set - set(SOURCE_KEYS)
-    if bad:
-        raise SystemExit(f"未知源：{'、'.join(sorted(bad))}（可选：{'、'.join(SOURCE_KEYS)}、all）")
-    print("正在拉取聚合源…" + (f"（源：{'、'.join(sorted(only_set))}）" if only_set != set(SOURCE_KEYS) else "（全部）"))
-    fresh = await harvest(proxy, only=only_set)
+def _merge_into_pool(fresh: list[Candidate]) -> tuple[int, int]:
+    """把本轮结果与已有候选池增量合并并落盘，返回（合并后总数, 新增数）。"""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_file = OUT_DIR / "candidates.json"
     # 与已有候选池增量合并：某源拉挂只影响本轮新拉到的站，不会把上轮的站从池子里挤掉
     previous: list[Candidate] = []
     if out_file.exists():
         try:
-            previous = []
             for item in json.loads(out_file.read_text(encoding="utf-8"))["candidates"]:
                 cand = Candidate(**item)
                 origin = origin_of(cand.url)  # 顺带清洗：旧池里可能有带转义反斜杠的 host/url
@@ -508,7 +611,30 @@ async def run_harvest(proxy: str | None, only: str | None) -> None:
         "candidates": [cand.__dict__ for cand in candidates],
     }
     out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"本轮拉到 {len(fresh)}、已有池 {len(previous)}、合并去重后 {len(candidates)}（新增 {max(len(candidates) - len(previous), 0)}）→ {out_file}")
+    return len(candidates), max(len(candidates) - len(previous), 0)
+
+
+async def run_harvest(proxy: str | None, only: str | None) -> None:
+    if only is None:
+        only_set = set(DEFAULT_SOURCES)
+    elif only.strip().lower() == "all":
+        only_set = set(SOURCE_KEYS)
+    else:
+        only_set = {key.strip() for key in only.split(",")}
+    bad = only_set - set(SOURCE_KEYS)
+    if bad:
+        raise SystemExit(f"未知源：{'、'.join(sorted(bad))}（可选：{'、'.join(SOURCE_KEYS)}、all）")
+    print("正在拉取聚合源…" + (f"（源：{'、'.join(sorted(only_set))}）" if only_set != set(SOURCE_KEYS) else "（全部）"))
+    fresh = await harvest(proxy, only=only_set)
+    total, added = _merge_into_pool(fresh)
+    print(f"本轮拉到 {len(fresh)}、合并去重后 {total}（新增 {added}）→ {OUT_DIR / 'candidates.json'}")
+
+
+def run_sweep(engine: str, panel: str, query: str | None, size: int) -> None:
+    print(f"正在用 {engine} 搜 {panel} 实例（{query or PANEL_FINGERPRINTS[panel]}，取 {size} 条）…")
+    candidates = sweep(engine, panel, query, size)
+    total, added = _merge_into_pool(candidates)
+    print(f"引擎返回 {len(candidates)} 条有效站点，合并去重后池子 {total}（新增 {added}）→ {OUT_DIR / 'candidates.json'}；跑 probe 检测价格接口。")
 
 
 PROBE_CANDIDATE_PROXIES = (
@@ -623,9 +749,16 @@ def main() -> None:
     p_probe.add_argument("--proxy", help="可选代理，http://127.0.0.1:7890 或 auto=自动探测本机常见代理端口")
     p_probe.add_argument("--retry-failed", action="store_true", help="只重测上轮未通过的站（配 --proxy auto 给被墙站翻案）")
     sub.add_parser("diff", help="只比对不探测：候选池里哪些站库里已有、哪些是新增")
+    sw = sub.add_parser("sweep", help="网络空间测绘检索面板实例（不依赖收录名单，需引擎 API key 环境变量）")
+    sw.add_argument("--engine", default="fofa", choices=sorted(ENGINE_KEYS), help="测绘引擎（key 从环境变量读）")
+    sw.add_argument("--panel", default="new-api", choices=sorted(PANEL_FINGERPRINTS), help="面板指纹")
+    sw.add_argument("--query", help="覆盖预设查询语法（引擎原样语法）")
+    sw.add_argument("--size", type=int, default=200, help="取回条数（fofa body 查询上限 500）")
     args = parser.parse_args()
     if args.command == "harvest":
         asyncio.run(run_harvest(args.proxy, args.only))
+    elif args.command == "sweep":
+        run_sweep(args.engine, args.panel, args.query, args.size)
     elif args.command == "diff":
         run_diff()
     else:

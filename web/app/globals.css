@@ -1962,10 +1962,28 @@ html:not([data-theme="dark"]) .panel {
 .nav-pill-item {
   position: relative;
   z-index: 1;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13.5px;
+  color: var(--text-2);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color var(--dur),
+    background-color var(--dur);
 }
 
-/* 全宽 mega 面板：铺满视口（两侧留边）、与 tabs 之间留间隙；hover 在 tabs 之间移动时
-   面板保持展开、内容平滑切换，不反复弹出收起（Stripe/Linear 手法）。
+.nav-pill-item:hover {
+  color: var(--text);
+}
+
+.nav-pill-item.active {
+  color: var(--text);
+  font-weight: 550;
+}
+
+/* 全宽 mega 面板：铺满视口（两侧留边）、与 tabs 之间留间隙；hover 在 tabs 间移动时
+   面板保持展开、内容按方向左右滑切，不反复弹出收起（Stripe/Linear 手法）。
    面板 portal 到 body，位置由 NavTabs 按 tabs 底缘实测注入 */
 .nav-mega {
   position: fixed;
@@ -1986,9 +2004,10 @@ html:not([data-theme="dark"]) .panel {
 
 .nav-mega-card {
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 28px 36px;
+  border: var(--card-border);
+  border-radius: 14px;
+  padding: 20px 24px;
+  min-height: 216px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.16);
   animation: nav-mega-in 0.22s var(--ease);
 }
@@ -1998,144 +2017,103 @@ html:not([data-theme="dark"]) .panel {
 }
 
 .nav-mega.leaving .nav-mega-card {
-  animation: nav-mega-out 0.16s var(--ease) forwards;
+  animation: nav-mega-out 0.15s var(--ease) forwards;
 }
 
 @keyframes nav-mega-in {
   from {
     opacity: 0;
-    transform: translateY(-8px) scale(0.99);
+    transform: translateY(-8px) scale(0.995);
   }
 }
 
 @keyframes nav-mega-out {
   to {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(-5px);
   }
 }
 
-/* 内容随 hover 的 tab 切换：swap 动画只动内容，面板本体不动 */
+/* 内容随 hover 的 tab 左右滑切：方向由 tab 位置决定，面板本体不动 */
 .nav-mega-body {
   display: grid;
-  grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
-  gap: 28px 56px;
-  align-items: start;
-  animation: nav-mega-swap 0.2s var(--ease);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 32px;
+  align-content: center;
+  min-height: 176px;
+  animation: nav-swap-right 0.24s var(--ease);
 }
 
-@keyframes nav-mega-swap {
+.nav-mega-body.dir-left {
+  animation-name: nav-swap-left;
+}
+
+@keyframes nav-swap-right {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateX(18px);
   }
 }
 
-.nav-mega-label {
-  display: block;
-  font-size: 11.5px;
-  color: var(--text-3);
+@keyframes nav-swap-left {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
 }
 
-.nav-mega-desc {
-  margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-2);
-}
-
-.nav-mega-go {
-  display: inline-block;
-  margin-top: 16px;
-  font-size: 13px;
-  color: var(--accent-text);
-  text-decoration: none;
-}
-
-.nav-mega-go:hover {
-  text-decoration: underline;
-}
-
-.nav-mega-side {
+.nav-mega-entry {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-left: 56px;
-  border-left: 1px solid var(--border);
-  min-height: 100%;
-}
-
-.nav-mega-side-title {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.nav-mega-points {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.nav-mega-point {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 14px 16px;
-  background: var(--panel-2);
+  gap: 4px;
+  padding: 15px 18px;
   border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--dur) linear;
+}
+
+.nav-mega-entry:hover {
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+}
+
+.nav-mega-entry-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  transition: color var(--dur);
+}
+
+.nav-mega-entry:hover .nav-mega-entry-title {
+  color: var(--accent-text);
+}
+
+.nav-mega-entry-desc {
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--text-2);
 }
 
-.nav-mega-point-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: var(--accent);
-  opacity: 0.8;
-  margin-top: 6px;
-  flex-shrink: 0;
-}
+@media (prefers-reduced-motion: reduce) {
+  .site-card::before,
+  .site-card::after {
+    transition: none;
+  }
 
-@media (max-width: 1200px) {
+  .nav-pill-indicator,
+  .nav-pop,
+  .nav-mega-card,
   .nav-mega-body {
-    grid-template-columns: 1fr;
-    gap: 20px;
+    animation: none;
   }
 
-  .nav-mega-side {
-    border-left: 0;
-    padding-left: 0;
+  .nav-pill-indicator {
+    transition: none;
   }
-}
 
-
-/* 滚动后：保持悬浮胶囊形态，仅加一点软投影让胶囊从滚过的内容上浮起 */
-.site-header[data-scrolled] .nav-pill {
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.1);
-}
-
-.nav-pill-item {
-  padding: 6px 14px;
-  border-radius: 4px;
-  font-size: 13.5px;
-  color: var(--text-2);
-  text-decoration: none;
-  white-space: nowrap;
-  transition:
-    color var(--dur),
-    background-color var(--dur);
-}
-
-.nav-pill-item:hover {
-  color: var(--text);
-}
-
-.nav-pill-item.active {
-  color: var(--text);
-  font-weight: 550;
+  .nav-mega.leaving .nav-mega-card {
+    opacity: 0;
+  }
 }
 
 /* 汉堡菜单仅移动端：提升特异性，避免被 AntD .ant-btn 的 display 覆盖 */

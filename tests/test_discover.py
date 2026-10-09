@@ -20,6 +20,9 @@ from llm_price_monitor.discover import (
     host_to_id,
     normalize_host,
     origin_of,
+    parse_fofa,
+    parse_hunter,
+    parse_quake,
 )
 
 
@@ -276,3 +279,36 @@ def test_run_harvest_only_selection_and_incremental_merge(tmp_path: Path, monkey
     asyncio.run(discover_mod.run_harvest(None, None))
     merged = json.loads((out / "candidates.json").read_text(encoding="utf-8"))["candidates"]
     assert {cand["host"] for cand in merged} == {"old.example", "fresh.example"}
+
+
+# ---------- 网络空间测绘引擎响应解析（sweep） ----------
+
+
+def test_parse_fofa_handles_list_rows_and_port_schemes():
+    payload = {"error": False, "results": [["demo.example.com", "443", "New API"], ["1.2.3.4:8080", "8080", "One API"], ["https://x.example.net", "443", "T"], ["", "443", "空"]]}
+    rows = parse_fofa(payload)
+    assert [(r.host, r.url) for r in rows] == [
+        ("demo.example.com", "https://demo.example.com"),
+        ("1.2.3.4", "http://1.2.3.4:8080"),
+        ("x.example.net", "https://x.example.net"),
+    ]
+    assert all(r.sources == ["fofa"] for r in rows)
+
+
+def test_parse_quake_prefers_http_host_over_ip():
+    payload = {"code": 0, "data": [
+        {"ip": "1.2.3.4", "port": 443, "hostname": ["a.example.com"], "service": {"http": {"host": "a.example.com", "title": "New API"}}},
+        {"ip": "5.6.7.8", "port": 3000, "service": {"http": {"host": "5.6.7.8:3000"}}},
+        {"ip": "9.9.9.9", "port": 80},
+    ]}
+    rows = parse_quake(payload)
+    assert [(r.url, r.name) for r in rows] == [("https://a.example.com", "New API"), ("http://5.6.7.8:3000", "")]
+
+
+def test_parse_hunter_uses_url_field():
+    payload = {"code": 200, "data": {"arr": [
+        {"url": "https://h.example.com", "http_title": "中转站", "domain": "h.example.com"},
+        {"url": "无效"}, {"url": "http://p.example.org:8443", "http_title": ""},
+    ]}}
+    rows = parse_hunter(payload)
+    assert [(r.host, r.url, r.name) for r in rows] == [("h.example.com", "https://h.example.com", "中转站"), ("p.example.org", "http://p.example.org:8443", "")]

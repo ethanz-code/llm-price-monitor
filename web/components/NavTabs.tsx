@@ -7,9 +7,9 @@ import { createPortal } from "react-dom";
 import { nav } from "@/lib/copy";
 
 /** 桌面主导航 tabs：滑动选中指示器 + 全宽 mega 面板。
- *  面板铺满视口宽度（两侧留边、与 tabs 之间留间隙），hover 在不同 tabs 之间移动时
- *  面板保持展开、内容平滑切换，不反复弹出收起；移出导航区短暂宽限后淡出，
- *  滚动 / 路由变化 / Escape 立即收起。触屏不受影响（hover 不触发，点击直达）。 */
+ *  面板展开一次常驻，hover 在 tabs 间移动只做内容的左右滑动切换（不反复弹出收起）；
+ *  条目全部是真实页面/锚点直达。移出导航区 180ms 宽限后淡出，
+ *  滚动 / 路由变化 / Escape / resize 立即收起。触屏不受影响（点击直达）。 */
 export function NavTabs({
   items,
   selected,
@@ -24,8 +24,10 @@ export function NavTabs({
   const [open, setOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [dir, setDir] = useState<"left" | "right">("right");
   const [panelTop, setPanelTop] = useState(76);
   const closeTimer = useRef(0);
+  const prevKeyRef = useRef<string | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -53,7 +55,11 @@ export function NavTabs({
     };
   }, [pathname, items.length]);
 
-  const cancelClose = useCallback(() => window.clearTimeout(closeTimer.current), []);
+  /** 取消收起并恢复面板可见（离开态的淡出动画立即中断） */
+  const cancelClose = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    setLeaving(false);
+  }, []);
 
   const closeNow = useCallback(() => {
     window.clearTimeout(closeTimer.current);
@@ -61,7 +67,7 @@ export function NavTabs({
     setLeaving(false);
   }, []);
 
-  /** 移出导航区：给 180ms 宽限（穿过 tab 与面板之间的间隙不丢），超时淡出 */
+  /** 移出导航区：180ms 宽限（穿过 tab 与面板之间的间隙不丢），超时淡出 */
   const scheduleClose = useCallback(() => {
     window.clearTimeout(closeTimer.current);
     setLeaving(true);
@@ -71,20 +77,28 @@ export function NavTabs({
     }, 180);
   }, []);
 
-  /** hover 到某个 tab：面板保持展开，内容切到该 tab */
+  /** hover 到某个 tab：面板保持展开，内容带方向地滑切到该 tab */
   const enterTab = useCallback(
     (key: string) => {
       window.clearTimeout(closeTimer.current);
       setLeaving(false);
+      const prev = prevKeyRef.current ?? selected;
+      if (prev !== key) {
+        const indexOf = (k: string) => items.findIndex((item) => item.key === k);
+        const pi = indexOf(prev);
+        const ni = indexOf(key);
+        if (pi !== ni) setDir(ni > pi ? "right" : "left");
+      }
+      prevKeyRef.current = key;
       setActiveKey(key);
       const pill = pillRef.current;
       if (pill) setPanelTop(Math.round(pill.getBoundingClientRect().bottom) + 12);
       setOpen(true);
     },
-    [],
+    [items, selected],
   );
 
-  // 滚动 / Escape 立即收起；路由变化收起；resize 收起（面板位置失效）
+  // 滚动 / Escape / resize 立即收起；路由变化收起
   useEffect(() => {
     const onScroll = () => closeNow();
     const onKey = (event: KeyboardEvent) => {
@@ -145,30 +159,19 @@ export function NavTabs({
             onMouseLeave={scheduleClose}
           >
             <div className="nav-mega-card">
-              {/* 内容随 hover 的 tab 切换：key 变化触发 swap 动画，面板本体不动 */}
-              <div className="nav-mega-body" key={activeKey}>
-                <div className="nav-mega-main">
-                  <span className="nav-mega-label">{activeItem.label}</span>
-                  <p className="nav-mega-desc">{activePop.desc}</p>
+              {/* 内容随 hover 的 tab 左右滑动切换：方向由 tab 位置决定，面板本体不动 */}
+              <div className={`nav-mega-body dir-${dir}`} key={activeKey}>
+                {activePop.entries.map((entry) => (
                   <Link
-                    href={activeItem.key}
-                    className="nav-mega-go"
+                    key={entry.href + entry.title}
+                    href={entry.href}
+                    className="nav-mega-entry"
                     onClick={closeNow}
                   >
-                    进入{activeItem.label} →
+                    <span className="nav-mega-entry-title">{entry.title}</span>
+                    <span className="nav-mega-entry-desc">{entry.desc}</span>
                   </Link>
-                </div>
-                <div className="nav-mega-side">
-                  <span className="nav-mega-side-title">核心看点</span>
-                  <div className="nav-mega-points">
-                    {activePop.points.map((point) => (
-                      <div key={point} className="nav-mega-point">
-                        <span className="nav-mega-point-dot" aria-hidden />
-                        <span>{point}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>,
